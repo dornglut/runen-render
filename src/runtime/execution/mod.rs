@@ -155,6 +155,8 @@ use errors::{
 use lifecycle::{DeterministicObservationIntent, DeterministicVerificationState};
 use packing::*;
 use prepare::{PackedOutput, lower_deterministic_render};
+#[cfg(test)]
+use state::DeterministicTemporalStorage;
 use state::{
     DeterministicBufferKind, DeterministicOutputExecutionSelection,
     DeterministicOutputPackingState, DeterministicRenderExecutionSelection,
@@ -162,8 +164,6 @@ use state::{
     DeterministicTemporalSignature, MaintainedExecutionKind, temporal_evaluation_extent_supported,
     temporal_observation_compatibility,
 };
-#[cfg(test)]
-use state::DeterministicTemporalStorage;
 use submission::submit_prepared_deterministic_render;
 
 #[cfg(test)]
