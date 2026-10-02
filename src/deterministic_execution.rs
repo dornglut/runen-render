@@ -34,9 +34,12 @@ use super::request::{
 };
 use super::scene::{RenderObjectId, RenderSceneRevision};
 use super::shader_bridge::{
-    RenderMaintainedProgramBuildError, RenderMaintainedProgramSources,
-    RenderRunenShaderCompilationError, build_maintained_program_sources,
+    RenderMaintainedProgram, RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError,
+    build_camera_reprojection_program, build_maintained_evaluator_program,
+    build_temporal_reconstruction_program,
 };
+#[cfg(test)]
+use super::shader_bridge::build_maintained_program_sources;
 use super::space_time::RenderTimeInterval;
 use super::surface_input::{
     RenderSurfaceSemanticInputBinding, RenderSurfaceSemanticInputGeneration,
@@ -254,7 +257,9 @@ struct DeterministicTemporalHistorySelection {
 pub(crate) struct DeterministicResourceCache {
     identities: GpuWorkResourceIdAllocator,
     buffers: BTreeMap<(u64, usize, DeterministicBufferKind), GpuBufferHandle>,
-    program_sources: Option<RenderMaintainedProgramSources>,
+    maintained_source: Option<RenderMaintainedProgram>,
+    reconstruction_source: Option<RenderMaintainedProgram>,
+    camera_reprojection_source: Option<RenderMaintainedProgram>,
     temporal_histories: BTreeMap<(u64, usize), DeterministicTemporalHistory>,
     next_temporal_generation: u64,
     prepared_temporal_outputs: BTreeMap<u64, BTreeSet<usize>>,
@@ -347,50 +352,61 @@ impl DeterministicResourceCache {
         }
     }
 
-    fn program_sources(
-        &mut self,
-    ) -> Result<&RenderMaintainedProgramSources, RenderDeterministicLoweringError> {
-        if self.program_sources.is_none() {
-            let sources = build_maintained_program_sources(
-                MAINTAINED_EVALUATOR_REVISION,
-                MAINTAINED_WGSL.as_str(),
-                u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
-                TEMPORAL_RECONSTRUCTION_WGSL,
-                u64::from(CAMERA_REPROJECTION_REVISION),
-                CAMERA_REPROJECTION_WGSL.as_str(),
-            )
-            .map_err(|error| match error {
-                RenderMaintainedProgramBuildError::RunenShader(error) => {
-                    RenderDeterministicLoweringError::RunenShaderCompilation(error)
-                }
-                RenderMaintainedProgramBuildError::RunenGpu { stage, source } => {
-                    gpu_program_source(stage, source)
-                }
-            })?;
-            self.program_sources = Some(sources);
-        }
-        Ok(self
-            .program_sources
-            .as_ref()
-            .expect("maintained program sources were initialized"))
-    }
-
     fn maintained_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        Ok(self.program_sources()?.evaluator().clone())
+        if self.maintained_source.is_none() {
+            let program = build_maintained_evaluator_program(
+                MAINTAINED_EVALUATOR_REVISION,
+                MAINTAINED_WGSL.as_str(),
+            )
+            .map_err(map_maintained_program_build_error)?;
+            self.maintained_source = Some(program);
+        }
+        Ok(self
+            .maintained_source
+            .as_ref()
+            .expect("maintained evaluator source was initialized")
+            .admitted()
+            .clone())
     }
 
     fn reconstruction_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        Ok(self.program_sources()?.temporal_reconstruction().clone())
+        if self.reconstruction_source.is_none() {
+            let program = build_temporal_reconstruction_program(
+                u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
+                TEMPORAL_RECONSTRUCTION_WGSL,
+            )
+            .map_err(map_maintained_program_build_error)?;
+            self.reconstruction_source = Some(program);
+        }
+        Ok(self
+            .reconstruction_source
+            .as_ref()
+            .expect("temporal reconstruction source was initialized")
+            .admitted()
+            .clone())
     }
 
     fn camera_reprojection_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        Ok(self.program_sources()?.camera_reprojection().clone())
+        if self.camera_reprojection_source.is_none() {
+            let program = build_camera_reprojection_program(
+                u64::from(CAMERA_REPROJECTION_REVISION),
+                CAMERA_REPROJECTION_WGSL.as_str(),
+            )
+            .map_err(map_maintained_program_build_error)?;
+            self.camera_reprojection_source = Some(program);
+        }
+        Ok(self
+            .camera_reprojection_source
+            .as_ref()
+            .expect("camera reprojection source was initialized")
+            .admitted()
+            .clone())
     }
 
     fn temporal_history(
@@ -3237,6 +3253,19 @@ fn deterministic_dispatch_size(
         u32::try_from(groups_y).expect("admitted dispatch y dimension must fit u32"),
         1,
     ))
+}
+
+fn map_maintained_program_build_error(
+    error: RenderMaintainedProgramBuildError,
+) -> RenderDeterministicLoweringError {
+    match error {
+        RenderMaintainedProgramBuildError::RunenShader(error) => {
+            RenderDeterministicLoweringError::RunenShaderCompilation(error)
+        }
+        RenderMaintainedProgramBuildError::RunenGpu { stage, source } => {
+            gpu_program_source(stage, source)
+        }
+    }
 }
 
 fn gpu_program_source(

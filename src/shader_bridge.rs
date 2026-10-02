@@ -156,46 +156,56 @@ pub(crate) enum RenderMaintainedProgramBuildError {
 }
 
 #[derive(Debug)]
-struct RetainedMaintainedProgram {
+pub(crate) struct RenderMaintainedProgram {
     // Retain the accepted RunenShader artifact for the same renderer lifetime as its RunenGPU
     // admission even when production execution only needs the admitted source handle.
     _artifact: ShaderArtifact,
     admitted: GpuAdmittedProgramSource,
 }
 
-#[derive(Debug)]
-pub(crate) struct RenderMaintainedProgramSources {
-    evaluator: RetainedMaintainedProgram,
-    temporal_reconstruction: RetainedMaintainedProgram,
-    camera_reprojection: RetainedMaintainedProgram,
+impl RenderMaintainedProgram {
+    pub(crate) fn admitted(&self) -> &GpuAdmittedProgramSource {
+        &self.admitted
+    }
+
+    #[cfg(test)]
+    pub(crate) fn artifact(&self) -> &ShaderArtifact {
+        &self._artifact
+    }
 }
 
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct RenderMaintainedProgramSources {
+    evaluator: RenderMaintainedProgram,
+    temporal_reconstruction: RenderMaintainedProgram,
+    camera_reprojection: RenderMaintainedProgram,
+}
+
+#[cfg(test)]
 impl RenderMaintainedProgramSources {
     pub(crate) fn evaluator(&self) -> &GpuAdmittedProgramSource {
-        &self.evaluator.admitted
+        self.evaluator.admitted()
     }
 
     pub(crate) fn temporal_reconstruction(&self) -> &GpuAdmittedProgramSource {
-        &self.temporal_reconstruction.admitted
+        self.temporal_reconstruction.admitted()
     }
 
     pub(crate) fn camera_reprojection(&self) -> &GpuAdmittedProgramSource {
-        &self.camera_reprojection.admitted
+        self.camera_reprojection.admitted()
     }
 
-    #[cfg(test)]
     pub(crate) fn evaluator_artifact(&self) -> &ShaderArtifact {
-        &self.evaluator._artifact
+        self.evaluator.artifact()
     }
 
-    #[cfg(test)]
     pub(crate) fn temporal_reconstruction_artifact(&self) -> &ShaderArtifact {
-        &self.temporal_reconstruction._artifact
+        self.temporal_reconstruction.artifact()
     }
 
-    #[cfg(test)]
     pub(crate) fn camera_reprojection_artifact(&self) -> &ShaderArtifact {
-        &self.camera_reprojection._artifact
+        self.camera_reprojection.artifact()
     }
 }
 
@@ -206,6 +216,63 @@ struct MaintainedShaderSpec<'a> {
     wgsl: &'a str,
 }
 
+pub(crate) fn build_maintained_evaluator_program(
+    revision: u64,
+    wgsl: &str,
+) -> Result<RenderMaintainedProgram, RenderMaintainedProgramBuildError> {
+    build_maintained_program(MaintainedShaderSpec {
+        program: MaintainedShaderProgram::Evaluator,
+        revision,
+        wgsl,
+    })
+}
+
+pub(crate) fn build_temporal_reconstruction_program(
+    revision: u64,
+    wgsl: &str,
+) -> Result<RenderMaintainedProgram, RenderMaintainedProgramBuildError> {
+    build_maintained_program(MaintainedShaderSpec {
+        program: MaintainedShaderProgram::TemporalReconstruction,
+        revision,
+        wgsl,
+    })
+}
+
+pub(crate) fn build_camera_reprojection_program(
+    revision: u64,
+    wgsl: &str,
+) -> Result<RenderMaintainedProgram, RenderMaintainedProgramBuildError> {
+    build_maintained_program(MaintainedShaderSpec {
+        program: MaintainedShaderProgram::CameraReprojection,
+        revision,
+        wgsl,
+    })
+}
+
+fn build_maintained_program(
+    spec: MaintainedShaderSpec<'_>,
+) -> Result<RenderMaintainedProgram, RenderMaintainedProgramBuildError> {
+    let mut compiler = ShaderCompiler::new();
+    let artifact =
+        compile_exact_program(&mut compiler, spec).map_err(RenderMaintainedProgramBuildError::RunenShader)?;
+
+    let mut registry = GpuProgramSourceRegistry::new(1, spec.wgsl.len().max(1)).map_err(|source| {
+        RenderMaintainedProgramBuildError::RunenGpu {
+            stage: "maintained program source registry",
+            source,
+        }
+    })?;
+    let owner = GpuProgramSourceOwnerId::allocate().map_err(|source| {
+        RenderMaintainedProgramBuildError::RunenGpu {
+            stage: "maintained program source owner",
+            source,
+        }
+    })?;
+
+    admit_artifact(&mut registry, owner, spec, artifact)
+}
+
+#[cfg(test)]
 pub(crate) fn build_maintained_program_sources(
     evaluator_revision: u64,
     evaluator_wgsl: &str,
@@ -214,62 +281,15 @@ pub(crate) fn build_maintained_program_sources(
     camera_revision: u64,
     camera_wgsl: &str,
 ) -> Result<RenderMaintainedProgramSources, RenderMaintainedProgramBuildError> {
-    let specs = [
-        MaintainedShaderSpec {
-            program: MaintainedShaderProgram::Evaluator,
-            revision: evaluator_revision,
-            wgsl: evaluator_wgsl,
-        },
-        MaintainedShaderSpec {
-            program: MaintainedShaderProgram::TemporalReconstruction,
-            revision: temporal_revision,
-            wgsl: temporal_wgsl,
-        },
-        MaintainedShaderSpec {
-            program: MaintainedShaderProgram::CameraReprojection,
-            revision: camera_revision,
-            wgsl: camera_wgsl,
-        },
-    ];
-
-    let mut compiler = ShaderCompiler::new();
-    let evaluator = compile_exact_program(&mut compiler, specs[0])
-        .map_err(RenderMaintainedProgramBuildError::RunenShader)?;
-    let temporal_reconstruction = compile_exact_program(&mut compiler, specs[1])
-        .map_err(RenderMaintainedProgramBuildError::RunenShader)?;
-    let camera_reprojection = compile_exact_program(&mut compiler, specs[2])
-        .map_err(RenderMaintainedProgramBuildError::RunenShader)?;
-
-    let total_source_bytes = specs
-        .iter()
-        .try_fold(0usize, |total, spec| total.checked_add(spec.wgsl.len()))
-        .unwrap_or(usize::MAX);
-    let mut registry =
-        GpuProgramSourceRegistry::new(3, total_source_bytes.max(1)).map_err(|source| {
-            RenderMaintainedProgramBuildError::RunenGpu {
-                stage: "maintained program source registry",
-                source,
-            }
-        })?;
-    let owner = GpuProgramSourceOwnerId::allocate().map_err(|source| {
-        RenderMaintainedProgramBuildError::RunenGpu {
-            stage: "maintained program source owner",
-            source,
-        }
-    })?;
-
     Ok(RenderMaintainedProgramSources {
-        evaluator: admit_artifact(&mut registry, owner, specs[0], evaluator)?,
-        temporal_reconstruction: admit_artifact(
-            &mut registry,
-            owner,
-            specs[1],
-            temporal_reconstruction,
+        evaluator: build_maintained_evaluator_program(evaluator_revision, evaluator_wgsl)?,
+        temporal_reconstruction: build_temporal_reconstruction_program(
+            temporal_revision,
+            temporal_wgsl,
         )?,
-        camera_reprojection: admit_artifact(&mut registry, owner, specs[2], camera_reprojection)?,
+        camera_reprojection: build_camera_reprojection_program(camera_revision, camera_wgsl)?,
     })
 }
-
 fn compile_exact_program(
     compiler: &mut ShaderCompiler,
     spec: MaintainedShaderSpec<'_>,
@@ -327,7 +347,7 @@ fn admit_artifact(
     owner: GpuProgramSourceOwnerId,
     spec: MaintainedShaderSpec<'_>,
     artifact: ShaderArtifact,
-) -> Result<RetainedMaintainedProgram, RenderMaintainedProgramBuildError> {
+) -> Result<RenderMaintainedProgram, RenderMaintainedProgramBuildError> {
     let key = GpuProgramSourceKey::new(spec.program.gpu_key()).map_err(|source| {
         RenderMaintainedProgramBuildError::RunenGpu {
             stage: "maintained program source key",
@@ -360,7 +380,7 @@ fn admit_artifact(
             source,
         })?;
 
-    Ok(RetainedMaintainedProgram {
+    Ok(RenderMaintainedProgram {
         _artifact: artifact,
         admitted,
     })
