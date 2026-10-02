@@ -336,10 +336,10 @@ pub(super) fn lower_output(
             semantic_inputs: admitted.surface_semantic_inputs().to_vec(),
             field_semantic_inputs: admitted.field_semantic_inputs().to_vec(),
             evaluation_extent,
-            sequence_revision: TEMPORAL_SEQUENCE_REVISION,
+            sequence_revision: temporal::SEQUENCE_REVISION,
             reconstruction_revision: TEMPORAL_RECONSTRUCTION_REVISION,
             camera_reprojection_revision: camera_capable.then_some(CAMERA_REPROJECTION_REVISION),
-            depth_policy_revision: camera_capable.then_some(CAMERA_DEPTH_POLICY_REVISION),
+            depth_policy_revision: camera_capable.then_some(camera::DEPTH_POLICY_REVISION),
         };
         Some(resources.temporal_history(
             scope,
@@ -498,7 +498,7 @@ pub(super) fn lower_output(
             GpuReconstruction::SourceBacked,
             packed
                 .output_byte_len
-                .checked_mul(CURRENT_HIT_WORDS_PER_SAMPLE)
+                .checked_mul(camera::history::CURRENT_HIT_WORDS_PER_SAMPLE)
                 .ok_or(RenderDeterministicLoweringError::SizeOverflow {
                     field: "current coherent hit point byte length",
                 })?,
@@ -786,7 +786,7 @@ pub(super) fn lower_output(
                                     current_coverage: requested_coverage.as_ref().map(|_| {
                                         RenderRequestedCoveragePreparation {
                                             extent: requested_extent.expect("coverage lattice"),
-                                            policy_revision: REQUESTED_COVERAGE_POLICY_REVISION,
+                                            policy_revision: requested_coverage::POLICY_REVISION,
                                             evaluator_revision: MAINTAINED_EVALUATOR_REVISION,
                                         }
                                     }),
@@ -814,7 +814,7 @@ pub(super) fn lower_output(
                                             )
                                         })
                                         .collect(),
-                                    sequence_revision: TEMPORAL_SEQUENCE_REVISION,
+                                    sequence_revision: temporal::SEQUENCE_REVISION,
                                     reconstruction_revision: TEMPORAL_RECONSTRUCTION_REVISION,
                                     phase: history.phase,
                                     history_generation: history.generation,
@@ -856,7 +856,7 @@ pub(super) fn lower_output(
                                         &history.storage,
                                         DeterministicTemporalHistoryUseStorage::Camera { .. }
                                     )
-                                    .then_some(CAMERA_DEPTH_POLICY_REVISION),
+                                    .then_some(camera::DEPTH_POLICY_REVISION),
                                 }
                             }),
                         },

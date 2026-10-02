@@ -217,12 +217,12 @@ impl DeterministicResourceCache {
                                 Some(_) => camera
                                     .same_pose_completed_frames
                                     .saturating_add(1)
-                                    .min(TEMPORAL_PHASE_COUNT),
+                                    .min(temporal::PHASE_COUNT),
                             };
                             camera.completed_observation = Some(observation);
                         }
                     }
-                    history.phase = (history.phase + 1) % TEMPORAL_PHASE_COUNT;
+                    history.phase = (history.phase + 1) % temporal::PHASE_COUNT;
                     history.age = history.age.saturating_add(1);
                 }
             }
@@ -235,31 +235,19 @@ impl DeterministicResourceCache {
     pub(super) fn maintained_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        retained_maintained_evaluator_source(
-            MAINTAINED_EVALUATOR_REVISION,
-            MAINTAINED_WGSL.as_str(),
-        )
-        .map_err(map_maintained_program_build_error)
+        retained_maintained_evaluator_source().map_err(map_maintained_program_build_error)
     }
 
     pub(super) fn reconstruction_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        retained_temporal_reconstruction_source(
-            u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
-            TEMPORAL_RECONSTRUCTION_WGSL,
-        )
-        .map_err(map_maintained_program_build_error)
+        retained_temporal_reconstruction_source().map_err(map_maintained_program_build_error)
     }
 
     pub(super) fn camera_reprojection_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        retained_camera_reprojection_source(
-            u64::from(CAMERA_REPROJECTION_REVISION),
-            CAMERA_REPROJECTION_WGSL.as_str(),
-        )
-        .map_err(map_maintained_program_build_error)
+        retained_camera_reprojection_source().map_err(map_maintained_program_build_error)
     }
 
     pub(super) fn temporal_history(
@@ -309,8 +297,8 @@ impl DeterministicResourceCache {
                 field: "camera history sample count",
             })?;
         let camera_byte_len = camera_sample_count
-            .checked_mul(CAMERA_HISTORY_WORDS_PER_SAMPLE)
-            .and_then(|words| words.checked_add(CAMERA_DIAGNOSTIC_WORDS))
+            .checked_mul(camera::history::WORDS_PER_SAMPLE)
+            .and_then(|words| words.checked_add(camera::history::DIAGNOSTIC_WORDS))
             .and_then(|words| words.checked_mul(WORD_BYTES))
             .ok_or(RenderDeterministicLoweringError::SizeOverflow {
                 field: "camera history byte length",

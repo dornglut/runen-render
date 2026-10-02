@@ -1,3 +1,5 @@
+pub(crate) mod abi;
+
 use runen_gpu::{
     GpuAdmittedProgramSource, GpuProgramSourceError, GpuProgramSourceIdentity, GpuProgramSourceKey,
     GpuProgramSourceOwnerId, GpuProgramSourceProvenance, GpuProgramSourceRegistry,
@@ -11,7 +13,7 @@ use runen_shader::{
 };
 use std::error::Error;
 use std::fmt;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 const RUNEN_RENDER_SHADER_PACKAGE_ID: u64 = 1;
 const EVALUATOR_MODULE_ID: u64 = 1;
@@ -20,6 +22,26 @@ const TEMPORAL_MODULE_ID: u64 = 2;
 const TEMPORAL_SOURCE_UNIT_ID: u64 = 2;
 const CAMERA_MODULE_ID: u64 = 3;
 const CAMERA_SOURCE_UNIT_ID: u64 = 3;
+
+pub(crate) const MAINTAINED_EVALUATOR_REVISION: u64 = 3;
+pub(crate) const TEMPORAL_RECONSTRUCTION_REVISION: u32 = 2;
+pub(crate) const CAMERA_REPROJECTION_REVISION: u32 = 3;
+
+pub(crate) const SCENE_QUERY_WGSL: &str = include_str!("shaders/scene_query.wgsl");
+pub(crate) static EVALUATOR_WGSL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{SCENE_QUERY_WGSL}\n{}",
+        include_str!("shaders/evaluator.wgsl")
+    )
+});
+pub(crate) const TEMPORAL_RECONSTRUCTION_WGSL: &str =
+    include_str!("shaders/temporal_reconstruction.wgsl");
+pub(crate) static CAMERA_REPROJECTION_WGSL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{SCENE_QUERY_WGSL}\n{}",
+        include_str!("shaders/camera_reprojection.wgsl")
+    )
+});
 
 static EVALUATOR_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
 static TEMPORAL_RECONSTRUCTION_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
@@ -258,43 +280,37 @@ pub(crate) fn build_camera_reprojection_program(
 }
 
 pub(crate) fn retained_maintained_evaluator_source(
-    revision: u64,
-    wgsl: &str,
 ) -> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
     retained_program_source(
         &EVALUATOR_PROGRAM,
         MaintainedShaderSpec {
             program: MaintainedShaderProgram::Evaluator,
-            revision,
-            wgsl,
+            revision: MAINTAINED_EVALUATOR_REVISION,
+            wgsl: EVALUATOR_WGSL.as_str(),
         },
     )
 }
 
 pub(crate) fn retained_temporal_reconstruction_source(
-    revision: u64,
-    wgsl: &str,
 ) -> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
     retained_program_source(
         &TEMPORAL_RECONSTRUCTION_PROGRAM,
         MaintainedShaderSpec {
             program: MaintainedShaderProgram::TemporalReconstruction,
-            revision,
-            wgsl,
+            revision: u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
+            wgsl: TEMPORAL_RECONSTRUCTION_WGSL,
         },
     )
 }
 
 pub(crate) fn retained_camera_reprojection_source(
-    revision: u64,
-    wgsl: &str,
 ) -> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
     retained_program_source(
         &CAMERA_REPROJECTION_PROGRAM,
         MaintainedShaderSpec {
             program: MaintainedShaderProgram::CameraReprojection,
-            revision,
-            wgsl,
+            revision: u64::from(CAMERA_REPROJECTION_REVISION),
+            wgsl: CAMERA_REPROJECTION_WGSL.as_str(),
         },
     )
 }
@@ -343,20 +359,20 @@ fn build_maintained_program(
 
 #[cfg(test)]
 pub(crate) fn build_maintained_program_sources(
-    evaluator_revision: u64,
-    evaluator_wgsl: &str,
-    temporal_revision: u64,
-    temporal_wgsl: &str,
-    camera_revision: u64,
-    camera_wgsl: &str,
 ) -> Result<RenderMaintainedProgramSources, RenderMaintainedProgramBuildError> {
     Ok(RenderMaintainedProgramSources {
-        evaluator: build_maintained_evaluator_program(evaluator_revision, evaluator_wgsl)?,
-        temporal_reconstruction: build_temporal_reconstruction_program(
-            temporal_revision,
-            temporal_wgsl,
+        evaluator: build_maintained_evaluator_program(
+            MAINTAINED_EVALUATOR_REVISION,
+            EVALUATOR_WGSL.as_str(),
         )?,
-        camera_reprojection: build_camera_reprojection_program(camera_revision, camera_wgsl)?,
+        temporal_reconstruction: build_temporal_reconstruction_program(
+            u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
+            TEMPORAL_RECONSTRUCTION_WGSL,
+        )?,
+        camera_reprojection: build_camera_reprojection_program(
+            u64::from(CAMERA_REPROJECTION_REVISION),
+            CAMERA_REPROJECTION_WGSL.as_str(),
+        )?,
     })
 }
 fn compile_exact_program(

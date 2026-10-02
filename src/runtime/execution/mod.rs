@@ -18,9 +18,18 @@ pub use super::capture::{
 };
 use super::carrier;
 #[cfg(test)]
-use super::program::build_maintained_program_sources;
 use super::program::{
-    RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError,
+    CAMERA_REPROJECTION_WGSL, EVALUATOR_WGSL, TEMPORAL_RECONSTRUCTION_WGSL,
+    build_maintained_program_sources,
+};
+use super::program::{
+    CAMERA_REPROJECTION_REVISION, MAINTAINED_EVALUATOR_REVISION,
+    TEMPORAL_RECONSTRUCTION_REVISION, RenderMaintainedProgramBuildError,
+    RenderRunenShaderCompilationError,
+    abi::{
+        WORKGROUP_SIZE, camera, emitter, execution_mode, geometry, header, observation_kind,
+        requested_coverage, shape, temporal,
+    },
     retained_camera_reprojection_source, retained_maintained_evaluator_source,
     retained_temporal_reconstruction_source,
 };
@@ -63,7 +72,6 @@ use runen_gpu::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
-use std::sync::LazyLock;
 
 #[cfg(test)]
 #[path = "../../proofs/camera_history.rs"]
@@ -74,48 +82,6 @@ mod camera_history_proof;
 mod requested_coverage_proof;
 
 const WORD_BYTES: u64 = carrier::WORD_BYTES as u64;
-const HEADER_WORDS: usize = 30;
-const GEOMETRY_WORDS: usize = 40;
-const EMITTER_WORDS: usize = 4;
-const WORKGROUP_SIZE: u32 = 64;
-const OUTPUT_RADIANCE: u32 = 1;
-const OUTPUT_FORWARD_DEPTH: u32 = 2;
-const OUTPUT_OBJECT_IDENTITY: u32 = 3;
-const EXECUTION_REQUESTED_COVERAGE: u32 = 4;
-const REQUESTED_COVERAGE_POLICY_REVISION: u32 = 1;
-const OBSERVATION_PERSPECTIVE: u32 = 1;
-const OBSERVATION_PROBE: u32 = 2;
-const OBSERVATION_PERSPECTIVE_FOOTPRINT: u32 = 3;
-const TEMPORAL_SEQUENCE_REVISION: u32 = 1;
-const TEMPORAL_RECONSTRUCTION_REVISION: u32 = 2;
-const CAMERA_REPROJECTION_REVISION: u32 = 3;
-const CAMERA_DEPTH_POLICY_REVISION: u32 = 1;
-const CAMERA_HISTORY_WORDS_PER_SAMPLE: u64 = 8;
-const CURRENT_HIT_WORDS_PER_SAMPLE: u64 = 4;
-const CAMERA_DIAGNOSTIC_WORDS: u64 = 32 * 32;
-const MAINTAINED_EVALUATOR_REVISION: u64 = 3;
-const CAMERA_DEPTH_ABSOLUTE_EPSILON: f32 = 0.001;
-
-const CAMERA_DEPTH_RELATIVE_EPSILON: f32 = 0.001;
-const TEMPORAL_PHASE_COUNT: u32 = 4;
-const SHAPE_SPHERE: u32 = 1;
-const SHAPE_PLANE: u32 = 2;
-const SHAPE_FIELD: u32 = 3;
-const SCENE_QUERY_WGSL: &str = include_str!("../../deterministic_scene_query.wgsl");
-static MAINTAINED_WGSL: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "{SCENE_QUERY_WGSL}\n{}",
-        include_str!("../../deterministic_execution.wgsl")
-    )
-});
-const TEMPORAL_RECONSTRUCTION_WGSL: &str =
-    include_str!("../../deterministic_temporal_reconstruction.wgsl");
-static CAMERA_REPROJECTION_WGSL: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "{SCENE_QUERY_WGSL}\n{}",
-        include_str!("../../deterministic_camera_reprojection.wgsl")
-    )
-});
 
 mod errors;
 mod lifecycle;
