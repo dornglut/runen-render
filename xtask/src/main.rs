@@ -244,7 +244,8 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
 
     if !root.join("tests/ordinary_public_api.rs").is_file() {
         return Err(
-            "required ordinary public API proof is missing: tests/ordinary_public_api.rs".to_owned(),
+            "required ordinary public API proof is missing: tests/ordinary_public_api.rs"
+                .to_owned(),
         );
     }
 
@@ -320,9 +321,8 @@ fn maintained_source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
         let entries = fs::read_dir(&directory)
             .map_err(|error| format!("failed to read {}: {error}", directory.display()))?;
         for entry in entries {
-            let entry = entry.map_err(|error| {
-                format!("failed to inspect {}: {error}", directory.display())
-            })?;
+            let entry = entry
+                .map_err(|error| format!("failed to inspect {}: {error}", directory.display()))?;
             let file_type = entry.file_type().map_err(|error| {
                 format!("failed to inspect {}: {error}", entry.path().display())
             })?;
