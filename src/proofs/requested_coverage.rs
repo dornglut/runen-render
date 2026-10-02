@@ -1,6 +1,7 @@
 //! Actual current-coverage execution proof. Readbacks are authored
 //! only here, after the ordinary producer fragment, and correlated to that same completed submission.
 
+use super::prepare::build_object_identity_decoder;
 use super::*;
 use crate::admission::{RenderOutputBinding, RenderOutputDestination};
 use crate::proofs::execution::{MaintainedExecutionFixture, maintained_fixture};
