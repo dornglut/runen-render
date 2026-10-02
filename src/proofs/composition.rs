@@ -7,12 +7,12 @@ use super::execution::{
     MaintainedExecutionFixture, admit_with_retained_radiance_destination, maintained_fixture,
 };
 use crate::admission::{RenderOutputBinding, RenderOutputDestination};
-use crate::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
-use crate::deterministic_execution::prepare_deterministic_render;
 use crate::request::{
     RenderOutputSpec, RenderOutputValue, RenderRadiometricRepresentation, RenderRequest,
     RenderRequestedOutput, RenderResultTopology, RenderSemanticTolerance,
 };
+use crate::runtime::admission::admit_deterministic_render_with_semantic_inputs;
+use crate::runtime::execution::prepare_deterministic_render;
 use runen_gpu::{
     GpuBufferDescriptor, GpuBufferInitialization, GpuBufferTextureLayout, GpuBufferUsage,
     GpuCapabilityProfile, GpuContext, GpuContextDescriptor, GpuContextRequestErrorCategory,
@@ -95,7 +95,7 @@ fn r32float_radiance_destination(
 fn admit_r32float_radiance(
     fixture: &MaintainedExecutionFixture,
     context: &GpuContext,
-) -> crate::deterministic_admission::AdmittedDeterministicRender {
+) -> crate::runtime::admission::AdmittedDeterministicRender {
     let mut allocator = GpuWorkResourceIdAllocator::new();
     let destination = r32float_radiance_destination(&mut allocator);
     let output_bindings = [RenderOutputBinding::new(

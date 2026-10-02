@@ -9,12 +9,6 @@ use crate::admission::{
     RenderRepresentationAvailabilityState,
 };
 use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-use crate::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
-use crate::deterministic_carrier::{decode_word, maintained_evaluation_value};
-use crate::deterministic_execution::DeterministicVerificationSubmission;
-use crate::deterministic_verification::{
-    submit_deterministic_render_for_verified_formation, verify_completed_deterministic_render,
-};
 use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
 use crate::representation::{
     RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION, RENDER_SURFACE_QUERY_PROTOCOL_REVISION,
@@ -26,6 +20,12 @@ use crate::request::{
     RenderPerspectiveObservation, RenderProbeObservation, RenderRadiometricRepresentation,
     RenderRequest, RenderRequestedOutput, RenderResultTopology, RenderSamplingSupport,
     RenderSemanticTolerance,
+};
+use crate::runtime::admission::admit_deterministic_render_with_semantic_inputs;
+use crate::runtime::carrier::{decode_word, maintained_evaluation_value};
+use crate::runtime::execution::DeterministicVerificationSubmission;
+use crate::runtime::verification::{
+    submit_deterministic_render_for_verified_formation, verify_completed_deterministic_render,
 };
 use crate::scene::{RenderObjectState, RenderSceneSnapshot, RenderSceneStore, RenderSceneUpdate};
 use crate::space_time::{

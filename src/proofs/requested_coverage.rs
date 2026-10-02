@@ -3,11 +3,11 @@
 
 use super::*;
 use crate::admission::{RenderOutputBinding, RenderOutputDestination};
-use crate::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
 use crate::proofs::execution::{MaintainedExecutionFixture, maintained_fixture};
 use crate::request::{
     RenderRequest, RenderRequestedOutput, RenderResultTopology, RenderSemanticTolerance,
 };
+use crate::runtime::admission::admit_deterministic_render_with_semantic_inputs;
 use crate::space_time::{RenderAffineTransform3, RenderTemporalSupport};
 use crate::surface_input::RenderSurfaceSemanticInput;
 use runen_gpu::{
@@ -626,17 +626,17 @@ fn field_fixture(
     MaintainedExecutionFixture,
     Vec<RenderFieldSemanticInputBinding>,
 ) {
-    use super::super::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-    use super::super::field_input::RenderFieldSemanticInputRequirement;
-    use super::super::participation::{RenderMaterialAssignment, RenderObjectParticipation};
-    use super::super::representation::{
-        RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RenderFieldDistanceGuarantee,
-        RenderFieldDistanceProtocolEvidence, RenderRefinementEvidence, RenderRepresentationRecord,
-    };
-    use super::super::scene::{RenderSceneStore, RenderSceneUpdate};
     use crate::admission::{
         RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState,
     };
+    use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
+    use crate::field_input::RenderFieldSemanticInputRequirement;
+    use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
+    use crate::representation::{
+        RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RenderFieldDistanceGuarantee,
+        RenderFieldDistanceProtocolEvidence, RenderRefinementEvidence, RenderRepresentationRecord,
+    };
+    use crate::scene::{RenderSceneStore, RenderSceneUpdate};
     use crate::space_time::RenderSpatialCoverage;
     let mut fixture = fixture((8, 8), 0.0, 0.0, 1);
     let state = fixture
@@ -955,7 +955,7 @@ fn requested_coverage_plane_depth_matches_the_same_phase_primary_query() {
 
 #[test]
 fn requested_coverage_uses_current_scene_state_even_with_unchanged_surface_generation() {
-    use super::super::scene::{RenderObjectState, RenderSceneStore, RenderSceneUpdate};
+    use crate::scene::{RenderObjectState, RenderSceneStore, RenderSceneUpdate};
     use crate::space_time::RenderObjectSpatialState;
     let Some(context) = context() else { return };
     let mut fixture = fixture((8, 8), 0.0, 0.0, 7);

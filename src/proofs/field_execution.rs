@@ -9,13 +9,6 @@ use crate::admission::{
     RenderRepresentationAvailabilityState,
 };
 use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-use crate::deterministic_admission::{
-    AdmittedDeterministicRender, admit_deterministic_render_with_semantic_inputs,
-};
-use crate::deterministic_execution::{
-    DeterministicVerificationSubmission, prepare_deterministic_render,
-    submit_deterministic_render_for_verification,
-};
 use crate::field_input::{
     RenderFieldSemanticInput, RenderFieldSemanticInputBinding, RenderFieldSemanticInputRequirement,
 };
@@ -30,6 +23,13 @@ use crate::request::{
     RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
     RenderPerspectiveObservation, RenderRadiometricRepresentation, RenderRequest,
     RenderRequestedOutput, RenderResultTopology, RenderSamplingSupport, RenderSemanticTolerance,
+};
+use crate::runtime::admission::{
+    AdmittedDeterministicRender, admit_deterministic_render_with_semantic_inputs,
+};
+use crate::runtime::execution::{
+    DeterministicVerificationSubmission, prepare_deterministic_render,
+    submit_deterministic_render_for_verification,
 };
 use crate::scene::{
     RenderObjectId, RenderObjectState, RenderSceneSnapshot, RenderSceneStore, RenderSceneUpdate,

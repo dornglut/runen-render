@@ -11,37 +11,37 @@
 //! remain distinct from payload bits. For this maintained direct/no-environment method only, a
 //! primary radiance miss is the defined value zero; generic R2 radiance-miss semantics remain wider.
 
-use super::admission::{AdmittedRenderPlan, RenderOutputDestination};
-use super::derived_transform::{
-    RenderCompiledMetricSimilarityTransform, RenderCompiledMetricSimilarityTransformError,
-    RenderCompiledObjectTransform, RenderCompiledObjectTransformError,
-};
-use super::deterministic_admission::AdmittedDeterministicRender;
-pub use super::deterministic_capture::{
+use super::admission::AdmittedDeterministicRender;
+pub use super::capture::{
     RenderCapturedDeterministicRadiance, RenderDeterministicRadianceCaptureError,
     RenderDeterministicRadianceCaptureRequest, RenderDeterministicRadianceCaptureRequestError,
 };
-use super::deterministic_carrier;
-use super::field_input::{
-    RenderFieldSemanticInput, RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration,
-};
-use super::lowering::RenderWorkSet;
-use super::render_result::RenderResult;
-use super::representation::{RenderRepresentationId, RenderRepresentationProtocol};
-use super::request::{
-    RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
-    RenderPerspectiveObservation, RenderSamplingSupport,
-};
-use super::scene::{RenderObjectId, RenderSceneRevision};
+use super::carrier;
 #[cfg(test)]
-use super::shader_bridge::build_maintained_program_sources;
-use super::shader_bridge::{
+use super::program::build_maintained_program_sources;
+use super::program::{
     RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError,
     retained_camera_reprojection_source, retained_maintained_evaluator_source,
     retained_temporal_reconstruction_source,
 };
-use super::space_time::RenderTimeInterval;
-use super::surface_input::{
+use super::transform::{
+    RenderCompiledMetricSimilarityTransform, RenderCompiledMetricSimilarityTransformError,
+    RenderCompiledObjectTransform, RenderCompiledObjectTransformError,
+};
+use crate::admission::{AdmittedRenderPlan, RenderOutputDestination};
+use crate::field_input::{
+    RenderFieldSemanticInput, RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration,
+};
+use crate::lowering::RenderWorkSet;
+use crate::render_result::RenderResult;
+use crate::representation::{RenderRepresentationId, RenderRepresentationProtocol};
+use crate::request::{
+    RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
+    RenderPerspectiveObservation, RenderSamplingSupport,
+};
+use crate::scene::{RenderObjectId, RenderSceneRevision};
+use crate::space_time::RenderTimeInterval;
+use crate::surface_input::{
     RenderSurfaceSemanticInputBinding, RenderSurfaceSemanticInputGeneration,
     RenderSurfaceSemanticInputView,
 };
@@ -66,14 +66,14 @@ use std::fmt;
 use std::sync::LazyLock;
 
 #[cfg(test)]
-#[path = "proofs/camera_history.rs"]
+#[path = "../proofs/camera_history.rs"]
 mod camera_history_proof;
 
 #[cfg(test)]
-#[path = "proofs/requested_coverage.rs"]
+#[path = "../proofs/requested_coverage.rs"]
 mod requested_coverage_proof;
 
-const WORD_BYTES: u64 = deterministic_carrier::WORD_BYTES as u64;
+const WORD_BYTES: u64 = carrier::WORD_BYTES as u64;
 const HEADER_WORDS: usize = 30;
 const GEOMETRY_WORDS: usize = 40;
 const EMITTER_WORDS: usize = 4;
@@ -101,19 +101,19 @@ const TEMPORAL_PHASE_COUNT: u32 = 4;
 const SHAPE_SPHERE: u32 = 1;
 const SHAPE_PLANE: u32 = 2;
 const SHAPE_FIELD: u32 = 3;
-const SCENE_QUERY_WGSL: &str = include_str!("deterministic_scene_query.wgsl");
+const SCENE_QUERY_WGSL: &str = include_str!("../deterministic_scene_query.wgsl");
 static MAINTAINED_WGSL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "{SCENE_QUERY_WGSL}\n{}",
-        include_str!("deterministic_execution.wgsl")
+        include_str!("../deterministic_execution.wgsl")
     )
 });
 const TEMPORAL_RECONSTRUCTION_WGSL: &str =
-    include_str!("deterministic_temporal_reconstruction.wgsl");
+    include_str!("../deterministic_temporal_reconstruction.wgsl");
 static CAMERA_REPROJECTION_WGSL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "{SCENE_QUERY_WGSL}\n{}",
-        include_str!("deterministic_camera_reprojection.wgsl")
+        include_str!("../deterministic_camera_reprojection.wgsl")
     )
 });
 
@@ -781,7 +781,7 @@ impl PreparedDeterministicRadianceOutput {
 /// RR566-EVAL-001. The IDs are process-local RunenGPU correlation values bound to one exact
 /// `GpuSubmission`; they are not semantic identity and are never exposed as public renderer state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct DeterministicVerificationReadbacks {
+pub(crate) struct DeterministicVerificationReadbacks {
     output_index: usize,
     canonical_output: GpuReadbackId,
     definedness: GpuReadbackId,
@@ -789,19 +789,19 @@ pub(super) struct DeterministicVerificationReadbacks {
 }
 
 impl DeterministicVerificationReadbacks {
-    pub(super) const fn output_index(self) -> usize {
+    pub(crate) const fn output_index(self) -> usize {
         self.output_index
     }
 
-    pub(super) const fn canonical_output(self) -> GpuReadbackId {
+    pub(crate) const fn canonical_output(self) -> GpuReadbackId {
         self.canonical_output
     }
 
-    pub(super) const fn definedness(self) -> GpuReadbackId {
+    pub(crate) const fn definedness(self) -> GpuReadbackId {
         self.definedness
     }
 
-    pub(super) const fn status(self) -> GpuReadbackId {
+    pub(crate) const fn status(self) -> GpuReadbackId {
         self.status
     }
 }
@@ -853,11 +853,11 @@ impl SubmittedDeterministicRender {
         self.submission.status()
     }
 
-    pub(super) const fn submission(&self) -> &GpuSubmission {
+    pub(crate) const fn submission(&self) -> &GpuSubmission {
         &self.submission
     }
 
-    pub(super) const fn result_is_formed(&self) -> bool {
+    pub(crate) const fn result_is_formed(&self) -> bool {
         matches!(self.verification, DeterministicVerificationState::Formed)
     }
 
@@ -869,7 +869,7 @@ impl SubmittedDeterministicRender {
         RenderDeterministicRadianceCaptureRequest,
         RenderDeterministicRadianceCaptureRequestError,
     > {
-        super::deterministic_capture::mint_request(self, output_index)
+        super::capture::mint_request(self, output_index)
     }
 
     /// Consume one capture request and interpret its completed product-owned public readback.
@@ -879,7 +879,7 @@ impl SubmittedDeterministicRender {
         context: &GpuContext,
         product_submission: &GpuSubmission,
     ) -> Result<RenderCapturedDeterministicRadiance, RenderDeterministicRadianceCaptureError> {
-        super::deterministic_capture::capture(self, request, context, product_submission)
+        super::capture::capture(self, request, context, product_submission)
     }
 
     pub const fn object_identity_decoder(&self) -> &RenderObjectIdentityDecoder {
@@ -951,7 +951,7 @@ impl SubmittedDeterministicRender {
             },
         };
         let formation_evidence =
-            super::deterministic_verification::verify_completed_deterministic_render(verification)
+            super::verification::verify_completed_deterministic_render(verification)
                 .map_err(RenderDeterministicResultFormationError::Verification)?;
         let result = RenderResult::from_formation_evidence(formation_evidence);
         self.verification = DeterministicVerificationState::Formed;
@@ -965,16 +965,16 @@ impl SubmittedDeterministicRender {
 /// value. The public submitted render itself privately retains the correlation; there is no second
 /// submission lifecycle and no public verification token.
 #[derive(Debug)]
-pub(super) struct DeterministicVerificationSubmission {
+pub(crate) struct DeterministicVerificationSubmission {
     submitted: SubmittedDeterministicRender,
 }
 
 impl DeterministicVerificationSubmission {
-    pub(super) const fn submitted(&self) -> &SubmittedDeterministicRender {
+    pub(crate) const fn submitted(&self) -> &SubmittedDeterministicRender {
         &self.submitted
     }
 
-    pub(super) fn readbacks(&self) -> &[DeterministicVerificationReadbacks] {
+    pub(crate) fn readbacks(&self) -> &[DeterministicVerificationReadbacks] {
         match &self.submitted.verification {
             DeterministicVerificationState::Requested(readbacks) => readbacks,
             DeterministicVerificationState::NotRequested
@@ -982,13 +982,13 @@ impl DeterministicVerificationSubmission {
         }
     }
 
-    pub(super) fn into_submitted(self) -> SubmittedDeterministicRender {
+    pub(crate) fn into_submitted(self) -> SubmittedDeterministicRender {
         self.submitted
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum RenderRunenGpuPreparationError {
+pub(crate) enum RenderRunenGpuPreparationError {
     ProgramSource {
         stage: &'static str,
         source: GpuProgramSourceError,
@@ -1069,7 +1069,7 @@ impl Error for RenderRunenGpuPreparationError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum RenderDeterministicLoweringError {
+pub(crate) enum RenderDeterministicLoweringError {
     ContextAffinityChanged {
         admitted: GpuContextAffinity,
         actual: GpuContextAffinity,
@@ -1271,7 +1271,7 @@ impl Error for RenderDeterministicLoweringError {
 }
 
 #[derive(Debug)]
-pub(super) enum RenderDeterministicExecutionError {
+pub(crate) enum RenderDeterministicExecutionError {
     Lowering(RenderDeterministicLoweringError),
     Submission(GpuWorkSubmissionError),
 }
@@ -1302,7 +1302,7 @@ impl From<RenderDeterministicLoweringError> for RenderDeterministicExecutionErro
 
 /// Failure while polling one exact verified submission for semantic result formation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum RenderDeterministicResultFormationError {
+pub(crate) enum RenderDeterministicResultFormationError {
     VerificationNotRequested,
     ResultAlreadyFormed,
     SubmissionFailed {
@@ -1317,7 +1317,7 @@ pub(super) enum RenderDeterministicResultFormationError {
         channel: &'static str,
         kind: GpuSubmissionFailureKind,
     },
-    Verification(super::deterministic_verification::RenderDeterministicVerificationError),
+    Verification(super::verification::RenderDeterministicVerificationError),
 }
 
 impl fmt::Display for RenderDeterministicResultFormationError {
@@ -1481,13 +1481,11 @@ pub async fn submit_deterministic_render_for_verified_result(
     context: &GpuContext,
 ) -> Result<
     SubmittedDeterministicRender,
-    super::deterministic_verification::RenderDeterministicVerifiedSubmissionError,
+    super::verification::RenderDeterministicVerifiedSubmissionError,
 > {
-    super::deterministic_verification::submit_deterministic_render_for_verified_formation(
-        admitted, context,
-    )
-    .await
-    .map(DeterministicVerificationSubmission::into_submitted)
+    super::verification::submit_deterministic_render_for_verified_formation(admitted, context)
+        .await
+        .map(DeterministicVerificationSubmission::into_submitted)
 }
 
 /// Submit the exact maintained deterministic path with renderer-private same-submission readbacks.
@@ -1495,7 +1493,7 @@ pub async fn submit_deterministic_render_for_verified_result(
 /// Static verifier eligibility is owned by `deterministic_verification` and must be established
 /// before this function is called. The returned private witness wraps the same ordinary submitted
 /// execution plus only the readback correlation authored before that submission.
-pub(super) async fn submit_deterministic_render_for_verification(
+pub(crate) async fn submit_deterministic_render_for_verification(
     admitted: AdmittedDeterministicRender,
     context: &GpuContext,
 ) -> Result<DeterministicVerificationSubmission, RenderDeterministicExecutionError> {
@@ -2501,7 +2499,7 @@ fn prepare_requested_coverage(
 
 fn pack_output(
     admitted: &AdmittedRenderPlan,
-    admitted_output: &super::admission::RenderAdmittedOutput,
+    admitted_output: &crate::admission::RenderAdmittedOutput,
     execution_kind: MaintainedExecutionKind,
     observation: RenderObservationSpec,
     object_codes: &BTreeMap<RenderObjectId, u32>,
@@ -2905,7 +2903,7 @@ fn pack_output(
 fn matching_emitters(
     admitted: &AdmittedRenderPlan,
     wavelength_meters: f64,
-) -> Result<Vec<super::appearance::RenderDirectionalEmitter>, RenderDeterministicLoweringError> {
+) -> Result<Vec<crate::appearance::RenderDirectionalEmitter>, RenderDeterministicLoweringError> {
     let mut emitters = Vec::new();
     emitters
         .try_reserve_exact(admitted.plan().scene().len())
@@ -3042,7 +3040,7 @@ fn invert_matrix3(
 
 fn pack_observation(
     words: &mut [u32],
-    transform: super::space_time::RenderAffineTransform3,
+    transform: crate::space_time::RenderAffineTransform3,
     tan_half_fov: Option<f64>,
     aspect_ratio: Option<f64>,
 ) -> Result<(), RenderDeterministicLoweringError> {
@@ -3312,8 +3310,8 @@ fn gpu_work_authoring(
 
 #[cfg(test)]
 mod tests {
-    use super::super::space_time::RenderAffineTransform3;
     use super::*;
+    use crate::space_time::RenderAffineTransform3;
     use runen_gpu::GpuBufferRange;
 
     #[test]
@@ -3605,10 +3603,10 @@ mod tests {
     }
 
     fn temporal_test_observation(
-        transform: super::super::space_time::RenderAffineTransform3,
+        transform: crate::space_time::RenderAffineTransform3,
     ) -> RenderPerspectiveObservation {
-        use super::super::request::{RenderPerspectiveObservation, RenderSamplingSupport};
-        use super::super::space_time::{RenderTimeInterval, RenderTimePoint};
+        use crate::request::{RenderPerspectiveObservation, RenderSamplingSupport};
+        use crate::space_time::{RenderTimeInterval, RenderTimePoint};
 
         let shutter = RenderTimeInterval::instant(
             RenderTimePoint::from_seconds(0.0).expect("finite test time"),
@@ -3624,12 +3622,12 @@ mod tests {
     }
 
     fn temporal_signature(source_generation: u64) -> DeterministicTemporalSignature {
-        use super::super::request::{
+        use crate::request::{
             RenderOutputSpec, RenderOutputValue, RenderRadiometricRepresentation,
             RenderResultTopology, RenderSemanticTolerance,
         };
-        use super::super::space_time::{RenderAffineTransform3, RenderTemporalSupport};
-        use super::super::surface_input::{
+        use crate::space_time::{RenderAffineTransform3, RenderTemporalSupport};
+        use crate::surface_input::{
             RenderSurfaceSemanticInput, RenderSurfaceSemanticInputBinding,
             RenderSurfaceSemanticInputGeneration,
         };
@@ -3678,11 +3676,11 @@ mod tests {
         surface_generation: u64,
         field_generation: u64,
     ) -> DeterministicTemporalSignature {
-        use super::super::field_input::{
+        use crate::field_input::{
             RenderFieldSemanticInput, RenderFieldSemanticInputBinding,
             RenderFieldSemanticInputGeneration,
         };
-        use super::super::space_time::RenderTemporalSupport;
+        use crate::space_time::RenderTemporalSupport;
 
         let mut signature = temporal_signature(surface_generation);
         let input = RenderFieldSemanticInput::dense(
@@ -3723,8 +3721,8 @@ mod tests {
     fn temporal_test_observation_with(
         vertical_fov: f64,
         aspect_ratio: f64,
-        shutter: super::super::space_time::RenderTimeInterval,
-        sampling_support: super::super::request::RenderSamplingSupport,
+        shutter: crate::space_time::RenderTimeInterval,
+        sampling_support: crate::request::RenderSamplingSupport,
     ) -> RenderPerspectiveObservation {
         RenderPerspectiveObservation::new(
             RenderAffineTransform3::identity(),
@@ -3927,7 +3925,7 @@ mod tests {
 
     #[test]
     fn p100_camera_compatibility_excludes_pose_but_retains_projection_semantics() {
-        use super::super::space_time::RenderAffineTransform3;
+        use crate::space_time::RenderAffineTransform3;
 
         let first = temporal_test_observation(RenderAffineTransform3::identity());
         let moved = temporal_test_observation(
@@ -3948,12 +3946,12 @@ mod tests {
 
     #[test]
     fn camera_compatibility_key_retains_every_non_pose_dependency() {
-        use super::super::request::{
+        use crate::request::{
             RenderOutputSpec, RenderOutputValue, RenderRadiometricRepresentation,
             RenderResultTopology, RenderSamplingSupport, RenderSemanticTolerance,
         };
-        use super::super::scene::{RenderSceneStore, RenderSceneUpdate};
-        use super::super::space_time::{RenderTimeInterval, RenderTimePoint};
+        use crate::scene::{RenderSceneStore, RenderSceneUpdate};
+        use crate::space_time::{RenderTimeInterval, RenderTimePoint};
 
         let baseline_observation = temporal_test_observation(RenderAffineTransform3::identity());
         let baseline = camera_temporal_signature(7, baseline_observation, (4, 4));
@@ -4045,7 +4043,7 @@ mod tests {
             std::f64::consts::FRAC_PI_4,
             1.0,
             observation.shutter(),
-            super::super::request::RenderSamplingSupport::perspective_lattice_cell(),
+            crate::request::RenderSamplingSupport::perspective_lattice_cell(),
         );
         assert_camera_signature_recreates(
             camera_temporal_signature(7, changed_fov, (4, 4)),
@@ -4111,7 +4109,7 @@ mod tests {
 
     #[test]
     fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
-        use super::super::space_time::RenderAffineTransform3;
+        use crate::space_time::RenderAffineTransform3;
 
         let mut cache = DeterministicResourceCache::default();
         let observation = temporal_test_observation(RenderAffineTransform3::identity());
@@ -4897,7 +4895,7 @@ mod tests {
 
     #[test]
     fn maintained_execution_has_no_string_flattening_gpu_authoring_bucket() {
-        let source = include_str!("deterministic_execution.rs");
+        let source = include_str!("execution.rs");
         assert!(!source.contains(concat!("gpu_", "authoring(")));
         assert!(!source.contains(concat!("RunenGpu", "Authoring")));
     }

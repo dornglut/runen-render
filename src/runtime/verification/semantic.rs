@@ -7,24 +7,22 @@
 //! branch fails closed; no physical packing, WGSL behavior, or test-only CPU oracle becomes semantic
 //! authority.
 
-use super::super::admission::{AdmittedRenderPlan, RenderAdmittedOutput};
-use super::super::appearance::RenderDirectionalEmitter;
-use super::super::deterministic_carrier::maintained_evaluation_value;
-use super::super::deterministic_execution::{
-    DeterministicVerificationSubmission, RenderObjectIdentityDecoder,
-};
-use super::super::request::{
-    RenderDistanceConvention, RenderObservationSpec, RenderOutputValue, RenderRequestedOutput,
-    RenderResultTopology,
-};
-use super::super::scene::RenderObjectId;
-use super::super::surface_input::RenderSurfaceSemanticInputView;
+use super::super::carrier::maintained_evaluation_value;
+use super::super::execution::{DeterministicVerificationSubmission, RenderObjectIdentityDecoder};
 use super::RenderDeterministicVerificationError;
 use super::numeric::{
     VerificationInterval, certified_tan_half_fov, mathematical_pi_interval,
     numeric_value_satisfies_tolerance,
 };
 use super::observation::DeterministicVerificationObservation;
+use crate::admission::{AdmittedRenderPlan, RenderAdmittedOutput};
+use crate::appearance::RenderDirectionalEmitter;
+use crate::request::{
+    RenderDistanceConvention, RenderObservationSpec, RenderOutputValue, RenderRequestedOutput,
+    RenderResultTopology,
+};
+use crate::scene::RenderObjectId;
+use crate::surface_input::RenderSurfaceSemanticInputView;
 
 #[derive(Debug, Clone, Copy)]
 struct CertifiedRay {
@@ -300,7 +298,7 @@ fn verify_numeric_value(
     sample_index: usize,
     canonical_word: u32,
     reference: VerificationInterval,
-    tolerance: super::super::request::RenderSemanticTolerance,
+    tolerance: crate::request::RenderSemanticTolerance,
 ) -> Result<(), RenderDeterministicVerificationError> {
     let Some(observed) = maintained_evaluation_value(canonical_word).map(f64::from) else {
         return Err(physical_mismatch_error(
@@ -829,8 +827,8 @@ fn physical_mismatch_error(
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::scene::RenderSceneStore;
     use super::*;
+    use crate::scene::RenderSceneStore;
 
     fn object_id() -> RenderObjectId {
         let mut store = RenderSceneStore::new();
