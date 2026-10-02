@@ -136,41 +136,37 @@ pub use prepare::{
 
 pub(crate) use errors::{
     RenderDeterministicExecutionError, RenderDeterministicLoweringError,
-    RenderDeterministicResultFormationError, RenderRunenGpuPreparationError,
+    RenderDeterministicResultFormationError,
 };
+#[cfg(test)]
+use errors::{RenderRunenGpuPreparationError, gpu_program_source};
 pub(crate) use lifecycle::{
     DeterministicVerificationReadbacks, DeterministicVerificationSubmission,
 };
-pub(crate) use prepare::{
-    prepare_deterministic_render_with_cache, prepare_deterministic_render_with_cache_in_scope,
-    prepare_deterministic_render_with_cache_in_scope_and_evaluation,
-};
+pub(crate) use prepare::prepare_deterministic_render_with_cache_in_scope_and_evaluation;
 pub(crate) use state::DeterministicResourceCache;
 pub(crate) use submission::submit_deterministic_render_for_verification;
 
 use errors::{
-    gpu_program_contract, gpu_program_source, gpu_readback_request, gpu_resource_allocation,
-    gpu_resource_descriptor, gpu_transfer_preparation, gpu_work_authoring, gpu_work_operation,
+    gpu_program_contract, gpu_readback_request, gpu_resource_allocation, gpu_resource_descriptor,
+    gpu_transfer_preparation, gpu_work_authoring, gpu_work_operation,
     map_maintained_program_build_error,
 };
 use lifecycle::{DeterministicObservationIntent, DeterministicVerificationState};
 use packing::*;
-use prepare::{
-    LoweredDeterministicOutput, LoweredDeterministicRender, PackedOutput,
-    PreparedRequestedCoverage, VerificationReadbackOperations, build_object_identity_decoder,
-    lower_deterministic_render, lower_output, prepare_requested_coverage,
-};
+use prepare::{PackedOutput, lower_deterministic_render};
 use state::{
-    DeterministicBufferKind, DeterministicCameraTemporalStorage,
-    DeterministicOutputExecutionSelection, DeterministicOutputPackingState,
-    DeterministicRenderExecutionSelection, DeterministicTemporalHistory,
-    DeterministicTemporalHistorySelection, DeterministicTemporalHistoryUse,
-    DeterministicTemporalHistoryUseStorage, DeterministicTemporalObservationCompatibility,
-    DeterministicTemporalSignature, DeterministicTemporalStorage, MaintainedExecutionKind,
-    any_producer_scope_in_flight, temporal_evaluation_extent_supported,
+    DeterministicBufferKind, DeterministicOutputExecutionSelection,
+    DeterministicOutputPackingState, DeterministicRenderExecutionSelection,
+    DeterministicTemporalHistorySelection, DeterministicTemporalHistoryUseStorage,
+    DeterministicTemporalSignature, MaintainedExecutionKind, temporal_evaluation_extent_supported,
     temporal_observation_compatibility,
 };
-use submission::{submit_lowered_deterministic_render, submit_prepared_deterministic_render};
+#[cfg(test)]
+use state::{
+    DeterministicTemporalHistory, DeterministicTemporalHistoryUse, DeterministicTemporalStorage,
+};
+use submission::submit_prepared_deterministic_render;
 
 #[cfg(test)]
 mod tests;

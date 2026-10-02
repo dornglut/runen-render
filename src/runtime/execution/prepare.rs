@@ -116,9 +116,9 @@ pub async fn submit_deterministic_render_for_verified_result(
     context: &GpuContext,
 ) -> Result<
     SubmittedDeterministicRender,
-    super::verification::RenderDeterministicVerifiedSubmissionError,
+    crate::runtime::verification::RenderDeterministicVerifiedSubmissionError,
 > {
-    super::verification::submit_deterministic_render_for_verified_formation(admitted, context)
+    crate::runtime::verification::submit_deterministic_render_for_verified_formation(admitted, context)
         .await
         .map(DeterministicVerificationSubmission::into_submitted)
 }

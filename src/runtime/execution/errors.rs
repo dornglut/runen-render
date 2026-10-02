@@ -330,7 +330,7 @@ pub(crate) enum RenderDeterministicResultFormationError {
         channel: &'static str,
         kind: GpuSubmissionFailureKind,
     },
-    Verification(super::verification::RenderDeterministicVerificationError),
+    Verification(crate::runtime::verification::RenderDeterministicVerificationError),
 }
 
 impl fmt::Display for RenderDeterministicResultFormationError {

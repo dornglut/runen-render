@@ -169,7 +169,7 @@ pub(super) enum DeterministicObservationIntent {
 }
 
 impl DeterministicObservationIntent {
-    const fn requires_private_readback(self) -> bool {
+    pub(super) const fn requires_private_readback(self) -> bool {
         matches!(self, Self::Verify)
     }
 }
@@ -225,7 +225,7 @@ impl SubmittedDeterministicRender {
         RenderDeterministicRadianceCaptureRequest,
         RenderDeterministicRadianceCaptureRequestError,
     > {
-        super::capture::mint_request(self, output_index)
+        crate::runtime::capture::mint_request(self, output_index)
     }
 
     /// Consume one capture request and interpret its completed product-owned public readback.
@@ -235,7 +235,7 @@ impl SubmittedDeterministicRender {
         context: &GpuContext,
         product_submission: &GpuSubmission,
     ) -> Result<RenderCapturedDeterministicRadiance, RenderDeterministicRadianceCaptureError> {
-        super::capture::capture(self, request, context, product_submission)
+        crate::runtime::capture::capture(self, request, context, product_submission)
     }
 
     pub const fn object_identity_decoder(&self) -> &RenderObjectIdentityDecoder {
@@ -307,7 +307,7 @@ impl SubmittedDeterministicRender {
             },
         };
         let formation_evidence =
-            super::verification::verify_completed_deterministic_render(verification)
+            crate::runtime::verification::verify_completed_deterministic_render(verification)
                 .map_err(RenderDeterministicResultFormationError::Verification)?;
         let result = RenderResult::from_formation_evidence(formation_evidence);
         self.verification = DeterministicVerificationState::Formed;
