@@ -1,77 +1,73 @@
-# Rust Framework Template
+# RunenRender
 
-`dornglut/rust-framework-template` is a one-time bootstrap baseline for new
-Dornglut Rust framework repositories.
-
-It provides a minimal repository shape, repository-owned validation entrypoint,
-bootstrap guidance, and licensing/provenance rules. It is not a product,
-framework runtime, or ongoing synchronization authority.
+RunenRender is a standalone Rust framework for reusable rendering semantics,
+maintained image formation, semantic result formation, and renderer-owned
+composition of RunenShader artifacts into RunenGPU program execution.
 
 ## Maturity
 
-This repository is intentionally minimal bootstrap infrastructure. It proves a
-working repository shape and validation baseline; it does not define a product
-runtime or public framework API.
+This repository is in RX bootstrap and extraction preparation. The repository
+exists and owns its package/profile/validation surface, but it does **not** yet
+contain the transferred RunenRender implementation.
+
+Runenwerk remains the sole RunenRender semantic source authority until a later
+validated successor candidate is accepted on `runen-render/main` under
+Engineering ADR 0008.
 
 ## Boundary
 
-The template owns only generic bootstrap infrastructure:
+RunenRender will own reusable renderer semantics, semantic scene/request/
+representation/input contracts, maintained renderer execution, temporal/camera
+rendering evidence, semantic result formation, and the explicit renderer-owned
+bridge from accepted RunenShader artifacts into public RunenGPU program
+admission.
 
-- Rust package and workspace conventions;
-- root architecture, testing, and agent entrypoints;
-- one canonical `cargo validate` command;
-- a thin immutable CI caller;
-- bootstrap guidance for identity, ownership, licensing, toolchain, settings,
-  validation extensions, conformance, provenance, and deviations.
+RunenRender does not own:
 
-Generated repositories own their implementation, public API, architecture,
-dependencies, compatibility, releases, and product-specific validation.
+- RunenShader source/compilation/artifact semantics;
+- generic RunenGPU resource/work/submission/backend semantics;
+- Runenwerk App/ECS/Winit/native-host lifecycle;
+- Runenwerk World/UI/Editor adapters;
+- product frame/presentation scheduling and final Present policy;
+- Render Lab product/window/oracle policy;
+- product filesystem/JSON/image/video artifact persistence.
 
-## Bootstrap
+## Package
 
-A repository created from this template must resolve its own:
+```text
+package: runen-render
+crate: runen_render
+version: 0.1.0
+edition: 2024
+MSRV: 1.93.0
+publish: false
+```
 
-1. repository, package, and crate identity;
-2. profile, lifecycle, and contribution classification;
-3. public license class and required license files;
-4. product MSRV and toolchain;
-5. repository visibility, merge policy, branch protection, and security controls;
-6. canonical validation extensions;
-7. downstream conformance workload when a public framework contract exists;
-8. extraction and source provenance when applicable;
-9. every intentional deviation from this baseline.
-
-The template is irrelevant after bootstrap. Do not add synchronization or
-template-update machinery to generated repositories.
-
-See [BOOTSTRAP.md](BOOTSTRAP.md).
+The initial MSRV is the supported repository floor. It does not claim that the
+future transferred source cannot compile on an older compiler; a lower support
+floor requires separate evidence and acceptance.
 
 ## Validation
 
-`cargo validate` is the single repository-owned validation command.
-
-It verifies the required template authority files, formatting, workspace tests,
-Clippy with warnings denied, rustdoc with warnings denied, Git whitespace, and
-unchanged repository state.
-
-CI invokes the same command through the accepted immutable
-`dornglut/github-workflows` reusable Rust validation workflow.
+`cargo validate` is the single repository-owned merge-readiness command. At
+bootstrap it proves repository/package identity and profile integrity rather
+than renderer implementation conformance.
 
 See [TESTING.md](TESTING.md).
 
-## Architecture and policy
+## Authority and policy
 
 - [Architecture](ARCHITECTURE.md)
 - [Testing](TESTING.md)
-- [Bootstrap](BOOTSTRAP.md)
-- [Agent guide](AGENTS.md)
+- [Bootstrap and provenance](BOOTSTRAP.md)
+- [Executor guidance](AGENTS.md)
+- [Public license](LICENSE)
+- [Licensing and historical provenance](LICENSING.md)
 - [Organization contribution guidance](https://github.com/dornglut/.github/blob/main/CONTRIBUTING.md)
 - [Organization security policy](https://github.com/dornglut/.github/blob/main/SECURITY.md)
 
-## License
+## Contribution
 
-This template repository is available under the [Apache License 2.0](LICENSE).
-
-A generated repository must select its own product license before accepting
-substantive implementation. The template's Apache-2.0 license does not become
-the generated product's licensing authority.
+Tracked-content contributions are currently `owner-only` until an accepted
+inbound mechanism preserves the rights required by the public/commercial
+licensing model.

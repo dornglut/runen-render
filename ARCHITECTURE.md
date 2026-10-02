@@ -1,49 +1,57 @@
-# Architecture
-
-## Boundary
-
-`rust-framework-template` is bootstrap infrastructure. Its purpose is to
-provide a minimal, reusable starting shape for a new Dornglut Rust framework
-repository.
-
-It owns no runtime behavior, public product contract, domain model, renderer,
-GPU subsystem, ECS, service, application, or product data.
-
-## Repository shape
-
-The baseline consists of:
-
-- a tiny non-published root Rust library used to prove the package baseline;
-- a local `xtask` that owns canonical validation;
-- a thin immutable shared-workflow caller;
-- root agent, architecture, testing, and bootstrap documentation;
-- the repository's Apache-2.0 license.
-
-No empty taxonomy directories or product-specific modules are created.
+# RunenRender architecture
 
 ## Dependency direction
 
 ```text
-repository source
-    └── root package
-
-validation authority
-    └── xtask
-          └── cargo / git commands
-
-CI orchestration
-    └── dornglut/github-workflows
-          └── cargo +stable validate
+Runenwerk product/integration
+    -> RunenRender renderer semantics + maintained image formation
+        -> RunenShader source/compilation/artifact semantics
+        -> RunenGPU generic GPU execution
 ```
 
-The reusable workflow orchestrates validation but does not define its meaning.
-The `xtask` is repository-local validation authority.
+RunenRender composes downward sibling authorities; it does not absorb or
+re-export their private implementations.
 
-## Generated repositories
+## Ownership
 
-A generated repository replaces the placeholder package identity and source,
-selects its own license and toolchain contract, establishes its repository
-settings, and extends validation only for proven product-specific requirements.
+RunenRender owns reusable renderer-domain meaning:
 
-After bootstrap, the template is not an architectural dependency and must not
-remain a synchronization authority.
+- semantic scene, request, representation, participation, appearance, and input
+  contracts;
+- render planning/admission/lowering into the maintained renderer authority;
+- maintained image-formation execution state and temporal/camera evidence;
+- generic semantic result-formation evidence;
+- the renderer-owned retained bridge from exact RunenShader artifacts to public
+  RunenGPU program admission/execution.
+
+RunenShader owns shader source identity, compilation, artifact provenance, and
+typed compilation outcomes.
+
+RunenGPU owns backend-neutral program/resource/work/submission/readback
+contracts and private backend realization.
+
+Runenwerk stays above the framework boundary and owns App/ECS/Winit/native-host
+lifecycle, World/UI/Editor adapters, frame/presentation scheduling, product
+composition/Present policy, Render Lab product behavior, and product
+filesystem/JSON/media artifact policy.
+
+## Public versus private surface
+
+The later semantic transfer keeps ordinary/public renderer vocabulary separate
+from maintained implementation vocabulary. Proof-era `Deterministic*` types
+and methods are private implementation details unless a separately accepted
+public-contract change proves otherwise.
+
+No compatibility facade, mirror, source include, Git submodule, moving branch
+dependency, mirrored maintained WGSL authority, or private sibling reach-through
+is part of this architecture.
+
+## Authority transfer
+
+During bootstrap and an unmerged successor candidate, Runenwerk remains the sole
+RunenRender semantic source authority.
+
+Under ADR 0008, accepted successor default-branch publication switches semantic
+authority to RunenRender. The transferred Runenwerk predecessor boundary freezes
+at that moment and is deletion-bound during the exact-revision downstream
+cutover.

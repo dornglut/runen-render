@@ -1,4 +1,5 @@
-//! Placeholder library for the Rust framework bootstrap template.
+//! RunenRender's reusable semantic rendering and maintained image-formation contract.
 //!
-//! Generated repositories replace this package identity and source during
-//! bootstrap. The template itself owns no product semantics.
+//! This repository is currently in source-free bootstrap and extraction
+//! preparation. The RunenRender implementation remains authoritative in
+//! Runenwerk until the later ADR-0008 successor-acceptance switch.
