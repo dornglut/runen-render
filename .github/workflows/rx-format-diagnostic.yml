@@ -1,0 +1,40 @@
+name: RX Format Diagnostic
+
+on:
+  push:
+    branches:
+      - rx-transfer-4
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    name: Apply canonical rustfmt
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: rx-transfer-4
+      - name: Install stable rustfmt
+        run: rustup toolchain install stable --profile minimal --component rustfmt
+      - name: Apply canonical formatting
+        run: cargo fmt --all
+      - name: Prove formatting scope
+        run: |
+          changed="$(git status --porcelain --untracked-files=all)"
+          printf '%s\n' "$changed"
+          test -n "$changed"
+          if printf '%s\n' "$changed" | sed '/^$/d' | awk '{print $2}' | grep -Ev '\.rs$'; then
+            echo "rustfmt changed a non-Rust file" >&2
+            exit 1
+          fi
+      - name: Commit canonical formatting
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- '*.rs'
+          git commit -m "Apply canonical RX Rust formatting (#4)"
+          git push origin HEAD:rx-transfer-4
