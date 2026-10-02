@@ -36,9 +36,9 @@ use super::scene::{RenderObjectId, RenderSceneRevision};
 #[cfg(test)]
 use super::shader_bridge::build_maintained_program_sources;
 use super::shader_bridge::{
-    RenderMaintainedProgram, RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError,
-    build_camera_reprojection_program, build_maintained_evaluator_program,
-    build_temporal_reconstruction_program,
+    RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError,
+    retained_camera_reprojection_source, retained_maintained_evaluator_source,
+    retained_temporal_reconstruction_source,
 };
 use super::space_time::RenderTimeInterval;
 use super::surface_input::{
@@ -257,9 +257,6 @@ struct DeterministicTemporalHistorySelection {
 pub(crate) struct DeterministicResourceCache {
     identities: GpuWorkResourceIdAllocator,
     buffers: BTreeMap<(u64, usize, DeterministicBufferKind), GpuBufferHandle>,
-    maintained_source: Option<RenderMaintainedProgram>,
-    reconstruction_source: Option<RenderMaintainedProgram>,
-    camera_reprojection_source: Option<RenderMaintainedProgram>,
     temporal_histories: BTreeMap<(u64, usize), DeterministicTemporalHistory>,
     next_temporal_generation: u64,
     prepared_temporal_outputs: BTreeMap<u64, BTreeSet<usize>>,
@@ -355,58 +352,28 @@ impl DeterministicResourceCache {
     fn maintained_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        if self.maintained_source.is_none() {
-            let program = build_maintained_evaluator_program(
-                MAINTAINED_EVALUATOR_REVISION,
-                MAINTAINED_WGSL.as_str(),
-            )
-            .map_err(map_maintained_program_build_error)?;
-            self.maintained_source = Some(program);
-        }
-        Ok(self
-            .maintained_source
-            .as_ref()
-            .expect("maintained evaluator source was initialized")
-            .admitted()
-            .clone())
+        retained_maintained_evaluator_source(MAINTAINED_EVALUATOR_REVISION, MAINTAINED_WGSL.as_str())
+            .map_err(map_maintained_program_build_error)
     }
 
     fn reconstruction_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        if self.reconstruction_source.is_none() {
-            let program = build_temporal_reconstruction_program(
-                u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
-                TEMPORAL_RECONSTRUCTION_WGSL,
-            )
-            .map_err(map_maintained_program_build_error)?;
-            self.reconstruction_source = Some(program);
-        }
-        Ok(self
-            .reconstruction_source
-            .as_ref()
-            .expect("temporal reconstruction source was initialized")
-            .admitted()
-            .clone())
+        retained_temporal_reconstruction_source(
+            u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
+            TEMPORAL_RECONSTRUCTION_WGSL,
+        )
+        .map_err(map_maintained_program_build_error)
     }
 
     fn camera_reprojection_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        if self.camera_reprojection_source.is_none() {
-            let program = build_camera_reprojection_program(
-                u64::from(CAMERA_REPROJECTION_REVISION),
-                CAMERA_REPROJECTION_WGSL.as_str(),
-            )
-            .map_err(map_maintained_program_build_error)?;
-            self.camera_reprojection_source = Some(program);
-        }
-        Ok(self
-            .camera_reprojection_source
-            .as_ref()
-            .expect("camera reprojection source was initialized")
-            .admitted()
-            .clone())
+        retained_camera_reprojection_source(
+            u64::from(CAMERA_REPROJECTION_REVISION),
+            CAMERA_REPROJECTION_WGSL.as_str(),
+        )
+        .map_err(map_maintained_program_build_error)
     }
 
     fn temporal_history(
@@ -4663,13 +4630,12 @@ mod tests {
     }
 
     #[test]
-    fn maintained_source_is_admitted_once_for_sustained_frames() {
-        let mut cache = DeterministicResourceCache::default();
-        let first = cache
+    fn maintained_source_is_retained_across_fresh_renderer_resource_caches() {
+        let first = DeterministicResourceCache::default()
             .maintained_source()
             .expect("maintained source should admit");
         for _ in 0..120 {
-            let next = cache
+            let next = DeterministicResourceCache::default()
                 .maintained_source()
                 .expect("maintained source should remain available");
             assert!(first.is_same_record(&next));

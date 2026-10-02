@@ -11,6 +11,7 @@ use runen_shader::{
 };
 use std::error::Error;
 use std::fmt;
+use std::sync::OnceLock;
 
 const RUNEN_RENDER_SHADER_PACKAGE_ID: u64 = 1;
 const EVALUATOR_MODULE_ID: u64 = 1;
@@ -19,6 +20,10 @@ const TEMPORAL_MODULE_ID: u64 = 2;
 const TEMPORAL_SOURCE_UNIT_ID: u64 = 2;
 const CAMERA_MODULE_ID: u64 = 3;
 const CAMERA_SOURCE_UNIT_ID: u64 = 3;
+
+static EVALUATOR_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
+static TEMPORAL_RECONSTRUCTION_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
+static CAMERA_REPROJECTION_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MaintainedShaderProgram {
@@ -247,6 +252,66 @@ pub(crate) fn build_camera_reprojection_program(
         revision,
         wgsl,
     })
+}
+
+pub(crate) fn retained_maintained_evaluator_source(
+    revision: u64,
+    wgsl: &str,
+) -> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
+    retained_program_source(
+        &EVALUATOR_PROGRAM,
+        MaintainedShaderSpec {
+            program: MaintainedShaderProgram::Evaluator,
+            revision,
+            wgsl,
+        },
+    )
+}
+
+pub(crate) fn retained_temporal_reconstruction_source(
+    revision: u64,
+    wgsl: &str,
+) -> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
+    retained_program_source(
+        &TEMPORAL_RECONSTRUCTION_PROGRAM,
+        MaintainedShaderSpec {
+            program: MaintainedShaderProgram::TemporalReconstruction,
+            revision,
+            wgsl,
+        },
+    )
+}
+
+pub(crate) fn retained_camera_reprojection_source(
+    revision: u64,
+    wgsl: &str,
+) -> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
+    retained_program_source(
+        &CAMERA_REPROJECTION_PROGRAM,
+        MaintainedShaderSpec {
+            program: MaintainedShaderProgram::CameraReprojection,
+            revision,
+            wgsl,
+        },
+    )
+}
+
+fn retained_program_source(
+    cell: &'static OnceLock<RenderMaintainedProgram>,
+    spec: MaintainedShaderSpec<'_>,
+) -> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
+    if let Some(program) = cell.get() {
+        return Ok(program.admitted().clone());
+    }
+
+    let program = build_maintained_program(spec)?;
+    let _ = cell.set(program);
+
+    Ok(cell
+        .get()
+        .expect("successful maintained program admission must initialize its retained cell")
+        .admitted()
+        .clone())
 }
 
 fn build_maintained_program(
