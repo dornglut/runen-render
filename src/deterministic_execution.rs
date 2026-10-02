@@ -4633,15 +4633,33 @@ mod tests {
     }
 
     #[test]
-    fn maintained_source_is_retained_across_fresh_renderer_resource_caches() {
-        let first = DeterministicResourceCache::default()
+    fn maintained_program_sources_are_retained_across_fresh_renderer_resource_caches() {
+        let mut first_cache = DeterministicResourceCache::default();
+        let first_evaluator = first_cache
             .maintained_source()
-            .expect("maintained source should admit");
+            .expect("maintained evaluator should admit");
+        let first_temporal = first_cache
+            .reconstruction_source()
+            .expect("temporal reconstruction should admit");
+        let first_camera = first_cache
+            .camera_reprojection_source()
+            .expect("camera reprojection should admit");
+
         for _ in 0..120 {
-            let next = DeterministicResourceCache::default()
+            let mut next_cache = DeterministicResourceCache::default();
+            let next_evaluator = next_cache
                 .maintained_source()
-                .expect("maintained source should remain available");
-            assert!(first.is_same_record(&next));
+                .expect("maintained evaluator should remain available");
+            let next_temporal = next_cache
+                .reconstruction_source()
+                .expect("temporal reconstruction should remain available");
+            let next_camera = next_cache
+                .camera_reprojection_source()
+                .expect("camera reprojection should remain available");
+
+            assert!(first_evaluator.is_same_record(&next_evaluator));
+            assert!(first_temporal.is_same_record(&next_temporal));
+            assert!(first_camera.is_same_record(&next_camera));
         }
     }
 
