@@ -323,7 +323,10 @@ fn validate_transfer_contract(root: &Path) -> Result<(), String> {
         "RUNEN_RENDER_REQUIRE_GPU: '1'",
         "mesa-vulkan-drivers",
         "WGPU_BACKEND=vulkan",
-        "cargo +stable test -p runen-render --locked -- --nocapture --test-threads=1",
+        "cargo +stable test -p runen-render",
+        "--skip camera_history_proof",
+        "--lib camera_history_proof",
+        "--test ordinary_public_api",
     ] {
         require_contains(".github/workflows/validation.yml", &workflow, required)?;
     }
