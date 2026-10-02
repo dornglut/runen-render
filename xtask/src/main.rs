@@ -138,7 +138,7 @@ fn validate() -> Result<(), String> {
         &root,
         "cargo",
         &[
-            "+1.93.0",
+            "+1.97.1",
             "check",
             "--workspace",
             "--all-targets",
@@ -175,7 +175,7 @@ fn validate_product_identity(root: &Path) -> Result<(), String> {
         "name = \"runen-render\"",
         "version = \"0.1.0\"",
         "edition = \"2024\"",
-        "rust-version = \"1.93.0\"",
+        "rust-version = \"1.97.1\"",
         "license.workspace = true",
         "repository = \"https://github.com/dornglut/runen-render\"",
         "description = \"Reusable semantic rendering and maintained image-formation framework\"",

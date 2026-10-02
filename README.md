@@ -40,13 +40,15 @@ package: runen-render
 crate: runen_render
 version: 0.1.0
 edition: 2024
-MSRV: 1.93.0
+MSRV: 1.97.1
 publish: false
 ```
 
-The initial MSRV is the supported repository floor. It does not claim that the
-future transferred source cannot compile on an older compiler; a lower support
-floor requires separate evidence and acceptance.
+The current RX MSRV is the supported repository floor. Source-free bootstrap
+initially selected Rust 1.93.0, but executable transfer validation proved that
+the accepted RunenShader dependency graph requires Rust 1.97.1 through its exact
+WESL 0.5.0 graph. The candidate therefore raises the floor to 1.97.1 rather than
+advertising an unsupported lower compiler.
 
 ## Validation
 

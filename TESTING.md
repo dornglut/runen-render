@@ -22,7 +22,7 @@ Repository-local `xtask` owns the merge-readiness baseline. It proves:
 - locked workspace tests;
 - strict Clippy;
 - rustdoc with warnings denied;
-- explicit Rust 1.93.0 workspace/all-targets check;
+- explicit Rust 1.97.1 workspace/all-targets check;
 - Git whitespace checks;
 - validation not mutating repository state.
 
