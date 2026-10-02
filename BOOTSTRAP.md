@@ -1,103 +1,101 @@
-# Bootstrap procedure
+# RunenRender bootstrap and provenance
 
-This template is a one-time starting point. A generated repository must establish
-its own current authority before accepting substantive implementation.
+This record captures stable repository bootstrap facts and the boundary before
+semantic extraction. It is not a branch, pull-request, workflow-run, or current-
+head ledger.
 
-## 1. Identity
+## Accepted template provenance
 
-Replace the placeholder repository, package, crate, version, description, and
-repository metadata with the generated repository's accepted identity.
+```text
+template repository:
+dornglut/rust-framework-template
 
-Do not leave `rust-framework-template` as an active product identity.
+accepted template commit:
+500461d51fe155febc806e288e5bc013e413a785
 
-## 2. Classification
+accepted template tree:
+1e1ae24713cd48b5ea2c3fe1da87cf8dd8f8358a
 
-Resolve and record:
+generated RunenRender initial commit:
+8f1b9719f41769430ef50f540f4c0e14e7e2c1f9
 
-- repository profile;
-- lifecycle;
-- contribution mode;
-- owning domain;
-- relationship to existing repositories.
+generated RunenRender initial tree:
+1e1ae24713cd48b5ea2c3fe1da87cf8dd8f8358a
+```
 
-Use the accepted organization vocabulary rather than inventing local property
-values.
+The generated initial tree exactly matched the accepted template tree.
+Generated-repository validation run `36984365701` succeeded on that exact
+initial commit through immutable shared workflow revision
+`688f274ec1fdd19acba9bf3577b26b4b7b7f4037`.
 
-## 3. Licensing
+The historical template material originated under Apache-2.0. That historical
+grant remains historical provenance and is not ongoing synchronization,
+architecture, product-license, or source authority.
 
-Select the product license class before substantive implementation.
+## Product decisions
 
-Establish the required current `LICENSE`, package SPDX metadata, README license
-statement, and any required additional licensing documentation.
+```text
+repository: dornglut/runen-render
+package: runen-render
+crate: runen_render
+version: 0.1.0
+edition: 2024
+MSRV: 1.93.0
+publish: false
+features: default=[]
+license: GPL-3.0-only
+profile: rust-framework
+lifecycle: active
+contribution: owner-only
+```
 
-The template's Apache-2.0 license is the template's own current license; it is
-not a generic product-license choice.
+Version `0.1.0` represents the first standalone consumer-facing RunenRender
+framework contract rather than a placeholder identity.
 
-License changes are prospective. Historical grants remain historical evidence,
-and third-party material keeps its own license.
+Rust `1.93.0` is the initial supported MSRV because no lower RunenRender support
+floor was accepted or proven during R8. A later lower MSRV requires independent
+evidence; bootstrap does not infer one from sibling packages.
 
-## 4. Toolchain
+The generic template `unsafe_code = "forbid"` lint is intentionally removed.
+R8 did not accept a new blanket RunenRender unsafe-code policy, and extraction
+must not silently add source constraints.
 
-Resolve the generated repository's MSRV and toolchain from product evidence.
+## Repository classification
 
-Do not assume the template's current toolchain is the generated product's final
-MSRV. Update the package metadata and toolchain declaration together.
+The intended accepted repository posture is:
 
-## 5. Repository settings
+```text
+visibility: public
+default branch: main
+merge: squash-only
+delete merged branches: enabled
+profile: rust-framework
+lifecycle: active
+contribution: owner-only
+```
 
-Establish the repository's accepted GitHub posture:
+Native settings/protection/security are repository administration, not semantic
+source authority. They must be reconciled before bootstrap acceptance.
 
-- public or explicitly accepted visibility;
-- default branch `main`;
-- squash merge enabled;
-- merge commits disabled;
-- rebase merge disabled unless specifically justified;
-- merged head branches deleted;
-- normal changes through pull requests;
-- canonical validation required;
-- conversations resolved before merge;
-- force pushes and default-branch deletion blocked;
-- linear history preferred;
-- no meaningless solo-maintainer approval count;
-- applicable security controls enabled or recorded as platform deviations.
+## Future extraction provenance
 
-## 6. Validation
+The separately authorized semantic transfer is governed by `runen-render#1`
+from frozen Runenwerk R8:
 
-Keep `cargo validate` as the canonical command.
+```text
+predecessor:
+dornglut/runenwerk
 
-Extend the local `xtask` only when the product has a demonstrated validation
-requirement. Product-specific checks remain repository-local and are not moved
-into shared CI.
+accepted predecessor revision:
+75d793d227235441952167303051334f5b3a1e0f
 
-## 7. Downstream conformance
+accepted predecessor tree:
+2abd9fe0792969b1d26106cb7f8e1741c6c9d68f
 
-When the framework exposes a public contract consumed by another repository,
-create an independent downstream conformance package or workload. Do not use
-the template itself as conformance evidence.
+transfer authority:
+runenwerk#1129
+```
 
-## 8. Extraction and provenance
-
-If implementation is transferred from another repository, record:
-
-- source repository and accepted source revision;
-- source path or boundary;
-- ownership and licensing disposition;
-- transfer rationale and scope;
-- consumer migration boundary;
-- deviations introduced during extraction.
-
-The template does not grant authority to transfer source. Extraction remains
-owned by the accepted source and destination work.
-
-## 9. Deviations
-
-Record every intentional deviation from this template baseline in the generated
-repository's appropriate authority.
-
-Do not preserve obsolete template material merely for tree similarity.
-
-## Completion
-
-After these decisions are accepted, the template ceases to be relevant. The
-generated repository becomes the sole authority for its code, architecture,
-validation semantics, roadmap, releases, and compatibility.
+This bootstrap transfers zero RunenRender implementation source and adds no
+RunenGPU or RunenShader product dependency. Runenwerk remains sole RunenRender
+semantic authority until the later accepted successor merge under ADR 0008.

@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -14,12 +14,28 @@ const REQUIRED_FILES: &[&str] = &[
     "Cargo.lock",
     "Cargo.toml",
     "LICENSE",
+    "LICENSING.md",
     "README.md",
     "TESTING.md",
     "rust-toolchain.toml",
     "src/lib.rs",
     "xtask/Cargo.toml",
     "xtask/src/main.rs",
+];
+
+const ACTIVE_IDENTITY_FILES: &[&str] = &[
+    "Cargo.toml",
+    "README.md",
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "TESTING.md",
+    "src/lib.rs",
+];
+
+const STALE_ACTIVE_IDENTITY: &[&str] = &[
+    "rust-framework-template",
+    "MIT OR Apache-2.0",
+    "Apache License 2.0",
 ];
 
 fn main() {
@@ -41,6 +57,8 @@ fn validate() -> Result<(), String> {
         .to_path_buf();
 
     validate_required_files(&root)?;
+    validate_product_identity(&root)?;
+
     let initial_state = git_status(&root)?;
     if !initial_state.is_empty() {
         return Err(format!(
@@ -69,6 +87,17 @@ fn validate() -> Result<(), String> {
         &["doc", "--workspace", "--no-deps", "--locked"],
         &[("RUSTDOCFLAGS", "-D warnings")],
     )?;
+    run(
+        &root,
+        "cargo",
+        &[
+            "+1.93.0",
+            "check",
+            "--workspace",
+            "--all-targets",
+            "--locked",
+        ],
+    )?;
     run(&root, "git", &["diff", "--check"])?;
     run(&root, "git", &["diff", "--cached", "--check"])?;
 
@@ -91,6 +120,78 @@ fn validate_required_files(root: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn validate_product_identity(root: &Path) -> Result<(), String> {
+    let manifest = read_file(root, "Cargo.toml")?;
+    for required in [
+        "name = \"runen-render\"",
+        "version = \"0.1.0\"",
+        "edition = \"2024\"",
+        "rust-version = \"1.93.0\"",
+        "license.workspace = true",
+        "repository = \"https://github.com/dornglut/runen-render\"",
+        "description = \"Reusable semantic rendering and maintained image-formation framework\"",
+        "publish = false",
+        "[workspace.package]",
+        "license = \"GPL-3.0-only\"",
+        "[features]\ndefault = []",
+    ] {
+        require_contains("Cargo.toml", &manifest, required)?;
+    }
+
+    if manifest.contains("unsafe_code = \"forbid\"") {
+        return Err(
+            "Cargo.toml contains the unaccepted template unsafe-code policy".to_owned(),
+        );
+    }
+
+    let lockfile = read_file(root, "Cargo.lock")?;
+    require_contains("Cargo.lock", &lockfile, "name = \"runen-render\"")?;
+    if lockfile.contains("name = \"rust-framework-template\"") {
+        return Err("Cargo.lock contains stale framework-template identity".to_owned());
+    }
+
+    let license = read_file(root, "LICENSE")?;
+    for required in [
+        "GNU GENERAL PUBLIC LICENSE",
+        "Version 3, 29 June 2007",
+        "END OF TERMS AND CONDITIONS",
+        "How to Apply These Terms to Your New Programs",
+    ] {
+        require_contains("LICENSE", &license, required)?;
+    }
+    if license.len() < 10_000 {
+        return Err("LICENSE is shorter than a complete GPLv3 text".to_owned());
+    }
+
+    for relative_path in ACTIVE_IDENTITY_FILES {
+        let contents = read_file(root, relative_path)?;
+        for stale_identity in STALE_ACTIVE_IDENTITY {
+            if contents.contains(stale_identity) {
+                return Err(format!(
+                    "active identity file {relative_path} contains stale product identity or license: {stale_identity}"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn read_file(root: &Path, relative_path: &str) -> Result<String, String> {
+    fs::read_to_string(root.join(relative_path))
+        .map_err(|error| format!("failed to read {relative_path}: {error}"))
+}
+
+fn require_contains(file: &str, contents: &str, required: &str) -> Result<(), String> {
+    if contents.contains(required) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{file} is missing required product contract: {required}"
+        ))
+    }
 }
 
 fn git_status(root: &Path) -> Result<String, String> {
