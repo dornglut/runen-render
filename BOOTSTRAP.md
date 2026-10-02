@@ -56,8 +56,8 @@ Source-free bootstrap initially selected Rust `1.93.0` because no lower
 RunenRender support floor was accepted or proven during R8. That provisional
 choice was superseded before semantic authority acceptance: exact-head RX
 validation with the accepted RunenShader revision proved that its exact
-`wesl 0.5.0` dependency graph requires Rust `1.97.1`. The successor candidate
-therefore establishes `1.97.1` as the supported MSRV. A future lower floor
+`wesl 0.5.0` dependency graph requires Rust `1.97.1`. RX therefore establishes
+`1.97.1` as the supported MSRV. A future lower floor
 requires an accepted sibling/dependency change plus direct validation evidence.
 
 The generic template `unsafe_code = "forbid"` lint is intentionally removed.
