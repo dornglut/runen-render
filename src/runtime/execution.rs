@@ -951,7 +951,7 @@ impl SubmittedDeterministicRender {
             },
         };
         let formation_evidence =
-            super::deterministic_verification::verify_completed_deterministic_render(verification)
+            super::verification::verify_completed_deterministic_render(verification)
                 .map_err(RenderDeterministicResultFormationError::Verification)?;
         let result = RenderResult::from_formation_evidence(formation_evidence);
         self.verification = DeterministicVerificationState::Formed;
@@ -1317,7 +1317,7 @@ pub(crate) enum RenderDeterministicResultFormationError {
         channel: &'static str,
         kind: GpuSubmissionFailureKind,
     },
-    Verification(super::deterministic_verification::RenderDeterministicVerificationError),
+    Verification(super::verification::RenderDeterministicVerificationError),
 }
 
 impl fmt::Display for RenderDeterministicResultFormationError {
@@ -1481,9 +1481,9 @@ pub async fn submit_deterministic_render_for_verified_result(
     context: &GpuContext,
 ) -> Result<
     SubmittedDeterministicRender,
-    super::deterministic_verification::RenderDeterministicVerifiedSubmissionError,
+    super::verification::RenderDeterministicVerifiedSubmissionError,
 > {
-    super::deterministic_verification::submit_deterministic_render_for_verified_formation(
+    super::verification::submit_deterministic_render_for_verified_formation(
         admitted, context,
     )
     .await

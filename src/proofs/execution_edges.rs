@@ -9,7 +9,7 @@ use crate::admission::{
     RenderRepresentationAvailabilityState,
 };
 use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-use crate::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
+use crate::runtime::admission::admit_deterministic_render_with_semantic_inputs;
 use crate::runtime::carrier::{decode_word, maintained_evaluation_value};
 use crate::runtime::execution::DeterministicVerificationSubmission;
 use crate::runtime::verification::{
