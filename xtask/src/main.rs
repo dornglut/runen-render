@@ -265,7 +265,9 @@ fn validate_transfer_contract(root: &Path) -> Result<(), String> {
         "tests/ordinary_public_api.rs",
     ] {
         if !root.join(relative_path).is_file() {
-            return Err(format!("required RX authority file is missing: {relative_path}"));
+            return Err(format!(
+                "required RX authority file is missing: {relative_path}"
+            ));
         }
     }
 
