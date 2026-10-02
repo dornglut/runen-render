@@ -1271,8 +1271,8 @@ mod tests {
     fn execution_error_preserves_runenshader_owner_category() {
         let error = RenderExecutionError {
             inner: RenderDeterministicExecutionError::Lowering(
-                super::deterministic_execution::RenderDeterministicLoweringError::RunenShaderCompilation(
-                    super::shader_bridge::RenderRunenShaderCompilationError::CanonicalBytesChanged {
+                crate::deterministic_execution::RenderDeterministicLoweringError::RunenShaderCompilation(
+                    crate::shader_bridge::RenderRunenShaderCompilationError::CanonicalBytesChanged {
                         program: "test program",
                     },
                 ),

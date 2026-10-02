@@ -4712,13 +4712,16 @@ mod tests {
 
     #[test]
     fn camera_reprojection_wgsl_forms_a_canonical_compute_pipeline() {
-        let [source] = admit_static_wgsl_sources([(
-            "runenrender.maintained.camera_reprojection.test",
+        let programs = build_maintained_program_sources(
+            MAINTAINED_EVALUATOR_REVISION,
+            MAINTAINED_WGSL.as_str(),
+            u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
+            TEMPORAL_RECONSTRUCTION_WGSL,
             u64::from(CAMERA_REPROJECTION_REVISION),
             CAMERA_REPROJECTION_WGSL.as_str(),
-        )])
-        .expect("camera reprojection source admission");
-        GpuComputePipelineDescriptor::ordinary(source, "main")
+        )
+        .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
+        GpuComputePipelineDescriptor::ordinary(programs.camera_reprojection().clone(), "main")
             .expect("camera reprojection must form a canonical compute pipeline");
     }
 
@@ -4785,12 +4788,16 @@ mod tests {
 
     #[test]
     fn maintained_wgsl_forms_a_canonical_compute_pipeline() {
-        let [source] = admit_static_wgsl_sources([(
-            "runenrender.maintained.deterministic.test",
+        let programs = build_maintained_program_sources(
             MAINTAINED_EVALUATOR_REVISION,
             MAINTAINED_WGSL.as_str(),
-        )])
-        .expect("maintained deterministic source admission");
+            u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
+            TEMPORAL_RECONSTRUCTION_WGSL,
+            u64::from(CAMERA_REPROJECTION_REVISION),
+            CAMERA_REPROJECTION_WGSL.as_str(),
+        )
+        .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
+        let source = programs.evaluator().clone();
         assert_eq!(
             source.identity().revision().get(),
             MAINTAINED_EVALUATOR_REVISION
@@ -4888,9 +4895,8 @@ mod tests {
             "access",
         );
 
-        let program_source =
-            admit_static_wgsl_sources([("", 1, "@compute @workgroup_size(1) fn main() {}")])
-                .expect_err("empty source key must fail in RunenGPU source authority");
+        let program_source = runen_gpu::GpuProgramSourceKey::new("")
+            .expect_err("empty source key must fail in RunenGPU source authority");
         assert_owner(
             RenderRunenGpuPreparationError::ProgramSource {
                 stage: "program-source",
@@ -4940,13 +4946,16 @@ mod tests {
             "transfer-preparation",
         );
 
-        let [source] = admit_static_wgsl_sources([(
-            "typed-error-program",
-            1,
-            "@compute @workgroup_size(1) fn main() {}",
-        )])
-        .expect("proof program source admission");
-        let program_contract = GpuComputePipelineDescriptor::ordinary(source, "")
+        let programs = build_maintained_program_sources(
+            MAINTAINED_EVALUATOR_REVISION,
+            MAINTAINED_WGSL.as_str(),
+            u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
+            TEMPORAL_RECONSTRUCTION_WGSL,
+            u64::from(CAMERA_REPROJECTION_REVISION),
+            CAMERA_REPROJECTION_WGSL.as_str(),
+        )
+        .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
+        let program_contract = GpuComputePipelineDescriptor::ordinary(programs.evaluator().clone(), "")
             .expect_err("empty entry point must fail in RunenGPU program authority");
         assert_owner(
             RenderRunenGpuPreparationError::ProgramContract {
@@ -4993,9 +5002,8 @@ mod tests {
 
     #[test]
     fn runengpu_preparation_preserves_typed_source_chain() {
-        let source =
-            admit_static_wgsl_sources([("", 1, "@compute @workgroup_size(1) fn main() {}")])
-                .expect_err("empty RunenGPU source key must be rejected");
+        let source = runen_gpu::GpuProgramSourceKey::new("")
+            .expect_err("empty RunenGPU source key must be rejected");
         let error = gpu_program_source("typed source proof", source.clone());
 
         let preparation =

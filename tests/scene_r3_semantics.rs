@@ -276,7 +276,13 @@ fn unknown_representation_identity_is_rejected_without_publication() {
     let mut store = RenderSceneStore::new();
     let object_id = store.allocate_object_id().expect("object ID");
     insert_object(&mut store, object_id);
-    let unknown = RenderRepresentationId::from_raw(999_999).expect("non-zero unknown ID");
+    let mut foreign_store = RenderSceneStore::new();
+    let foreign_owner = foreign_store
+        .allocate_object_id()
+        .expect("foreign object ID");
+    let unknown = foreign_store
+        .allocate_representation_id(foreign_owner)
+        .expect("foreign representation ID");
     let participation =
         RenderObjectParticipation::new(vec![surface_representation_with_id(unknown)], None, None)
             .expect("structurally valid participation");

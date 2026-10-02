@@ -121,22 +121,23 @@ struct CameraProofPipelines {
 }
 
 fn camera_proof_pipelines() -> CameraProofPipelines {
-    let [evaluation_source, camera_source] = admit_static_wgsl_sources([
-        (
-            "camera-proof.evaluation",
-            MAINTAINED_EVALUATOR_REVISION,
-            MAINTAINED_WGSL.as_str(),
-        ),
-        (
-            "camera-proof.history",
-            u64::from(CAMERA_REPROJECTION_REVISION),
-            CAMERA_REPROJECTION_WGSL.as_str(),
-        ),
-    ])
-    .unwrap();
+    let programs = build_maintained_program_sources(
+        MAINTAINED_EVALUATOR_REVISION,
+        MAINTAINED_WGSL.as_str(),
+        u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
+        TEMPORAL_RECONSTRUCTION_WGSL,
+        u64::from(CAMERA_REPROJECTION_REVISION),
+        CAMERA_REPROJECTION_WGSL.as_str(),
+    )
+    .expect("camera proof programs must compile through RunenShader and admit through RunenGPU");
     CameraProofPipelines {
-        evaluation: GpuComputePipelineDescriptor::ordinary(evaluation_source, "main").unwrap(),
-        reconstruction: GpuComputePipelineDescriptor::ordinary(camera_source, "main").unwrap(),
+        evaluation: GpuComputePipelineDescriptor::ordinary(programs.evaluator().clone(), "main")
+            .unwrap(),
+        reconstruction: GpuComputePipelineDescriptor::ordinary(
+            programs.camera_reprojection().clone(),
+            "main",
+        )
+        .unwrap(),
     }
 }
 
