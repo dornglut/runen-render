@@ -44,7 +44,7 @@ use super::surface_input::{
 };
 use runen_gpu::{
     GpuAdmittedProgramSource, GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization,
-    GpuBufferRegion, GpuBufferTextureLayout, GpuBufferUsage, GpuClearOperation,
+    GpuBufferRange, GpuBufferRegion, GpuBufferTextureLayout, GpuBufferUsage, GpuClearOperation,
     GpuComputeOperation, GpuComputePipelineDescriptor, GpuContext, GpuContextAffinity,
     GpuCopyOperation, GpuDispatchIntent, GpuDispatchSize, GpuExportKey, GpuExportRelationship,
     GpuInitialCoverage, GpuOrdinaryTransferPreparationError, GpuProgramContractError,
