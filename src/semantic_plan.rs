@@ -656,28 +656,28 @@ fn distance_bound(value: f64) -> RenderDistanceErrorBound {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::render::appearance::RenderDiffuseMaterial;
-    use crate::plugins::render::method::{
+    use crate::appearance::RenderDiffuseMaterial;
+    use crate::method::{
         RenderAbstractExecutionRequirement, RenderFieldDistanceInputRequirement,
         RenderMethodOutputGuarantee, RenderMethodOutputKind, RenderMethodRepresentationRequirement,
         RenderRepresentationProtocolRequirement, RenderSpectralRadianceSupport,
     };
-    use crate::plugins::render::participation::{
+    use crate::participation::{
         RenderMaterialAssignment, RenderObjectParticipation,
     };
-    use crate::plugins::render::representation::{
+    use crate::representation::{
         RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
         RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderFieldDistanceGuarantee,
         RenderFieldDistanceProtocolEvidence, RenderOrientedSurfaceProtocolEvidence,
         RenderRefinementEvidence, RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
     };
-    use crate::plugins::render::request::{
+    use crate::request::{
         RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
         RenderPerspectiveObservation, RenderProbeObservation, RenderRadiometricRepresentation,
         RenderResultTopology, RenderSamplingSupport,
     };
-    use crate::plugins::render::scene::{RenderObjectState, RenderSceneStore, RenderSceneUpdate};
-    use crate::plugins::render::space_time::{
+    use crate::scene::{RenderObjectState, RenderSceneStore, RenderSceneUpdate};
+    use crate::space_time::{
         RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState,
         RenderObjectTemporalState, RenderSpaceSpec, RenderSpatialCoverage, RenderTemporalSupport,
         RenderTimeInterval, RenderTimePoint,

@@ -645,7 +645,7 @@ impl RenderRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::render::space_time::RenderTimePoint;
+    use crate::space_time::RenderTimePoint;
 
     fn interval(start: f64, end: f64) -> RenderTimeInterval {
         RenderTimeInterval::new(

@@ -1128,16 +1128,16 @@ impl ValidatedRenderSceneUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::render::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-    use crate::plugins::render::participation::{
+    use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
+    use crate::participation::{
         RenderMaterialAssignment, RenderObjectParticipation,
     };
-    use crate::plugins::render::representation::{
+    use crate::representation::{
         RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RENDER_SURFACE_QUERY_PROTOCOL_REVISION,
         RenderFieldDistanceGuarantee, RenderFieldDistanceProtocolEvidence,
         RenderRefinementEvidence, RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
     };
-    use crate::plugins::render::space_time::{
+    use crate::space_time::{
         RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState,
         RenderObjectTemporalState, RenderSpaceSpec, RenderSpatialCoverage, RenderTemporalSupport,
         RenderTimeInterval, RenderTimePoint,

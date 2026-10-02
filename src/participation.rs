@@ -112,11 +112,11 @@ impl RenderObjectParticipation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::render::representation::{
+    use crate::representation::{
         RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderRefinementEvidence,
         RenderSurfaceProtocolEvidence,
     };
-    use crate::plugins::render::space_time::{RenderSpatialCoverage, RenderTemporalSupport};
+    use crate::space_time::{RenderSpatialCoverage, RenderTemporalSupport};
 
     fn representation(raw: u64) -> RenderRepresentationRecord {
         RenderRepresentationRecord::new(

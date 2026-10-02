@@ -764,8 +764,8 @@ fn canonical_unit_direction(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::render::space_time::{RenderTimeInterval, RenderTimePoint};
-    use crate::plugins::render::surface_input::RenderSurfaceSemanticInputRequirement;
+    use crate::space_time::{RenderTimeInterval, RenderTimePoint};
+    use crate::surface_input::RenderSurfaceSemanticInputRequirement;
 
     fn instant() -> RenderTimePoint {
         RenderTimePoint::from_seconds(0.0).expect("finite time")
@@ -805,7 +805,7 @@ mod tests {
 
     #[test]
     fn exact_analytic_surface_protocol_has_narrow_query_and_result() {
-        use crate::plugins::render::surface_result::RenderSurfaceQueryResult;
+        use crate::surface_result::RenderSurfaceQueryResult;
 
         let record = representation(
             1,

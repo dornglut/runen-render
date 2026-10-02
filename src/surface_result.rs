@@ -189,7 +189,7 @@ fn canonical_unit_geometric_normal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::render::space_time::{RenderSemanticValueError, RenderTimePoint};
+    use crate::space_time::{RenderSemanticValueError, RenderTimePoint};
 
     fn query() -> RenderSurfaceQuery {
         RenderSurfaceQuery::new(
