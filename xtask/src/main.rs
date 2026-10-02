@@ -38,7 +38,7 @@ const STALE_ACTIVE_IDENTITY: &[&str] = &[
     "Apache License 2.0",
 ];
 
-const FORBIDDEN_PRODUCTION_MARKERS: &[&str] = &[
+const FORBIDDEN_MAINTAINED_SOURCE_MARKERS: &[&str] = &[
     "RUNENWERK_",
     "crate::plugins::render",
     "crate::plugins::world",
@@ -214,7 +214,7 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
                 relative_path.display()
             )
         })?;
-        for marker in FORBIDDEN_PRODUCTION_MARKERS {
+        for marker in FORBIDDEN_MAINTAINED_SOURCE_MARKERS {
             if contents.contains(marker) {
                 return Err(format!(
                     "maintained source {} contains forbidden predecessor/product coupling: {marker}",
@@ -225,7 +225,9 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
     }
 
     if !root.join("tests/ordinary_public_api.rs").is_file() {
-        return Err("required ordinary public API proof is missing: tests/ordinary_public_api.rs".to_owned());
+        return Err(
+            "required ordinary public API proof is missing: tests/ordinary_public_api.rs".to_owned(),
+        );
     }
 
     let lib = read_file(root, "src/lib.rs")?;
@@ -256,6 +258,10 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
         "pub mod maintained_method",
         "pub mod ordinary",
         "pub mod shader_bridge",
+        "pub mod runtime",
+        "pub use runtime",
+        "pub mod proofs",
+        "pub use proofs",
     ] {
         if lib.contains(forbidden) {
             return Err(format!(
