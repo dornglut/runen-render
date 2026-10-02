@@ -12,17 +12,6 @@ use crate::admission::{
     RenderRepresentationAvailabilityState,
 };
 use crate::appearance::RenderDiffuseMaterial;
-use crate::runtime::admission::{
-    AdmittedDeterministicRender, admit_deterministic_render_with_semantic_inputs,
-};
-use crate::runtime::execution::{
-    RenderDeterministicRadianceCaptureRequestError, RenderDeterministicResultFormationError,
-    SubmittedDeterministicRender, submit_deterministic_render,
-    submit_deterministic_render_for_verified_result,
-};
-use crate::runtime::verification::{
-    submit_deterministic_render_for_verified_formation, verify_completed_deterministic_render,
-};
 use crate::participation::RenderMaterialAssignment;
 use crate::participation::RenderObjectParticipation;
 use crate::representation::{
@@ -34,6 +23,17 @@ use crate::request::{
     RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
     RenderPerspectiveObservation, RenderRequest, RenderRequestedOutput, RenderResultTopology,
     RenderSamplingSupport, RenderSemanticTolerance,
+};
+use crate::runtime::admission::{
+    AdmittedDeterministicRender, admit_deterministic_render_with_semantic_inputs,
+};
+use crate::runtime::execution::{
+    RenderDeterministicRadianceCaptureRequestError, RenderDeterministicResultFormationError,
+    SubmittedDeterministicRender, submit_deterministic_render,
+    submit_deterministic_render_for_verified_result,
+};
+use crate::runtime::verification::{
+    submit_deterministic_render_for_verified_formation, verify_completed_deterministic_render,
 };
 use crate::scene::{RenderObjectState, RenderSceneSnapshot, RenderSceneStore, RenderSceneUpdate};
 use crate::space_time::{

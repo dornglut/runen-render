@@ -3,11 +3,11 @@
 
 use super::*;
 use crate::admission::{RenderOutputBinding, RenderOutputDestination};
-use crate::runtime::admission::admit_deterministic_render_with_semantic_inputs;
 use crate::proofs::execution::{MaintainedExecutionFixture, maintained_fixture};
 use crate::request::{
     RenderRequest, RenderRequestedOutput, RenderResultTopology, RenderSemanticTolerance,
 };
+use crate::runtime::admission::admit_deterministic_render_with_semantic_inputs;
 use crate::space_time::{RenderAffineTransform3, RenderTemporalSupport};
 use crate::surface_input::RenderSurfaceSemanticInput;
 use runen_gpu::{
@@ -626,6 +626,9 @@ fn field_fixture(
     MaintainedExecutionFixture,
     Vec<RenderFieldSemanticInputBinding>,
 ) {
+    use crate::admission::{
+        RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState,
+    };
     use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
     use crate::field_input::RenderFieldSemanticInputRequirement;
     use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
@@ -634,9 +637,6 @@ fn field_fixture(
         RenderFieldDistanceProtocolEvidence, RenderRefinementEvidence, RenderRepresentationRecord,
     };
     use crate::scene::{RenderSceneStore, RenderSceneUpdate};
-    use crate::admission::{
-        RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState,
-    };
     use crate::space_time::RenderSpatialCoverage;
     let mut fixture = fixture((8, 8), 0.0, 0.0, 1);
     let state = fixture
