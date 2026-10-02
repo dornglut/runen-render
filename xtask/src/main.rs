@@ -141,9 +141,7 @@ fn validate_product_identity(root: &Path) -> Result<(), String> {
     }
 
     if manifest.contains("unsafe_code = \"forbid\"") {
-        return Err(
-            "Cargo.toml contains the unaccepted template unsafe-code policy".to_owned(),
-        );
+        return Err("Cargo.toml contains the unaccepted template unsafe-code policy".to_owned());
     }
 
     let lockfile = read_file(root, "Cargo.lock")?;
