@@ -109,8 +109,8 @@ runenwerk#1129
 
 The accepted bootstrap transferred zero RunenRender implementation source.
 
-The current unmerged RX candidate transfers the frozen production/conformance
-boundary and uses these exact sibling revisions:
+The RX successor transfer governed by `runen-render#4` uses the frozen
+production/conformance boundary and these exact sibling revisions:
 
 ```text
 runen-gpu:
@@ -144,11 +144,15 @@ The 18 adapted files are fully classified:
 - owner-correct RunenShader ordinary error projection plus deletion of the
   predecessor camera artifact side channel:
   `ordinary.rs`;
-- retained RunenShader artifact -> RunenGPU admission bridge, deletion of the
-  predecessor camera artifact side channel, test-only import relocation, and
-  canonical formatting:
+- retained RunenShader artifact -> RunenGPU admission bridge, successful
+  process-lifetime program retention shared by one-shot and stateful execution,
+  deletion of the predecessor camera artifact side channel, test-only import
+  relocation, and canonical formatting:
   `deterministic_execution.rs`.
 
 The four maintained WGSL blobs remain byte-identical to the accepted R8 freeze.
-Runenwerk remains sole accepted RunenRender semantic authority until the
-successor candidate is accepted on `runen-render/main` under ADR 0008.
+
+Authority follows ADR 0008 rather than physical copy state: Runenwerk is sole
+accepted RunenRender semantic authority before successor acceptance; the exact
+accepted `runen-render/main` successor revision becomes sole semantic authority
+at acceptance and triggers the deletion-bound Runenwerk cutover.

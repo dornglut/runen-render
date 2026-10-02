@@ -48,11 +48,13 @@ is part of this architecture.
 
 ## Authority transfer
 
-During the current unmerged successor candidate, Runenwerk remains the sole
-accepted RunenRender semantic source authority even though the candidate source
-is physically present here.
+Physical presence of successor source does not determine semantic authority.
+Before successor acceptance, Runenwerk remains the sole accepted RunenRender
+semantic source authority.
 
 Under ADR 0008, accepted successor default-branch publication switches semantic
 authority to RunenRender. The transferred Runenwerk predecessor boundary freezes
 at that moment and is deletion-bound during the exact-revision downstream
-cutover.
+cutover. After the switch, reusable-contract corrections are accepted here and
+Runenwerk repins; the frozen predecessor is not patched as an alternate
+implementation.

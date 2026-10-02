@@ -6,14 +6,19 @@ composition of RunenShader artifacts into RunenGPU program execution.
 
 ## Maturity
 
-This repository is in the RX standalone successor-candidate phase. The current
-transfer branch physically contains the frozen RunenRender implementation and
-standalone conformance candidate, but that physical copy is **not** accepted
-semantic authority yet.
+This repository contains the RX standalone successor implementation and its
+standalone conformance authority. Engineering ADR 0008 defines the source-
+authority transition:
 
-Runenwerk remains the sole accepted RunenRender semantic source authority until
-the fully validated successor candidate is accepted on `runen-render/main`
-under Engineering ADR 0008. That accepted merge is the authority switch.
+- before the validated successor is accepted on `runen-render/main`, Runenwerk
+  remains the sole accepted RunenRender semantic source authority;
+- the exact accepted successor revision on `runen-render/main` becomes the
+  sole RunenRender semantic source authority;
+- ordinary standalone feature evolution remains blocked until Runenwerk #1134
+  deletes the predecessor semantic/method/WGSL authority.
+
+The accepted switch revision and downstream retirement status are recorded by
+the RX authority issues rather than inferred from a working branch.
 
 ## Boundary
 

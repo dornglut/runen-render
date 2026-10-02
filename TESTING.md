@@ -65,7 +65,9 @@ head must additionally establish through tests/cold review:
 
 - package-level ordinary public conformance;
 - exact three-effective-program RunenShader artifact -> RunenGPU admission;
-- renderer-lifetime retained program admission rather than per-frame compilation;
+- successful maintained-program compilation/admission retained across both
+  one-shot and stateful renderer resource-cache lifetimes rather than per-frame
+  compilation;
 - headless/offscreen maintained execution;
 - same-submission semantic result formation and requested tolerance;
 - ordinary submission with no implicit CPU readback;
