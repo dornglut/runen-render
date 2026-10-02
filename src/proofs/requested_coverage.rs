@@ -2,6 +2,7 @@
 //! only here, after the ordinary producer fragment, and correlated to that same completed submission.
 
 use super::*;
+use super::prepare::build_object_identity_decoder;
 use crate::admission::{RenderOutputBinding, RenderOutputDestination};
 use crate::proofs::execution::{MaintainedExecutionFixture, maintained_fixture};
 use crate::request::{

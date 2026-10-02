@@ -163,9 +163,7 @@ use state::{
     temporal_observation_compatibility,
 };
 #[cfg(test)]
-use state::{
-    DeterministicTemporalHistory, DeterministicTemporalHistoryUse, DeterministicTemporalStorage,
-};
+use state::DeterministicTemporalStorage;
 use submission::submit_prepared_deterministic_render;
 
 #[cfg(test)]
