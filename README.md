@@ -6,21 +6,27 @@ composition of RunenShader artifacts into RunenGPU program execution.
 
 ## Maturity
 
-This repository is in RX bootstrap and extraction preparation. The repository
-exists and owns its package/profile/validation surface, but it does **not** yet
-contain the transferred RunenRender implementation.
+This repository contains the RX standalone successor implementation and its
+standalone conformance authority. Engineering ADR 0008 defines the source-
+authority transition:
 
-Runenwerk remains the sole RunenRender semantic source authority until a later
-validated successor candidate is accepted on `runen-render/main` under
-Engineering ADR 0008.
+- before the validated successor is accepted on `runen-render/main`, Runenwerk
+  remains the sole accepted RunenRender semantic source authority;
+- the exact accepted successor revision on `runen-render/main` becomes the
+  sole RunenRender semantic source authority;
+- ordinary standalone feature evolution remains blocked until Runenwerk #1134
+  deletes the predecessor semantic/method/WGSL authority.
+
+The accepted switch revision and downstream retirement status are recorded by
+the RX authority issues rather than inferred from a working branch.
 
 ## Boundary
 
-RunenRender will own reusable renderer semantics, semantic scene/request/
-representation/input contracts, maintained renderer execution, temporal/camera
-rendering evidence, semantic result formation, and the explicit renderer-owned
-bridge from accepted RunenShader artifacts into public RunenGPU program
-admission.
+The standalone boundary assigns RunenRender ownership of reusable renderer
+semantics, semantic scene/request/representation/input contracts, maintained
+renderer execution, temporal/camera rendering evidence, semantic result
+formation, and the explicit renderer-owned bridge from accepted RunenShader
+artifacts into public RunenGPU program admission.
 
 RunenRender does not own:
 
@@ -39,21 +45,26 @@ package: runen-render
 crate: runen_render
 version: 0.1.0
 edition: 2024
-MSRV: 1.93.0
+MSRV: 1.97.1
 publish: false
 ```
 
-The initial MSRV is the supported repository floor. It does not claim that the
-future transferred source cannot compile on an older compiler; a lower support
-floor requires separate evidence and acceptance.
+The current RX MSRV is the supported repository floor. Source-free bootstrap
+initially selected Rust 1.93.0, but executable transfer validation proved that
+the accepted RunenShader dependency graph requires Rust 1.97.1 through its exact
+WESL 0.5.0 graph. RX therefore establishes the floor at 1.97.1 rather than
+advertising an unsupported lower compiler.
 
 ## Validation
 
-`cargo validate` is the single repository-owned merge-readiness command. At
-bootstrap it proves repository/package identity and profile integrity rather
-than renderer implementation conformance.
+`cargo validate` is the canonical repository-owned baseline. It now proves
+package/profile integrity, exact sibling dependency policy, public-surface
+guards, production-boundary residue, compile/test/Clippy/rustdoc/MSRV, and
+clean-tree invariants.
 
-See [TESTING.md](TESTING.md).
+Pull-request and accepted-main CI additionally runs a dedicated headless Vulkan
+conformance lane with GPU availability required through Mesa Lavapipe. See
+[TESTING.md](TESTING.md).
 
 ## Authority and policy
 

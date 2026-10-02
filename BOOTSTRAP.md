@@ -40,7 +40,7 @@ package: runen-render
 crate: runen_render
 version: 0.1.0
 edition: 2024
-MSRV: 1.93.0
+MSRV: 1.97.1
 publish: false
 features: default=[]
 license: GPL-3.0-only
@@ -52,9 +52,13 @@ contribution: owner-only
 Version `0.1.0` represents the first standalone consumer-facing RunenRender
 framework contract rather than a placeholder identity.
 
-Rust `1.93.0` is the initial supported MSRV because no lower RunenRender support
-floor was accepted or proven during R8. A later lower MSRV requires independent
-evidence; bootstrap does not infer one from sibling packages.
+Source-free bootstrap initially selected Rust `1.93.0` because no lower
+RunenRender support floor was accepted or proven during R8. That provisional
+choice was superseded before semantic authority acceptance: exact-head RX
+validation with the accepted RunenShader revision proved that its exact
+`wesl 0.5.0` dependency graph requires Rust `1.97.1`. RX therefore establishes
+`1.97.1` as the supported MSRV. A future lower floor
+requires an accepted sibling/dependency change plus direct validation evidence.
 
 The generic template `unsafe_code = "forbid"` lint is intentionally removed.
 R8 did not accept a new blanket RunenRender unsafe-code policy, and extraction
@@ -62,7 +66,7 @@ must not silently add source constraints.
 
 ## Repository classification
 
-The intended accepted repository posture is:
+The accepted bootstrap repository posture is:
 
 ```text
 visibility: public
@@ -74,13 +78,20 @@ lifecycle: active
 contribution: owner-only
 ```
 
-Native settings/protection/security are repository administration, not semantic
-source authority. They must be reconciled before bootstrap acceptance.
+Native settings/protection were reconciled before bootstrap acceptance. Security
+controls remain native platform administration and must not be inferred from
+source files.
 
-## Future extraction provenance
+Accepted source-free bootstrap main:
 
-The separately authorized semantic transfer is governed by `runen-render#1`
-from frozen Runenwerk R8:
+```text
+8c1d72b00e50d5e2bc14fcbf5ffd909dfce4c674
+```
+
+## RX transfer provenance
+
+The separately authorized successor transfer is governed by `runen-render#1`
+and `runen-render#4` from frozen Runenwerk R8:
 
 ```text
 predecessor:
@@ -96,6 +107,52 @@ transfer authority:
 runenwerk#1129
 ```
 
-This bootstrap transfers zero RunenRender implementation source and adds no
-RunenGPU or RunenShader product dependency. Runenwerk remains sole RunenRender
-semantic authority until the later accepted successor merge under ADR 0008.
+The accepted bootstrap transferred zero RunenRender implementation source.
+
+The RX successor transfer governed by `runen-render#4` uses the frozen
+production/conformance boundary and these exact sibling revisions:
+
+```text
+runen-gpu:
+789b430fdefeda89bfe59de86d548618b8f8ab9a
+
+runen-shader:
+406f8165da92caa2d296b3a2f774ba534279870d
+```
+
+Current full-file blob census against the frozen 32-file R8 production set:
+
+```text
+byte-identical full files: 14
+classified adaptations:   18
+total:                     32
+```
+
+The 18 adapted files are fully classified:
+
+- test-import relocation only:
+  `admission.rs`, `derived_state.rs`, `deterministic_admission.rs`,
+  `deterministic_verification.rs`, `field_input.rs`, `method.rs`,
+  `output_result.rs`, `participation.rs`, `representation.rs`,
+  `request.rs`, `semantic_plan.rs`, and `surface_result.rs`;
+- standalone proof-only scoping in addition to test-import relocation:
+  `derived_transform.rs` and `scene/mod.rs`;
+- standalone proof-only scoping:
+  `deterministic_verification/numeric.rs`;
+- monolith-relative visibility normalization:
+  `deterministic_verification/observation.rs`;
+- owner-correct RunenShader ordinary error projection plus deletion of the
+  predecessor camera artifact side channel:
+  `ordinary.rs`;
+- retained RunenShader artifact -> RunenGPU admission bridge, successful
+  process-lifetime program retention shared by one-shot and stateful execution,
+  deletion of the predecessor camera artifact side channel, test-only import
+  relocation, and canonical formatting:
+  `deterministic_execution.rs`.
+
+The four maintained WGSL blobs remain byte-identical to the accepted R8 freeze.
+
+Authority follows ADR 0008 rather than physical copy state: Runenwerk is sole
+accepted RunenRender semantic authority before successor acceptance; the exact
+accepted `runen-render/main` successor revision becomes sole semantic authority
+at acceptance and triggers the deletion-bound Runenwerk cutover.

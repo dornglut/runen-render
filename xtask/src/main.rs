@@ -38,6 +38,52 @@ const STALE_ACTIVE_IDENTITY: &[&str] = &[
     "Apache License 2.0",
 ];
 
+const TRANSFER_PRODUCTION_FILES: &[&str] = &[
+    "src/admission.rs",
+    "src/appearance.rs",
+    "src/derived_state.rs",
+    "src/derived_transform.rs",
+    "src/deterministic_admission.rs",
+    "src/deterministic_capture.rs",
+    "src/deterministic_carrier.rs",
+    "src/deterministic_execution.rs",
+    "src/deterministic_verification.rs",
+    "src/deterministic_verification/numeric.rs",
+    "src/deterministic_verification/observation.rs",
+    "src/deterministic_verification/semantic.rs",
+    "src/field_input.rs",
+    "src/lib.rs",
+    "src/lowering.rs",
+    "src/maintained_method.rs",
+    "src/method.rs",
+    "src/ordinary.rs",
+    "src/output_result.rs",
+    "src/participation.rs",
+    "src/render_result.rs",
+    "src/representation.rs",
+    "src/request.rs",
+    "src/scene/mod.rs",
+    "src/semantic_binding.rs",
+    "src/semantic_plan.rs",
+    "src/shader_bridge.rs",
+    "src/space_time.rs",
+    "src/surface_input.rs",
+    "src/surface_result.rs",
+];
+
+const FORBIDDEN_PRODUCTION_MARKERS: &[&str] = &[
+    "RUNENWERK_",
+    "crate::plugins::render",
+    "crate::plugins::world",
+    "crate::plugins::ui",
+    "bevy_",
+    "winit::",
+    "std::env",
+    "std::fs",
+    "serde_json",
+    "wgpu::",
+];
+
 fn main() {
     let result = match env::args().nth(1).as_deref() {
         Some("validate") => validate(),
@@ -58,6 +104,7 @@ fn validate() -> Result<(), String> {
 
     validate_required_files(&root)?;
     validate_product_identity(&root)?;
+    validate_transfer_contract(&root)?;
 
     let initial_state = git_status(&root)?;
     if !initial_state.is_empty() {
@@ -91,7 +138,7 @@ fn validate() -> Result<(), String> {
         &root,
         "cargo",
         &[
-            "+1.93.0",
+            "+1.97.1",
             "check",
             "--workspace",
             "--all-targets",
@@ -128,7 +175,7 @@ fn validate_product_identity(root: &Path) -> Result<(), String> {
         "name = \"runen-render\"",
         "version = \"0.1.0\"",
         "edition = \"2024\"",
-        "rust-version = \"1.93.0\"",
+        "rust-version = \"1.97.1\"",
         "license.workspace = true",
         "repository = \"https://github.com/dornglut/runen-render\"",
         "description = \"Reusable semantic rendering and maintained image-formation framework\"",
@@ -172,6 +219,116 @@ fn validate_product_identity(root: &Path) -> Result<(), String> {
                 ));
             }
         }
+    }
+
+    Ok(())
+}
+
+fn validate_transfer_contract(root: &Path) -> Result<(), String> {
+    let manifest = read_file(root, "Cargo.toml")?;
+    for required in [
+        "runen-gpu = { git = \"https://github.com/dornglut/runen-gpu\", rev = \"789b430fdefeda89bfe59de86d548618b8f8ab9a\" }",
+        "runen-shader = { git = \"https://github.com/dornglut/runen-shader\", rev = \"406f8165da92caa2d296b3a2f774ba534279870d\" }",
+    ] {
+        require_contains("Cargo.toml", &manifest, required)?;
+    }
+    for moving in ["branch =", "tag ="] {
+        if manifest.contains(moving) {
+            return Err(format!(
+                "Cargo.toml contains moving sibling dependency authority: {moving}"
+            ));
+        }
+    }
+
+    for relative_path in TRANSFER_PRODUCTION_FILES {
+        let path = root.join(relative_path);
+        if !path.is_file() {
+            return Err(format!(
+                "required transferred production file is missing: {relative_path}"
+            ));
+        }
+        let contents = read_file(root, relative_path)?;
+        for marker in FORBIDDEN_PRODUCTION_MARKERS {
+            if contents.contains(marker) {
+                return Err(format!(
+                    "production source {relative_path} contains forbidden predecessor/product coupling: {marker}"
+                ));
+            }
+        }
+    }
+
+    for relative_path in [
+        "src/deterministic_scene_query.wgsl",
+        "src/deterministic_execution.wgsl",
+        "src/deterministic_temporal_reconstruction.wgsl",
+        "src/deterministic_camera_reprojection.wgsl",
+        "tests/ordinary_public_api.rs",
+    ] {
+        if !root.join(relative_path).is_file() {
+            return Err(format!(
+                "required RX authority file is missing: {relative_path}"
+            ));
+        }
+    }
+
+    let lib = read_file(root, "src/lib.rs")?;
+    for required in [
+        "pub mod admission;",
+        "pub mod appearance;",
+        "pub mod derived_state;",
+        "pub mod field_input;",
+        "pub mod lowering;",
+        "pub mod method;",
+        "pub mod output_result;",
+        "pub mod participation;",
+        "pub mod representation;",
+        "pub mod request;",
+        "pub mod scene;",
+        "pub mod semantic_plan;",
+        "pub mod space_time;",
+        "pub mod surface_input;",
+        "pub mod surface_result;",
+        "mod deterministic_execution;",
+        "mod ordinary;",
+        "mod shader_bridge;",
+        "pub use ordinary::*;",
+    ] {
+        require_contains("src/lib.rs", &lib, required)?;
+    }
+    for forbidden in [
+        "pub mod deterministic_",
+        "pub use deterministic_",
+        "pub mod maintained_method",
+        "pub mod ordinary",
+        "pub mod shader_bridge",
+    ] {
+        if lib.contains(forbidden) {
+            return Err(format!(
+                "src/lib.rs leaks maintained implementation vocabulary: {forbidden}"
+            ));
+        }
+    }
+
+    let public_consumer = read_file(root, "tests/ordinary_public_api.rs")?;
+    if public_consumer.contains("Deterministic") {
+        return Err(
+            "ordinary public package consumer references deterministic implementation vocabulary"
+                .to_owned(),
+        );
+    }
+
+    let workflow = read_file(root, ".github/workflows/validation.yml")?;
+    for required in [
+        "name: RunenRender Vulkan conformance",
+        "RUNEN_RENDER_REQUIRE_GPU: '1'",
+        "mesa-vulkan-drivers",
+        "WGPU_BACKEND=vulkan",
+        "cargo +stable test -p runen-render",
+        "--skip camera_history_proof",
+        "--lib camera_history_proof",
+        "--test ordinary_public_api",
+    ] {
+        require_contains(".github/workflows/validation.yml", &workflow, required)?;
     }
 
     Ok(())
