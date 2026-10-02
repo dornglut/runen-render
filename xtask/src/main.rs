@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env, fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -45,11 +46,11 @@ const FORBIDDEN_MAINTAINED_SOURCE_MARKERS: &[&str] = &[
     "crate::plugins::ui",
     "bevy_",
     "winit::",
-    "std::env",
-    "std::fs",
     "serde_json",
     "wgpu::",
 ];
+
+const FORBIDDEN_PRODUCTION_RUST_MARKERS: &[&str] = &["std::env", "std::fs"];
 
 fn main() {
     let result = match env::args().nth(1).as_deref() {
@@ -224,6 +225,23 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
         }
     }
 
+    for relative_path in production_rust_source_files(root)? {
+        let contents = fs::read_to_string(root.join(&relative_path)).map_err(|error| {
+            format!(
+                "failed to read production Rust source {}: {error}",
+                relative_path.display()
+            )
+        })?;
+        for marker in FORBIDDEN_PRODUCTION_RUST_MARKERS {
+            if contents.contains(marker) {
+                return Err(format!(
+                    "production Rust source {} contains forbidden product coupling: {marker}",
+                    relative_path.display()
+                ));
+            }
+        }
+    }
+
     if !root.join("tests/ordinary_public_api.rs").is_file() {
         return Err(
             "required ordinary public API proof is missing: tests/ordinary_public_api.rs".to_owned(),
@@ -332,6 +350,140 @@ fn maintained_source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 
     files.sort();
     Ok(files)
+}
+
+fn production_rust_source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut pending = vec![PathBuf::from("src/lib.rs")];
+    let mut visited = BTreeSet::new();
+
+    while let Some(relative_path) = pending.pop() {
+        if !visited.insert(relative_path.clone()) {
+            continue;
+        }
+
+        let contents = fs::read_to_string(root.join(&relative_path)).map_err(|error| {
+            format!(
+                "failed to read production Rust source {}: {error}",
+                relative_path.display()
+            )
+        })?;
+        let lines = contents.lines().collect::<Vec<_>>();
+
+        for (line_index, line) in lines.iter().enumerate() {
+            let Some(module_name) = external_module_name(line) else {
+                continue;
+            };
+
+            let attributes = preceding_attributes(&lines, line_index);
+            if attributes
+                .iter()
+                .any(|attribute| attribute.replace(' ', "") == "#[cfg(test)]")
+            {
+                continue;
+            }
+
+            let explicit_path = attributes
+                .iter()
+                .find_map(|attribute| path_attribute_value(attribute));
+            let child = if let Some(explicit_path) = explicit_path {
+                relative_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .join(explicit_path)
+            } else {
+                resolve_module_path(root, &relative_path, module_name)?
+            };
+            pending.push(child);
+        }
+    }
+
+    Ok(visited.into_iter().collect())
+}
+
+fn external_module_name(line: &str) -> Option<&str> {
+    let line = line.trim();
+    if !line.ends_with(';') || !line.contains("mod ") {
+        return None;
+    }
+
+    let tokens = line
+        .trim_end_matches(';')
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    let module_index = tokens.iter().position(|token| *token == "mod")?;
+    let name = *tokens.get(module_index + 1)?;
+    name.chars()
+        .all(|character| character == '_' || character.is_ascii_alphanumeric())
+        .then_some(name)
+}
+
+fn preceding_attributes<'a>(lines: &'a [&'a str], line_index: usize) -> Vec<&'a str> {
+    let mut attributes = Vec::new();
+    let mut index = line_index;
+    while index > 0 {
+        let previous = lines[index - 1].trim();
+        if previous.starts_with("#[") && previous.ends_with(']') {
+            attributes.push(previous);
+            index -= 1;
+        } else {
+            break;
+        }
+    }
+    attributes
+}
+
+fn path_attribute_value(attribute: &str) -> Option<&str> {
+    let attribute = attribute.trim();
+    let body = attribute
+        .strip_prefix("#[path")?
+        .strip_suffix(']')?
+        .trim()
+        .strip_prefix('=')?
+        .trim();
+    body.strip_prefix('"')?.strip_suffix('"')
+}
+
+fn resolve_module_path(
+    root: &Path,
+    parent_relative_path: &Path,
+    module_name: &str,
+) -> Result<PathBuf, String> {
+    let parent_file_name = parent_relative_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "production module path is not valid UTF-8: {}",
+                parent_relative_path.display()
+            )
+        })?;
+    let parent_directory = parent_relative_path
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let module_directory = if matches!(parent_file_name, "lib.rs" | "main.rs" | "mod.rs") {
+        parent_directory.to_path_buf()
+    } else {
+        let stem = parent_relative_path
+            .file_stem()
+            .expect("Rust source file must have a stem");
+        parent_directory.join(stem)
+    };
+
+    let flat = module_directory.join(format!("{module_name}.rs"));
+    let nested = module_directory.join(module_name).join("mod.rs");
+    match (root.join(&flat).is_file(), root.join(&nested).is_file()) {
+        (true, false) => Ok(flat),
+        (false, true) => Ok(nested),
+        (true, true) => Err(format!(
+            "production module {module_name} has both {} and {}",
+            flat.display(),
+            nested.display()
+        )),
+        (false, false) => Err(format!(
+            "production module {module_name} declared by {} has no source file",
+            parent_relative_path.display()
+        )),
+    }
 }
 
 fn read_file(root: &Path, relative_path: &str) -> Result<String, String> {
