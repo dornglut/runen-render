@@ -62,7 +62,7 @@ must not silently add source constraints.
 
 ## Repository classification
 
-The intended accepted repository posture is:
+The accepted bootstrap repository posture is:
 
 ```text
 visibility: public
@@ -74,13 +74,20 @@ lifecycle: active
 contribution: owner-only
 ```
 
-Native settings/protection/security are repository administration, not semantic
-source authority. They must be reconciled before bootstrap acceptance.
+Native settings/protection were reconciled before bootstrap acceptance. Security
+controls remain native platform administration and must not be inferred from
+source files.
 
-## Future extraction provenance
+Accepted source-free bootstrap main:
 
-The separately authorized semantic transfer is governed by `runen-render#1`
-from frozen Runenwerk R8:
+```text
+8c1d72b00e50d5e2bc14fcbf5ffd909dfce4c674
+```
+
+## RX transfer provenance
+
+The separately authorized successor transfer is governed by `runen-render#1`
+and `runen-render#4` from frozen Runenwerk R8:
 
 ```text
 predecessor:
@@ -96,6 +103,27 @@ transfer authority:
 runenwerk#1129
 ```
 
-This bootstrap transfers zero RunenRender implementation source and adds no
-RunenGPU or RunenShader product dependency. Runenwerk remains sole RunenRender
-semantic authority until the later accepted successor merge under ADR 0008.
+The accepted bootstrap transferred zero RunenRender implementation source.
+
+The current unmerged RX candidate transfers the frozen production/conformance
+boundary and uses these exact sibling revisions:
+
+```text
+runen-gpu:
+789b430fdefeda89bfe59de86d548618b8f8ab9a
+
+runen-shader:
+406f8165da92caa2d296b3a2f774ba534279870d
+```
+
+Of the 32 frozen production files, 30 remain byte-identical in the initial
+standalone candidate. The two recorded adaptations are:
+- `deterministic_verification/observation.rs`: normalize monolith-relative
+  visibility to owner-local standalone visibility;
+- `deterministic_execution.rs`: replace proof-era static WGSL admission with
+  the retained RunenRender-owned RunenShader artifact -> RunenGPU admission
+  bridge and normalize owner-local visibility.
+
+The four maintained WGSL blobs remain byte-identical to the accepted R8 freeze.
+Runenwerk remains sole accepted RunenRender semantic authority until the
+successor candidate is accepted on `runen-render/main` under ADR 0008.

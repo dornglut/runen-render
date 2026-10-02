@@ -37,9 +37,9 @@ filesystem/JSON/media artifact policy.
 
 ## Public versus private surface
 
-The later semantic transfer keeps ordinary/public renderer vocabulary separate
+The RX successor candidate keeps ordinary/public renderer vocabulary separate
 from maintained implementation vocabulary. Proof-era `Deterministic*` types
-and methods are private implementation details unless a separately accepted
+and methods remain private implementation details unless a separately accepted
 public-contract change proves otherwise.
 
 No compatibility facade, mirror, source include, Git submodule, moving branch
@@ -48,8 +48,9 @@ is part of this architecture.
 
 ## Authority transfer
 
-During bootstrap and an unmerged successor candidate, Runenwerk remains the sole
-RunenRender semantic source authority.
+During the current unmerged successor candidate, Runenwerk remains the sole
+accepted RunenRender semantic source authority even though the candidate source
+is physically present here.
 
 Under ADR 0008, accepted successor default-branch publication switches semantic
 authority to RunenRender. The transferred Runenwerk predecessor boundary freezes

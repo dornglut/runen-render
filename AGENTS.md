@@ -9,7 +9,8 @@ revisions before editing.
 
 - Keep exactly one semantic source authority per concern.
 - Before successor acceptance, Runenwerk remains RunenRender semantic authority.
-- Do not transfer implementation under the repository-bootstrap issue.
+- Repository bootstrap #2 is complete. Transfer implementation only under
+  successor transfer authority #4 and parent acceptance authority #1.
 - Preserve the accepted ordinary/public surface; do not expose proof-era
   `Deterministic*` vocabulary by physical-transfer accident.
 - RunenRender owns the renderer-side RunenShader-artifact -> RunenGPU-program
@@ -50,6 +51,7 @@ cargo validate
 ```
 
 CI must validate the exact reviewed feature head through the repository-owned
-thin immutable caller. Do not claim renderer, native/Vulkan, shader-artifact,
-RunenGPU, or downstream evidence until the relevant transfer work actually runs
-those proofs.
+baseline and dedicated Vulkan conformance job. Do not claim shader-artifact,
+RunenGPU, semantic-result, or downstream evidence until the relevant transfer
+work actually runs those proofs. Runenwerk native-window/Present/Render-Lab
+evidence stays downstream and must not be recreated here as product policy.

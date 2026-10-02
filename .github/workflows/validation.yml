@@ -20,3 +20,71 @@ jobs:
   validate:
     name: Validate RunenRender
     uses: dornglut/github-workflows/.github/workflows/reusable-rust-cargo-validate.yml@688f274ec1fdd19acba9bf3577b26b4b7b7f4037
+
+  runenrender-vulkan-conformance:
+    name: RunenRender Vulkan conformance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Resolve expected revision
+        id: revision
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SHA: ${{ github.sha }}
+          PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request) expected_revision="$PULL_REQUEST_HEAD_SHA" ;;
+            push|workflow_dispatch) expected_revision="$EVENT_SHA" ;;
+            *) echo "Unsupported event: $EVENT_NAME" >&2; exit 1 ;;
+          esac
+          test -n "$expected_revision"
+          echo "expected_revision=$expected_revision" >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ steps.revision.outputs.expected_revision }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prove checked-out revision
+        env:
+          EXPECTED_REVISION: ${{ steps.revision.outputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          actual_revision="$(git rev-parse HEAD)"
+          echo "Expected revision: $EXPECTED_REVISION"
+          echo "Actual revision:   $actual_revision"
+          test "$actual_revision" = "$EXPECTED_REVISION"
+
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Install Mesa Vulkan fallback
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes mesa-vulkan-drivers vulkan-tools
+          icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$icd"
+          echo "Lavapipe ICD: $icd"
+          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          echo "WGPU_BACKEND=vulkan" >> "$GITHUB_ENV"
+          echo "XDG_RUNTIME_DIR=${RUNNER_TEMP}/runenrender-vulkan-xdg" >> "$GITHUB_ENV"
+          mkdir -p "${RUNNER_TEMP}/runenrender-vulkan-xdg"
+          chmod 700 "${RUNNER_TEMP}/runenrender-vulkan-xdg"
+
+      - name: Prove Vulkan software adapter
+        run: vulkaninfo --summary
+
+      - name: Run standalone RunenRender GPU conformance
+        env:
+          RUST_BACKTRACE: '1'
+          RUNEN_RENDER_REQUIRE_GPU: '1'
+        run: |
+          set -euo pipefail
+          cargo +stable test -p runen-render --locked -- --nocapture --test-threads=1

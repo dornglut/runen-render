@@ -6,13 +6,14 @@ composition of RunenShader artifacts into RunenGPU program execution.
 
 ## Maturity
 
-This repository is in RX bootstrap and extraction preparation. The repository
-exists and owns its package/profile/validation surface, but it does **not** yet
-contain the transferred RunenRender implementation.
+This repository is in the RX standalone successor-candidate phase. The current
+transfer branch physically contains the frozen RunenRender implementation and
+standalone conformance candidate, but that physical copy is **not** accepted
+semantic authority yet.
 
-Runenwerk remains the sole RunenRender semantic source authority until a later
-validated successor candidate is accepted on `runen-render/main` under
-Engineering ADR 0008.
+Runenwerk remains the sole accepted RunenRender semantic source authority until
+the fully validated successor candidate is accepted on `runen-render/main`
+under Engineering ADR 0008. That accepted merge is the authority switch.
 
 ## Boundary
 
@@ -49,11 +50,14 @@ floor requires separate evidence and acceptance.
 
 ## Validation
 
-`cargo validate` is the single repository-owned merge-readiness command. At
-bootstrap it proves repository/package identity and profile integrity rather
-than renderer implementation conformance.
+`cargo validate` is the canonical repository-owned baseline. It now proves
+package/profile integrity, exact sibling dependency policy, public-surface
+guards, production-boundary residue, compile/test/Clippy/rustdoc/MSRV, and
+clean-tree invariants.
 
-See [TESTING.md](TESTING.md).
+Pull-request and accepted-main CI additionally runs a dedicated headless Vulkan
+conformance lane with GPU availability required through Mesa Lavapipe. See
+[TESTING.md](TESTING.md).
 
 ## Authority and policy
 
