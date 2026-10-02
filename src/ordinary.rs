@@ -19,8 +19,7 @@ use super::deterministic_capture::{
 pub use super::deterministic_execution::RenderObjectIdentityDecoder;
 use super::deterministic_execution::{
     DeterministicResourceCache, PreparedDeterministicRadianceOutput, PreparedDeterministicRender,
-    RenderCameraDiagnosticRequest, RenderCameraDiagnosticSource, RenderDeterministicExecutionError,
-    RenderDeterministicResultFormationError,
+    RenderDeterministicExecutionError, RenderDeterministicResultFormationError,
     RenderTemporalExecutionEvidence as DeterministicTemporalExecutionEvidence,
     SubmittedDeterministicRender, prepare_deterministic_render,
     prepare_deterministic_render_with_cache_in_scope_and_evaluation, submit_deterministic_render,
@@ -922,17 +921,6 @@ impl RenderExecutionState {
         scope: RenderExecutionScope,
         evaluation: Option<RenderEvaluationSelection>,
     ) -> Result<PreparedRender, RenderExecutionError> {
-        self.prepare_internal(admitted, context, scope, evaluation, None)
-    }
-
-    fn prepare_internal(
-        &mut self,
-        admitted: AdmittedRender,
-        context: &GpuContext,
-        scope: RenderExecutionScope,
-        evaluation: Option<RenderEvaluationSelection>,
-        camera_diagnostic: Option<RenderCameraDiagnosticRequest>,
-    ) -> Result<PreparedRender, RenderExecutionError> {
         let finite_evaluation =
             evaluation.map(|selection| (selection.output_index(), selection.extent()));
         prepare_deterministic_render_with_cache_in_scope_and_evaluation(
@@ -942,37 +930,9 @@ impl RenderExecutionState {
             scope.raw(),
             finite_evaluation,
             false,
-            camera_diagnostic,
         )
         .map(|inner| PreparedRender { inner })
         .map_err(|inner| RenderExecutionError { inner })
-    }
-
-    pub(crate) fn prepare_with_camera_diagnostic(
-        &mut self,
-        admitted: AdmittedRender,
-        context: &GpuContext,
-        scope: RenderExecutionScope,
-        evaluation: Option<RenderEvaluationSelection>,
-        request: RenderCameraDiagnosticRequest,
-    ) -> Result<PreparedRender, RenderExecutionError> {
-        self.prepare_internal(admitted, context, scope, evaluation, Some(request))
-    }
-
-    pub(crate) fn take_camera_diagnostic_source(
-        &mut self,
-        scope: RenderExecutionScope,
-    ) -> Option<RenderCameraDiagnosticSource> {
-        self.inner.take_camera_diagnostic_source(scope.raw())
-    }
-
-    pub(crate) fn retain_auxiliary_submission(
-        &mut self,
-        scope: RenderExecutionScope,
-        submission: &GpuSubmission,
-    ) {
-        self.inner
-            .retain_auxiliary_producer_submission(scope.raw(), submission);
     }
 }
 

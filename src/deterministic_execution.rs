@@ -43,7 +43,7 @@ use super::surface_input::{
     RenderSurfaceSemanticInputView,
 };
 use runen_gpu::{
-    GpuAccessError, GpuAdmittedProgramSource, GpuBufferDescriptor, GpuBufferHandle,
+    GpuAdmittedProgramSource, GpuBufferDescriptor, GpuBufferHandle,
     GpuBufferInitialization, GpuBufferRange, GpuBufferRegion, GpuBufferTextureLayout,
     GpuBufferUsage, GpuClearOperation, GpuComputeOperation, GpuComputePipelineDescriptor,
     GpuContext, GpuContextAffinity, GpuCopyOperation, GpuDispatchIntent, GpuDispatchSize,
@@ -93,80 +93,6 @@ const CAMERA_DIAGNOSTIC_WORDS: u64 = 32 * 32;
 const MAINTAINED_EVALUATOR_REVISION: u64 = 3;
 const CAMERA_DEPTH_ABSOLUTE_EPSILON: f32 = 0.001;
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RenderCameraDiagnosticRequest {
-    current_only_control: bool,
-}
-
-impl RenderCameraDiagnosticRequest {
-    pub(crate) const fn new(current_only_control: bool) -> Self {
-        Self {
-            current_only_control,
-        }
-    }
-
-    pub(crate) const fn current_only_control(self) -> bool {
-        self.current_only_control
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RenderCameraDiagnosticSource {
-    history: GpuBufferHandle,
-    extent: (u32, u32),
-    phase: u32,
-    history_age: u32,
-    prior_same_pose_completed_frames: u32,
-    current_only_control: bool,
-}
-
-impl RenderCameraDiagnosticSource {
-    pub(crate) const fn extent(&self) -> (u32, u32) {
-        self.extent
-    }
-
-    pub(crate) const fn phase(&self) -> u32 {
-        self.phase
-    }
-
-    pub(crate) const fn history_age(&self) -> u32 {
-        self.history_age
-    }
-
-    pub(crate) const fn prior_same_pose_completed_frames(&self) -> u32 {
-        self.prior_same_pose_completed_frames
-    }
-
-    pub(crate) const fn current_only_control(&self) -> bool {
-        self.current_only_control
-    }
-
-    pub(crate) const fn camera_reprojection_revision(&self) -> u32 {
-        CAMERA_REPROJECTION_REVISION
-    }
-
-    pub(crate) fn readback_source(
-        &self,
-    ) -> Result<GpuBufferRegion, RenderDeterministicLoweringError> {
-        let offset = u64::from(self.extent.0)
-            .checked_mul(u64::from(self.extent.1))
-            .and_then(|samples| samples.checked_mul(CAMERA_HISTORY_WORDS_PER_SAMPLE))
-            .and_then(|words| words.checked_mul(WORD_BYTES))
-            .ok_or(RenderDeterministicLoweringError::SizeOverflow {
-                field: "camera diagnostic readback offset",
-            })?;
-        let byte_len = CAMERA_DIAGNOSTIC_WORDS.checked_mul(WORD_BYTES).ok_or(
-            RenderDeterministicLoweringError::SizeOverflow {
-                field: "camera diagnostic readback byte length",
-            },
-        )?;
-        let range = GpuBufferRange::new(&self.history, offset, byte_len)
-            .map_err(|error| gpu_access("camera diagnostic readback range", error))?;
-        let region = GpuBufferRegion::new(&self.history, range)
-            .map_err(|error| gpu_work_operation("camera diagnostic readback region", error))?;
-        Ok(region)
-    }
-}
 const CAMERA_DEPTH_RELATIVE_EPSILON: f32 = 0.001;
 const TEMPORAL_PHASE_COUNT: u32 = 4;
 const SHAPE_SPHERE: u32 = 1;
@@ -289,7 +215,6 @@ struct DeterministicRenderExecutionSelection {
     scope: u64,
     finite_evaluation: Option<(usize, (u32, u32))>,
     produce_requested_coverage: bool,
-    camera_diagnostic_request: Option<RenderCameraDiagnosticRequest>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -297,7 +222,6 @@ struct DeterministicOutputExecutionSelection {
     scope: u64,
     finite_evaluation_extent: Option<(u32, u32)>,
     produce_requested_coverage: bool,
-    camera_diagnostic_request: Option<RenderCameraDiagnosticRequest>,
 }
 
 /// Physical execution selection; private coverage is not a requested semantic depth output.
@@ -337,7 +261,6 @@ pub(crate) struct DeterministicResourceCache {
     // Keep the latest accepted graph correlated with every producer namespace whose mutable
     // intermediates it used. A peer surface's submission must not stall this producer's cache.
     producer_submissions: BTreeMap<u64, GpuSubmission>,
-    prepared_camera_diagnostics: BTreeMap<u64, RenderCameraDiagnosticSource>,
 }
 
 impl DeterministicResourceCache {
@@ -358,22 +281,6 @@ impl DeterministicResourceCache {
         &mut self,
         producer_scope: u64,
         _frame_index: u64,
-        submission: &GpuSubmission,
-    ) {
-        self.producer_submissions
-            .insert(producer_scope, submission.clone());
-    }
-
-    pub(crate) fn take_camera_diagnostic_source(
-        &mut self,
-        producer_scope: u64,
-    ) -> Option<RenderCameraDiagnosticSource> {
-        self.prepared_camera_diagnostics.remove(&producer_scope)
-    }
-
-    pub(crate) fn retain_auxiliary_producer_submission(
-        &mut self,
-        producer_scope: u64,
         submission: &GpuSubmission,
     ) {
         self.producer_submissions
@@ -1096,10 +1003,6 @@ impl DeterministicVerificationSubmission {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RenderRunenGpuPreparationError {
-    Access {
-        stage: &'static str,
-        source: GpuAccessError,
-    },
     ProgramSource {
         stage: &'static str,
         source: GpuProgramSourceError,
@@ -1137,8 +1040,7 @@ pub(super) enum RenderRunenGpuPreparationError {
 impl RenderRunenGpuPreparationError {
     pub const fn stage(&self) -> &'static str {
         match self {
-            Self::Access { stage, .. }
-            | Self::ProgramSource { stage, .. }
+            Self::ProgramSource { stage, .. }
             | Self::ResourceDescriptor { stage, .. }
             | Self::ResourceAllocation { stage, .. }
             | Self::TransferPreparation { stage, .. }
@@ -1151,7 +1053,6 @@ impl RenderRunenGpuPreparationError {
 
     fn owner_source(&self) -> &(dyn Error + 'static) {
         match self {
-            Self::Access { source, .. } => source,
             Self::ProgramSource { source, .. } => source,
             Self::ResourceDescriptor { source, .. } => source,
             Self::ResourceAllocation { source, .. } => source,
@@ -1548,7 +1449,7 @@ pub(crate) fn prepare_deterministic_render_with_cache_in_scope(
     scope: u64,
 ) -> Result<PreparedDeterministicRender, RenderDeterministicExecutionError> {
     prepare_deterministic_render_with_cache_in_scope_and_evaluation(
-        admitted, context, resources, scope, None, false, None,
+        admitted, context, resources, scope, None, false,
     )
 }
 
@@ -1559,9 +1460,7 @@ pub(crate) fn prepare_deterministic_render_with_cache_in_scope_and_evaluation(
     scope: u64,
     finite_evaluation: Option<(usize, (u32, u32))>,
     produce_requested_coverage: bool,
-    camera_diagnostic_request: Option<RenderCameraDiagnosticRequest>,
 ) -> Result<PreparedDeterministicRender, RenderDeterministicExecutionError> {
-    resources.prepared_camera_diagnostics.remove(&scope);
     let lowered = lower_deterministic_render(
         &admitted,
         context,
@@ -1571,7 +1470,6 @@ pub(crate) fn prepare_deterministic_render_with_cache_in_scope_and_evaluation(
             scope,
             finite_evaluation,
             produce_requested_coverage,
-            camera_diagnostic_request,
         },
     )?;
     debug_assert!(lowered.verification_readbacks.is_empty());
@@ -1624,7 +1522,6 @@ pub(super) async fn submit_deterministic_render_for_verification(
             scope: 0,
             finite_evaluation: None,
             produce_requested_coverage: false,
-            camera_diagnostic_request: None,
         },
     )?;
     let verification_readbacks = lowered.verification_readbacks;
@@ -1691,7 +1588,6 @@ fn lower_deterministic_render(
         scope,
         finite_evaluation,
         produce_requested_coverage,
-        camera_diagnostic_request,
     } = execution;
     let admitted = maintained.admitted();
     if admitted.environment().affinity() != context.affinity() {
@@ -1750,7 +1646,6 @@ fn lower_deterministic_render(
                     },
                 ),
                 produce_requested_coverage,
-                camera_diagnostic_request,
             },
         )?;
         fragments.push(lowered.fragment);
@@ -1807,7 +1702,6 @@ fn lower_output(
         scope,
         finite_evaluation_extent,
         produce_requested_coverage,
-        camera_diagnostic_request,
     } = execution;
     let admitted_output = admitted
         .outputs()
@@ -2167,7 +2061,7 @@ fn lower_output(
                 pose_changed,
                 same_pose_completed_frames,
             } => {
-                let mut parameter_words = camera_reprojection_parameter_words(
+                let parameter_words = camera_reprojection_parameter_words(
                     match observation {
                         RenderObservationSpec::Perspective(perspective) => perspective,
                         _ => {
@@ -2180,33 +2074,6 @@ fn lower_output(
                     *pose_changed,
                     *same_pose_completed_frames,
                 )?;
-                if output_index == 0
-                    && *pose_changed
-                    && *same_pose_completed_frames == 4
-                    && temporal_history
-                        .as_ref()
-                        .is_some_and(|history| history.age == 8)
-                    && let Some(request) = camera_diagnostic_request
-                {
-                    let history = temporal_history.as_ref().expect("camera temporal history");
-                    parameter_words[33] = 1;
-                    parameter_words[34] = u32::from(request.current_only_control());
-                    resources.prepared_camera_diagnostics.insert(
-                        scope,
-                        RenderCameraDiagnosticSource {
-                            history: current_history.clone(),
-                            extent: requested
-                                .spec()
-                                .topology()
-                                .sample_lattice_dimensions()
-                                .expect("camera lattice"),
-                            phase: history.phase,
-                            history_age: history.age,
-                            prior_same_pose_completed_frames: *same_pose_completed_frames,
-                            current_only_control: request.current_only_control(),
-                        },
-                    );
-                }
                 let payload = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
                     format!("RunenRender output {output_index} camera reprojection parameters"),
                     &parameter_words,
@@ -3370,13 +3237,6 @@ fn deterministic_dispatch_size(
         u32::try_from(groups_y).expect("admitted dispatch y dimension must fit u32"),
         1,
     ))
-}
-
-fn gpu_access(stage: &'static str, source: GpuAccessError) -> RenderDeterministicLoweringError {
-    RenderDeterministicLoweringError::RunenGpuPreparation(RenderRunenGpuPreparationError::Access {
-        stage,
-        source,
-    })
 }
 
 fn gpu_program_source(
@@ -4886,15 +4746,6 @@ mod tests {
 
         let access = GpuBufferRange::new(&buffer, 0, 0)
             .expect_err("zero range must fail in RunenGPU access authority");
-        assert_owner(
-            RenderRunenGpuPreparationError::Access {
-                stage: "access",
-                source: access.clone(),
-            },
-            &access,
-            "access",
-        );
-
         let program_source = runen_gpu::GpuProgramSourceKey::new("")
             .expect_err("empty source key must fail in RunenGPU source authority");
         assert_owner(
