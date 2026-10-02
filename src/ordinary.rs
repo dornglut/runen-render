@@ -109,6 +109,7 @@ impl Error for RenderAdmissionError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderExecutionErrorKind {
     Lowering,
+    RunenShaderCompilation,
     RunenGpuPreparation,
     Submission,
 }
@@ -124,6 +125,11 @@ impl RenderExecutionError {
     pub fn kind(&self) -> RenderExecutionErrorKind {
         match &self.inner {
             RenderDeterministicExecutionError::Lowering(
+                super::deterministic_execution::RenderDeterministicLoweringError::RunenShaderCompilation(
+                    _,
+                ),
+            ) => RenderExecutionErrorKind::RunenShaderCompilation,
+            RenderDeterministicExecutionError::Lowering(
                 super::deterministic_execution::RenderDeterministicLoweringError::RunenGpuPreparation(
                     _,
                 ),
@@ -133,6 +139,22 @@ impl RenderExecutionError {
                 RenderExecutionErrorKind::Submission
             }
         }
+    }
+
+    /// RunenShader-owned compilation failure when maintained renderer source did not compile.
+    ///
+    /// The concrete renderer wrapper stays private; callers receive the exact error chain as an
+    /// ordinary error source without RunenRender mirroring RunenShader's diagnostic taxonomy.
+    pub fn runen_shader_compilation_source(&self) -> Option<&(dyn Error + 'static)> {
+        let RenderDeterministicExecutionError::Lowering(
+            super::deterministic_execution::RenderDeterministicLoweringError::RunenShaderCompilation(
+                error,
+            ),
+        ) = &self.inner
+        else {
+            return None;
+        };
+        Some(error)
     }
 
     /// Exact public RunenGPU owner error when failure happened during GPU preparation.
@@ -1244,6 +1266,26 @@ pub async fn submit_render_for_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_error_preserves_runenshader_owner_category() {
+        let error = RenderExecutionError {
+            inner: RenderDeterministicExecutionError::Lowering(
+                super::deterministic_execution::RenderDeterministicLoweringError::RunenShaderCompilation(
+                    super::shader_bridge::RenderRunenShaderCompilationError::CanonicalBytesChanged {
+                        program: "test program",
+                    },
+                ),
+            ),
+        };
+        assert_eq!(
+            error.kind(),
+            RenderExecutionErrorKind::RunenShaderCompilation
+        );
+        assert!(error.runen_shader_compilation_source().is_some());
+        assert!(error.runen_gpu_preparation_source().is_none());
+        assert!(Error::source(&error).is_some());
+    }
 
     #[test]
     fn result_submission_preserves_structured_eligibility_and_correlation() {
