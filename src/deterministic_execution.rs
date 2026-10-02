@@ -352,8 +352,11 @@ impl DeterministicResourceCache {
     fn maintained_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        retained_maintained_evaluator_source(MAINTAINED_EVALUATOR_REVISION, MAINTAINED_WGSL.as_str())
-            .map_err(map_maintained_program_build_error)
+        retained_maintained_evaluator_source(
+            MAINTAINED_EVALUATOR_REVISION,
+            MAINTAINED_WGSL.as_str(),
+        )
+        .map_err(map_maintained_program_build_error)
     }
 
     fn reconstruction_source(
