@@ -4,9 +4,9 @@
 //! binds one fresh post-result readback correlation to one exact maintained radiance destination
 //! and interprets the returned carrier through RunenRender's private maintained mapping.
 
-use crate::admission::RenderOutputDestination;
 use super::carrier::{WORD_BYTES, decode_word, maintained_evaluation_value};
 use super::execution::SubmittedDeterministicRender;
+use crate::admission::RenderOutputDestination;
 use crate::request::{RenderOutputValue, RenderRadiometricRepresentation, RenderResultTopology};
 use runen_gpu::{
     GpuContext, GpuContextAffinity, GpuDataLayout, GpuOpaqueContentContinuity, GpuReadbackId,

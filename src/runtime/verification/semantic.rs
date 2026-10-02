@@ -7,24 +7,22 @@
 //! branch fails closed; no physical packing, WGSL behavior, or test-only CPU oracle becomes semantic
 //! authority.
 
-use crate::admission::{AdmittedRenderPlan, RenderAdmittedOutput};
-use crate::appearance::RenderDirectionalEmitter;
 use super::super::carrier::maintained_evaluation_value;
-use super::super::execution::{
-    DeterministicVerificationSubmission, RenderObjectIdentityDecoder,
-};
-use crate::request::{
-    RenderDistanceConvention, RenderObservationSpec, RenderOutputValue, RenderRequestedOutput,
-    RenderResultTopology,
-};
-use crate::scene::RenderObjectId;
-use crate::surface_input::RenderSurfaceSemanticInputView;
+use super::super::execution::{DeterministicVerificationSubmission, RenderObjectIdentityDecoder};
 use super::RenderDeterministicVerificationError;
 use super::numeric::{
     VerificationInterval, certified_tan_half_fov, mathematical_pi_interval,
     numeric_value_satisfies_tolerance,
 };
 use super::observation::DeterministicVerificationObservation;
+use crate::admission::{AdmittedRenderPlan, RenderAdmittedOutput};
+use crate::appearance::RenderDirectionalEmitter;
+use crate::request::{
+    RenderDistanceConvention, RenderObservationSpec, RenderOutputValue, RenderRequestedOutput,
+    RenderResultTopology,
+};
+use crate::scene::RenderObjectId;
+use crate::surface_input::RenderSurfaceSemanticInputView;
 
 #[derive(Debug, Clone, Copy)]
 struct CertifiedRay {
@@ -829,8 +827,8 @@ fn physical_mismatch_error(
 
 #[cfg(test)]
 mod tests {
-    use crate::scene::RenderSceneStore;
     use super::*;
+    use crate::scene::RenderSceneStore;
 
     fn object_id() -> RenderObjectId {
         let mut store = RenderSceneStore::new();

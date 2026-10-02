@@ -4,17 +4,17 @@
 //! reusing the renderer-local method ID. RunenRender selects the exact method contract and admits
 //! the resulting ordinary plan before applying evaluator/physical-realization compatibility.
 
+use super::method::maintained_deterministic_method;
+use super::transform::{
+    RenderCompiledMetricSimilarityTransform, RenderCompiledMetricSimilarityTransformError,
+    RenderCompiledObjectTransform, RenderCompiledObjectTransformError,
+};
 use crate::admission::{
     AdmittedRenderPlan, RenderExecutionAdmissionFailure, RenderOutputBinding,
     RenderOutputDestination, RenderRepresentationAvailabilityFact,
     admit_render_plan_with_semantic_inputs,
 };
-use super::transform::{
-    RenderCompiledMetricSimilarityTransform, RenderCompiledMetricSimilarityTransformError,
-    RenderCompiledObjectTransform, RenderCompiledObjectTransformError,
-};
 use crate::field_input::{RenderFieldSemanticInput, RenderFieldSemanticInputBinding};
-use super::method::maintained_deterministic_method;
 use crate::representation::{RenderRepresentationId, RenderRepresentationProtocol};
 use crate::request::{RenderObservationSpec, RenderOutputValue, RenderRequest};
 use crate::scene::{RenderObjectId, RenderObjectState, RenderSceneSnapshot};
@@ -864,8 +864,10 @@ mod tests {
             )
             .expect("composable radiance texture handle");
         let radiance_value = RenderOutputValue::Radiance {
-            representation: crate::request::RenderRadiometricRepresentation::
-                spectral_at_wavelength_meters(550.0e-9)
+            representation:
+                crate::request::RenderRadiometricRepresentation::spectral_at_wavelength_meters(
+                    550.0e-9,
+                )
                 .expect("radiance representation"),
         };
         assert_eq!(

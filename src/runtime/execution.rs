@@ -11,17 +11,24 @@
 //! remain distinct from payload bits. For this maintained direct/no-environment method only, a
 //! primary radiance miss is the defined value zero; generic R2 radiance-miss semantics remain wider.
 
-use crate::admission::{AdmittedRenderPlan, RenderOutputDestination};
-use super::transform::{
-    RenderCompiledMetricSimilarityTransform, RenderCompiledMetricSimilarityTransformError,
-    RenderCompiledObjectTransform, RenderCompiledObjectTransformError,
-};
 use super::admission::AdmittedDeterministicRender;
 pub use super::capture::{
     RenderCapturedDeterministicRadiance, RenderDeterministicRadianceCaptureError,
     RenderDeterministicRadianceCaptureRequest, RenderDeterministicRadianceCaptureRequestError,
 };
 use super::carrier;
+#[cfg(test)]
+use super::program::build_maintained_program_sources;
+use super::program::{
+    RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError,
+    retained_camera_reprojection_source, retained_maintained_evaluator_source,
+    retained_temporal_reconstruction_source,
+};
+use super::transform::{
+    RenderCompiledMetricSimilarityTransform, RenderCompiledMetricSimilarityTransformError,
+    RenderCompiledObjectTransform, RenderCompiledObjectTransformError,
+};
+use crate::admission::{AdmittedRenderPlan, RenderOutputDestination};
 use crate::field_input::{
     RenderFieldSemanticInput, RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration,
 };
@@ -33,13 +40,6 @@ use crate::request::{
     RenderPerspectiveObservation, RenderSamplingSupport,
 };
 use crate::scene::{RenderObjectId, RenderSceneRevision};
-#[cfg(test)]
-use super::program::build_maintained_program_sources;
-use super::program::{
-    RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError,
-    retained_camera_reprojection_source, retained_maintained_evaluator_source,
-    retained_temporal_reconstruction_source,
-};
 use crate::space_time::RenderTimeInterval;
 use crate::surface_input::{
     RenderSurfaceSemanticInputBinding, RenderSurfaceSemanticInputGeneration,
@@ -1483,11 +1483,9 @@ pub async fn submit_deterministic_render_for_verified_result(
     SubmittedDeterministicRender,
     super::verification::RenderDeterministicVerifiedSubmissionError,
 > {
-    super::verification::submit_deterministic_render_for_verified_formation(
-        admitted, context,
-    )
-    .await
-    .map(DeterministicVerificationSubmission::into_submitted)
+    super::verification::submit_deterministic_render_for_verified_formation(admitted, context)
+        .await
+        .map(DeterministicVerificationSubmission::into_submitted)
 }
 
 /// Submit the exact maintained deterministic path with renderer-private same-submission readbacks.
@@ -3312,8 +3310,8 @@ fn gpu_work_authoring(
 
 #[cfg(test)]
 mod tests {
-    use crate::space_time::RenderAffineTransform3;
     use super::*;
+    use crate::space_time::RenderAffineTransform3;
     use runen_gpu::GpuBufferRange;
 
     #[test]
