@@ -1,7 +1,7 @@
 use runen_gpu::{
-    GpuAdmittedProgramSource, GpuProgramSourceError, GpuProgramSourceIdentity,
-    GpuProgramSourceKey, GpuProgramSourceOwnerId, GpuProgramSourceProvenance,
-    GpuProgramSourceRegistry, GpuProgramSourceRevision,
+    GpuAdmittedProgramSource, GpuProgramSourceError, GpuProgramSourceIdentity, GpuProgramSourceKey,
+    GpuProgramSourceOwnerId, GpuProgramSourceProvenance, GpuProgramSourceRegistry,
+    GpuProgramSourceRevision,
 };
 use runen_shader::{
     ShaderArtifact, ShaderCompilationInput, ShaderCompilationInvocation, ShaderCompilationOutcome,
@@ -97,7 +97,10 @@ impl fmt::Display for RenderRunenShaderCompilationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invariant { program, source } => {
-                write!(formatter, "RunenShader invariant failure for {program}: {source}")
+                write!(
+                    formatter,
+                    "RunenShader invariant failure for {program}: {source}"
+                )
             }
             Self::Rejected {
                 program,
@@ -239,12 +242,13 @@ pub(crate) fn build_maintained_program_sources(
         .iter()
         .try_fold(0usize, |total, spec| total.checked_add(spec.wgsl.len()))
         .unwrap_or(usize::MAX);
-    let mut registry = GpuProgramSourceRegistry::new(3, total_source_bytes.max(1)).map_err(
-        |source| RenderMaintainedProgramBuildError::RunenGpu {
-            stage: "maintained program source registry",
-            source,
-        },
-    )?;
+    let mut registry =
+        GpuProgramSourceRegistry::new(3, total_source_bytes.max(1)).map_err(|source| {
+            RenderMaintainedProgramBuildError::RunenGpu {
+                stage: "maintained program source registry",
+                source,
+            }
+        })?;
     let owner = GpuProgramSourceOwnerId::allocate().map_err(|source| {
         RenderMaintainedProgramBuildError::RunenGpu {
             stage: "maintained program source owner",
@@ -260,12 +264,7 @@ pub(crate) fn build_maintained_program_sources(
             specs[1],
             temporal_reconstruction,
         )?,
-        camera_reprojection: admit_artifact(
-            &mut registry,
-            owner,
-            specs[2],
-            camera_reprojection,
-        )?,
+        camera_reprojection: admit_artifact(&mut registry, owner, specs[2], camera_reprojection)?,
     })
 }
 
@@ -283,10 +282,8 @@ fn compile_exact_program(
         .expect("maintained shader revisions are nonzero");
     let source = ShaderSourceSnapshot::new(source_unit, revision, spec.wgsl);
     let input = ShaderCompilationInput::exact_wgsl(package, module, source);
-    let invocation = ShaderCompilationInvocation::new(
-        input,
-        ShaderCompilerRealization::Naga3001ExactWgslGateV1,
-    );
+    let invocation =
+        ShaderCompilationInvocation::new(input, ShaderCompilerRealization::Naga3001ExactWgslGateV1);
     let artifact = match compiler.compile(&invocation) {
         Ok(ShaderCompilationOutcome::Accepted(artifact)) => artifact,
         Ok(ShaderCompilationOutcome::Rejected(diagnostics)) => {

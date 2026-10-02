@@ -470,8 +470,9 @@ fn founding_scene_uses_exact_r1_r4_semantic_spine_and_independent_field_capabili
 #[test]
 fn founding_scene_reaches_public_r5_admission_without_synthetic_semantic_bindings() {
     let fixture = founding_fixture();
-    let descriptor = GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
-        .with_label("RunenRender R6 founding admission proof");
+    let descriptor =
+        GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
+            .with_label("RunenRender R6 founding admission proof");
     let context = match pollster::block_on(GpuContext::request(descriptor)) {
         Ok(context) => context,
         Err(error) if error.category() == GpuContextRequestErrorCategory::NoAdapterAvailable => {

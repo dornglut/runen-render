@@ -1,3 +1,9 @@
+use runen_gpu::{
+    GpuCapabilityProfile, GpuContext, GpuContextDescriptor, GpuContextRequestErrorCategory,
+    GpuFormatRole, GpuReadbackOperation, GpuReconstruction, GpuResourceLifetime, GpuSubmission,
+    GpuSubmissionStatus, GpuTextureDescriptor, GpuTextureFormat, GpuTextureInitialization,
+    GpuTextureUsage, GpuWorkResourceIdAllocator,
+};
 use runen_render::admission::{
     RenderOutputBinding, RenderOutputDestination, RenderRepresentationAvailabilityFact,
     RenderRepresentationAvailabilityState,
@@ -32,12 +38,6 @@ use runen_render::{
     RenderResultSubmissionErrorKind, RenderTemporalExecutionEvidence,
     RenderVerificationEligibilityErrorKind, SubmittedRender, SubmittedRenderForResult,
     admit_render, prepare_render, submit_render, submit_render_for_result,
-};
-use runen_gpu::{
-    GpuCapabilityProfile, GpuContext, GpuContextDescriptor, GpuContextRequestErrorCategory,
-    GpuFormatRole, GpuReadbackOperation, GpuReconstruction, GpuResourceLifetime, GpuSubmission,
-    GpuSubmissionStatus, GpuTextureDescriptor, GpuTextureFormat, GpuTextureInitialization,
-    GpuTextureUsage, GpuWorkResourceIdAllocator,
 };
 use std::time::{Duration, Instant};
 

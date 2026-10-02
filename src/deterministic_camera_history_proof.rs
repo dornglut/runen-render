@@ -6,8 +6,9 @@ use runen_gpu::{GpuCapabilityProfile, GpuContextDescriptor, GpuContextRequestErr
 use std::time::{Duration, Instant};
 
 fn context() -> Option<GpuContext> {
-    let descriptor = GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
-        .with_label("RunenRender camera correspondence behavior proof");
+    let descriptor =
+        GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
+            .with_label("RunenRender camera correspondence behavior proof");
     match pollster::block_on(GpuContext::request(descriptor)) {
         Ok(context) => {
             let facts = context.adapter_facts();

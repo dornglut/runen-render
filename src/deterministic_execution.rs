@@ -3466,7 +3466,9 @@ mod tests {
             u64::from(CAMERA_REPROJECTION_REVISION),
             CAMERA_REPROJECTION_WGSL.as_str(),
         )
-        .expect("all maintained programs must compile through RunenShader and admit through RunenGPU");
+        .expect(
+            "all maintained programs must compile through RunenShader and admit through RunenGPU",
+        );
 
         assert_eq!(
             programs.evaluator_artifact().canonical_wgsl().as_bytes(),
@@ -3498,10 +3500,7 @@ mod tests {
             CAMERA_REPROJECTION_WGSL.as_bytes()
         );
         assert_eq!(
-            programs
-                .camera_reprojection()
-                .canonical_wgsl()
-                .as_bytes(),
+            programs.camera_reprojection().canonical_wgsl().as_bytes(),
             CAMERA_REPROJECTION_WGSL.as_bytes()
         );
     }

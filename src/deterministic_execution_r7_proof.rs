@@ -265,10 +265,11 @@ fn request_execution_context() -> Option<GpuContext> {
 fn request_execution_context_with_dispatch_limit(
     max_workgroups_per_dimension: Option<u64>,
 ) -> Option<GpuContext> {
-    let mut descriptor = GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
-        .require_format_role(GpuTextureFormat::R32Uint, GpuFormatRole::CopyDestination)
-        .require_format_role(GpuTextureFormat::R32Uint, GpuFormatRole::CopySource)
-        .with_label("RunenRender R7 maintained execution proof");
+    let mut descriptor =
+        GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
+            .require_format_role(GpuTextureFormat::R32Uint, GpuFormatRole::CopyDestination)
+            .require_format_role(GpuTextureFormat::R32Uint, GpuFormatRole::CopySource)
+            .with_label("RunenRender R7 maintained execution proof");
     if let Some(maximum) = max_workgroups_per_dimension {
         descriptor =
             descriptor.permit_limit(GpuLimitKind::MaxComputeWorkgroupsPerDimension, maximum);

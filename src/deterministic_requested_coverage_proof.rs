@@ -19,9 +19,10 @@ use runen_gpu::{
 use std::time::{Duration, Instant};
 
 fn context() -> Option<GpuContext> {
-    let descriptor = GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
-        .require_format_role(GpuTextureFormat::R32Float, GpuFormatRole::CopyDestination)
-        .with_label("requested current coverage proof");
+    let descriptor =
+        GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
+            .require_format_role(GpuTextureFormat::R32Float, GpuFormatRole::CopyDestination)
+            .with_label("requested current coverage proof");
     match pollster::block_on(GpuContext::request(descriptor)) {
         Ok(context) => {
             let facts = context.adapter_facts();

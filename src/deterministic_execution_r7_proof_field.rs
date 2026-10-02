@@ -233,10 +233,11 @@ fn perspective_request(values: &[RenderOutputValue]) -> RenderRequest {
 }
 
 fn request_execution_context() -> Option<GpuContext> {
-    let descriptor = GpuContextDescriptor::new(runen_gpu::GpuCapabilityProfile::ComputeBaseline.requirements())
-        .require_format_role(GpuTextureFormat::R32Uint, GpuFormatRole::CopyDestination)
-        .require_format_role(GpuTextureFormat::R32Uint, GpuFormatRole::CopySource)
-        .with_label("RunenRender GP1B2 sampled-field execution proof");
+    let descriptor =
+        GpuContextDescriptor::new(runen_gpu::GpuCapabilityProfile::ComputeBaseline.requirements())
+            .require_format_role(GpuTextureFormat::R32Uint, GpuFormatRole::CopyDestination)
+            .require_format_role(GpuTextureFormat::R32Uint, GpuFormatRole::CopySource)
+            .with_label("RunenRender GP1B2 sampled-field execution proof");
     match pollster::block_on(GpuContext::request(descriptor)) {
         Ok(context) => Some(context),
         Err(error) if error.category() == GpuContextRequestErrorCategory::NoAdapterAvailable => {

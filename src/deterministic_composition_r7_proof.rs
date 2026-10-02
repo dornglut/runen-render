@@ -52,9 +52,10 @@ fn radiance_fixture() -> MaintainedExecutionFixture {
             0,
             RenderOutputSpec::new(
                 RenderOutputValue::Radiance {
-                    representation:
-                        RenderRadiometricRepresentation::spectral_at_wavelength_meters(550.0e-9)
-                            .expect("R7 composition radiance representation"),
+                    representation: RenderRadiometricRepresentation::spectral_at_wavelength_meters(
+                        550.0e-9,
+                    )
+                    .expect("R7 composition radiance representation"),
                 },
                 RenderResultTopology::sample_lattice_2d(2, 2)
                     .expect("R7 composition radiance topology"),
