@@ -130,7 +130,6 @@ pub async fn submit_deterministic_render_for_verified_result(
 /// Static verifier eligibility is owned by `deterministic_verification` and must be established
 /// before this function is called. The returned private witness wraps the same ordinary submitted
 /// execution plus only the readback correlation authored before that submission.
-
 pub(super) fn lower_deterministic_render(
     maintained: &AdmittedDeterministicRender,
     context: &GpuContext,
