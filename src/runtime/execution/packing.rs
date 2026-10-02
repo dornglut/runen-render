@@ -617,7 +617,10 @@ pub(super) fn pack_invertible_matrix3(
     Ok(())
 }
 
-pub(super) fn f32_bits(value: f64, field: &'static str) -> Result<u32, RenderDeterministicLoweringError> {
+pub(super) fn f32_bits(
+    value: f64,
+    field: &'static str,
+) -> Result<u32, RenderDeterministicLoweringError> {
     let physical = value as f32;
     if !value.is_finite() || !physical.is_finite() {
         return Err(RenderDeterministicLoweringError::NumericRealization { field });
@@ -671,7 +674,10 @@ pub(super) fn conservative_nonnegative_f32_bits(
     Ok(physical.to_bits())
 }
 
-pub(super) fn align_up(value: u64, alignment: u64) -> Result<u64, RenderDeterministicLoweringError> {
+pub(super) fn align_up(
+    value: u64,
+    alignment: u64,
+) -> Result<u64, RenderDeterministicLoweringError> {
     if alignment == 0 {
         return Err(RenderDeterministicLoweringError::InvalidBytesPerRowAlignment { alignment });
     }

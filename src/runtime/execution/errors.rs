@@ -378,7 +378,6 @@ impl Error for RenderDeterministicResultFormationError {
     }
 }
 
-
 pub(super) fn map_maintained_program_build_error(
     error: RenderMaintainedProgramBuildError,
 ) -> RenderDeterministicLoweringError {
