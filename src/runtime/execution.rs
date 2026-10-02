@@ -73,7 +73,7 @@ mod camera_history_proof;
 #[path = "../proofs/requested_coverage.rs"]
 mod requested_coverage_proof;
 
-const WORD_BYTES: u64 = deterministic_carrier::WORD_BYTES as u64;
+const WORD_BYTES: u64 = carrier::WORD_BYTES as u64;
 const HEADER_WORDS: usize = 30;
 const GEOMETRY_WORDS: usize = 40;
 const EMITTER_WORDS: usize = 4;
@@ -4897,7 +4897,7 @@ mod tests {
 
     #[test]
     fn maintained_execution_has_no_string_flattening_gpu_authoring_bucket() {
-        let source = include_str!("deterministic_execution.rs");
+        let source = include_str!("execution.rs");
         assert!(!source.contains(concat!("gpu_", "authoring(")));
         assert!(!source.contains(concat!("RunenGpu", "Authoring")));
     }

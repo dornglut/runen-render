@@ -402,7 +402,7 @@ pub(crate) async fn submit_deterministic_render_for_verified_formation(
 ) -> Result<DeterministicVerificationSubmission, RenderDeterministicVerifiedSubmissionError> {
     ensure_deterministic_verification_eligible(&maintained)?;
     let verification =
-        deterministic_execution::submit_deterministic_render_for_verification(maintained, context)
+        execution::submit_deterministic_render_for_verification(maintained, context)
             .await?;
 
     let submitted = verification.submitted();
