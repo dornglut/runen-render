@@ -33,13 +33,13 @@ use super::request::{
     RenderPerspectiveObservation, RenderSamplingSupport,
 };
 use super::scene::{RenderObjectId, RenderSceneRevision};
+#[cfg(test)]
+use super::shader_bridge::build_maintained_program_sources;
 use super::shader_bridge::{
     RenderMaintainedProgram, RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError,
     build_camera_reprojection_program, build_maintained_evaluator_program,
     build_temporal_reconstruction_program,
 };
-#[cfg(test)]
-use super::shader_bridge::build_maintained_program_sources;
 use super::space_time::RenderTimeInterval;
 use super::surface_input::{
     RenderSurfaceSemanticInputBinding, RenderSurfaceSemanticInputGeneration,

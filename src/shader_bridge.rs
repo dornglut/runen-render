@@ -253,15 +253,16 @@ fn build_maintained_program(
     spec: MaintainedShaderSpec<'_>,
 ) -> Result<RenderMaintainedProgram, RenderMaintainedProgramBuildError> {
     let mut compiler = ShaderCompiler::new();
-    let artifact =
-        compile_exact_program(&mut compiler, spec).map_err(RenderMaintainedProgramBuildError::RunenShader)?;
+    let artifact = compile_exact_program(&mut compiler, spec)
+        .map_err(RenderMaintainedProgramBuildError::RunenShader)?;
 
-    let mut registry = GpuProgramSourceRegistry::new(1, spec.wgsl.len().max(1)).map_err(|source| {
-        RenderMaintainedProgramBuildError::RunenGpu {
-            stage: "maintained program source registry",
-            source,
-        }
-    })?;
+    let mut registry =
+        GpuProgramSourceRegistry::new(1, spec.wgsl.len().max(1)).map_err(|source| {
+            RenderMaintainedProgramBuildError::RunenGpu {
+                stage: "maintained program source registry",
+                source,
+            }
+        })?;
     let owner = GpuProgramSourceOwnerId::allocate().map_err(|source| {
         RenderMaintainedProgramBuildError::RunenGpu {
             stage: "maintained program source owner",
