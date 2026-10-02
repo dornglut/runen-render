@@ -12,9 +12,7 @@ fn maintained_programs_compile_through_runenshader_and_preserve_exact_gpu_source
         u64::from(CAMERA_REPROJECTION_REVISION),
         CAMERA_REPROJECTION_WGSL.as_str(),
     )
-    .expect(
-        "all maintained programs must compile through RunenShader and admit through RunenGPU",
-    );
+    .expect("all maintained programs must compile through RunenShader and admit through RunenGPU");
 
     assert_eq!(
         programs.evaluator_artifact().canonical_wgsl().as_bytes(),
@@ -296,9 +294,8 @@ fn temporal_test_observation(
     use crate::request::{RenderPerspectiveObservation, RenderSamplingSupport};
     use crate::space_time::{RenderTimeInterval, RenderTimePoint};
 
-    let shutter = RenderTimeInterval::instant(
-        RenderTimePoint::from_seconds(0.0).expect("finite test time"),
-    );
+    let shutter =
+        RenderTimeInterval::instant(RenderTimePoint::from_seconds(0.0).expect("finite test time"));
     RenderPerspectiveObservation::new(
         transform,
         std::f64::consts::FRAC_PI_3,
@@ -311,8 +308,8 @@ fn temporal_test_observation(
 
 fn temporal_signature(source_generation: u64) -> DeterministicTemporalSignature {
     use crate::request::{
-        RenderOutputSpec, RenderOutputValue, RenderRadiometricRepresentation,
-        RenderResultTopology, RenderSemanticTolerance,
+        RenderOutputSpec, RenderOutputValue, RenderRadiometricRepresentation, RenderResultTopology,
+        RenderSemanticTolerance,
     };
     use crate::space_time::{RenderAffineTransform3, RenderTemporalSupport};
     use crate::surface_input::{
@@ -396,10 +393,8 @@ fn camera_temporal_signature(
     evaluation_extent: (u32, u32),
 ) -> DeterministicTemporalSignature {
     let mut signature = temporal_signature(source_generation);
-    signature.observation = temporal_observation_compatibility(
-        RenderObservationSpec::Perspective(observation),
-        true,
-    );
+    signature.observation =
+        temporal_observation_compatibility(RenderObservationSpec::Perspective(observation), true);
     signature.evaluation_extent = evaluation_extent;
     signature.camera_reprojection_revision = Some(CAMERA_REPROJECTION_REVISION);
     signature.depth_policy_revision = Some(CAMERA_DEPTH_POLICY_REVISION);
@@ -470,9 +465,7 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
             (4, 4),
             4,
             DeterministicTemporalHistorySelection {
-                current_observation: temporal_test_observation(
-                    RenderAffineTransform3::identity(),
-                ),
+                current_observation: temporal_test_observation(RenderAffineTransform3::identity()),
                 camera_capable: false,
             },
         )
@@ -489,9 +482,7 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
             (4, 4),
             4,
             DeterministicTemporalHistorySelection {
-                current_observation: temporal_test_observation(
-                    RenderAffineTransform3::identity(),
-                ),
+                current_observation: temporal_test_observation(RenderAffineTransform3::identity()),
                 camera_capable: false,
             },
         )
@@ -516,9 +507,7 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
             (4, 4),
             4,
             DeterministicTemporalHistorySelection {
-                current_observation: temporal_test_observation(
-                    RenderAffineTransform3::identity(),
-                ),
+                current_observation: temporal_test_observation(RenderAffineTransform3::identity()),
                 camera_capable: false,
             },
         )
@@ -536,9 +525,7 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
             (4, 4),
             4,
             DeterministicTemporalHistorySelection {
-                current_observation: temporal_test_observation(
-                    RenderAffineTransform3::identity(),
-                ),
+                current_observation: temporal_test_observation(RenderAffineTransform3::identity()),
                 camera_capable: false,
             },
         )
@@ -635,8 +622,8 @@ fn p100_camera_compatibility_excludes_pose_but_retains_projection_semantics() {
 #[test]
 fn camera_compatibility_key_retains_every_non_pose_dependency() {
     use crate::request::{
-        RenderOutputSpec, RenderOutputValue, RenderRadiometricRepresentation,
-        RenderResultTopology, RenderSamplingSupport, RenderSemanticTolerance,
+        RenderOutputSpec, RenderOutputValue, RenderRadiometricRepresentation, RenderResultTopology,
+        RenderSamplingSupport, RenderSemanticTolerance,
     };
     use crate::scene::{RenderSceneStore, RenderSceneUpdate};
     use crate::space_time::{RenderTimeInterval, RenderTimePoint};
@@ -802,10 +789,8 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
     let mut cache = DeterministicResourceCache::default();
     let observation = temporal_test_observation(RenderAffineTransform3::identity());
     let mut signature = temporal_signature(7);
-    signature.observation = temporal_observation_compatibility(
-        RenderObservationSpec::Perspective(observation),
-        true,
-    );
+    signature.observation =
+        temporal_observation_compatibility(RenderObservationSpec::Perspective(observation), true);
     signature.evaluation_extent = (4, 4);
     signature.camera_reprojection_revision = Some(CAMERA_REPROJECTION_REVISION);
     signature.depth_policy_revision = Some(CAMERA_DEPTH_POLICY_REVISION);
@@ -1112,8 +1097,7 @@ fn camera_reference_decision(sample: CameraReferenceSample) -> CameraReferenceDe
     let projected_y = previous_local[1] / (-previous_local[2] * tan_half_fov);
     let u = projected_x * 0.5 + 0.5;
     let v = 0.5 - projected_y * 0.5;
-    if !u.is_finite() || !v.is_finite() || !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v)
-    {
+    if !u.is_finite() || !v.is_finite() || !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
         return CameraReferenceDecision::OutOfBounds;
     }
     if !previous_hit {
@@ -1293,9 +1277,8 @@ fn temporal_reconstruction_shaders_keep_undefined_samples_fail_closed() {
 
     assert!(CAMERA_REPROJECTION_WGSL.contains("INVALID_HISTORY_SAMPLE_COUNT"));
     assert!(
-        CAMERA_REPROJECTION_WGSL.contains(
-            "write_current(sample_index, 0.0, 0.0, INVALID_HISTORY_SAMPLE_COUNT, 0u)"
-        )
+        CAMERA_REPROJECTION_WGSL
+            .contains("write_current(sample_index, 0.0, 0.0, INVALID_HISTORY_SAMPLE_COUNT, 0u)")
     );
     assert!(CAMERA_REPROJECTION_WGSL.contains("count == INVALID_HISTORY_SAMPLE_COUNT"));
 }
@@ -1488,9 +1471,8 @@ fn every_runengpu_preparation_owner_remains_a_typed_source() {
         "resource-allocation",
     );
 
-    let transfer_preparation =
-        PreparedGpuData::<TransferData>::ordinary_pod_transfer("", &[1_u32])
-            .expect_err("empty label must fail in RunenGPU transfer preparation");
+    let transfer_preparation = PreparedGpuData::<TransferData>::ordinary_pod_transfer("", &[1_u32])
+        .expect_err("empty label must fail in RunenGPU transfer preparation");
     assert_owner(
         RenderRunenGpuPreparationError::TransferPreparation {
             stage: "transfer-preparation",
@@ -1509,9 +1491,8 @@ fn every_runengpu_preparation_owner_remains_a_typed_source() {
         CAMERA_REPROJECTION_WGSL.as_str(),
     )
     .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
-    let program_contract =
-        GpuComputePipelineDescriptor::ordinary(programs.evaluator().clone(), "")
-            .expect_err("empty entry point must fail in RunenGPU program authority");
+    let program_contract = GpuComputePipelineDescriptor::ordinary(programs.evaluator().clone(), "")
+        .expect_err("empty entry point must fail in RunenGPU program authority");
     assert_owner(
         RenderRunenGpuPreparationError::ProgramContract {
             stage: "program-contract",

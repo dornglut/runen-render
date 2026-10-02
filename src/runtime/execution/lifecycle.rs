@@ -342,4 +342,3 @@ impl DeterministicVerificationSubmission {
         self.submitted
     }
 }
-

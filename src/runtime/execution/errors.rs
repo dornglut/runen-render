@@ -462,4 +462,3 @@ pub(super) fn gpu_work_authoring(
         RenderRunenGpuPreparationError::WorkAuthoring { stage, source },
     )
 }
-

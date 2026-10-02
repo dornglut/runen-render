@@ -125,9 +125,9 @@ mod state;
 mod submission;
 
 pub use lifecycle::{
-    PreparedDeterministicRadianceOutput, PreparedDeterministicRender,
-    RenderObjectIdentityDecoder, RenderRequestedCoveragePreparation,
-    RenderTemporalExecutionEvidence, SubmittedDeterministicRender,
+    PreparedDeterministicRadianceOutput, PreparedDeterministicRender, RenderObjectIdentityDecoder,
+    RenderRequestedCoveragePreparation, RenderTemporalExecutionEvidence,
+    SubmittedDeterministicRender,
 };
 pub use prepare::{
     prepare_deterministic_render, submit_deterministic_render,
@@ -142,8 +142,7 @@ pub(crate) use lifecycle::{
     DeterministicVerificationReadbacks, DeterministicVerificationSubmission,
 };
 pub(crate) use prepare::{
-    prepare_deterministic_render_with_cache,
-    prepare_deterministic_render_with_cache_in_scope,
+    prepare_deterministic_render_with_cache, prepare_deterministic_render_with_cache_in_scope,
     prepare_deterministic_render_with_cache_in_scope_and_evaluation,
 };
 pub(crate) use state::DeterministicResourceCache;

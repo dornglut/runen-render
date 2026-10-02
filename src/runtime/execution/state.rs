@@ -526,4 +526,3 @@ pub(super) fn any_producer_scope_in_flight(
 ) -> bool {
     producer_scopes.into_iter().any(&mut producer_is_in_flight)
 }
-

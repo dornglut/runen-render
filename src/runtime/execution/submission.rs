@@ -67,4 +67,3 @@ pub(super) async fn submit_prepared_deterministic_render(
         verification: DeterministicVerificationState::NotRequested,
     })
 }
-
