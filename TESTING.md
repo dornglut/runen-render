@@ -60,7 +60,7 @@ surface-routing, and product diagnostic policy.
 
 ## RX acceptance evidence
 
-Before the current successor candidate may be accepted, the unchanged reviewed
+Before an RX authority-switch merge may be accepted, the unchanged reviewed
 head must additionally establish through tests/cold review:
 
 - package-level ordinary public conformance;
