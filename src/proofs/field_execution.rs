@@ -1,45 +1,45 @@
-//! Focused Vulkan-capable proof for GP1B2 sampled field-distance execution.
+//! Focused Vulkan-capable proof for sampled field-distance execution.
 //!
 //! These tests deliberately exercise the ordinary maintained evaluator and its renderer-private
 //! same-submission readbacks. The older RR566 analytic-surface verifier remains unchanged; this
 //! module does not claim that its sphere/plane reference model certifies sampled fields.
 
-use super::admission::{
+use crate::admission::{
     RenderOutputBinding, RenderOutputDestination, RenderRepresentationAvailabilityFact,
     RenderRepresentationAvailabilityState,
 };
-use super::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-use super::deterministic_admission::{
+use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
+use crate::deterministic_admission::{
     AdmittedDeterministicRender, admit_deterministic_render_with_semantic_inputs,
 };
-use super::deterministic_execution::{
+use crate::deterministic_execution::{
     DeterministicVerificationSubmission, prepare_deterministic_render,
     submit_deterministic_render_for_verification,
 };
-use super::field_input::{
+use crate::field_input::{
     RenderFieldSemanticInput, RenderFieldSemanticInputBinding, RenderFieldSemanticInputRequirement,
 };
-use super::participation::{RenderMaterialAssignment, RenderObjectParticipation};
-use super::representation::{
+use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
+use crate::representation::{
     RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
     RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderFieldDistanceGuarantee,
     RenderFieldDistanceProtocolEvidence, RenderOrientedSurfaceProtocolEvidence,
     RenderRefinementEvidence, RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
 };
-use super::request::{
+use crate::request::{
     RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
     RenderPerspectiveObservation, RenderRadiometricRepresentation, RenderRequest,
     RenderRequestedOutput, RenderResultTopology, RenderSamplingSupport, RenderSemanticTolerance,
 };
-use super::scene::{
+use crate::scene::{
     RenderObjectId, RenderObjectState, RenderSceneSnapshot, RenderSceneStore, RenderSceneUpdate,
 };
-use super::space_time::{
+use crate::space_time::{
     RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState, RenderObjectTemporalState,
     RenderSpaceSpec, RenderSpatialCoverage, RenderTemporalSupport, RenderTimeInterval,
     RenderTimePoint,
 };
-use super::surface_input::{
+use crate::surface_input::{
     RenderSurfaceSemanticInput, RenderSurfaceSemanticInputBinding,
     RenderSurfaceSemanticInputRequirement,
 };
@@ -288,7 +288,7 @@ fn add_field_object(
     reflectance: Option<f64>,
 ) -> (
     RenderObjectId,
-    super::representation::RenderRepresentationId,
+    crate::representation::RenderRepresentationId,
 ) {
     let object_id = store.allocate_object_id().expect("field object id");
     let mut insert = RenderSceneUpdate::new();
@@ -329,7 +329,7 @@ fn add_surface_sphere(
     transform: RenderAffineTransform3,
 ) -> (
     RenderObjectId,
-    super::representation::RenderRepresentationId,
+    crate::representation::RenderRepresentationId,
 ) {
     let object_id = store.allocate_object_id().expect("surface object id");
     let mut insert = RenderSceneUpdate::new();

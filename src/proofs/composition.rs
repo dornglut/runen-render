@@ -1,15 +1,15 @@
-//! R7 framework composition proof.
+//! Framework composition proof.
 //!
 //! This proves only reusable RunenRender -> RunenGPU producer/import semantics. Runenwerk
 //! Render-Lab visualization, surface routing, and Present policy remain downstream product tests.
 
-use super::admission::{RenderOutputBinding, RenderOutputDestination};
-use super::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
-use super::deterministic_execution::prepare_deterministic_render;
-use super::deterministic_execution_r7_proof::{
+use crate::admission::{RenderOutputBinding, RenderOutputDestination};
+use crate::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
+use crate::deterministic_execution::prepare_deterministic_render;
+use crate::deterministic_execution_r7_proof::{
     MaintainedExecutionFixture, admit_with_retained_radiance_destination, maintained_fixture,
 };
-use super::request::{
+use crate::request::{
     RenderOutputSpec, RenderOutputValue, RenderRadiometricRepresentation, RenderRequest,
     RenderRequestedOutput, RenderResultTopology, RenderSemanticTolerance,
 };
@@ -95,7 +95,7 @@ fn r32float_radiance_destination(
 fn admit_r32float_radiance(
     fixture: &MaintainedExecutionFixture,
     context: &GpuContext,
-) -> super::deterministic_admission::AdmittedDeterministicRender {
+) -> crate::deterministic_admission::AdmittedDeterministicRender {
     let mut allocator = GpuWorkResourceIdAllocator::new();
     let destination = r32float_radiance_destination(&mut allocator);
     let output_bindings = [RenderOutputBinding::new(

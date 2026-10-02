@@ -1,19 +1,19 @@
-//! Proof-local concrete realization for the bounded R6 founding renderer.
+//! Proof-local concrete realization for the bounded founding renderer.
 //!
 //! This module deliberately exists only in the internal R6 proof. It does not create public
 //! sphere/plane/field representation families or a provider/dispatch authority. Concrete values are
 //! correlated by the existing R3 `RenderRepresentationId`, while semantic query/result meaning stays
 //! owned by the permanent R2/R3 contracts.
 
-use super::derived_transform::{RenderCompiledObjectTransform, RenderCompiledObjectTransformError};
-use super::representation::{
+use crate::derived_transform::{RenderCompiledObjectTransform, RenderCompiledObjectTransformError};
+use crate::representation::{
     RenderFieldDistanceProtocolEvidence, RenderFieldDistanceQuery, RenderFieldDistanceSample,
     RenderRepresentationId, RenderRepresentationValidationError, RenderSurfaceQuery,
     classify_field_distance_transform,
 };
-use super::scene::RenderObjectState;
-use super::space_time::{CanonicalF64, RenderSemanticValueError};
-use super::surface_result::RenderOrientedSurfaceQueryResult;
+use crate::scene::RenderObjectState;
+use crate::space_time::{CanonicalF64, RenderSemanticValueError};
+use crate::surface_result::RenderOrientedSurfaceQueryResult;
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

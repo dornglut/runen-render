@@ -66,12 +66,12 @@ use std::fmt;
 use std::sync::LazyLock;
 
 #[cfg(test)]
-#[path = "deterministic_camera_history_proof.rs"]
+#[path = "proofs/camera_history.rs"]
 mod camera_history_proof;
 
 #[cfg(test)]
-#[path = "deterministic_requested_coverage_proof.rs"]
-mod deterministic_execution_r7_proof_coverage;
+#[path = "proofs/requested_coverage.rs"]
+mod requested_coverage_proof;
 
 const WORD_BYTES: u64 = deterministic_carrier::WORD_BYTES as u64;
 const HEADER_WORDS: usize = 30;

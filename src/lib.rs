@@ -39,20 +39,4 @@ pub use render_result::{
 pub use semantic_binding::RenderSemanticBindingInputError;
 
 #[cfg(test)]
-mod derived_transform_r7_proof;
-#[cfg(test)]
-mod deterministic_composition_r7_proof;
-#[cfg(test)]
-mod deterministic_execution_r7_proof;
-#[cfg(test)]
-mod deterministic_execution_r7_proof_edges;
-#[cfg(test)]
-mod deterministic_execution_r7_proof_field;
-#[cfg(test)]
-mod r6_proof;
-#[cfg(test)]
-mod r6_reference_proof;
-#[cfg(test)]
-mod r6_spine_proof;
-#[cfg(test)]
-mod semantic_binding_r7_proof;
+mod proofs;
