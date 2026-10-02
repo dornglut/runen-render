@@ -221,6 +221,7 @@ struct MaintainedShaderSpec<'a> {
     wgsl: &'a str,
 }
 
+#[cfg(test)]
 pub(crate) fn build_maintained_evaluator_program(
     revision: u64,
     wgsl: &str,
@@ -232,6 +233,7 @@ pub(crate) fn build_maintained_evaluator_program(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn build_temporal_reconstruction_program(
     revision: u64,
     wgsl: &str,
@@ -243,6 +245,7 @@ pub(crate) fn build_temporal_reconstruction_program(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn build_camera_reprojection_program(
     revision: u64,
     wgsl: &str,
