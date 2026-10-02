@@ -6,19 +6,18 @@ composition of RunenShader artifacts into RunenGPU program execution.
 
 ## Maturity
 
-This repository contains the RX standalone successor implementation and its
-standalone conformance authority. Engineering ADR 0008 defines the source-
-authority transition:
+RunenRender is now the accepted standalone semantic and conformance authority
+for its renderer domain. The Engineering ADR 0008 RX transfer and the
+exact-revision Runenwerk predecessor cutover are complete.
 
-- before the validated successor is accepted on `runen-render/main`, Runenwerk
-  remains the sole accepted RunenRender semantic source authority;
-- the exact accepted successor revision on `runen-render/main` becomes the
-  sole RunenRender semantic source authority;
-- ordinary standalone feature evolution remains blocked until Runenwerk #1134
-  deletes the predecessor semantic/method/WGSL authority.
+The accepted transfer established the initial standalone `0.1.0` semantic
+baseline. Ordinary framework evolution now belongs in this repository under
+current accepted RunenRender issues; transfer-era issues and predecessor source
+remain historical provenance rather than active implementation authority.
 
-The accepted switch revision and downstream retirement status are recorded by
-the RX authority issues rather than inferred from a working branch.
+Pre-1.0 status does not imply that every current internal decomposition is a
+permanent API or architecture commitment. Public semantic changes still require
+explicit accepted authority and compatibility review.
 
 ## Boundary
 
@@ -49,15 +48,14 @@ MSRV: 1.97.1
 publish: false
 ```
 
-The current RX MSRV is the supported repository floor. Source-free bootstrap
-initially selected Rust 1.93.0, but executable transfer validation proved that
-the accepted RunenShader dependency graph requires Rust 1.97.1 through its exact
-WESL 0.5.0 graph. RX therefore establishes the floor at 1.97.1 rather than
-advertising an unsupported lower compiler.
+The supported repository floor is Rust 1.97.1. Source-free bootstrap initially
+selected Rust 1.93.0, but executable transfer validation proved that the
+accepted RunenShader dependency graph requires Rust 1.97.1 through its exact
+WESL 0.5.0 graph.
 
 ## Validation
 
-`cargo validate` is the canonical repository-owned baseline. It now proves
+`cargo validate` is the canonical repository-owned baseline. It proves
 package/profile integrity, exact sibling dependency policy, public-surface
 guards, production-boundary residue, compile/test/Clippy/rustdoc/MSRV, and
 clean-tree invariants.

@@ -58,10 +58,11 @@ This lane owns reusable framework evidence only. It deliberately excludes
 Runenwerk native-window, Present, Render Lab image/JSON artifact, product
 surface-routing, and product diagnostic policy.
 
-## RX acceptance evidence
+## Accepted standalone baseline evidence
 
-Before an RX authority-switch merge may be accepted, the unchanged reviewed
-head must additionally establish through tests/cold review:
+The completed RX authority transition established the initial standalone
+baseline through unchanged reviewed-head and accepted-main evidence. The
+retained proof surface establishes:
 
 - package-level ordinary public conformance;
 - exact three-effective-program RunenShader artifact -> RunenGPU admission;
@@ -73,8 +74,14 @@ head must additionally establish through tests/cold review:
 - ordinary submission with no implicit CPU readback;
 - temporal reconstruction, camera-history, field, and requested-lattice behavior;
 - no proof-private camera diagnostic seam promoted into public API;
-- exact frozen transfer/adaptation/provenance ledger;
+- exact frozen transfer/adaptation/provenance evidence;
 - no predecessor mirror/forwarder/private sibling reach-through.
 
-Accepted-main validation is rechecked after the authority-switch merge. Runenwerk
-downstream cutover/deletion evidence remains owned by Runenwerk #1134.
+These are accepted baseline properties, not a claim that the extraction-era
+internal module layout is permanently frozen. Future changes must preserve or
+deliberately replace the relevant evidence under their owning issue and must be
+validated on the exact reviewed head.
+
+Runenwerk downstream native/product integration remains downstream consumer
+evidence. Its predecessor cutover is complete and is no longer an activation
+gate for ordinary standalone RunenRender evolution.
