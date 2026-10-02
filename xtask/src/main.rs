@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env, fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -38,51 +39,18 @@ const STALE_ACTIVE_IDENTITY: &[&str] = &[
     "Apache License 2.0",
 ];
 
-const TRANSFER_PRODUCTION_FILES: &[&str] = &[
-    "src/admission.rs",
-    "src/appearance.rs",
-    "src/derived_state.rs",
-    "src/derived_transform.rs",
-    "src/deterministic_admission.rs",
-    "src/deterministic_capture.rs",
-    "src/deterministic_carrier.rs",
-    "src/deterministic_execution.rs",
-    "src/deterministic_verification.rs",
-    "src/deterministic_verification/numeric.rs",
-    "src/deterministic_verification/observation.rs",
-    "src/deterministic_verification/semantic.rs",
-    "src/field_input.rs",
-    "src/lib.rs",
-    "src/lowering.rs",
-    "src/maintained_method.rs",
-    "src/method.rs",
-    "src/ordinary.rs",
-    "src/output_result.rs",
-    "src/participation.rs",
-    "src/render_result.rs",
-    "src/representation.rs",
-    "src/request.rs",
-    "src/scene/mod.rs",
-    "src/semantic_binding.rs",
-    "src/semantic_plan.rs",
-    "src/shader_bridge.rs",
-    "src/space_time.rs",
-    "src/surface_input.rs",
-    "src/surface_result.rs",
-];
-
-const FORBIDDEN_PRODUCTION_MARKERS: &[&str] = &[
+const FORBIDDEN_MAINTAINED_SOURCE_MARKERS: &[&str] = &[
     "RUNENWERK_",
     "crate::plugins::render",
     "crate::plugins::world",
     "crate::plugins::ui",
     "bevy_",
     "winit::",
-    "std::env",
-    "std::fs",
     "serde_json",
     "wgpu::",
 ];
+
+const FORBIDDEN_PRODUCTION_RUST_MARKERS: &[&str] = &["std::env", "std::fs"];
 
 fn main() {
     let result = match env::args().nth(1).as_deref() {
@@ -104,7 +72,7 @@ fn validate() -> Result<(), String> {
 
     validate_required_files(&root)?;
     validate_product_identity(&root)?;
-    validate_transfer_contract(&root)?;
+    validate_source_contract(&root)?;
 
     let initial_state = git_status(&root)?;
     if !initial_state.is_empty() {
@@ -224,7 +192,7 @@ fn validate_product_identity(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_transfer_contract(root: &Path) -> Result<(), String> {
+fn validate_source_contract(root: &Path) -> Result<(), String> {
     let manifest = read_file(root, "Cargo.toml")?;
     for required in [
         "runen-gpu = { git = \"https://github.com/dornglut/runen-gpu\", rev = \"789b430fdefeda89bfe59de86d548618b8f8ab9a\" }",
@@ -240,35 +208,45 @@ fn validate_transfer_contract(root: &Path) -> Result<(), String> {
         }
     }
 
-    for relative_path in TRANSFER_PRODUCTION_FILES {
-        let path = root.join(relative_path);
-        if !path.is_file() {
-            return Err(format!(
-                "required transferred production file is missing: {relative_path}"
-            ));
-        }
-        let contents = read_file(root, relative_path)?;
-        for marker in FORBIDDEN_PRODUCTION_MARKERS {
+    for relative_path in maintained_source_files(root)? {
+        let contents = fs::read_to_string(root.join(&relative_path)).map_err(|error| {
+            format!(
+                "failed to read maintained source {}: {error}",
+                relative_path.display()
+            )
+        })?;
+        for marker in FORBIDDEN_MAINTAINED_SOURCE_MARKERS {
             if contents.contains(marker) {
                 return Err(format!(
-                    "production source {relative_path} contains forbidden predecessor/product coupling: {marker}"
+                    "maintained source {} contains forbidden predecessor/product coupling: {marker}",
+                    relative_path.display()
                 ));
             }
         }
     }
 
-    for relative_path in [
-        "src/deterministic_scene_query.wgsl",
-        "src/deterministic_execution.wgsl",
-        "src/deterministic_temporal_reconstruction.wgsl",
-        "src/deterministic_camera_reprojection.wgsl",
-        "tests/ordinary_public_api.rs",
-    ] {
-        if !root.join(relative_path).is_file() {
-            return Err(format!(
-                "required RX authority file is missing: {relative_path}"
-            ));
+    for relative_path in production_rust_source_files(root)? {
+        let contents = fs::read_to_string(root.join(&relative_path)).map_err(|error| {
+            format!(
+                "failed to read production Rust source {}: {error}",
+                relative_path.display()
+            )
+        })?;
+        for marker in FORBIDDEN_PRODUCTION_RUST_MARKERS {
+            if contents.contains(marker) {
+                return Err(format!(
+                    "production Rust source {} contains forbidden product coupling: {marker}",
+                    relative_path.display()
+                ));
+            }
         }
+    }
+
+    if !root.join("tests/ordinary_public_api.rs").is_file() {
+        return Err(
+            "required ordinary public API proof is missing: tests/ordinary_public_api.rs"
+                .to_owned(),
+        );
     }
 
     let lib = read_file(root, "src/lib.rs")?;
@@ -288,9 +266,7 @@ fn validate_transfer_contract(root: &Path) -> Result<(), String> {
         "pub mod space_time;",
         "pub mod surface_input;",
         "pub mod surface_result;",
-        "mod deterministic_execution;",
         "mod ordinary;",
-        "mod shader_bridge;",
         "pub use ordinary::*;",
     ] {
         require_contains("src/lib.rs", &lib, required)?;
@@ -301,6 +277,10 @@ fn validate_transfer_contract(root: &Path) -> Result<(), String> {
         "pub mod maintained_method",
         "pub mod ordinary",
         "pub mod shader_bridge",
+        "pub mod runtime",
+        "pub use runtime",
+        "pub mod proofs",
+        "pub use proofs",
     ] {
         if lib.contains(forbidden) {
             return Err(format!(
@@ -324,14 +304,186 @@ fn validate_transfer_contract(root: &Path) -> Result<(), String> {
         "mesa-vulkan-drivers",
         "WGPU_BACKEND=vulkan",
         "cargo +stable test -p runen-render",
-        "--skip camera_history_proof",
-        "--lib camera_history_proof",
         "--test ordinary_public_api",
     ] {
         require_contains(".github/workflows/validation.yml", &workflow, required)?;
     }
 
     Ok(())
+}
+
+fn maintained_source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let source_root = root.join("src");
+    let mut pending = vec![source_root];
+    let mut files = Vec::new();
+
+    while let Some(directory) = pending.pop() {
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| format!("failed to read {}: {error}", directory.display()))?;
+        for entry in entries {
+            let entry = entry
+                .map_err(|error| format!("failed to inspect {}: {error}", directory.display()))?;
+            let file_type = entry.file_type().map_err(|error| {
+                format!("failed to inspect {}: {error}", entry.path().display())
+            })?;
+            let path = entry.path();
+            if file_type.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let maintained_extension = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| matches!(extension, "rs" | "wgsl"));
+            if maintained_extension {
+                files.push(
+                    path.strip_prefix(root)
+                        .expect("source path must remain under repository root")
+                        .to_path_buf(),
+                );
+            }
+        }
+    }
+
+    files.sort();
+    Ok(files)
+}
+
+fn production_rust_source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut pending = vec![PathBuf::from("src/lib.rs")];
+    let mut visited = BTreeSet::new();
+
+    while let Some(relative_path) = pending.pop() {
+        if !visited.insert(relative_path.clone()) {
+            continue;
+        }
+
+        let contents = fs::read_to_string(root.join(&relative_path)).map_err(|error| {
+            format!(
+                "failed to read production Rust source {}: {error}",
+                relative_path.display()
+            )
+        })?;
+        let lines = contents.lines().collect::<Vec<_>>();
+
+        for (line_index, line) in lines.iter().enumerate() {
+            let Some(module_name) = external_module_name(line) else {
+                continue;
+            };
+
+            let attributes = preceding_attributes(&lines, line_index);
+            if attributes
+                .iter()
+                .any(|attribute| attribute.replace(' ', "") == "#[cfg(test)]")
+            {
+                continue;
+            }
+
+            let explicit_path = attributes
+                .iter()
+                .find_map(|attribute| path_attribute_value(attribute));
+            let child = if let Some(explicit_path) = explicit_path {
+                relative_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .join(explicit_path)
+            } else {
+                resolve_module_path(root, &relative_path, module_name)?
+            };
+            pending.push(child);
+        }
+    }
+
+    Ok(visited.into_iter().collect())
+}
+
+fn external_module_name(line: &str) -> Option<&str> {
+    let line = line.trim();
+    if !line.ends_with(';') || !line.contains("mod ") {
+        return None;
+    }
+
+    let tokens = line
+        .trim_end_matches(';')
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    let module_index = tokens.iter().position(|token| *token == "mod")?;
+    let name = *tokens.get(module_index + 1)?;
+    name.chars()
+        .all(|character| character == '_' || character.is_ascii_alphanumeric())
+        .then_some(name)
+}
+
+fn preceding_attributes<'a>(lines: &'a [&'a str], line_index: usize) -> Vec<&'a str> {
+    let mut attributes = Vec::new();
+    let mut index = line_index;
+    while index > 0 {
+        let previous = lines[index - 1].trim();
+        if previous.starts_with("#[") && previous.ends_with(']') {
+            attributes.push(previous);
+            index -= 1;
+        } else {
+            break;
+        }
+    }
+    attributes
+}
+
+fn path_attribute_value(attribute: &str) -> Option<&str> {
+    let attribute = attribute.trim();
+    let body = attribute
+        .strip_prefix("#[path")?
+        .strip_suffix(']')?
+        .trim()
+        .strip_prefix('=')?
+        .trim();
+    body.strip_prefix('"')?.strip_suffix('"')
+}
+
+fn resolve_module_path(
+    root: &Path,
+    parent_relative_path: &Path,
+    module_name: &str,
+) -> Result<PathBuf, String> {
+    let parent_file_name = parent_relative_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "production module path is not valid UTF-8: {}",
+                parent_relative_path.display()
+            )
+        })?;
+    let parent_directory = parent_relative_path
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let module_directory = if matches!(parent_file_name, "lib.rs" | "main.rs" | "mod.rs") {
+        parent_directory.to_path_buf()
+    } else {
+        let stem = parent_relative_path
+            .file_stem()
+            .expect("Rust source file must have a stem");
+        parent_directory.join(stem)
+    };
+
+    let flat = module_directory.join(format!("{module_name}.rs"));
+    let nested = module_directory.join(module_name).join("mod.rs");
+    match (root.join(&flat).is_file(), root.join(&nested).is_file()) {
+        (true, false) => Ok(flat),
+        (false, true) => Ok(nested),
+        (true, true) => Err(format!(
+            "production module {module_name} has both {} and {}",
+            flat.display(),
+            nested.display()
+        )),
+        (false, false) => Err(format!(
+            "production module {module_name} declared by {} has no source file",
+            parent_relative_path.display()
+        )),
+    }
 }
 
 fn read_file(root: &Path, relative_path: &str) -> Result<String, String> {
