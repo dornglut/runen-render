@@ -38,39 +38,6 @@ const STALE_ACTIVE_IDENTITY: &[&str] = &[
     "Apache License 2.0",
 ];
 
-const TRANSFER_PRODUCTION_FILES: &[&str] = &[
-    "src/admission.rs",
-    "src/appearance.rs",
-    "src/derived_state.rs",
-    "src/derived_transform.rs",
-    "src/deterministic_admission.rs",
-    "src/deterministic_capture.rs",
-    "src/deterministic_carrier.rs",
-    "src/deterministic_execution.rs",
-    "src/deterministic_verification.rs",
-    "src/deterministic_verification/numeric.rs",
-    "src/deterministic_verification/observation.rs",
-    "src/deterministic_verification/semantic.rs",
-    "src/field_input.rs",
-    "src/lib.rs",
-    "src/lowering.rs",
-    "src/maintained_method.rs",
-    "src/method.rs",
-    "src/ordinary.rs",
-    "src/output_result.rs",
-    "src/participation.rs",
-    "src/render_result.rs",
-    "src/representation.rs",
-    "src/request.rs",
-    "src/scene/mod.rs",
-    "src/semantic_binding.rs",
-    "src/semantic_plan.rs",
-    "src/shader_bridge.rs",
-    "src/space_time.rs",
-    "src/surface_input.rs",
-    "src/surface_result.rs",
-];
-
 const FORBIDDEN_PRODUCTION_MARKERS: &[&str] = &[
     "RUNENWERK_",
     "crate::plugins::render",
@@ -104,7 +71,7 @@ fn validate() -> Result<(), String> {
 
     validate_required_files(&root)?;
     validate_product_identity(&root)?;
-    validate_transfer_contract(&root)?;
+    validate_source_contract(&root)?;
 
     let initial_state = git_status(&root)?;
     if !initial_state.is_empty() {
@@ -224,7 +191,7 @@ fn validate_product_identity(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_transfer_contract(root: &Path) -> Result<(), String> {
+fn validate_source_contract(root: &Path) -> Result<(), String> {
     let manifest = read_file(root, "Cargo.toml")?;
     for required in [
         "runen-gpu = { git = \"https://github.com/dornglut/runen-gpu\", rev = \"789b430fdefeda89bfe59de86d548618b8f8ab9a\" }",
@@ -240,35 +207,25 @@ fn validate_transfer_contract(root: &Path) -> Result<(), String> {
         }
     }
 
-    for relative_path in TRANSFER_PRODUCTION_FILES {
-        let path = root.join(relative_path);
-        if !path.is_file() {
-            return Err(format!(
-                "required transferred production file is missing: {relative_path}"
-            ));
-        }
-        let contents = read_file(root, relative_path)?;
+    for relative_path in maintained_source_files(root)? {
+        let contents = fs::read_to_string(root.join(&relative_path)).map_err(|error| {
+            format!(
+                "failed to read maintained source {}: {error}",
+                relative_path.display()
+            )
+        })?;
         for marker in FORBIDDEN_PRODUCTION_MARKERS {
             if contents.contains(marker) {
                 return Err(format!(
-                    "production source {relative_path} contains forbidden predecessor/product coupling: {marker}"
+                    "maintained source {} contains forbidden predecessor/product coupling: {marker}",
+                    relative_path.display()
                 ));
             }
         }
     }
 
-    for relative_path in [
-        "src/deterministic_scene_query.wgsl",
-        "src/deterministic_execution.wgsl",
-        "src/deterministic_temporal_reconstruction.wgsl",
-        "src/deterministic_camera_reprojection.wgsl",
-        "tests/ordinary_public_api.rs",
-    ] {
-        if !root.join(relative_path).is_file() {
-            return Err(format!(
-                "required RX authority file is missing: {relative_path}"
-            ));
-        }
+    if !root.join("tests/ordinary_public_api.rs").is_file() {
+        return Err("required ordinary public API proof is missing: tests/ordinary_public_api.rs".to_owned());
     }
 
     let lib = read_file(root, "src/lib.rs")?;
@@ -288,9 +245,7 @@ fn validate_transfer_contract(root: &Path) -> Result<(), String> {
         "pub mod space_time;",
         "pub mod surface_input;",
         "pub mod surface_result;",
-        "mod deterministic_execution;",
         "mod ordinary;",
-        "mod shader_bridge;",
         "pub use ordinary::*;",
     ] {
         require_contains("src/lib.rs", &lib, required)?;
@@ -324,14 +279,53 @@ fn validate_transfer_contract(root: &Path) -> Result<(), String> {
         "mesa-vulkan-drivers",
         "WGPU_BACKEND=vulkan",
         "cargo +stable test -p runen-render",
-        "--skip camera_history_proof",
-        "--lib camera_history_proof",
         "--test ordinary_public_api",
     ] {
         require_contains(".github/workflows/validation.yml", &workflow, required)?;
     }
 
     Ok(())
+}
+
+fn maintained_source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let source_root = root.join("src");
+    let mut pending = vec![source_root];
+    let mut files = Vec::new();
+
+    while let Some(directory) = pending.pop() {
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| format!("failed to read {}: {error}", directory.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!("failed to inspect {}: {error}", directory.display())
+            })?;
+            let file_type = entry.file_type().map_err(|error| {
+                format!("failed to inspect {}: {error}", entry.path().display())
+            })?;
+            let path = entry.path();
+            if file_type.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let maintained_extension = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| matches!(extension, "rs" | "wgsl"));
+            if maintained_extension {
+                files.push(
+                    path.strip_prefix(root)
+                        .expect("source path must remain under repository root")
+                        .to_path_buf(),
+                );
+            }
+        }
+    }
+
+    files.sort();
+    Ok(files)
 }
 
 fn read_file(root: &Path, relative_path: &str) -> Result<String, String> {
