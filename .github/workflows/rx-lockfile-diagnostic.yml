@@ -1,0 +1,26 @@
+name: RX Lockfile Diagnostic
+
+on:
+  push:
+    branches:
+      - rx-transfer-4
+
+permissions:
+  contents: read
+
+jobs:
+  generate-lockfile:
+    name: Generate canonical Cargo.lock
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Generate canonical lockfile
+        run: cargo generate-lockfile
+      - name: Upload canonical lockfile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rx-canonical-lockfile
+          path: Cargo.lock
+          if-no-files-found: error
+          retention-days: 1
