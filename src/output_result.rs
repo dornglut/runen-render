@@ -77,9 +77,7 @@ impl RenderOutputValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::request::{
-        RenderDistanceConvention, RenderRadiometricRepresentation,
-    };
+    use crate::request::{RenderDistanceConvention, RenderRadiometricRepresentation};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct ProofPhysicalWord {

@@ -4955,8 +4955,9 @@ mod tests {
             CAMERA_REPROJECTION_WGSL.as_str(),
         )
         .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
-        let program_contract = GpuComputePipelineDescriptor::ordinary(programs.evaluator().clone(), "")
-            .expect_err("empty entry point must fail in RunenGPU program authority");
+        let program_contract =
+            GpuComputePipelineDescriptor::ordinary(programs.evaluator().clone(), "")
+                .expect_err("empty entry point must fail in RunenGPU program authority");
         assert_owner(
             RenderRunenGpuPreparationError::ProgramContract {
                 stage: "program-contract",

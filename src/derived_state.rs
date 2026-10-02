@@ -142,9 +142,7 @@ impl RenderDerivedSceneDependencies {
 mod tests {
     use super::*;
     use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-    use crate::participation::{
-        RenderMaterialAssignment, RenderObjectParticipation,
-    };
+    use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
     use crate::representation::{
         RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderRefinementEvidence,
         RenderRepresentationRecord, RenderSurfaceProtocolEvidence,

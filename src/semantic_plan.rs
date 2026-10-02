@@ -662,9 +662,7 @@ mod tests {
         RenderMethodOutputGuarantee, RenderMethodOutputKind, RenderMethodRepresentationRequirement,
         RenderRepresentationProtocolRequirement, RenderSpectralRadianceSupport,
     };
-    use crate::participation::{
-        RenderMaterialAssignment, RenderObjectParticipation,
-    };
+    use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
     use crate::representation::{
         RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
         RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderFieldDistanceGuarantee,
