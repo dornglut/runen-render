@@ -1,4 +1,4 @@
-//! Focused Vulkan-capable proof for the maintained R7 deterministic execution seam.
+//! Focused Vulkan-capable proof for the maintained deterministic execution seam.
 //!
 //! The fixture intentionally owns no method or evaluator authority. It reaches execution only
 //! through `admit_deterministic_render_with_semantic_inputs`, then proves the maintained ordinary and verified paths use
@@ -7,41 +7,41 @@
 //! readbacks from the same exact `GpuSubmission`, can establish the private RR566-EVAL-001 witness,
 //! and can form public FORM-001 result evidence through the maintained submitted-render surface.
 
-use super::admission::{
+use crate::admission::{
     RenderOutputBinding, RenderOutputDestination, RenderRepresentationAvailabilityFact,
     RenderRepresentationAvailabilityState,
 };
-use super::appearance::RenderDiffuseMaterial;
-use super::deterministic_admission::{
+use crate::appearance::RenderDiffuseMaterial;
+use crate::deterministic_admission::{
     AdmittedDeterministicRender, admit_deterministic_render_with_semantic_inputs,
 };
-use super::deterministic_execution::{
+use crate::deterministic_execution::{
     RenderDeterministicRadianceCaptureRequestError, RenderDeterministicResultFormationError,
     SubmittedDeterministicRender, submit_deterministic_render,
     submit_deterministic_render_for_verified_result,
 };
-use super::deterministic_verification::{
+use crate::deterministic_verification::{
     submit_deterministic_render_for_verified_formation, verify_completed_deterministic_render,
 };
-use super::participation::RenderMaterialAssignment;
-use super::participation::RenderObjectParticipation;
-use super::representation::{
+use crate::participation::RenderMaterialAssignment;
+use crate::participation::RenderObjectParticipation;
+use crate::representation::{
     RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION, RENDER_SURFACE_QUERY_PROTOCOL_REVISION,
     RenderOrientedSurfaceProtocolEvidence, RenderRefinementEvidence, RenderRepresentationRecord,
     RenderSurfaceProtocolEvidence,
 };
-use super::request::{
+use crate::request::{
     RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
     RenderPerspectiveObservation, RenderRequest, RenderRequestedOutput, RenderResultTopology,
     RenderSamplingSupport, RenderSemanticTolerance,
 };
-use super::scene::{RenderObjectState, RenderSceneSnapshot, RenderSceneStore, RenderSceneUpdate};
-use super::space_time::{
+use crate::scene::{RenderObjectState, RenderSceneSnapshot, RenderSceneStore, RenderSceneUpdate};
+use crate::space_time::{
     RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState, RenderObjectTemporalState,
     RenderSpaceSpec, RenderSpatialCoverage, RenderTemporalSupport, RenderTimeInterval,
     RenderTimePoint,
 };
-use super::surface_input::{
+use crate::surface_input::{
     RenderSurfaceSemanticInput, RenderSurfaceSemanticInputBinding,
     RenderSurfaceSemanticInputRequirement,
 };
@@ -55,11 +55,11 @@ use runen_gpu::{
 };
 use std::time::{Duration, Instant};
 
-pub(super) struct MaintainedExecutionFixture {
-    pub(super) scene: RenderSceneSnapshot,
-    pub(super) request: RenderRequest,
-    pub(super) semantic_inputs: Vec<RenderSurfaceSemanticInputBinding>,
-    pub(super) availability: Vec<RenderRepresentationAvailabilityFact>,
+pub(crate) struct MaintainedExecutionFixture {
+    pub(crate) scene: RenderSceneSnapshot,
+    pub(crate) request: RenderRequest,
+    pub(crate) semantic_inputs: Vec<RenderSurfaceSemanticInputBinding>,
+    pub(crate) availability: Vec<RenderRepresentationAvailabilityFact>,
 }
 
 fn object_identity_lattice_request(width: u32, height: u32) -> RenderRequest {
@@ -124,7 +124,7 @@ fn maintained_surface_evidence() -> RenderSurfaceProtocolEvidence {
         .with_semantic_input_requirement(RenderSurfaceSemanticInputRequirement::current())
 }
 
-pub(super) fn maintained_fixture() -> MaintainedExecutionFixture {
+pub(crate) fn maintained_fixture() -> MaintainedExecutionFixture {
     let mut store = RenderSceneStore::new();
     let object_id = store
         .allocate_object_id()
@@ -243,7 +243,7 @@ fn radiance_lattice_request() -> RenderRequest {
             0,
             RenderOutputSpec::new(
                 RenderOutputValue::Radiance {
-                    representation: super::request::RenderRadiometricRepresentation::spectral_at_wavelength_meters(
+                    representation: crate::request::RenderRadiometricRepresentation::spectral_at_wavelength_meters(
                         550.0e-9,
                     )
                     .expect("R7 maintained radiance representation"),
@@ -376,7 +376,7 @@ fn admit_with_retained_destination(
     .expect("R7 maintained retained radiance fixture must admit")
 }
 
-pub(super) fn admit_with_retained_radiance_destination(
+pub(crate) fn admit_with_retained_radiance_destination(
     fixture: &MaintainedExecutionFixture,
     context: &GpuContext,
 ) -> AdmittedDeterministicRender {
@@ -811,7 +811,7 @@ fn radiance_capture_rejects_correlation_affinity_and_replaced_writer_evidence() 
             &context_a,
             &missing_submission,
         ),
-        Err(super::deterministic_execution::RenderDeterministicRadianceCaptureError::ReadbackCorrelationMissing)
+        Err(crate::deterministic_execution::RenderDeterministicRadianceCaptureError::ReadbackCorrelationMissing)
     );
 
     let wrong_source_request = submitted_a
@@ -828,7 +828,7 @@ fn radiance_capture_rejects_correlation_affinity_and_replaced_writer_evidence() 
             &context_a,
             &wrong_source_submission,
         ),
-        Err(super::deterministic_execution::RenderDeterministicRadianceCaptureError::ReadbackSourceMismatch)
+        Err(crate::deterministic_execution::RenderDeterministicRadianceCaptureError::ReadbackSourceMismatch)
     );
 
     let submitted_b = form_verified_render(
@@ -859,7 +859,7 @@ fn radiance_capture_rejects_correlation_affinity_and_replaced_writer_evidence() 
             &context_b,
             submitted_b.submission(),
         ),
-        Err(super::deterministic_execution::RenderDeterministicRadianceCaptureError::ContextAffinityMismatch)
+        Err(crate::deterministic_execution::RenderDeterministicRadianceCaptureError::ContextAffinityMismatch)
     );
 
     let mismatched_render_request = submitted_a
@@ -871,7 +871,7 @@ fn radiance_capture_rejects_correlation_affinity_and_replaced_writer_evidence() 
             &context_b,
             submitted_b.submission(),
         ),
-        Err(super::deterministic_execution::RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch)
+        Err(crate::deterministic_execution::RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch)
     );
 
     let foreign_product_request = submitted_a
@@ -883,7 +883,7 @@ fn radiance_capture_rejects_correlation_affinity_and_replaced_writer_evidence() 
             &context_a,
             submitted_b.submission(),
         ),
-        Err(super::deterministic_execution::RenderDeterministicRadianceCaptureError::ProductSubmissionAffinityMismatch)
+        Err(crate::deterministic_execution::RenderDeterministicRadianceCaptureError::ProductSubmissionAffinityMismatch)
     );
 
     let replaced_writer_request = submitted_a
@@ -901,7 +901,7 @@ fn radiance_capture_rejects_correlation_affinity_and_replaced_writer_evidence() 
             &context_a,
             &replaced_writer_submission,
         ),
-        Err(super::deterministic_execution::RenderDeterministicRadianceCaptureError::RendererWriteNoLongerCurrent)
+        Err(crate::deterministic_execution::RenderDeterministicRadianceCaptureError::RendererWriteNoLongerCurrent)
     );
 }
 

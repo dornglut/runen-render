@@ -1,39 +1,39 @@
-//! Vulkan-capable edge proofs for the maintained R7 deterministic execution seam.
+//! Vulkan-capable edge proofs for the maintained deterministic execution seam.
 //!
 //! These fixtures own no evaluator or method authority. They exercise the maintained public-RunenGPU
 //! path to prove emitter cardinality and geometric-miss physical encodings, then require the private
 //! RR566-EVAL-001 verifier to certify the same exact submissions.
 
-use super::admission::{
+use crate::admission::{
     RenderOutputBinding, RenderOutputDestination, RenderRepresentationAvailabilityFact,
     RenderRepresentationAvailabilityState,
 };
-use super::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-use super::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
-use super::deterministic_carrier::{decode_word, maintained_evaluation_value};
-use super::deterministic_execution::DeterministicVerificationSubmission;
-use super::deterministic_verification::{
+use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
+use crate::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
+use crate::deterministic_carrier::{decode_word, maintained_evaluation_value};
+use crate::deterministic_execution::DeterministicVerificationSubmission;
+use crate::deterministic_verification::{
     submit_deterministic_render_for_verified_formation, verify_completed_deterministic_render,
 };
-use super::participation::{RenderMaterialAssignment, RenderObjectParticipation};
-use super::representation::{
+use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
+use crate::representation::{
     RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION, RENDER_SURFACE_QUERY_PROTOCOL_REVISION,
     RenderOrientedSurfaceProtocolEvidence, RenderRefinementEvidence, RenderRepresentationRecord,
     RenderSurfaceProtocolEvidence,
 };
-use super::request::{
+use crate::request::{
     RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
     RenderPerspectiveObservation, RenderProbeObservation, RenderRadiometricRepresentation,
     RenderRequest, RenderRequestedOutput, RenderResultTopology, RenderSamplingSupport,
     RenderSemanticTolerance,
 };
-use super::scene::{RenderObjectState, RenderSceneSnapshot, RenderSceneStore, RenderSceneUpdate};
-use super::space_time::{
+use crate::scene::{RenderObjectState, RenderSceneSnapshot, RenderSceneStore, RenderSceneUpdate};
+use crate::space_time::{
     RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState, RenderObjectTemporalState,
     RenderSpaceSpec, RenderSpatialCoverage, RenderTemporalSupport, RenderTimeInterval,
     RenderTimePoint,
 };
-use super::surface_input::{
+use crate::surface_input::{
     RenderSurfaceSemanticInput, RenderSurfaceSemanticInputBinding,
     RenderSurfaceSemanticInputRequirement,
 };
@@ -102,7 +102,7 @@ fn oriented_surface_evidence() -> RenderSurfaceProtocolEvidence {
 fn insert_geometry(
     store: &mut RenderSceneStore,
     translation_scene: [f64; 3],
-) -> super::representation::RenderRepresentationId {
+) -> crate::representation::RenderRepresentationId {
     let object_id = store.allocate_object_id().expect("R7 edge-proof object id");
     let mut insert = RenderSceneUpdate::new();
     insert.insert_with_state(object_id, object_state(translation_scene));

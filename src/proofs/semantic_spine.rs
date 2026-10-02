@@ -1,37 +1,38 @@
-//! End-to-end R1-R5 semantic-spine proof for the bounded R6 founding renderer.
+//! End-to-end semantic-spine proof for the bounded founding renderer.
 //!
 //! This remains test-only. It proves that the exact founding semantic scene/request/method shape can
-//! use the permanent R1-R5 contracts before R6 method lowering exists. Concrete primitive evaluation
-//! remains in `r6_proof`; this module does not create a second realization or planning authority.
+//! use the permanent semantic contracts before maintained method lowering. Concrete primitive
+//! evaluation remains in `founding_realization`; this module does not create a second realization
+//! or planning authority.
 
-use super::admission::{
+use crate::admission::{
     RenderOutputBinding, RenderOutputDestination, RenderRepresentationAvailabilityFact,
     RenderRepresentationAvailabilityState, admit_render_plan,
 };
-use super::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-use super::method::{
+use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
+use crate::method::{
     RenderAbstractExecutionRequirement, RenderMethodContract, RenderMethodId,
     RenderMethodOutputContract, RenderMethodOutputGuarantee, RenderMethodOutputKind,
     RenderMethodRepresentationRequirement, RenderObservationKind,
     RenderRepresentationProtocolRequirement, RenderSpectralRadianceSupport,
 };
-use super::participation::{RenderMaterialAssignment, RenderObjectParticipation};
-use super::representation::{
+use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
+use crate::representation::{
     RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
     RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderFieldDistanceGuarantee,
     RenderFieldDistanceProtocolEvidence, RenderOrientedSurfaceProtocolEvidence,
     RenderRefinementEvidence, RenderRepresentationId, RenderRepresentationProtocol,
     RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
 };
-use super::request::{
+use crate::request::{
     RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
     RenderPerspectiveObservation, RenderProbeObservation, RenderRadiometricRepresentation,
     RenderRequest, RenderRequestedOutput, RenderResultTopology, RenderSamplingSupport,
     RenderSemanticTolerance,
 };
-use super::scene::{RenderObjectId, RenderObjectState, RenderSceneStore, RenderSceneUpdate};
-use super::semantic_plan::{RenderPlan, plan_render};
-use super::space_time::{
+use crate::scene::{RenderObjectId, RenderObjectState, RenderSceneStore, RenderSceneUpdate};
+use crate::semantic_plan::{RenderPlan, plan_render};
+use crate::space_time::{
     RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState, RenderObjectTemporalState,
     RenderSpaceSpec, RenderSpatialCoverage, RenderTemporalSupport, RenderTimeInterval,
     RenderTimePoint,
@@ -518,5 +519,5 @@ fn founding_scene_reaches_public_r5_admission_without_synthetic_semantic_binding
 }
 
 mod execution {
-    include!("r6_execution_proof.rs");
+    include!("semantic_spine_execution.rs");
 }

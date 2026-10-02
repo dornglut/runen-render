@@ -1,17 +1,17 @@
-//! Focused R7 proof that the retained compiled transform ignores same-object non-spatial facets.
+//! Focused proof that the retained compiled transform ignores same-object non-spatial facets.
 //!
 //! The compiled transform depends exactly on `ObjectSpatialState`; this proof exercises that exact
 //! retained artifact through accepted temporal and R3 participation changes on the same object.
 
-use super::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-use super::derived_transform::RenderRetainedObjectTransform;
-use super::participation::{RenderMaterialAssignment, RenderObjectParticipation};
-use super::representation::{
+use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
+use crate::derived_transform::RenderRetainedObjectTransform;
+use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
+use crate::representation::{
     RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderRefinementEvidence, RenderRepresentationRecord,
     RenderSurfaceProtocolEvidence,
 };
-use super::scene::{RenderObjectId, RenderObjectState, RenderSceneStore, RenderSceneUpdate};
-use super::space_time::{
+use crate::scene::{RenderObjectId, RenderObjectState, RenderSceneStore, RenderSceneUpdate};
+use crate::space_time::{
     RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState, RenderObjectTemporalState,
     RenderSpaceSpec, RenderSpatialCoverage, RenderTemporalSupport, RenderTimeInterval,
     RenderTimePoint,

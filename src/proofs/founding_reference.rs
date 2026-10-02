@@ -1,17 +1,17 @@
-//! CPU semantic oracle for the bounded R6 founding direct-lighting renderer.
+//! CPU semantic oracle for the bounded founding direct-lighting renderer.
 //!
 //! This module is test-only. It composes accepted R2/R3 observation, surface-result, material,
 //! emitter, and renderer-local identity semantics. It does not realize geometry, define a new render
 //! method contract, choose GPU formats, or authorize production API surface.
 
-use super::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-use super::representation::RenderSurfaceQuery;
-use super::request::{
+use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
+use crate::representation::RenderSurfaceQuery;
+use crate::request::{
     RenderPerspectiveObservation, RenderRadiometricRepresentation, RenderSamplingSupport,
 };
-use super::scene::{RenderObjectId, RenderSceneStore, RenderSceneUpdate};
-use super::space_time::{RenderAffineTransform3, RenderTimeInterval, RenderTimePoint};
-use super::surface_result::{RenderOrientedSurfaceHit, RenderOrientedSurfaceQueryResult};
+use crate::scene::{RenderObjectId, RenderSceneStore, RenderSceneUpdate};
+use crate::space_time::{RenderAffineTransform3, RenderTimeInterval, RenderTimePoint};
+use crate::surface_result::{RenderOrientedSurfaceHit, RenderOrientedSurfaceQueryResult};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct FoundingReferenceSample {

@@ -1,39 +1,39 @@
-//! Focused R7 proof for request-scoped semantic surface binding laws activated by #566.
+//! Focused proof for request-scoped semantic surface binding laws.
 //!
 //! This module proves protocol locality and one-binding temporal validity around the maintained R5
 //! semantic-binding implementation. It does not create a second planning or binding authority.
 
-use super::field_input::{
+use crate::field_input::{
     RenderFieldSemanticInput, RenderFieldSemanticInputBinding, RenderFieldSemanticInputRequirement,
 };
-use super::method::{
+use crate::method::{
     RenderAbstractExecutionRequirement, RenderFieldDistanceInputRequirement, RenderMethodContract,
     RenderMethodId, RenderMethodOutputContract, RenderMethodOutputGuarantee,
     RenderMethodOutputKind, RenderMethodRepresentationRequirement, RenderObservationKind,
     RenderRepresentationProtocolRequirement,
 };
-use super::participation::RenderObjectParticipation;
-use super::representation::{
+use crate::participation::RenderObjectParticipation;
+use crate::representation::{
     RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
     RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderFieldDistanceGuarantee,
     RenderFieldDistanceProtocolEvidence, RenderOrientedSurfaceProtocolEvidence,
     RenderRefinementEvidence, RenderRepresentationId, RenderRepresentationProtocol,
     RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
 };
-use super::request::{
+use crate::request::{
     RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
     RenderProbeObservation, RenderRequest, RenderRequestedOutput, RenderResultTopology,
     RenderSamplingSupport, RenderSemanticTolerance,
 };
-use super::scene::{RenderObjectId, RenderObjectState, RenderSceneStore, RenderSceneUpdate};
-use super::semantic_binding::{RenderNormalizedSemanticInputs, RenderSemanticBindingInputError};
-use super::semantic_plan::{RenderPlan, plan_render};
-use super::space_time::{
+use crate::scene::{RenderObjectId, RenderObjectState, RenderSceneStore, RenderSceneUpdate};
+use crate::semantic_binding::{RenderNormalizedSemanticInputs, RenderSemanticBindingInputError};
+use crate::semantic_plan::{RenderPlan, plan_render};
+use crate::space_time::{
     RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState, RenderObjectTemporalState,
     RenderSpaceSpec, RenderSpatialCoverage, RenderTemporalSupport, RenderTimeInterval,
     RenderTimePoint,
 };
-use super::surface_input::{
+use crate::surface_input::{
     RenderSurfaceSemanticInput, RenderSurfaceSemanticInputBinding,
     RenderSurfaceSemanticInputRequirement,
 };

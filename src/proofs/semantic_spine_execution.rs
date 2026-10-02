@@ -1,25 +1,25 @@
-// Permanent public-RunenGPU execution proof for the bounded R6 founding renderer.
+// Permanent public-RunenGPU execution proof for the bounded founding renderer.
 //
 // The proof keeps an independent CPU semantic oracle, but owns no GPU evaluator, WGSL, packing,
 // lowering, or submission authority. Execution flows only through the maintained deterministic R7
 // path. Direct inspection of renderer-private same-submission bytes is proof evidence only; EVAL-001
 // independently normalizes and certifies the same exact submission before semantic formation.
 
-use super::super::deterministic_admission::{AdmittedDeterministicRender, admit_deterministic_render_with_semantic_inputs};
-use super::super::deterministic_execution::DeterministicVerificationSubmission;
-use super::super::deterministic_verification::{
+use crate::deterministic_admission::{AdmittedDeterministicRender, admit_deterministic_render_with_semantic_inputs};
+use crate::deterministic_execution::DeterministicVerificationSubmission;
+use crate::deterministic_verification::{
     submit_deterministic_render_for_verified_formation, verify_completed_deterministic_render,
 };
-use super::super::r6_proof::FoundingRepresentationRealization;
-use super::super::r6_reference_proof::{direct_lighting_radiance, observation_forward_depth};
-use super::super::render_result::RenderResult;
-use super::super::representation::{RenderSurfaceQuery, RenderSurfaceProtocolEvidence};
-use super::super::scene::RenderSceneSnapshot;
-use super::super::surface_input::{
+use crate::proofs::founding_realization::FoundingRepresentationRealization;
+use crate::proofs::founding_reference::{direct_lighting_radiance, observation_forward_depth};
+use crate::render_result::RenderResult;
+use crate::representation::{RenderSurfaceQuery, RenderSurfaceProtocolEvidence};
+use crate::scene::RenderSceneSnapshot;
+use crate::surface_input::{
     RenderSurfaceSemanticInput, RenderSurfaceSemanticInputBinding,
     RenderSurfaceSemanticInputRequirement,
 };
-use super::super::surface_result::RenderOrientedSurfaceHit;
+use crate::surface_result::RenderOrientedSurfaceHit;
 use super::*;
 use runen_gpu::{
     GpuBufferDescriptor, GpuBufferInitialization, GpuBufferUsage, GpuCapabilityProfile, GpuContext,
@@ -389,7 +389,7 @@ fn reference_realizations(fixture: &ExecutionFixture) -> [ReferenceRealization; 
 }
 
 fn nearest_reference_hit(
-    admitted: &super::super::admission::AdmittedRenderPlan,
+    admitted: &crate::admission::AdmittedRenderPlan,
     realizations: &[ReferenceRealization],
     origin: [f64; 3],
     direction: [f64; 3],
@@ -467,7 +467,7 @@ fn observation_forward(transform: RenderAffineTransform3) -> Result<[f64; 3], St
 }
 
 fn reference_outputs(
-    admitted: &super::super::admission::AdmittedRenderPlan,
+    admitted: &crate::admission::AdmittedRenderPlan,
     realizations: &[ReferenceRealization],
     emitter: RenderDirectionalEmitter,
 ) -> Result<(Vec<ReferencePixel>, f64), String> {

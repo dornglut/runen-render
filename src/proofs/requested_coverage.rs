@@ -1,17 +1,15 @@
-//! Actual current-coverage execution proof in the existing R7 hosted filter. Readbacks are authored
+//! Actual current-coverage execution proof. Readbacks are authored
 //! only here, after the ordinary producer fragment, and correlated to that same completed submission.
 
-use super::super::admission::{RenderOutputBinding, RenderOutputDestination};
-use super::super::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
-use super::super::deterministic_execution_r7_proof::{
-    MaintainedExecutionFixture, maintained_fixture,
-};
-use super::super::request::{
+use super::*;
+use crate::admission::{RenderOutputBinding, RenderOutputDestination};
+use crate::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
+use crate::proofs::execution::{MaintainedExecutionFixture, maintained_fixture};
+use crate::request::{
     RenderRequest, RenderRequestedOutput, RenderResultTopology, RenderSemanticTolerance,
 };
-use super::super::space_time::{RenderAffineTransform3, RenderTemporalSupport};
-use super::super::surface_input::RenderSurfaceSemanticInput;
-use super::*;
+use crate::space_time::{RenderAffineTransform3, RenderTemporalSupport};
+use crate::surface_input::RenderSurfaceSemanticInput;
 use runen_gpu::{
     GpuCapabilityProfile, GpuContextDescriptor, GpuContextRequestErrorCategory, GpuFormatRole,
     GpuTextureDescriptor, GpuTextureInitialization, GpuTextureUsage, GpuWorkNodeKind,
@@ -71,7 +69,7 @@ fn fixture(
     fixture.request = RenderRequest::new(fixture.request.render_interval(),
         vec![RenderObservationSpec::Perspective(observation)],
         vec![RenderRequestedOutput::new(0, RenderOutputSpec::new(
-            RenderOutputValue::Radiance { representation: super::super::request::RenderRadiometricRepresentation::spectral_at_wavelength_meters(550e-9).unwrap() },
+            RenderOutputValue::Radiance { representation: crate::request::RenderRadiometricRepresentation::spectral_at_wavelength_meters(550e-9).unwrap() },
             RenderResultTopology::sample_lattice_2d(extent.0, extent.1).unwrap(), RenderSemanticTolerance::exact(),
         ).unwrap())],
     ).unwrap();
@@ -628,9 +626,6 @@ fn field_fixture(
     MaintainedExecutionFixture,
     Vec<RenderFieldSemanticInputBinding>,
 ) {
-    use super::super::admission::{
-        RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState,
-    };
     use super::super::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
     use super::super::field_input::RenderFieldSemanticInputRequirement;
     use super::super::participation::{RenderMaterialAssignment, RenderObjectParticipation};
@@ -639,7 +634,10 @@ fn field_fixture(
         RenderFieldDistanceProtocolEvidence, RenderRefinementEvidence, RenderRepresentationRecord,
     };
     use super::super::scene::{RenderSceneStore, RenderSceneUpdate};
-    use super::super::space_time::RenderSpatialCoverage;
+    use crate::admission::{
+        RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState,
+    };
+    use crate::space_time::RenderSpatialCoverage;
     let mut fixture = fixture((8, 8), 0.0, 0.0, 1);
     let state = fixture
         .scene
@@ -958,7 +956,7 @@ fn requested_coverage_plane_depth_matches_the_same_phase_primary_query() {
 #[test]
 fn requested_coverage_uses_current_scene_state_even_with_unchanged_surface_generation() {
     use super::super::scene::{RenderObjectState, RenderSceneStore, RenderSceneUpdate};
-    use super::super::space_time::RenderObjectSpatialState;
+    use crate::space_time::RenderObjectSpatialState;
     let Some(context) = context() else { return };
     let mut fixture = fixture((8, 8), 0.0, 0.0, 7);
     let mut cache = DeterministicResourceCache::default();
