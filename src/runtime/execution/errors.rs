@@ -1,5 +1,6 @@
 use super::*;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RenderRunenGpuPreparationError {
     ProgramSource {
         stage: &'static str,

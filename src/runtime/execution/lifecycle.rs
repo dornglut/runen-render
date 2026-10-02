@@ -343,4 +343,3 @@ impl DeterministicVerificationSubmission {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
