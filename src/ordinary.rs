@@ -8,16 +8,16 @@
 use super::admission::{
     AdmittedRenderPlan, RenderOutputBinding, RenderRepresentationAvailabilityFact,
 };
-use super::deterministic_admission::{
+use super::runtime::admission::{
     AdmittedDeterministicRender, RenderDeterministicAdmissionFailure,
     admit_deterministic_render_with_semantic_inputs,
 };
-use super::deterministic_capture::{
+use super::runtime::capture::{
     RenderCapturedDeterministicRadiance, RenderDeterministicRadianceCaptureError,
     RenderDeterministicRadianceCaptureRequest, RenderDeterministicRadianceCaptureRequestError,
 };
-pub use super::deterministic_execution::RenderObjectIdentityDecoder;
-use super::deterministic_execution::{
+pub use super::runtime::execution::RenderObjectIdentityDecoder;
+use super::runtime::execution::{
     DeterministicResourceCache, PreparedDeterministicRadianceOutput, PreparedDeterministicRender,
     RenderDeterministicExecutionError, RenderDeterministicResultFormationError,
     RenderTemporalExecutionEvidence as DeterministicTemporalExecutionEvidence,
@@ -25,7 +25,7 @@ use super::deterministic_execution::{
     prepare_deterministic_render_with_cache_in_scope_and_evaluation, submit_deterministic_render,
     submit_deterministic_render_for_verified_result,
 };
-use super::deterministic_verification::{
+use super::runtime::verification::{
     RenderDeterministicVerificationEligibilityError, RenderDeterministicVerificationError,
     RenderDeterministicVerifiedSubmissionError,
 };
@@ -124,12 +124,12 @@ impl RenderExecutionError {
     pub fn kind(&self) -> RenderExecutionErrorKind {
         match &self.inner {
             RenderDeterministicExecutionError::Lowering(
-                super::deterministic_execution::RenderDeterministicLoweringError::RunenShaderCompilation(
+                super::runtime::execution::RenderDeterministicLoweringError::RunenShaderCompilation(
                     _,
                 ),
             ) => RenderExecutionErrorKind::RunenShaderCompilation,
             RenderDeterministicExecutionError::Lowering(
-                super::deterministic_execution::RenderDeterministicLoweringError::RunenGpuPreparation(
+                super::runtime::execution::RenderDeterministicLoweringError::RunenGpuPreparation(
                     _,
                 ),
             ) => RenderExecutionErrorKind::RunenGpuPreparation,
@@ -146,7 +146,7 @@ impl RenderExecutionError {
     /// ordinary error source without RunenRender mirroring RunenShader's diagnostic taxonomy.
     pub fn runen_shader_compilation_source(&self) -> Option<&(dyn Error + 'static)> {
         let RenderDeterministicExecutionError::Lowering(
-            super::deterministic_execution::RenderDeterministicLoweringError::RunenShaderCompilation(
+            super::runtime::execution::RenderDeterministicLoweringError::RunenShaderCompilation(
                 error,
             ),
         ) = &self.inner
@@ -163,7 +163,7 @@ impl RenderExecutionError {
     /// mirroring RunenGPU's error taxonomy.
     pub fn runen_gpu_preparation_source(&self) -> Option<&(dyn Error + 'static)> {
         let RenderDeterministicExecutionError::Lowering(
-            super::deterministic_execution::RenderDeterministicLoweringError::RunenGpuPreparation(
+            super::runtime::execution::RenderDeterministicLoweringError::RunenGpuPreparation(
                 error,
             ),
         ) = &self.inner
@@ -1231,8 +1231,8 @@ mod tests {
     fn execution_error_preserves_runenshader_owner_category() {
         let error = RenderExecutionError {
             inner: RenderDeterministicExecutionError::Lowering(
-                crate::deterministic_execution::RenderDeterministicLoweringError::RunenShaderCompilation(
-                    crate::shader_bridge::RenderRunenShaderCompilationError::CanonicalBytesChanged {
+                crate::runtime::execution::RenderDeterministicLoweringError::RunenShaderCompilation(
+                    crate::runtime::program::RenderRunenShaderCompilationError::CanonicalBytesChanged {
                         program: "test program",
                     },
                 ),

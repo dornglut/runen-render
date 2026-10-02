@@ -4,22 +4,22 @@
 //! reusing the renderer-local method ID. RunenRender selects the exact method contract and admits
 //! the resulting ordinary plan before applying evaluator/physical-realization compatibility.
 
-use super::admission::{
+use crate::admission::{
     AdmittedRenderPlan, RenderExecutionAdmissionFailure, RenderOutputBinding,
     RenderOutputDestination, RenderRepresentationAvailabilityFact,
     admit_render_plan_with_semantic_inputs,
 };
-use super::derived_transform::{
+use super::transform::{
     RenderCompiledMetricSimilarityTransform, RenderCompiledMetricSimilarityTransformError,
     RenderCompiledObjectTransform, RenderCompiledObjectTransformError,
 };
-use super::field_input::{RenderFieldSemanticInput, RenderFieldSemanticInputBinding};
-use super::maintained_method::maintained_deterministic_method;
-use super::representation::{RenderRepresentationId, RenderRepresentationProtocol};
-use super::request::{RenderObservationSpec, RenderOutputValue, RenderRequest};
-use super::scene::{RenderObjectId, RenderObjectState, RenderSceneSnapshot};
-use super::semantic_plan::{RenderPlanningFailure, plan_render};
-use super::surface_input::{RenderSurfaceSemanticInput, RenderSurfaceSemanticInputBinding};
+use crate::field_input::{RenderFieldSemanticInput, RenderFieldSemanticInputBinding};
+use super::method::maintained_deterministic_method;
+use crate::representation::{RenderRepresentationId, RenderRepresentationProtocol};
+use crate::request::{RenderObservationSpec, RenderOutputValue, RenderRequest};
+use crate::scene::{RenderObjectId, RenderObjectState, RenderSceneSnapshot};
+use crate::semantic_plan::{RenderPlanningFailure, plan_render};
+use crate::surface_input::{RenderSurfaceSemanticInput, RenderSurfaceSemanticInputBinding};
 use runen_gpu::{GpuBufferUsage, GpuContext, GpuTextureFormat, GpuTextureUsage};
 use std::error::Error;
 use std::fmt;
@@ -864,7 +864,7 @@ mod tests {
             )
             .expect("composable radiance texture handle");
         let radiance_value = RenderOutputValue::Radiance {
-            representation: super::super::request::RenderRadiometricRepresentation::
+            representation: crate::request::RenderRadiometricRepresentation::
                 spectral_at_wavelength_meters(550.0e-9)
                 .expect("radiance representation"),
         };

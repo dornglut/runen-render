@@ -5,7 +5,7 @@
 //! correlated by the existing R3 `RenderRepresentationId`, while semantic query/result meaning stays
 //! owned by the permanent R2/R3 contracts.
 
-use crate::derived_transform::{RenderCompiledObjectTransform, RenderCompiledObjectTransformError};
+use crate::runtime::transform::{RenderCompiledObjectTransform, RenderCompiledObjectTransformError};
 use crate::representation::{
     RenderFieldDistanceProtocolEvidence, RenderFieldDistanceQuery, RenderFieldDistanceSample,
     RenderRepresentationId, RenderRepresentationValidationError, RenderSurfaceQuery,

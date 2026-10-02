@@ -3,19 +3,19 @@
 //! The contract is semantic method authority only. It does not expose a method plugin/registry,
 //! evaluator object, execution topology, GPU program, proof fixture, or product-facing method family.
 
-use super::method::{
+use crate::method::{
     RenderAbstractExecutionRequirement, RenderFieldDistanceInputRequirement, RenderMethodContract,
     RenderMethodId, RenderMethodOutputContract, RenderMethodOutputGuarantee,
     RenderMethodOutputKind, RenderMethodRepresentationRequirement, RenderObservationKind,
     RenderRepresentationProtocolRequirement, RenderSpectralRadianceSupport,
 };
-use super::representation::{
+use crate::representation::{
     RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
     RENDER_SURFACE_QUERY_PROTOCOL_REVISION,
 };
-use super::request::RenderDistanceConvention;
+use crate::request::RenderDistanceConvention;
 
-pub(super) fn maintained_deterministic_method() -> RenderMethodContract {
+pub(crate) fn maintained_deterministic_method() -> RenderMethodContract {
     let spectral = RenderSpectralRadianceSupport::new(400e-9, 700e-9)
         .expect("maintained deterministic spectral range is valid");
     let oriented_surface = || {

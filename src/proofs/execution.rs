@@ -12,15 +12,15 @@ use crate::admission::{
     RenderRepresentationAvailabilityState,
 };
 use crate::appearance::RenderDiffuseMaterial;
-use crate::deterministic_admission::{
+use crate::runtime::admission::{
     AdmittedDeterministicRender, admit_deterministic_render_with_semantic_inputs,
 };
-use crate::deterministic_execution::{
+use crate::runtime::execution::{
     RenderDeterministicRadianceCaptureRequestError, RenderDeterministicResultFormationError,
     SubmittedDeterministicRender, submit_deterministic_render,
     submit_deterministic_render_for_verified_result,
 };
-use crate::deterministic_verification::{
+use crate::runtime::verification::{
     submit_deterministic_render_for_verified_formation, verify_completed_deterministic_render,
 };
 use crate::participation::RenderMaterialAssignment;
@@ -811,7 +811,7 @@ fn radiance_capture_rejects_correlation_affinity_and_replaced_writer_evidence() 
             &context_a,
             &missing_submission,
         ),
-        Err(crate::deterministic_execution::RenderDeterministicRadianceCaptureError::ReadbackCorrelationMissing)
+        Err(crate::runtime::execution::RenderDeterministicRadianceCaptureError::ReadbackCorrelationMissing)
     );
 
     let wrong_source_request = submitted_a
@@ -828,7 +828,7 @@ fn radiance_capture_rejects_correlation_affinity_and_replaced_writer_evidence() 
             &context_a,
             &wrong_source_submission,
         ),
-        Err(crate::deterministic_execution::RenderDeterministicRadianceCaptureError::ReadbackSourceMismatch)
+        Err(crate::runtime::execution::RenderDeterministicRadianceCaptureError::ReadbackSourceMismatch)
     );
 
     let submitted_b = form_verified_render(
@@ -859,7 +859,7 @@ fn radiance_capture_rejects_correlation_affinity_and_replaced_writer_evidence() 
             &context_b,
             submitted_b.submission(),
         ),
-        Err(crate::deterministic_execution::RenderDeterministicRadianceCaptureError::ContextAffinityMismatch)
+        Err(crate::runtime::execution::RenderDeterministicRadianceCaptureError::ContextAffinityMismatch)
     );
 
     let mismatched_render_request = submitted_a
@@ -871,7 +871,7 @@ fn radiance_capture_rejects_correlation_affinity_and_replaced_writer_evidence() 
             &context_b,
             submitted_b.submission(),
         ),
-        Err(crate::deterministic_execution::RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch)
+        Err(crate::runtime::execution::RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch)
     );
 
     let foreign_product_request = submitted_a
@@ -883,7 +883,7 @@ fn radiance_capture_rejects_correlation_affinity_and_replaced_writer_evidence() 
             &context_a,
             submitted_b.submission(),
         ),
-        Err(crate::deterministic_execution::RenderDeterministicRadianceCaptureError::ProductSubmissionAffinityMismatch)
+        Err(crate::runtime::execution::RenderDeterministicRadianceCaptureError::ProductSubmissionAffinityMismatch)
     );
 
     let replaced_writer_request = submitted_a
@@ -901,7 +901,7 @@ fn radiance_capture_rejects_correlation_affinity_and_replaced_writer_evidence() 
             &context_a,
             &replaced_writer_submission,
         ),
-        Err(crate::deterministic_execution::RenderDeterministicRadianceCaptureError::RendererWriteNoLongerCurrent)
+        Err(crate::runtime::execution::RenderDeterministicRadianceCaptureError::RendererWriteNoLongerCurrent)
     );
 }
 

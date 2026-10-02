@@ -5,9 +5,9 @@
 // path. Direct inspection of renderer-private same-submission bytes is proof evidence only; EVAL-001
 // independently normalizes and certifies the same exact submission before semantic formation.
 
-use crate::deterministic_admission::{AdmittedDeterministicRender, admit_deterministic_render_with_semantic_inputs};
-use crate::deterministic_execution::DeterministicVerificationSubmission;
-use crate::deterministic_verification::{
+use crate::runtime::admission::{AdmittedDeterministicRender, admit_deterministic_render_with_semantic_inputs};
+use crate::runtime::execution::DeterministicVerificationSubmission;
+use crate::runtime::verification::{
     submit_deterministic_render_for_verified_formation, verify_completed_deterministic_render,
 };
 use crate::proofs::founding_realization::FoundingRepresentationRealization;

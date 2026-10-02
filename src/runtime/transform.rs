@@ -6,22 +6,22 @@
 //! whether that transform may be reused across accepted commits.
 
 #[cfg(test)]
-use super::derived_state::{RenderDerivedSceneDependencies, RenderDerivedSceneDependency};
-use super::representation::classify_field_distance_transform;
+use crate::derived_state::{RenderDerivedSceneDependencies, RenderDerivedSceneDependency};
+use crate::representation::classify_field_distance_transform;
 #[cfg(test)]
-use super::scene::{
+use crate::scene::{
     RenderObjectId, RenderSceneCommit, RenderSceneContinuity, RenderSceneResync,
     RenderSceneRevision, RenderSceneSnapshot,
 };
-use super::space_time::RenderObjectSpatialState;
+use crate::space_time::RenderObjectSpatialState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RenderCompiledObjectTransformError {
+pub(crate) enum RenderCompiledObjectTransformError {
     NonInvertibleObjectTransform,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct RenderCompiledObjectTransform {
+pub(crate) struct RenderCompiledObjectTransform {
     #[cfg(test)]
     local_units_to_scene: [[f64; 3]; 3],
     scene_to_local_units: [[f64; 3]; 3],
@@ -30,7 +30,7 @@ pub(super) struct RenderCompiledObjectTransform {
 }
 
 impl RenderCompiledObjectTransform {
-    pub(super) fn compile(
+    pub(crate) fn compile(
         spatial: &RenderObjectSpatialState,
     ) -> Result<Self, RenderCompiledObjectTransformError> {
         let source = spatial.local_to_scene().row_major_3x4();
@@ -65,7 +65,7 @@ impl RenderCompiledObjectTransform {
     }
 
     #[cfg(test)]
-    pub(super) fn scene_point_from_local(&self, point: [f64; 3]) -> [f64; 3] {
+    pub(crate) fn scene_point_from_local(&self, point: [f64; 3]) -> [f64; 3] {
         add(
             mul_matrix_vector(self.local_units_to_scene, point),
             self.translation_scene,
@@ -73,7 +73,7 @@ impl RenderCompiledObjectTransform {
     }
 
     #[cfg(test)]
-    pub(super) fn local_point_from_scene(&self, point: [f64; 3]) -> [f64; 3] {
+    pub(crate) fn local_point_from_scene(&self, point: [f64; 3]) -> [f64; 3] {
         mul_matrix_vector(
             self.scene_to_local_units,
             sub(point, self.translation_scene),
@@ -81,36 +81,36 @@ impl RenderCompiledObjectTransform {
     }
 
     #[cfg(test)]
-    pub(super) fn local_direction_per_scene_meter(&self, direction: [f64; 3]) -> [f64; 3] {
+    pub(crate) fn local_direction_per_scene_meter(&self, direction: [f64; 3]) -> [f64; 3] {
         mul_matrix_vector(self.scene_to_local_units, direction)
     }
 
     #[cfg(test)]
-    pub(super) fn scene_normal_from_local(&self, normal: [f64; 3]) -> [f64; 3] {
+    pub(crate) fn scene_normal_from_local(&self, normal: [f64; 3]) -> [f64; 3] {
         normalize(mul_matrix_vector(self.normal_local_to_scene, normal))
             .expect("invertible transform cannot map a non-zero normal to zero")
     }
 
-    pub(super) fn scene_to_local_units_row_major(&self) -> [f64; 9] {
+    pub(crate) fn scene_to_local_units_row_major(&self) -> [f64; 9] {
         flatten_3x3(self.scene_to_local_units)
     }
 
-    pub(super) const fn translation_scene(&self) -> [f64; 3] {
+    pub(crate) const fn translation_scene(&self) -> [f64; 3] {
         self.translation_scene
     }
 
-    pub(super) fn normal_local_to_scene_row_major(&self) -> [f64; 9] {
+    pub(crate) fn normal_local_to_scene_row_major(&self) -> [f64; 9] {
         flatten_3x3(self.normal_local_to_scene)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RenderCompiledMetricSimilarityTransformError {
+pub(crate) enum RenderCompiledMetricSimilarityTransformError {
     NotPositiveSimilarity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct RenderCompiledMetricSimilarityTransform {
+pub(crate) struct RenderCompiledMetricSimilarityTransform {
     scene_to_local_meters: [[f64; 3]; 3],
     normal_local_to_scene: [[f64; 3]; 3],
     translation_scene: [f64; 3],
@@ -118,7 +118,7 @@ pub(super) struct RenderCompiledMetricSimilarityTransform {
 }
 
 impl RenderCompiledMetricSimilarityTransform {
-    pub(super) fn compile(
+    pub(crate) fn compile(
         spatial: &RenderObjectSpatialState,
     ) -> Result<Self, RenderCompiledMetricSimilarityTransformError> {
         // R3 representation semantics own field-transform classification. This derived layer only
@@ -150,33 +150,33 @@ impl RenderCompiledMetricSimilarityTransform {
     }
 
     #[cfg(test)]
-    pub(super) fn local_point_meters_from_scene(&self, point: [f64; 3]) -> [f64; 3] {
+    pub(crate) fn local_point_meters_from_scene(&self, point: [f64; 3]) -> [f64; 3] {
         mul_matrix_vector(
             self.scene_to_local_meters,
             sub(point, self.translation_scene),
         )
     }
 
-    pub(super) fn scene_to_local_meters_row_major(&self) -> [f64; 9] {
+    pub(crate) fn scene_to_local_meters_row_major(&self) -> [f64; 9] {
         flatten_3x3(self.scene_to_local_meters)
     }
 
-    pub(super) fn normal_local_to_scene_row_major(&self) -> [f64; 9] {
+    pub(crate) fn normal_local_to_scene_row_major(&self) -> [f64; 9] {
         flatten_3x3(self.normal_local_to_scene)
     }
 
-    pub(super) const fn translation_scene(&self) -> [f64; 3] {
+    pub(crate) const fn translation_scene(&self) -> [f64; 3] {
         self.translation_scene
     }
 
-    pub(super) const fn scene_meters_per_local_meter(&self) -> f64 {
+    pub(crate) const fn scene_meters_per_local_meter(&self) -> f64 {
         self.scene_meters_per_local_meter
     }
 }
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RenderRetainedObjectTransformError {
+pub(crate) enum RenderRetainedObjectTransformError {
     ObjectStateMissing,
     NonInvertibleObjectTransform,
     ForeignSceneLineage,
@@ -205,7 +205,7 @@ impl From<RenderCompiledObjectTransformError> for RenderRetainedObjectTransformE
 /// explicitly from a current snapshot.
 #[cfg(test)]
 #[derive(Debug)]
-pub(super) struct RenderRetainedObjectTransform {
+pub(crate) struct RenderRetainedObjectTransform {
     object_id: RenderObjectId,
     dependencies: RenderDerivedSceneDependencies,
     continuity: RenderSceneContinuity,
@@ -214,7 +214,7 @@ pub(super) struct RenderRetainedObjectTransform {
 
 #[cfg(test)]
 impl RenderRetainedObjectTransform {
-    pub(super) fn from_snapshot(
+    pub(crate) fn from_snapshot(
         snapshot: &RenderSceneSnapshot,
         object_id: RenderObjectId,
     ) -> Result<Self, RenderRetainedObjectTransformError> {
@@ -232,7 +232,7 @@ impl RenderRetainedObjectTransform {
         })
     }
 
-    pub(super) fn advance(
+    pub(crate) fn advance(
         mut self,
         commit: &RenderSceneCommit,
     ) -> Result<Self, RenderRetainedObjectTransformError> {
@@ -252,7 +252,7 @@ impl RenderRetainedObjectTransform {
         Ok(self)
     }
 
-    pub(super) fn observe_resync(
+    pub(crate) fn observe_resync(
         self,
         resync: &RenderSceneResync,
     ) -> Result<Self, RenderRetainedObjectTransformError> {
@@ -262,19 +262,19 @@ impl RenderRetainedObjectTransform {
         unreachable!("the retained transform has one non-empty scene dependency")
     }
 
-    pub(super) const fn object_id(&self) -> RenderObjectId {
+    pub(crate) const fn object_id(&self) -> RenderObjectId {
         self.object_id
     }
 
-    pub(super) fn dependencies(&self) -> &RenderDerivedSceneDependencies {
+    pub(crate) fn dependencies(&self) -> &RenderDerivedSceneDependencies {
         &self.dependencies
     }
 
-    pub(super) const fn validated_revision(&self) -> RenderSceneRevision {
+    pub(crate) const fn validated_revision(&self) -> RenderSceneRevision {
         self.continuity.revision()
     }
 
-    pub(super) const fn compiled(&self) -> RenderCompiledObjectTransform {
+    pub(crate) const fn compiled(&self) -> RenderCompiledObjectTransform {
         self.compiled
     }
 }

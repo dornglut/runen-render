@@ -5,9 +5,9 @@
 //! using the retained semantic topology plus the exact returned canonical-buffer byte length. It
 //! never re-derives physical packing from device facts and it does not perform semantic verification.
 
-use super::super::deterministic_carrier::{WORD_BYTES, decode_word};
-use super::super::deterministic_execution::DeterministicVerificationSubmission;
-use super::super::request::RenderResultTopology;
+use super::super::carrier::{WORD_BYTES, decode_word};
+use super::super::execution::DeterministicVerificationSubmission;
+use crate::request::RenderResultTopology;
 use runen_gpu::{
     GpuReadbackBytes, GpuReadbackId, GpuReadbackStatus, GpuSubmission, GpuSubmissionFailureKind,
     GpuSubmissionStatus,

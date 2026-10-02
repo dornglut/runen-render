@@ -9,10 +9,10 @@ use crate::admission::{
     RenderRepresentationAvailabilityState,
 };
 use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-use crate::deterministic_admission::{
+use crate::runtime::admission::{
     AdmittedDeterministicRender, admit_deterministic_render_with_semantic_inputs,
 };
-use crate::deterministic_execution::{
+use crate::runtime::execution::{
     DeterministicVerificationSubmission, prepare_deterministic_render,
     submit_deterministic_render_for_verification,
 };

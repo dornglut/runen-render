@@ -4,7 +4,7 @@
 //! bounded conservative arithmetic needed by the maintained deterministic verifier. Every helper
 //! fails closed on non-finite/unsupported arithmetic instead of manufacturing fidelity evidence.
 
-use super::super::request::RenderSemanticTolerance;
+use crate::request::RenderSemanticTolerance;
 
 const CERTIFIED_TAYLOR_X_LIMIT: f64 = 0.786;
 const PI_LOWER_BITS: u64 = 0x4009_21fb_5444_2d18;

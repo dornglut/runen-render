@@ -18,14 +18,14 @@ use observation::{
     RenderDeterministicVerificationObservationError, observe_completed_deterministic_verification,
 };
 
-use super::deterministic_admission::AdmittedDeterministicRender;
-use super::deterministic_execution::{
+use super::admission::AdmittedDeterministicRender;
+use super::execution::{
     self, DeterministicVerificationSubmission, RenderDeterministicExecutionError,
 };
-use super::render_result::{RenderResultFormationError, RenderResultFormationEvidence};
-use super::request::RenderObservationSpec;
-use super::scene::RenderObjectId;
-use super::space_time::{RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState};
+use crate::render_result::{RenderResultFormationError, RenderResultFormationEvidence};
+use crate::request::RenderObservationSpec;
+use crate::scene::RenderObjectId;
+use crate::space_time::{RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState};
 use runen_gpu::GpuContext;
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -39,7 +39,7 @@ use std::fmt;
 const CERTIFIED_MAX_FULL_FOV_RADIANS: f64 = std::f64::consts::FRAC_PI_2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RenderDeterministicVerificationEligibilityError {
+pub(crate) enum RenderDeterministicVerificationEligibilityError {
     SelectedObservationMissing { observation_index: usize },
     PerspectiveFieldOfViewUnsupported { observation_index: usize },
     SamplingSupportUnsupported { observation_index: usize },
@@ -92,7 +92,7 @@ impl fmt::Display for RenderDeterministicVerificationEligibilityError {
 impl Error for RenderDeterministicVerificationEligibilityError {}
 
 #[derive(Debug)]
-pub(super) enum RenderDeterministicVerifiedSubmissionError {
+pub(crate) enum RenderDeterministicVerifiedSubmissionError {
     Eligibility(RenderDeterministicVerificationEligibilityError),
     Execution(RenderDeterministicExecutionError),
     ReadbackCardinality {
@@ -185,7 +185,7 @@ impl From<RenderDeterministicExecutionError> for RenderDeterministicVerifiedSubm
 /// semantic branch the conservative interval proof cannot uniquely establish. Physical mismatch and
 /// tolerance mismatch mean the completed observation contradicts the certified semantic result.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum RenderDeterministicVerificationError {
+pub(crate) enum RenderDeterministicVerificationError {
     ResultFormation(RenderResultFormationError),
     Eligibility(RenderDeterministicVerificationEligibilityError),
     ObservationNormalization(RenderDeterministicVerificationObservationError),
@@ -285,7 +285,7 @@ impl Error for RenderDeterministicVerificationError {
 }
 
 impl RenderDeterministicVerificationError {
-    pub(super) const fn output_index(&self) -> Option<usize> {
+    pub(crate) const fn output_index(&self) -> Option<usize> {
         match self {
             Self::ObservationNormalization(error) => error.output_index(),
             Self::Correlation { output_index, .. }
@@ -296,7 +296,7 @@ impl RenderDeterministicVerificationError {
         }
     }
 
-    pub(super) const fn sample_index(&self) -> Option<usize> {
+    pub(crate) const fn sample_index(&self) -> Option<usize> {
         match self {
             Self::Correlation { sample_index, .. }
             | Self::Inconclusive { sample_index, .. }
@@ -308,14 +308,14 @@ impl RenderDeterministicVerificationError {
         }
     }
 
-    pub(super) const fn channel(&self) -> Option<&'static str> {
+    pub(crate) const fn channel(&self) -> Option<&'static str> {
         match self {
             Self::ObservationNormalization(error) => error.channel(),
             _ => None,
         }
     }
 
-    pub(super) const fn gpu_failure_kind(&self) -> Option<runen_gpu::GpuSubmissionFailureKind> {
+    pub(crate) const fn gpu_failure_kind(&self) -> Option<runen_gpu::GpuSubmissionFailureKind> {
         match self {
             Self::ObservationNormalization(error) => error.gpu_failure_kind(),
             _ => None,
@@ -345,7 +345,7 @@ fn format_verification_location(
 /// Instant shutters and ideal-ray sampling are already invariants of `AdmittedDeterministicRender`.
 /// This gate therefore adds only verifier-specific restrictions; failure here must never make the
 /// same admitted invocation illegal for ordinary maintained execution.
-pub(super) fn ensure_deterministic_verification_eligible(
+pub(crate) fn ensure_deterministic_verification_eligible(
     maintained: &AdmittedDeterministicRender,
 ) -> Result<(), RenderDeterministicVerificationEligibilityError> {
     let admitted = maintained.admitted();
@@ -396,7 +396,7 @@ fn validate_selected_observations(
 /// This function intentionally stops before readback readiness or semantic comparison. A successful
 /// return proves only the static EVAL-001 domain gate plus same-submission correlation for canonical
 /// payload, semantic-definedness, and evaluator-status observations.
-pub(super) async fn submit_deterministic_render_for_verified_formation(
+pub(crate) async fn submit_deterministic_render_for_verified_formation(
     maintained: AdmittedDeterministicRender,
     context: &GpuContext,
 ) -> Result<DeterministicVerificationSubmission, RenderDeterministicVerifiedSubmissionError> {
@@ -460,7 +460,7 @@ pub(super) async fn submit_deterministic_render_for_verified_formation(
 ///
 /// Success does not yet form `RenderResult`; it returns an execution-scoped owner-controlled witness
 /// that later FORM-001 wiring can consume without accepting detached output-index assertions.
-pub(super) fn verify_completed_deterministic_render(
+pub(crate) fn verify_completed_deterministic_render(
     verification: DeterministicVerificationSubmission,
 ) -> Result<RenderResultFormationEvidence, RenderDeterministicVerificationError> {
     ensure_deterministic_verification_eligible(verification.submitted().admitted())

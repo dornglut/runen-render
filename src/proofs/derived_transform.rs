@@ -4,7 +4,7 @@
 //! retained artifact through accepted temporal and R3 participation changes on the same object.
 
 use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
-use crate::derived_transform::RenderRetainedObjectTransform;
+use crate::runtime::transform::RenderRetainedObjectTransform;
 use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
 use crate::representation::{
     RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderRefinementEvidence, RenderRepresentationRecord,

@@ -4,10 +4,10 @@
 //! binds one fresh post-result readback correlation to one exact maintained radiance destination
 //! and interprets the returned carrier through RunenRender's private maintained mapping.
 
-use super::admission::RenderOutputDestination;
-use super::deterministic_carrier::{WORD_BYTES, decode_word, maintained_evaluation_value};
-use super::deterministic_execution::SubmittedDeterministicRender;
-use super::request::{RenderOutputValue, RenderRadiometricRepresentation, RenderResultTopology};
+use crate::admission::RenderOutputDestination;
+use super::carrier::{WORD_BYTES, decode_word, maintained_evaluation_value};
+use super::execution::SubmittedDeterministicRender;
+use crate::request::{RenderOutputValue, RenderRadiometricRepresentation, RenderResultTopology};
 use runen_gpu::{
     GpuContext, GpuContextAffinity, GpuDataLayout, GpuOpaqueContentContinuity, GpuReadbackId,
     GpuReadbackStatus, GpuResourceLifetime, GpuResourceRef, GpuSubmission,
@@ -201,7 +201,7 @@ impl fmt::Display for RenderDeterministicRadianceCaptureError {
 
 impl Error for RenderDeterministicRadianceCaptureError {}
 
-pub(super) fn mint_request(
+pub(crate) fn mint_request(
     submitted: &SubmittedDeterministicRender,
     output_index: usize,
 ) -> Result<RenderDeterministicRadianceCaptureRequest, RenderDeterministicRadianceCaptureRequestError>
@@ -316,7 +316,7 @@ fn decode_radiance_samples(
     Ok(samples)
 }
 
-pub(super) fn capture(
+pub(crate) fn capture(
     submitted: &SubmittedDeterministicRender,
     request: RenderDeterministicRadianceCaptureRequest,
     context: &GpuContext,
