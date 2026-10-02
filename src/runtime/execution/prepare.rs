@@ -1,30 +1,30 @@
 use super::*;
 
 pub(super) struct LoweredDeterministicRender {
-    work_set: RenderWorkSet,
-    object_identity_decoder: RenderObjectIdentityDecoder,
-    verification_readbacks: Vec<DeterministicVerificationReadbacks>,
-    composable_radiance_outputs: Vec<PreparedDeterministicRadianceOutput>,
+    pub(super) work_set: RenderWorkSet,
+    pub(super) object_identity_decoder: RenderObjectIdentityDecoder,
+    pub(super) verification_readbacks: Vec<DeterministicVerificationReadbacks>,
+    pub(super) composable_radiance_outputs: Vec<PreparedDeterministicRadianceOutput>,
 }
 
 pub(super) struct LoweredDeterministicOutput {
-    fragment: GpuWorkFragment,
-    verification_readbacks: Option<DeterministicVerificationReadbacks>,
-    composable_radiance_output: Option<PreparedDeterministicRadianceOutput>,
+    pub(super) fragment: GpuWorkFragment,
+    pub(super) verification_readbacks: Option<DeterministicVerificationReadbacks>,
+    pub(super) composable_radiance_output: Option<PreparedDeterministicRadianceOutput>,
 }
 
 pub(super) struct PackedOutput {
-    input_words: Vec<u32>,
-    sample_count: u32,
-    output_byte_len: u64,
-    texture_row_bytes: Option<u32>,
+    pub(super) input_words: Vec<u32>,
+    pub(super) sample_count: u32,
+    pub(super) output_byte_len: u64,
+    pub(super) texture_row_bytes: Option<u32>,
 }
 
 pub(super) struct VerificationReadbackOperations {
-    correlation: DeterministicVerificationReadbacks,
-    canonical_output: GpuReadbackOperation,
-    definedness: GpuReadbackOperation,
-    status: GpuReadbackOperation,
+    pub(super) correlation: DeterministicVerificationReadbacks,
+    pub(super) canonical_output: GpuReadbackOperation,
+    pub(super) definedness: GpuReadbackOperation,
+    pub(super) status: GpuReadbackOperation,
 }
 
 /// Submit one ordinary maintained deterministic render invocation.
@@ -966,9 +966,9 @@ pub(super) fn lower_output(
 }
 
 pub(super) struct PreparedRequestedCoverage {
-    input_upload: GpuUploadOperation,
-    clears: Vec<GpuClearOperation>,
-    compute: GpuComputeOperation,
+    pub(super) input_upload: GpuUploadOperation,
+    pub(super) clears: Vec<GpuClearOperation>,
+    pub(super) compute: GpuComputeOperation,
 }
 
 /// One current requested-extent dispatch, with no history storage or runtime readback. Bindings

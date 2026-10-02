@@ -30,26 +30,26 @@ pub(super) enum DeterministicTemporalObservationCompatibility {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DeterministicTemporalSignature {
-    scene_revision: RenderSceneRevision,
-    observation: DeterministicTemporalObservationCompatibility,
-    output: RenderOutputSpec,
-    semantic_inputs: Vec<RenderSurfaceSemanticInputBinding>,
-    field_semantic_inputs: Vec<RenderFieldSemanticInputBinding>,
-    evaluation_extent: (u32, u32),
-    sequence_revision: u32,
-    reconstruction_revision: u32,
-    camera_reprojection_revision: Option<u32>,
-    depth_policy_revision: Option<u32>,
+    pub(super) scene_revision: RenderSceneRevision,
+    pub(super) observation: DeterministicTemporalObservationCompatibility,
+    pub(super) output: RenderOutputSpec,
+    pub(super) semantic_inputs: Vec<RenderSurfaceSemanticInputBinding>,
+    pub(super) field_semantic_inputs: Vec<RenderFieldSemanticInputBinding>,
+    pub(super) evaluation_extent: (u32, u32),
+    pub(super) sequence_revision: u32,
+    pub(super) reconstruction_revision: u32,
+    pub(super) camera_reprojection_revision: Option<u32>,
+    pub(super) depth_policy_revision: Option<u32>,
 }
 
 #[derive(Debug)]
 pub(super) struct DeterministicCameraTemporalStorage {
-    slots: [GpuBufferHandle; 2],
-    completed_slot: usize,
-    completed_observation: Option<RenderPerspectiveObservation>,
-    same_pose_completed_frames: u32,
-    pending_slot: Option<usize>,
-    pending_observation: Option<RenderPerspectiveObservation>,
+    pub(super) slots: [GpuBufferHandle; 2],
+    pub(super) completed_slot: usize,
+    pub(super) completed_observation: Option<RenderPerspectiveObservation>,
+    pub(super) same_pose_completed_frames: u32,
+    pub(super) pending_slot: Option<usize>,
+    pub(super) pending_observation: Option<RenderPerspectiveObservation>,
 }
 
 #[derive(Debug)]
@@ -64,11 +64,11 @@ pub(super) enum DeterministicTemporalStorage {
 
 #[derive(Debug)]
 pub(super) struct DeterministicTemporalHistory {
-    signature: DeterministicTemporalSignature,
-    storage: DeterministicTemporalStorage,
-    generation: u64,
-    phase: u32,
-    age: u32,
+    pub(super) signature: DeterministicTemporalSignature,
+    pub(super) storage: DeterministicTemporalStorage,
+    pub(super) generation: u64,
+    pub(super) phase: u32,
+    pub(super) age: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -89,25 +89,25 @@ pub(super) enum DeterministicTemporalHistoryUseStorage {
 
 #[derive(Debug, Clone)]
 pub(super) struct DeterministicTemporalHistoryUse {
-    storage: DeterministicTemporalHistoryUseStorage,
-    generation: u64,
-    reset: bool,
-    phase: u32,
-    age: u32,
+    pub(super) storage: DeterministicTemporalHistoryUseStorage,
+    pub(super) generation: u64,
+    pub(super) reset: bool,
+    pub(super) phase: u32,
+    pub(super) age: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DeterministicRenderExecutionSelection {
-    scope: u64,
-    finite_evaluation: Option<(usize, (u32, u32))>,
-    produce_requested_coverage: bool,
+    pub(super) scope: u64,
+    pub(super) finite_evaluation: Option<(usize, (u32, u32))>,
+    pub(super) produce_requested_coverage: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DeterministicOutputExecutionSelection {
-    scope: u64,
-    finite_evaluation_extent: Option<(u32, u32)>,
-    produce_requested_coverage: bool,
+    pub(super) scope: u64,
+    pub(super) finite_evaluation_extent: Option<(u32, u32)>,
+    pub(super) produce_requested_coverage: bool,
 }
 
 /// Physical execution selection; private coverage is not a requested semantic depth output.
@@ -119,14 +119,14 @@ pub(super) enum MaintainedExecutionKind {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DeterministicOutputPackingState<'a> {
-    finite_evaluation_extent: Option<(u32, u32)>,
-    temporal_history: Option<&'a DeterministicTemporalHistoryUse>,
+    pub(super) finite_evaluation_extent: Option<(u32, u32)>,
+    pub(super) temporal_history: Option<&'a DeterministicTemporalHistoryUse>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DeterministicTemporalHistorySelection {
-    current_observation: RenderPerspectiveObservation,
-    camera_capable: bool,
+    pub(super) current_observation: RenderPerspectiveObservation,
+    pub(super) camera_capable: bool,
 }
 
 /// Renderer-owned logical buffer identities reused by ordinary composed frames.
@@ -138,14 +138,14 @@ pub(super) struct DeterministicTemporalHistorySelection {
 /// replacement identity.
 #[derive(Debug, Default)]
 pub(crate) struct DeterministicResourceCache {
-    identities: GpuWorkResourceIdAllocator,
-    buffers: BTreeMap<(u64, usize, DeterministicBufferKind), GpuBufferHandle>,
-    temporal_histories: BTreeMap<(u64, usize), DeterministicTemporalHistory>,
-    next_temporal_generation: u64,
-    prepared_temporal_outputs: BTreeMap<u64, BTreeSet<usize>>,
+    pub(super) identities: GpuWorkResourceIdAllocator,
+    pub(super) buffers: BTreeMap<(u64, usize, DeterministicBufferKind), GpuBufferHandle>,
+    pub(super) temporal_histories: BTreeMap<(u64, usize), DeterministicTemporalHistory>,
+    pub(super) next_temporal_generation: u64,
+    pub(super) prepared_temporal_outputs: BTreeMap<u64, BTreeSet<usize>>,
     // Keep the latest accepted graph correlated with every producer namespace whose mutable
     // intermediates it used. A peer surface's submission must not stall this producer's cache.
-    producer_submissions: BTreeMap<u64, GpuSubmission>,
+    pub(super) producer_submissions: BTreeMap<u64, GpuSubmission>,
 }
 
 impl DeterministicResourceCache {
@@ -193,7 +193,7 @@ impl DeterministicResourceCache {
             .retain(|_, submission| matches!(submission.status(), GpuSubmissionStatus::Accepted));
     }
 
-    fn reconcile_temporal_outputs(&mut self, scope: u64, completed: bool) {
+    pub(super) fn reconcile_temporal_outputs(&mut self, scope: u64, completed: bool) {
         let outputs = self
             .prepared_temporal_outputs
             .remove(&scope)
@@ -232,7 +232,7 @@ impl DeterministicResourceCache {
         }
     }
 
-    fn maintained_source(
+    pub(super) fn maintained_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
         retained_maintained_evaluator_source(
@@ -242,7 +242,7 @@ impl DeterministicResourceCache {
         .map_err(map_maintained_program_build_error)
     }
 
-    fn reconstruction_source(
+    pub(super) fn reconstruction_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
         retained_temporal_reconstruction_source(
@@ -252,7 +252,7 @@ impl DeterministicResourceCache {
         .map_err(map_maintained_program_build_error)
     }
 
-    fn camera_reprojection_source(
+    pub(super) fn camera_reprojection_source(
         &mut self,
     ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
         retained_camera_reprojection_source(
@@ -262,7 +262,7 @@ impl DeterministicResourceCache {
         .map_err(map_maintained_program_build_error)
     }
 
-    fn temporal_history(
+    pub(super) fn temporal_history(
         &mut self,
         scope: u64,
         output_index: usize,
@@ -468,7 +468,7 @@ impl DeterministicResourceCache {
         })
     }
 
-    fn buffer(
+    pub(super) fn buffer(
         &mut self,
         scope: u64,
         output_index: usize,

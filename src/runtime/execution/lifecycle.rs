@@ -6,7 +6,7 @@ use super::*;
 /// decode to `None`; a non-zero code is meaningful only through this exact immutable codebook.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderObjectIdentityDecoder {
-    objects_by_code: Vec<RenderObjectId>,
+    pub(super) objects_by_code: Vec<RenderObjectId>,
 }
 
 impl RenderObjectIdentityDecoder {
@@ -23,10 +23,10 @@ impl RenderObjectIdentityDecoder {
 /// for an admitted composable R32Float radiance destination.
 #[derive(Debug, Clone)]
 pub struct PreparedDeterministicRender {
-    admitted: AdmittedDeterministicRender,
-    work_set: RenderWorkSet,
-    object_identity_decoder: RenderObjectIdentityDecoder,
-    radiance_outputs: Vec<PreparedDeterministicRadianceOutput>,
+    pub(super) admitted: AdmittedDeterministicRender,
+    pub(super) work_set: RenderWorkSet,
+    pub(super) object_identity_decoder: RenderObjectIdentityDecoder,
+    pub(super) radiance_outputs: Vec<PreparedDeterministicRadianceOutput>,
 }
 
 impl PreparedDeterministicRender {
@@ -94,9 +94,9 @@ pub struct RenderTemporalExecutionEvidence {
 /// maintained evaluator's private carrier.
 #[derive(Debug, Clone)]
 pub struct PreparedDeterministicRadianceOutput {
-    output_index: usize,
-    relationship: GpuExportRelationship,
-    temporal_evidence: Option<RenderTemporalExecutionEvidence>,
+    pub(super) output_index: usize,
+    pub(super) relationship: GpuExportRelationship,
+    pub(super) temporal_evidence: Option<RenderTemporalExecutionEvidence>,
 }
 
 impl PreparedDeterministicRadianceOutput {
@@ -138,10 +138,10 @@ impl PreparedDeterministicRadianceOutput {
 /// `GpuSubmission`; they are not semantic identity and are never exposed as public renderer state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeterministicVerificationReadbacks {
-    output_index: usize,
-    canonical_output: GpuReadbackId,
-    definedness: GpuReadbackId,
-    status: GpuReadbackId,
+    pub(super) output_index: usize,
+    pub(super) canonical_output: GpuReadbackId,
+    pub(super) definedness: GpuReadbackId,
+    pub(super) status: GpuReadbackId,
 }
 
 impl DeterministicVerificationReadbacks {
@@ -190,10 +190,10 @@ pub(super) enum DeterministicVerificationState {
 /// needed by RR566-EVAL-001 and FORM-001.
 #[derive(Debug)]
 pub struct SubmittedDeterministicRender {
-    admitted: AdmittedDeterministicRender,
-    submission: GpuSubmission,
-    object_identity_decoder: RenderObjectIdentityDecoder,
-    verification: DeterministicVerificationState,
+    pub(super) admitted: AdmittedDeterministicRender,
+    pub(super) submission: GpuSubmission,
+    pub(super) object_identity_decoder: RenderObjectIdentityDecoder,
+    pub(super) verification: DeterministicVerificationState,
 }
 
 impl SubmittedDeterministicRender {
@@ -322,7 +322,7 @@ impl SubmittedDeterministicRender {
 /// submission lifecycle and no public verification token.
 #[derive(Debug)]
 pub(crate) struct DeterministicVerificationSubmission {
-    submitted: SubmittedDeterministicRender,
+    pub(super) submitted: SubmittedDeterministicRender,
 }
 
 impl DeterministicVerificationSubmission {
