@@ -22,11 +22,11 @@ the RX authority issues rather than inferred from a working branch.
 
 ## Boundary
 
-RunenRender will own reusable renderer semantics, semantic scene/request/
-representation/input contracts, maintained renderer execution, temporal/camera
-rendering evidence, semantic result formation, and the explicit renderer-owned
-bridge from accepted RunenShader artifacts into public RunenGPU program
-admission.
+The standalone boundary assigns RunenRender ownership of reusable renderer
+semantics, semantic scene/request/representation/input contracts, maintained
+renderer execution, temporal/camera rendering evidence, semantic result
+formation, and the explicit renderer-owned bridge from accepted RunenShader
+artifacts into public RunenGPU program admission.
 
 RunenRender does not own:
 
@@ -52,7 +52,7 @@ publish: false
 The current RX MSRV is the supported repository floor. Source-free bootstrap
 initially selected Rust 1.93.0, but executable transfer validation proved that
 the accepted RunenShader dependency graph requires Rust 1.97.1 through its exact
-WESL 0.5.0 graph. The candidate therefore raises the floor to 1.97.1 rather than
+WESL 0.5.0 graph. RX therefore establishes the floor at 1.97.1 rather than
 advertising an unsupported lower compiler.
 
 ## Validation
