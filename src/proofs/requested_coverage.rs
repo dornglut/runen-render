@@ -1,17 +1,15 @@
 //! Actual current-coverage execution proof. Readbacks are authored
 //! only here, after the ordinary producer fragment, and correlated to that same completed submission.
 
+use super::*;
 use crate::admission::{RenderOutputBinding, RenderOutputDestination};
 use crate::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
-use crate::proofs::execution::{
-    MaintainedExecutionFixture, maintained_fixture,
-};
+use crate::proofs::execution::{MaintainedExecutionFixture, maintained_fixture};
 use crate::request::{
     RenderRequest, RenderRequestedOutput, RenderResultTopology, RenderSemanticTolerance,
 };
 use crate::space_time::{RenderAffineTransform3, RenderTemporalSupport};
 use crate::surface_input::RenderSurfaceSemanticInput;
-use super::*;
 use runen_gpu::{
     GpuCapabilityProfile, GpuContextDescriptor, GpuContextRequestErrorCategory, GpuFormatRole,
     GpuTextureDescriptor, GpuTextureInitialization, GpuTextureUsage, GpuWorkNodeKind,
@@ -628,9 +626,6 @@ fn field_fixture(
     MaintainedExecutionFixture,
     Vec<RenderFieldSemanticInputBinding>,
 ) {
-    use crate::admission::{
-        RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState,
-    };
     use super::super::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
     use super::super::field_input::RenderFieldSemanticInputRequirement;
     use super::super::participation::{RenderMaterialAssignment, RenderObjectParticipation};
@@ -639,6 +634,9 @@ fn field_fixture(
         RenderFieldDistanceProtocolEvidence, RenderRefinementEvidence, RenderRepresentationRecord,
     };
     use super::super::scene::{RenderSceneStore, RenderSceneUpdate};
+    use crate::admission::{
+        RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState,
+    };
     use crate::space_time::RenderSpatialCoverage;
     let mut fixture = fixture((8, 8), 0.0, 0.0, 1);
     let state = fixture

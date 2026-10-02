@@ -3,12 +3,12 @@
 //! This proves only reusable RunenRender -> RunenGPU producer/import semantics. Runenwerk
 //! Render-Lab visualization, surface routing, and Present policy remain downstream product tests.
 
-use crate::admission::{RenderOutputBinding, RenderOutputDestination};
-use crate::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
-use crate::deterministic_execution::prepare_deterministic_render;
 use super::execution::{
     MaintainedExecutionFixture, admit_with_retained_radiance_destination, maintained_fixture,
 };
+use crate::admission::{RenderOutputBinding, RenderOutputDestination};
+use crate::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
+use crate::deterministic_execution::prepare_deterministic_render;
 use crate::request::{
     RenderOutputSpec, RenderOutputValue, RenderRadiometricRepresentation, RenderRequest,
     RenderRequestedOutput, RenderResultTopology, RenderSemanticTolerance,
