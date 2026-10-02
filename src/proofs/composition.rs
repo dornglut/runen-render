@@ -6,7 +6,7 @@
 use crate::admission::{RenderOutputBinding, RenderOutputDestination};
 use crate::deterministic_admission::admit_deterministic_render_with_semantic_inputs;
 use crate::deterministic_execution::prepare_deterministic_render;
-use crate::deterministic_execution_r7_proof::{
+use super::execution::{
     MaintainedExecutionFixture, admit_with_retained_radiance_destination, maintained_fixture,
 };
 use crate::request::{

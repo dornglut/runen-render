@@ -1,8 +1,9 @@
 //! End-to-end semantic-spine proof for the bounded founding renderer.
 //!
 //! This remains test-only. It proves that the exact founding semantic scene/request/method shape can
-//! use the permanent R1-R5 contracts before R6 method lowering exists. Concrete primitive evaluation
-//! remains in `r6_proof`; this module does not create a second realization or planning authority.
+//! use the permanent semantic contracts before maintained method lowering. Concrete primitive
+//! evaluation remains in `founding_realization`; this module does not create a second realization
+//! or planning authority.
 
 use crate::admission::{
     RenderOutputBinding, RenderOutputDestination, RenderRepresentationAvailabilityFact,
