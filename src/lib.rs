@@ -40,6 +40,8 @@ pub use semantic_binding::RenderSemanticBindingInputError;
 #[cfg(test)]
 mod derived_transform_r7_proof;
 #[cfg(test)]
+mod deterministic_composition_r7_proof;
+#[cfg(test)]
 mod deterministic_execution_r7_proof;
 #[cfg(test)]
 mod deterministic_execution_r7_proof_edges;
