@@ -37,7 +37,7 @@ filesystem/JSON/media artifact policy.
 
 ## Public versus private surface
 
-The RX successor candidate keeps ordinary/public renderer vocabulary separate
+The standalone contract keeps ordinary/public renderer vocabulary separate
 from maintained implementation vocabulary. Proof-era `Deterministic*` types
 and methods remain private implementation details unless a separately accepted
 public-contract change proves otherwise.
