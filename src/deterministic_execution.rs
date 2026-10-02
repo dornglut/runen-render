@@ -44,7 +44,7 @@ use super::surface_input::{
 };
 use runen_gpu::{
     GpuAdmittedProgramSource, GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization,
-    GpuBufferRange, GpuBufferRegion, GpuBufferTextureLayout, GpuBufferUsage, GpuClearOperation,
+    GpuBufferRegion, GpuBufferTextureLayout, GpuBufferUsage, GpuClearOperation,
     GpuComputeOperation, GpuComputePipelineDescriptor, GpuContext, GpuContextAffinity,
     GpuCopyOperation, GpuDispatchIntent, GpuDispatchSize, GpuExportKey, GpuExportRelationship,
     GpuInitialCoverage, GpuOrdinaryTransferPreparationError, GpuProgramContractError,
@@ -3315,6 +3315,7 @@ fn gpu_work_authoring(
 mod tests {
     use super::super::space_time::RenderAffineTransform3;
     use super::*;
+    use runen_gpu::GpuBufferRange;
 
     #[test]
     fn maintained_programs_compile_through_runenshader_and_preserve_exact_gpu_source_bytes() {
