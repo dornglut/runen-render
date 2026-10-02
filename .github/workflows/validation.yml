@@ -87,4 +87,12 @@ jobs:
           RUNEN_RENDER_REQUIRE_GPU: '1'
         run: |
           set -euo pipefail
-          cargo +stable test -p runen-render --locked -- --nocapture --test-threads=1
+          # Run the broad library conformance first, but keep camera-history execution
+          # isolated from the cold first-pipeline cost on software Vulkan. This mirrors
+          # the accepted predecessor evidence ordering without relaxing the camera
+          # proof's own 15-second fail-closed readback deadline.
+          cargo +stable test -p runen-render             --lib             --locked -- --nocapture --test-threads=1 --skip camera_history_proof
+
+          cargo +stable test -p runen-render             --lib camera_history_proof             --locked -- --nocapture --test-threads=1
+
+          cargo +stable test -p runen-render             --test ordinary_public_api             --locked -- --nocapture --test-threads=1
