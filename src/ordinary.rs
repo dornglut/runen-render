@@ -8,6 +8,11 @@
 use super::admission::{
     AdmittedRenderPlan, RenderOutputBinding, RenderRepresentationAvailabilityFact,
 };
+use super::field_input::{RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration};
+use super::lowering::RenderWorkSet;
+use super::render_result::RenderResult;
+use super::representation::RenderRepresentationId;
+use super::request::{RenderRadiometricRepresentation, RenderRequest, RenderResultTopology};
 use super::runtime::admission::{
     AdmittedDeterministicRender, RenderDeterministicAdmissionFailure,
     admit_deterministic_render_with_semantic_inputs,
@@ -29,11 +34,6 @@ use super::runtime::verification::{
     RenderDeterministicVerificationEligibilityError, RenderDeterministicVerificationError,
     RenderDeterministicVerifiedSubmissionError,
 };
-use super::field_input::{RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration};
-use super::lowering::RenderWorkSet;
-use super::render_result::RenderResult;
-use super::representation::RenderRepresentationId;
-use super::request::{RenderRadiometricRepresentation, RenderRequest, RenderResultTopology};
 use super::scene::{RenderObjectId, RenderSceneSnapshot};
 use super::surface_input::{
     RenderSurfaceSemanticInputBinding, RenderSurfaceSemanticInputGeneration,

@@ -7,12 +7,12 @@ use super::execution::{
     MaintainedExecutionFixture, admit_with_retained_radiance_destination, maintained_fixture,
 };
 use crate::admission::{RenderOutputBinding, RenderOutputDestination};
-use crate::runtime::admission::admit_deterministic_render_with_semantic_inputs;
-use crate::runtime::execution::prepare_deterministic_render;
 use crate::request::{
     RenderOutputSpec, RenderOutputValue, RenderRadiometricRepresentation, RenderRequest,
     RenderRequestedOutput, RenderResultTopology, RenderSemanticTolerance,
 };
+use crate::runtime::admission::admit_deterministic_render_with_semantic_inputs;
+use crate::runtime::execution::prepare_deterministic_render;
 use runen_gpu::{
     GpuBufferDescriptor, GpuBufferInitialization, GpuBufferTextureLayout, GpuBufferUsage,
     GpuCapabilityProfile, GpuContext, GpuContextDescriptor, GpuContextRequestErrorCategory,
