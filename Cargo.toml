@@ -11,6 +11,13 @@ publish = false
 [features]
 default = []
 
+[dependencies]
+runen-gpu = { git = "https://github.com/dornglut/runen-gpu", rev = "789b430fdefeda89bfe59de86d548618b8f8ab9a" }
+runen-shader = { git = "https://github.com/dornglut/runen-shader", rev = "406f8165da92caa2d296b3a2f774ba534279870d" }
+
+[dev-dependencies]
+pollster = "0.4.0"
+
 [workspace]
 resolver = "3"
 members = ["xtask"]
