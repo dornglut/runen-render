@@ -257,7 +257,7 @@ fn positive_vector(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::render::space_time::RenderTemporalSupport;
+    use crate::space_time::RenderTemporalSupport;
 
     #[test]
     fn dense_field_rejects_degenerate_shape_and_invalid_spacing() {

@@ -818,29 +818,29 @@ fn validate_current_execution(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::render::method::{
+    use crate::method::{
         RenderDistanceErrorBound, RenderMethodContract, RenderMethodId, RenderMethodOutputContract,
         RenderMethodOutputGuarantee, RenderMethodOutputKind, RenderMethodRepresentationRequirement,
         RenderObservationKind, RenderRepresentationProtocolRequirement,
     };
-    use crate::plugins::render::participation::RenderObjectParticipation;
-    use crate::plugins::render::representation::{
+    use crate::participation::RenderObjectParticipation;
+    use crate::representation::{
         RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderRefinementEvidence,
         RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
     };
-    use crate::plugins::render::request::{
+    use crate::request::{
         RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
         RenderPerspectiveObservation, RenderProbeObservation, RenderRequestedOutput,
         RenderResultTopology, RenderSamplingSupport, RenderSemanticTolerance,
     };
-    use crate::plugins::render::scene::{RenderObjectState, RenderSceneStore, RenderSceneUpdate};
-    use crate::plugins::render::semantic_plan::plan_render;
-    use crate::plugins::render::space_time::{
+    use crate::scene::{RenderObjectState, RenderSceneStore, RenderSceneUpdate};
+    use crate::semantic_plan::plan_render;
+    use crate::space_time::{
         RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState,
         RenderObjectTemporalState, RenderSpaceSpec, RenderSpatialCoverage, RenderTemporalSupport,
         RenderTimeInterval, RenderTimePoint,
     };
-    use crate::plugins::render::surface_input::RenderSurfaceSemanticInputRequirement;
+    use crate::surface_input::RenderSurfaceSemanticInputRequirement;
     use runen_gpu::{
         GpuBufferDescriptor, GpuBufferInitialization, GpuBufferUsages, GpuMemoryIntent,
         GpuReconstruction, GpuResourceCommon, GpuResourceLabel, GpuResourceLifetime,

@@ -347,8 +347,8 @@ fn scale(vector: [f64; 3], factor: f64) -> [f64; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::render::scene::{RenderObjectState, RenderSceneStore, RenderSceneUpdate};
-    use crate::plugins::render::space_time::{
+    use crate::scene::{RenderObjectState, RenderSceneStore, RenderSceneUpdate};
+    use crate::space_time::{
         RenderAffineTransform3, RenderHandedness, RenderObjectTemporalState, RenderSpaceSpec,
         RenderSpatialCoverage, RenderTemporalSupport, RenderTimeInterval, RenderTimePoint,
     };

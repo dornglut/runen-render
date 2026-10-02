@@ -494,7 +494,7 @@ impl Error for RenderMethodValidationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::render::representation::{
+    use crate::representation::{
         RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
         RENDER_SURFACE_QUERY_PROTOCOL_REVISION,
     };

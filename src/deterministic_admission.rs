@@ -467,17 +467,17 @@ fn validate_destination(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::render::method::{
+    use crate::method::{
         RenderAbstractExecutionRequirement, RenderMethodContract, RenderMethodId,
         RenderMethodOutputContract, RenderMethodOutputGuarantee, RenderMethodOutputKind,
         RenderObservationKind, RenderSpectralRadianceSupport,
     };
-    use crate::plugins::render::request::{
+    use crate::request::{
         RenderDistanceConvention, RenderPerspectiveObservation, RenderProbeObservation,
         RenderSamplingSupport,
     };
-    use crate::plugins::render::scene::{RenderSceneStore, RenderSceneUpdate};
-    use crate::plugins::render::space_time::{
+    use crate::scene::{RenderSceneStore, RenderSceneUpdate};
+    use crate::space_time::{
         RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState,
         RenderObjectTemporalState, RenderSpaceSpec, RenderSpatialCoverage, RenderTemporalSupport,
         RenderTimeInterval, RenderTimePoint,

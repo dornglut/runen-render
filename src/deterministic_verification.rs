@@ -559,10 +559,10 @@ fn has_identity_linear_basis(transform: RenderAffineTransform3) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::render::request::{
+    use crate::request::{
         RenderPerspectiveObservation, RenderProbeObservation, RenderSamplingSupport,
     };
-    use crate::plugins::render::space_time::{
+    use crate::space_time::{
         RenderSemanticValueError, RenderSpaceSpec, RenderSpatialCoverage, RenderTimeInterval,
         RenderTimePoint,
     };
@@ -723,14 +723,14 @@ mod tests {
             translated_identity(4.0, 5.0, 6.0),
             RenderSpatialCoverage::unbounded(),
         );
-        let mut store = crate::plugins::render::scene::RenderSceneStore::new();
+        let mut store = crate::scene::RenderSceneStore::new();
         let object_id = store.allocate_object_id().expect("object id");
         assert_eq!(validate_object_spatial_state(object_id, &spatial), Ok(()));
     }
 
     #[test]
     fn object_gate_rejects_scale_handedness_and_linear_basis_independently() {
-        let mut store = crate::plugins::render::scene::RenderSceneStore::new();
+        let mut store = crate::scene::RenderSceneStore::new();
         let object_id = store.allocate_object_id().expect("object id");
 
         let scaled = RenderObjectSpatialState::new(
