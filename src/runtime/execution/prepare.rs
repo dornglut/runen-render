@@ -118,9 +118,11 @@ pub async fn submit_deterministic_render_for_verified_result(
     SubmittedDeterministicRender,
     crate::runtime::verification::RenderDeterministicVerifiedSubmissionError,
 > {
-    crate::runtime::verification::submit_deterministic_render_for_verified_formation(admitted, context)
-        .await
-        .map(DeterministicVerificationSubmission::into_submitted)
+    crate::runtime::verification::submit_deterministic_render_for_verified_formation(
+        admitted, context,
+    )
+    .await
+    .map(DeterministicVerificationSubmission::into_submitted)
 }
 
 /// Submit the exact maintained deterministic path with renderer-private same-submission readbacks.
