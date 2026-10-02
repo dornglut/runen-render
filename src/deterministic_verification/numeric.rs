@@ -36,6 +36,7 @@ impl VerificationInterval {
         self.upper
     }
 
+    #[cfg(test)]
     pub(super) fn contains(self, value: f64) -> bool {
         value.is_finite() && self.lower <= value && value <= self.upper
     }

@@ -157,7 +157,9 @@ pub(crate) enum RenderMaintainedProgramBuildError {
 
 #[derive(Debug)]
 struct RetainedMaintainedProgram {
-    artifact: ShaderArtifact,
+    // Retain the accepted RunenShader artifact for the same renderer lifetime as its RunenGPU
+    // admission even when production execution only needs the admitted source handle.
+    _artifact: ShaderArtifact,
     admitted: GpuAdmittedProgramSource,
 }
 
@@ -183,17 +185,17 @@ impl RenderMaintainedProgramSources {
 
     #[cfg(test)]
     pub(crate) fn evaluator_artifact(&self) -> &ShaderArtifact {
-        &self.evaluator.artifact
+        &self.evaluator._artifact
     }
 
     #[cfg(test)]
     pub(crate) fn temporal_reconstruction_artifact(&self) -> &ShaderArtifact {
-        &self.temporal_reconstruction.artifact
+        &self.temporal_reconstruction._artifact
     }
 
     #[cfg(test)]
     pub(crate) fn camera_reprojection_artifact(&self) -> &ShaderArtifact {
-        &self.camera_reprojection.artifact
+        &self.camera_reprojection._artifact
     }
 }
 
@@ -358,5 +360,8 @@ fn admit_artifact(
             source,
         })?;
 
-    Ok(RetainedMaintainedProgram { artifact, admitted })
+    Ok(RetainedMaintainedProgram {
+        _artifact: artifact,
+        admitted,
+    })
 }

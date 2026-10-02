@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU64;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Weak;
 
 const RADIX_BITS: usize = 4;
 const RADIX_MASK: u64 = (1 << RADIX_BITS) - 1;
@@ -551,12 +553,14 @@ fn collect_object_ids(
 ///
 /// The weak root identity is provenance only: it does not retain old scene contents and is not part
 /// of public semantic snapshot equality or a persisted/global scene identity.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct RenderSceneContinuity {
     revision: RenderSceneRevision,
     root: Weak<SceneNode>,
 }
 
+#[cfg(test)]
 impl RenderSceneContinuity {
     pub(crate) const fn revision(&self) -> RenderSceneRevision {
         self.revision
@@ -605,6 +609,7 @@ impl RenderSceneSnapshot {
         self.objects.object_ids()
     }
 
+    #[cfg(test)]
     pub(crate) fn continuity(&self) -> RenderSceneContinuity {
         RenderSceneContinuity {
             revision: self.revision,
@@ -615,6 +620,7 @@ impl RenderSceneSnapshot {
 
 #[derive(Debug, Clone)]
 pub struct RenderSceneCommit {
+    #[cfg(test)]
     previous: RenderSceneContinuity,
     snapshot: RenderSceneSnapshot,
     change_set: RenderSceneChangeSet,
@@ -641,14 +647,17 @@ impl RenderSceneCommit {
         &self.change_set
     }
 
+    #[cfg(test)]
     pub(crate) const fn previous_revision(&self) -> RenderSceneRevision {
         self.previous.revision()
     }
 
+    #[cfg(test)]
     pub(crate) fn directly_follows(&self, previous: &RenderSceneContinuity) -> bool {
         self.previous.same_position(previous)
     }
 
+    #[cfg(test)]
     pub(crate) fn continuity(&self) -> RenderSceneContinuity {
         self.snapshot.continuity()
     }
@@ -844,8 +853,10 @@ impl RenderSceneStore {
     ) -> Result<RenderSceneCommit, RenderSceneCommitError> {
         let validated = self.validate_update(&update)?;
         if validated.is_noop() {
+            #[cfg(test)]
             let previous = self.snapshot().continuity();
             return Ok(RenderSceneCommit {
+                #[cfg(test)]
                 previous,
                 snapshot: self.snapshot(),
                 change_set: RenderSceneChangeSet::incremental(
@@ -864,6 +875,7 @@ impl RenderSceneStore {
             .revision
             .checked_next()
             .ok_or(RenderSceneCommitError::RevisionExhausted)?;
+        #[cfg(test)]
         let previous = self.snapshot().continuity();
 
         let ValidatedRenderSceneUpdate {
@@ -899,6 +911,7 @@ impl RenderSceneStore {
         self.revision = next_revision;
 
         Ok(RenderSceneCommit {
+            #[cfg(test)]
             previous,
             snapshot: self.snapshot(),
             change_set: RenderSceneChangeSet::incremental(

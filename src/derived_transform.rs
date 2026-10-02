@@ -5,8 +5,10 @@
 //! carries one exact #516 scene dependency plus enough scene-owned continuity provenance to decide
 //! whether that transform may be reused across accepted commits.
 
+#[cfg(test)]
 use super::derived_state::{RenderDerivedSceneDependencies, RenderDerivedSceneDependency};
 use super::representation::classify_field_distance_transform;
+#[cfg(test)]
 use super::scene::{
     RenderObjectId, RenderSceneCommit, RenderSceneContinuity, RenderSceneResync,
     RenderSceneRevision, RenderSceneSnapshot,
@@ -20,6 +22,7 @@ pub(super) enum RenderCompiledObjectTransformError {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct RenderCompiledObjectTransform {
+    #[cfg(test)]
     local_units_to_scene: [[f64; 3]; 3],
     scene_to_local_units: [[f64; 3]; 3],
     normal_local_to_scene: [[f64; 3]; 3],
@@ -53,6 +56,7 @@ impl RenderCompiledObjectTransform {
             return Err(RenderCompiledObjectTransformError::NonInvertibleObjectTransform);
         };
         Ok(Self {
+            #[cfg(test)]
             local_units_to_scene,
             scene_to_local_units,
             normal_local_to_scene: transpose_3x3(scene_to_local_units),
@@ -60,6 +64,7 @@ impl RenderCompiledObjectTransform {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn scene_point_from_local(&self, point: [f64; 3]) -> [f64; 3] {
         add(
             mul_matrix_vector(self.local_units_to_scene, point),
@@ -67,6 +72,7 @@ impl RenderCompiledObjectTransform {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn local_point_from_scene(&self, point: [f64; 3]) -> [f64; 3] {
         mul_matrix_vector(
             self.scene_to_local_units,
@@ -74,10 +80,12 @@ impl RenderCompiledObjectTransform {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn local_direction_per_scene_meter(&self, direction: [f64; 3]) -> [f64; 3] {
         mul_matrix_vector(self.scene_to_local_units, direction)
     }
 
+    #[cfg(test)]
     pub(super) fn scene_normal_from_local(&self, normal: [f64; 3]) -> [f64; 3] {
         normalize(mul_matrix_vector(self.normal_local_to_scene, normal))
             .expect("invertible transform cannot map a non-zero normal to zero")
@@ -141,6 +149,7 @@ impl RenderCompiledMetricSimilarityTransform {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn local_point_meters_from_scene(&self, point: [f64; 3]) -> [f64; 3] {
         mul_matrix_vector(
             self.scene_to_local_meters,
@@ -165,6 +174,7 @@ impl RenderCompiledMetricSimilarityTransform {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RenderRetainedObjectTransformError {
     ObjectStateMissing,
@@ -177,6 +187,7 @@ pub(super) enum RenderRetainedObjectTransformError {
     SceneInvalidated,
 }
 
+#[cfg(test)]
 impl From<RenderCompiledObjectTransformError> for RenderRetainedObjectTransformError {
     fn from(value: RenderCompiledObjectTransformError) -> Self {
         match value {
@@ -192,6 +203,7 @@ impl From<RenderCompiledObjectTransformError> for RenderRetainedObjectTransformE
 /// Advancement consumes `self`. Once continuity, lineage, resynchronization, or a relevant scene
 /// delta rejects reuse there is no API that can resurrect the rejected value; callers must rebuild
 /// explicitly from a current snapshot.
+#[cfg(test)]
 #[derive(Debug)]
 pub(super) struct RenderRetainedObjectTransform {
     object_id: RenderObjectId,
@@ -200,6 +212,7 @@ pub(super) struct RenderRetainedObjectTransform {
     compiled: RenderCompiledObjectTransform,
 }
 
+#[cfg(test)]
 impl RenderRetainedObjectTransform {
     pub(super) fn from_snapshot(
         snapshot: &RenderSceneSnapshot,
@@ -315,6 +328,7 @@ fn flatten_3x3(matrix: [[f64; 3]; 3]) -> [f64; 9] {
     ]
 }
 
+#[cfg(test)]
 fn mul_matrix_vector(matrix: [[f64; 3]; 3], vector: [f64; 3]) -> [f64; 3] {
     [
         dot(matrix[0], vector),
@@ -323,23 +337,28 @@ fn mul_matrix_vector(matrix: [[f64; 3]; 3], vector: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+#[cfg(test)]
 fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
     left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
 }
 
+#[cfg(test)]
 fn normalize(vector: [f64; 3]) -> Option<[f64; 3]> {
     let magnitude = dot(vector, vector).sqrt();
     (magnitude > 0.0 && magnitude.is_finite()).then(|| scale(vector, magnitude.recip()))
 }
 
+#[cfg(test)]
 fn add(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
     [left[0] + right[0], left[1] + right[1], left[2] + right[2]]
 }
 
+#[cfg(test)]
 fn sub(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
     [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
 }
 
+#[cfg(test)]
 fn scale(vector: [f64; 3], factor: f64) -> [f64; 3] {
     [vector[0] * factor, vector[1] * factor, vector[2] * factor]
 }
