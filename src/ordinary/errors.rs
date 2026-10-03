@@ -78,12 +78,12 @@ impl RenderExecutionError {
     pub fn kind(&self) -> RenderExecutionErrorKind {
         match &self.inner {
             RenderDeterministicExecutionError::Lowering(
-                super::runtime::execution::RenderDeterministicLoweringError::RunenShaderCompilation(
+                crate::runtime::execution::RenderDeterministicLoweringError::RunenShaderCompilation(
                     _,
                 ),
             ) => RenderExecutionErrorKind::RunenShaderCompilation,
             RenderDeterministicExecutionError::Lowering(
-                super::runtime::execution::RenderDeterministicLoweringError::RunenGpuPreparation(_),
+                crate::runtime::execution::RenderDeterministicLoweringError::RunenGpuPreparation(_),
             ) => RenderExecutionErrorKind::RunenGpuPreparation,
             RenderDeterministicExecutionError::Lowering(_) => RenderExecutionErrorKind::Lowering,
             RenderDeterministicExecutionError::Submission(_) => {
@@ -98,7 +98,7 @@ impl RenderExecutionError {
     /// ordinary error source without RunenRender mirroring RunenShader's diagnostic taxonomy.
     pub fn runen_shader_compilation_source(&self) -> Option<&(dyn Error + 'static)> {
         let RenderDeterministicExecutionError::Lowering(
-            super::runtime::execution::RenderDeterministicLoweringError::RunenShaderCompilation(
+            crate::runtime::execution::RenderDeterministicLoweringError::RunenShaderCompilation(
                 error,
             ),
         ) = &self.inner
@@ -115,7 +115,7 @@ impl RenderExecutionError {
     /// mirroring RunenGPU's error taxonomy.
     pub fn runen_gpu_preparation_source(&self) -> Option<&(dyn Error + 'static)> {
         let RenderDeterministicExecutionError::Lowering(
-            super::runtime::execution::RenderDeterministicLoweringError::RunenGpuPreparation(error),
+            crate::runtime::execution::RenderDeterministicLoweringError::RunenGpuPreparation(error),
         ) = &self.inner
         else {
             return None;
