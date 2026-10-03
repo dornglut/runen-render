@@ -303,7 +303,10 @@ mod tests {
         assert_eq!(observation_kind::PERSPECTIVE, 1);
         assert_eq!(observation_kind::PROBE, 2);
         assert_eq!(observation_kind::PERSPECTIVE_FOOTPRINT, 3);
-        for kind in [observation_kind::PROBE, observation_kind::PERSPECTIVE_FOOTPRINT] {
+        for kind in [
+            observation_kind::PROBE,
+            observation_kind::PERSPECTIVE_FOOTPRINT,
+        ] {
             assert!(
                 EVALUATOR_WGSL.contains(&format!("input_words[7u] == {kind}u")),
                 "evaluator WGSL must retain observation kind {kind}"
