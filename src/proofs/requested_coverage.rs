@@ -4,9 +4,11 @@
 use super::prepare::build_object_identity_decoder;
 use super::*;
 use crate::admission::{RenderOutputBinding, RenderOutputDestination};
+use crate::field_input::RenderFieldSemanticInput;
 use crate::proofs::execution::{MaintainedExecutionFixture, maintained_fixture};
 use crate::request::{
-    RenderRequest, RenderRequestedOutput, RenderResultTopology, RenderSemanticTolerance,
+    RenderDistanceConvention, RenderRequest, RenderRequestedOutput, RenderResultTopology,
+    RenderSemanticTolerance,
 };
 use crate::runtime::admission::admit_deterministic_render_with_semantic_inputs;
 use crate::runtime::program::abi::{execution_mode, geometry, header};
@@ -249,16 +251,21 @@ fn packed_admitted(
         .enumerate()
         .map(|(index, object)| (object, index as u32 + 1))
         .collect();
+    let bytes_per_row_alignment = context
+        .device_facts()
+        .device_limits()
+        .alignments()
+        .bytes_per_row;
     let mut packed = pack_output(
         admitted.admitted(),
         &admitted.admitted().outputs()[0],
         kind,
         admitted.admitted().plan().request().observations()[0],
         &codes,
-        context,
-        DeterministicOutputPackingState {
+        OutputPackingInput {
             finite_evaluation_extent: None,
-            temporal_history: None,
+            bytes_per_row_alignment,
+            temporal: None,
         },
     )
     .unwrap();

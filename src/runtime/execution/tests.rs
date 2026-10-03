@@ -1350,10 +1350,10 @@ fn ordinary_observation_intent_never_requests_private_readback() {
 
 #[test]
 fn row_alignment_is_checked_without_embedding_device_policy() {
-    assert_eq!(align_up(12, 4), Ok(12));
-    assert_eq!(align_up(12, 8), Ok(16));
+    assert_eq!(super::layout::align_up(12, 4), Ok(12));
+    assert_eq!(super::layout::align_up(12, 8), Ok(16));
     assert_eq!(
-        align_up(12, 0),
+        super::layout::align_up(12, 0),
         Err(RenderDeterministicLoweringError::InvalidBytesPerRowAlignment { alignment: 0 })
     );
 }

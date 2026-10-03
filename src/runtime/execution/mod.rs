@@ -20,10 +20,7 @@ use super::carrier;
 use super::program::{
     CAMERA_REPROJECTION_REVISION, MAINTAINED_EVALUATOR_REVISION, RenderMaintainedProgramBuildError,
     RenderRunenShaderCompilationError, TEMPORAL_RECONSTRUCTION_REVISION,
-    abi::{
-        WORKGROUP_SIZE, camera, emitter, execution_mode, geometry, header, observation_kind,
-        requested_coverage, shape, temporal,
-    },
+    abi::{camera, requested_coverage, temporal},
     retained_camera_reprojection_source, retained_maintained_evaluator_source,
     retained_temporal_reconstruction_source,
 };
@@ -32,41 +29,33 @@ use super::program::{
     CAMERA_REPROJECTION_WGSL, EVALUATOR_WGSL, TEMPORAL_RECONSTRUCTION_WGSL,
     build_maintained_program_sources,
 };
-use super::transform::{
-    RenderCompiledMetricSimilarityTransform, RenderCompiledMetricSimilarityTransformError,
-    RenderCompiledObjectTransform, RenderCompiledObjectTransformError,
-};
 use crate::admission::{AdmittedRenderPlan, RenderOutputDestination};
-use crate::field_input::{
-    RenderFieldSemanticInput, RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration,
-};
+use crate::field_input::{RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration};
 use crate::lowering::RenderWorkSet;
 use crate::render_result::RenderResult;
-use crate::representation::{RenderRepresentationId, RenderRepresentationProtocol};
+use crate::representation::RenderRepresentationId;
 use crate::request::{
-    RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
-    RenderPerspectiveObservation, RenderSamplingSupport,
+    RenderObservationSpec, RenderOutputSpec, RenderOutputValue, RenderPerspectiveObservation,
+    RenderSamplingSupport,
 };
 use crate::scene::{RenderObjectId, RenderSceneRevision};
 use crate::space_time::RenderTimeInterval;
 use crate::surface_input::{
     RenderSurfaceSemanticInputBinding, RenderSurfaceSemanticInputGeneration,
-    RenderSurfaceSemanticInputView,
 };
 use runen_gpu::{
     GpuAdmittedProgramSource, GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization,
     GpuBufferRegion, GpuBufferTextureLayout, GpuBufferUsage, GpuClearOperation,
     GpuComputeOperation, GpuComputePipelineDescriptor, GpuContext, GpuContextAffinity,
-    GpuCopyOperation, GpuDispatchIntent, GpuDispatchSize, GpuExportKey, GpuExportRelationship,
-    GpuInitialCoverage, GpuOrdinaryTransferPreparationError, GpuProgramContractError,
-    GpuProgramSourceError, GpuReadbackId, GpuReadbackOperation, GpuReadbackRequestError,
-    GpuReadbackStatus, GpuReconstruction, GpuResourceAccessIntent, GpuResourceDescriptorError,
-    GpuResourceLifetime, GpuResourceProvenance, GpuResourceRef, GpuRuntimeBindingValue,
-    GpuSubmission, GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureAccessResource,
-    GpuTextureCopyRegion, GpuTextureFormat, GpuTextureHandle, GpuUploadOperation,
-    GpuWorkAuthoringError, GpuWorkFragment, GpuWorkImport, GpuWorkOperationError, GpuWorkOutput,
-    GpuWorkResourceIdAllocationError, GpuWorkResourceIdAllocator, GpuWorkSubmissionError,
-    PreparedGpuData, TransferData,
+    GpuCopyOperation, GpuDispatchIntent, GpuExportKey, GpuExportRelationship, GpuInitialCoverage,
+    GpuOrdinaryTransferPreparationError, GpuProgramContractError, GpuProgramSourceError,
+    GpuReadbackId, GpuReadbackOperation, GpuReadbackRequestError, GpuReadbackStatus,
+    GpuReconstruction, GpuResourceAccessIntent, GpuResourceDescriptorError, GpuResourceLifetime,
+    GpuResourceProvenance, GpuResourceRef, GpuRuntimeBindingValue, GpuSubmission,
+    GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureAccessResource, GpuTextureCopyRegion,
+    GpuTextureFormat, GpuTextureHandle, GpuUploadOperation, GpuWorkAuthoringError, GpuWorkFragment,
+    GpuWorkImport, GpuWorkOperationError, GpuWorkOutput, GpuWorkResourceIdAllocationError,
+    GpuWorkResourceIdAllocator, GpuWorkSubmissionError, PreparedGpuData, TransferData,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -83,6 +72,7 @@ mod requested_coverage_proof;
 const WORD_BYTES: u64 = carrier::WORD_BYTES as u64;
 
 mod errors;
+mod layout;
 mod lifecycle;
 mod packing;
 mod prepare;
@@ -119,15 +109,14 @@ use errors::{
 };
 use lifecycle::{DeterministicObservationIntent, DeterministicVerificationState};
 use packing::*;
-use prepare::{PackedOutput, lower_deterministic_render};
+use prepare::lower_deterministic_render;
 #[cfg(test)]
 use state::DeterministicTemporalStorage;
 use state::{
     DeterministicBufferKind, DeterministicOutputExecutionSelection,
-    DeterministicOutputPackingState, DeterministicRenderExecutionSelection,
-    DeterministicTemporalHistorySelection, DeterministicTemporalHistoryUseStorage,
-    DeterministicTemporalSignature, MaintainedExecutionKind, temporal_evaluation_extent_supported,
-    temporal_observation_compatibility,
+    DeterministicRenderExecutionSelection, DeterministicTemporalHistorySelection,
+    DeterministicTemporalHistoryUseStorage, DeterministicTemporalSignature,
+    temporal_evaluation_extent_supported, temporal_observation_compatibility,
 };
 use submission::submit_prepared_deterministic_render;
 
