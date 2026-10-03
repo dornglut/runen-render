@@ -55,7 +55,7 @@ use runen_gpu::{
     GpuUploadOperation, GpuWorkAuthoringError, GpuWorkFragment, GpuWorkImport,
     GpuWorkOperationError, GpuWorkResourceIdAllocationError, GpuWorkResourceIdAllocator,
     GpuWorkSubmissionError, PreparedGpuData, TransferData,
-}
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
