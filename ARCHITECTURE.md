@@ -42,12 +42,16 @@ runtime
 │  ├─ abi          named host <-> maintained-WGSL layout/revision authority
 │  └─ shaders      maintained shader sources
 ├─ execution
-│  ├─ state        retained resources and temporal/history lifetime
-│  ├─ lifecycle    prepared/submitted/result correlation
-│  ├─ prepare      work/resource preparation and lowering
-│  ├─ packing      host physical encoding and dispatch preparation
-│  ├─ submission   RunenGPU submission
-│  └─ errors       typed owner-preserving error projection
+│  ├─ state          retained resources and temporal/history lifetime
+│  ├─ lifecycle      prepared/submitted/result correlation
+│  ├─ output_context output/request/observation correlation and temporal preparation
+│  ├─ packing        host physical semantic encoding
+│  ├─ layout         physical row/layout alignment helpers
+│  ├─ passes         primary/coverage/temporal GPU pass preparation and dispatch
+│  ├─ finalize       destination/export/evidence/readback and fragment assembly
+│  ├─ prepare        render/output orchestration
+│  ├─ submission     RunenGPU submission
+│  └─ errors         typed owner-preserving error projection
 ├─ capture
 └─ verification
 ```
@@ -61,6 +65,24 @@ Maintained program source composition, exact revisions, retained RunenShader
 artifacts, and RunenGPU admission have one private owner under
 `runtime::program`. The host/WGSL contract uses named private ABI constants and
 parity proofs; it is not a public renderer ABI.
+
+Maintained output preparation is intentionally an orchestration pipeline rather
+than a single execution owner:
+
+```text
+resolved output context
+    -> temporal state
+    -> physical packing
+    -> prepared primary / coverage / temporal passes
+    -> destination + execution evidence + optional verification readbacks
+    -> ordered work-fragment assembly
+```
+
+The retained resource cache owns reusable resource identities and temporal
+history lifecycle, not maintained program-source retention. Dispatch sizing and
+camera-reprojection parameter realization belong with pass preparation rather
+than physical output packing. Execution modules use explicit dependencies at
+the preparation/state boundary instead of a shared private prelude.
 
 ## Ordinary façade
 
