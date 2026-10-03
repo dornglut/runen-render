@@ -18,16 +18,16 @@ pub use super::capture::{
 };
 use super::carrier;
 use super::program::{
-    CAMERA_REPROJECTION_REVISION, MAINTAINED_EVALUATOR_REVISION, RenderMaintainedProgramBuildError,
-    RenderRunenShaderCompilationError, TEMPORAL_RECONSTRUCTION_REVISION,
+    RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError,
     abi::{camera, temporal},
-    retained_camera_reprojection_source, retained_maintained_evaluator_source,
-    retained_temporal_reconstruction_source,
 };
 #[cfg(test)]
 use super::program::{
-    CAMERA_REPROJECTION_WGSL, EVALUATOR_WGSL, TEMPORAL_RECONSTRUCTION_WGSL,
-    build_maintained_program_sources,
+    CAMERA_REPROJECTION_REVISION, CAMERA_REPROJECTION_WGSL, EVALUATOR_WGSL,
+    MAINTAINED_EVALUATOR_REVISION, TEMPORAL_RECONSTRUCTION_REVISION,
+    TEMPORAL_RECONSTRUCTION_WGSL, build_maintained_program_sources,
+    retained_camera_reprojection_source, retained_maintained_evaluator_source,
+    retained_temporal_reconstruction_source,
 };
 use crate::admission::AdmittedRenderPlan;
 use crate::field_input::{RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration};
@@ -35,27 +35,31 @@ use crate::lowering::RenderWorkSet;
 use crate::render_result::RenderResult;
 use crate::representation::RenderRepresentationId;
 use crate::request::{
-    RenderObservationSpec, RenderOutputSpec, RenderOutputValue, RenderPerspectiveObservation,
-    RenderSamplingSupport,
+    RenderObservationSpec, RenderOutputSpec, RenderPerspectiveObservation, RenderSamplingSupport,
 };
+#[cfg(test)]
+use crate::request::RenderOutputValue;
 use crate::scene::{RenderObjectId, RenderSceneRevision};
 use crate::space_time::RenderTimeInterval;
 use crate::surface_input::{
     RenderSurfaceSemanticInputBinding, RenderSurfaceSemanticInputGeneration,
 };
 use runen_gpu::{
-    GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization, GpuBufferRegion, GpuBufferUsage,
-    GpuClearOperation, GpuComputeOperation, GpuComputePipelineDescriptor, GpuContext,
-    GpuContextAffinity, GpuDispatchIntent, GpuExportRelationship,
-    GpuOrdinaryTransferPreparationError, GpuProgramContractError, GpuProgramSourceError,
-    GpuReadbackId, GpuReadbackOperation, GpuReadbackRequestError, GpuReadbackStatus,
-    GpuReconstruction, GpuResourceAccessIntent, GpuResourceDescriptorError, GpuResourceLifetime,
-    GpuResourceProvenance, GpuResourceRef, GpuRuntimeBindingValue, GpuSubmission,
-    GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureFormat, GpuTextureHandle,
-    GpuUploadOperation, GpuWorkAuthoringError, GpuWorkFragment, GpuWorkImport,
-    GpuWorkOperationError, GpuWorkResourceIdAllocationError, GpuWorkResourceIdAllocator,
-    GpuWorkSubmissionError, PreparedGpuData, TransferData,
+    GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization, GpuBufferUsage, GpuContext,
+    GpuContextAffinity, GpuExportRelationship, GpuOrdinaryTransferPreparationError,
+    GpuProgramContractError, GpuProgramSourceError, GpuReadbackId, GpuReadbackRequestError,
+    GpuReadbackStatus, GpuReconstruction, GpuResourceAccessIntent, GpuResourceDescriptorError,
+    GpuResourceLifetime, GpuResourceProvenance, GpuResourceRef, GpuSubmission,
+    GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureHandle, GpuWorkAuthoringError,
+    GpuWorkImport, GpuWorkOperationError, GpuWorkResourceIdAllocationError,
+    GpuWorkResourceIdAllocator, GpuWorkSubmissionError,
 };
+#[cfg(test)]
+use runen_gpu::{
+    GpuBufferRegion, GpuClearOperation, GpuComputeOperation, GpuComputePipelineDescriptor,
+    GpuDispatchIntent, GpuReadbackOperation, GpuRuntimeBindingValue, GpuTextureFormat,
+    GpuUploadOperation, GpuWorkFragment, PreparedGpuData, TransferData,
+}
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
@@ -109,9 +113,10 @@ use packing::*;
 use prepare::lower_deterministic_render;
 #[cfg(test)]
 use state::DeterministicTemporalStorage;
+use state::{DeterministicOutputExecutionSelection, DeterministicRenderExecutionSelection};
+#[cfg(test)]
 use state::{
-    DeterministicBufferKind, DeterministicOutputExecutionSelection,
-    DeterministicRenderExecutionSelection, DeterministicTemporalHistorySelection,
+    DeterministicBufferKind, DeterministicTemporalHistorySelection,
     DeterministicTemporalHistoryUseStorage, DeterministicTemporalSignature,
     temporal_evaluation_extent_supported, temporal_observation_compatibility,
 };

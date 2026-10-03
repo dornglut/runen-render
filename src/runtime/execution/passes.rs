@@ -43,6 +43,12 @@ pub(super) struct PreparedTemporalPass {
     pub(super) reconstruction_compute: Option<GpuComputeOperation>,
 }
 
+pub(super) struct PreparedOutputPasses {
+    pub(super) requested_coverage: Option<PreparedRequestedCoverage>,
+    pub(super) primary: PreparedPrimaryPass,
+    pub(super) temporal: PreparedTemporalPass,
+}
+
 pub(super) fn prepare_primary_pass(
     packed: &PackedOutput,
     resolved: ResolvedOutputContext<'_>,

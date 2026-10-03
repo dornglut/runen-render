@@ -14,7 +14,9 @@ use super::lifecycle::{
 };
 use super::output_context::{PreparedTemporalState, ResolvedOutputContext};
 use super::packing::PackedOutput;
-use super::passes::{PreparedPrimaryPass, PreparedRequestedCoverage, PreparedTemporalPass};
+use super::passes::{
+    PreparedOutputPasses, PreparedPrimaryPass, PreparedRequestedCoverage, PreparedTemporalPass,
+};
 use super::state::DeterministicTemporalHistoryUseStorage;
 use crate::admission::{AdmittedRenderPlan, RenderOutputDestination};
 use crate::request::RenderOutputValue;
@@ -363,11 +365,14 @@ pub(super) fn finalize_output(
     resolved: ResolvedOutputContext<'_>,
     packed: &PackedOutput,
     temporal_state: &PreparedTemporalState,
-    requested_coverage: Option<PreparedRequestedCoverage>,
-    primary: PreparedPrimaryPass,
-    temporal_pass: PreparedTemporalPass,
+    passes: PreparedOutputPasses,
     intent: DeterministicObservationIntent,
 ) -> Result<LoweredDeterministicOutput, RenderDeterministicLoweringError> {
+    let PreparedOutputPasses {
+        requested_coverage,
+        primary,
+        temporal,
+    } = passes;
     let destination = prepare_destination(
         admitted,
         resolved,
@@ -384,7 +389,7 @@ pub(super) fn finalize_output(
         resolved.output_index,
         primary,
         requested_coverage,
-        temporal_pass,
+        temporal,
         destination,
         verification,
     )?;

@@ -1,6 +1,8 @@
 use super::finalize::{LoweredDeterministicOutput, finalize_output};
 use super::output_context::{prepare_temporal_state, resolve_output_context};
-use super::passes::{prepare_primary_pass, prepare_requested_coverage, prepare_temporal_pass};
+use super::passes::{
+    PreparedOutputPasses, prepare_primary_pass, prepare_requested_coverage, prepare_temporal_pass,
+};
 use super::*;
 
 pub(super) struct LoweredDeterministicRender {
@@ -282,16 +284,18 @@ pub(super) fn lower_output(
     };
 
     let primary = prepare_primary_pass(&packed, resolved, resources)?;
-    let temporal_pass =
+    let temporal =
         prepare_temporal_pass(&packed, resolved, &temporal_state, &primary, resources)?;
     finalize_output(
         admitted,
         resolved,
         &packed,
         &temporal_state,
-        requested_coverage,
-        primary,
-        temporal_pass,
+        PreparedOutputPasses {
+            requested_coverage,
+            primary,
+            temporal,
+        },
         intent,
     )
 }
