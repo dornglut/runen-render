@@ -173,7 +173,6 @@ mod tests {
                 &[
                     header::SAMPLE_COUNT,
                     header::EVALUATION_WIDTH,
-                    header::EVALUATION_HEIGHT,
                     header::ROW_STRIDE_WORDS,
                     header::REQUESTED_WIDTH,
                     header::REQUESTED_HEIGHT,
