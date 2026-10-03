@@ -2,6 +2,10 @@
 //! then reads their exact output; it does not substitute a CPU copy of shader decisions.
 
 use super::*;
+use crate::runtime::program::{
+    abi::{camera, emitter, execution_mode, geometry, header, observation_kind, shape},
+    build_maintained_program_sources,
+};
 use runen_gpu::{GpuCapabilityProfile, GpuContextDescriptor, GpuContextRequestErrorCategory};
 use std::time::{Duration, Instant};
 
@@ -35,8 +39,8 @@ fn context() -> Option<GpuContext> {
 
 fn scene_input(sphere: bool) -> Vec<u32> {
     let count = if sphere { 2 } else { 1 };
-    let emitter = HEADER_WORDS + count * GEOMETRY_WORDS;
-    let mut input = vec![0; emitter + EMITTER_WORDS];
+    let emitter = header::WORDS + count * geometry::WORDS;
+    let mut input = vec![0; emitter + emitter::WORDS];
     input[..8].copy_from_slice(&[
         1,
         1,
@@ -44,8 +48,8 @@ fn scene_input(sphere: bool) -> Vec<u32> {
         1,
         count as u32,
         1,
-        OUTPUT_RADIANCE,
-        OBSERVATION_PERSPECTIVE_FOOTPRINT,
+        execution_mode::RADIANCE,
+        observation_kind::PERSPECTIVE_FOOTPRINT,
     ]);
     pack_matrix3(
         &mut input,
@@ -59,11 +63,11 @@ fn scene_input(sphere: bool) -> Vec<u32> {
     input[23] = 1;
     input[29] = emitter as u32;
     for index in 0..count {
-        let base = HEADER_WORDS + index * GEOMETRY_WORDS;
+        let base = header::WORDS + index * geometry::WORDS;
         input[base] = if index == 1 {
-            SHAPE_SPHERE
+            shape::SPHERE
         } else {
-            SHAPE_PLANE
+            shape::PLANE
         };
         input[base + 1] = index as u32 + 1;
         input[base + 2] = 1.0_f32.to_bits();
@@ -121,15 +125,9 @@ struct CameraProofPipelines {
 }
 
 fn camera_proof_pipelines() -> CameraProofPipelines {
-    let programs = build_maintained_program_sources(
-        MAINTAINED_EVALUATOR_REVISION,
-        MAINTAINED_WGSL.as_str(),
-        u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
-        TEMPORAL_RECONSTRUCTION_WGSL,
-        u64::from(CAMERA_REPROJECTION_REVISION),
-        CAMERA_REPROJECTION_WGSL.as_str(),
-    )
-    .expect("camera proof programs must compile through RunenShader and admit through RunenGPU");
+    let programs = build_maintained_program_sources().expect(
+        "camera proof programs must compile through RunenShader and admit through RunenGPU",
+    );
     CameraProofPipelines {
         evaluation: GpuComputePipelineDescriptor::ordinary(programs.evaluator().clone(), "main")
             .unwrap(),
@@ -157,7 +155,7 @@ fn execute(
         vec![0],
         vec![0; 4],
         previous.to_vec(),
-        vec![0; 8 + CAMERA_DIAGNOSTIC_WORDS as usize],
+        vec![0; 8 + camera::history::DIAGNOSTIC_WORDS as usize],
         camera,
         vec![0],
     ];
@@ -424,7 +422,7 @@ fn hard_shadow_revalidation_distinguishes_depth_and_geometry_from_radiance() {
     };
     let pipelines = camera_proof_pipelines();
     let mut input = scene_input(true);
-    let blocker = HEADER_WORDS + GEOMETRY_WORDS;
+    let blocker = header::WORDS + geometry::WORDS;
     pack_vec3(&mut input, blocker + 25, [2.0, 0.0, -2.0]).unwrap();
     input[blocker + 28] = 0.25_f32.to_bits();
     let emitter = input[29] as usize;
@@ -500,9 +498,9 @@ fn settled_hit_miss_boundary_and_invalid_inputs_fail_closed_on_first_motion() {
     let pipelines = camera_proof_pipelines();
     let mut input = scene_input(true);
     input[4] = 1;
-    input[HEADER_WORDS] = SHAPE_SPHERE;
-    pack_vec3(&mut input, HEADER_WORDS + 25, [1.5, -1.5, -3.0]).unwrap();
-    input[HEADER_WORDS + 28] = 0.5_f32.to_bits();
+    input[header::WORDS] = shape::SPHERE;
+    pack_vec3(&mut input, header::WORDS + 25, [1.5, -1.5, -3.0]).unwrap();
+    input[header::WORDS + 28] = 0.5_f32.to_bits();
     let emitter = input[29] as usize;
     pack_vec3(&mut input, emitter, [0.0, 0.0, 1.0]).unwrap();
     let mut previous = [0; 8];

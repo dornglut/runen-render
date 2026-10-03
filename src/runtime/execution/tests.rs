@@ -4,23 +4,17 @@ use runen_gpu::GpuBufferRange;
 
 #[test]
 fn maintained_programs_compile_through_runenshader_and_preserve_exact_gpu_source_bytes() {
-    let programs = build_maintained_program_sources(
-        MAINTAINED_EVALUATOR_REVISION,
-        MAINTAINED_WGSL.as_str(),
-        u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
-        TEMPORAL_RECONSTRUCTION_WGSL,
-        u64::from(CAMERA_REPROJECTION_REVISION),
-        CAMERA_REPROJECTION_WGSL.as_str(),
-    )
-    .expect("all maintained programs must compile through RunenShader and admit through RunenGPU");
+    let programs = build_maintained_program_sources().expect(
+        "all maintained programs must compile through RunenShader and admit through RunenGPU",
+    );
 
     assert_eq!(
         programs.evaluator_artifact().canonical_wgsl().as_bytes(),
-        MAINTAINED_WGSL.as_bytes()
+        EVALUATOR_WGSL.as_bytes()
     );
     assert_eq!(
         programs.evaluator().canonical_wgsl().as_bytes(),
-        MAINTAINED_WGSL.as_bytes()
+        EVALUATOR_WGSL.as_bytes()
     );
     assert_eq!(
         programs
@@ -195,14 +189,14 @@ fn deterministic_cache_stays_bounded_across_frames_and_resize() {
 }
 
 fn bounded_cycle_mean(samples: &[Option<f32>]) -> Option<f32> {
-    if samples.len() < TEMPORAL_PHASE_COUNT as usize {
+    if samples.len() < temporal::PHASE_COUNT as usize {
         return None;
     }
     let mut sum = 0.0_f32;
-    for sample in samples.iter().take(TEMPORAL_PHASE_COUNT as usize) {
+    for sample in samples.iter().take(temporal::PHASE_COUNT as usize) {
         sum += (*sample)?;
     }
-    Some(sum / TEMPORAL_PHASE_COUNT as f32)
+    Some(sum / temporal::PHASE_COUNT as f32)
 }
 
 fn requested_cell_sample_counts(
@@ -210,7 +204,7 @@ fn requested_cell_sample_counts(
     evaluation_extent: (u32, u32),
 ) -> Vec<u32> {
     let mut counts = vec![0_u32; (requested_extent.0 * requested_extent.1) as usize];
-    for phase in 0..TEMPORAL_PHASE_COUNT {
+    for phase in 0..temporal::PHASE_COUNT {
         let phase_x = if phase == 1 || phase == 3 {
             0.75_f32
         } else {
@@ -350,7 +344,7 @@ fn temporal_signature(source_generation: u64) -> DeterministicTemporalSignature 
         semantic_inputs: vec![binding],
         field_semantic_inputs: Vec::new(),
         evaluation_extent: (2, 2),
-        sequence_revision: TEMPORAL_SEQUENCE_REVISION,
+        sequence_revision: temporal::SEQUENCE_REVISION,
         reconstruction_revision: TEMPORAL_RECONSTRUCTION_REVISION,
         camera_reprojection_revision: None,
         depth_policy_revision: None,
@@ -397,7 +391,7 @@ fn camera_temporal_signature(
         temporal_observation_compatibility(RenderObservationSpec::Perspective(observation), true);
     signature.evaluation_extent = evaluation_extent;
     signature.camera_reprojection_revision = Some(CAMERA_REPROJECTION_REVISION);
-    signature.depth_policy_revision = Some(CAMERA_DEPTH_POLICY_REVISION);
+    signature.depth_policy_revision = Some(camera::DEPTH_POLICY_REVISION);
     signature
 }
 
@@ -793,7 +787,7 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
         temporal_observation_compatibility(RenderObservationSpec::Perspective(observation), true);
     signature.evaluation_extent = (4, 4);
     signature.camera_reprojection_revision = Some(CAMERA_REPROJECTION_REVISION);
-    signature.depth_policy_revision = Some(CAMERA_DEPTH_POLICY_REVISION);
+    signature.depth_policy_revision = Some(camera::DEPTH_POLICY_REVISION);
 
     let first = cache
         .temporal_history(
@@ -954,7 +948,7 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
     ));
 
     cache.reconcile_temporal_outputs(23, true);
-    for expected_completed in 1..=TEMPORAL_PHASE_COUNT {
+    for expected_completed in 1..=temporal::PHASE_COUNT {
         let use_state = cache
             .temporal_history(
                 23,
@@ -1242,15 +1236,8 @@ fn camera_reprojection_shader_matches_the_reference_rejection_contract() {
 
 #[test]
 fn camera_reprojection_wgsl_forms_a_canonical_compute_pipeline() {
-    let programs = build_maintained_program_sources(
-        MAINTAINED_EVALUATOR_REVISION,
-        MAINTAINED_WGSL.as_str(),
-        u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
-        TEMPORAL_RECONSTRUCTION_WGSL,
-        u64::from(CAMERA_REPROJECTION_REVISION),
-        CAMERA_REPROJECTION_WGSL.as_str(),
-    )
-    .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
+    let programs = build_maintained_program_sources()
+        .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
     GpuComputePipelineDescriptor::ordinary(programs.camera_reprojection().clone(), "main")
         .expect("camera reprojection must form a canonical compute pipeline");
 }
@@ -1259,7 +1246,7 @@ fn camera_reprojection_wgsl_forms_a_canonical_compute_pipeline() {
 fn camera_reprojection_shader_carries_versioned_depth_policy() {
     assert!(CAMERA_REPROJECTION_WGSL.contains("CAMERA_DEPTH_ABSOLUTE_EPSILON: f32 = 0.001"));
     assert!(CAMERA_REPROJECTION_WGSL.contains("CAMERA_DEPTH_RELATIVE_EPSILON: f32 = 0.001"));
-    assert_eq!(CAMERA_DEPTH_POLICY_REVISION, 1);
+    assert_eq!(camera::DEPTH_POLICY_REVISION, 1);
     assert_eq!(CAMERA_REPROJECTION_REVISION, 3);
 }
 
@@ -1334,15 +1321,8 @@ fn maintained_program_sources_are_retained_across_fresh_renderer_resource_caches
 
 #[test]
 fn maintained_wgsl_forms_a_canonical_compute_pipeline() {
-    let programs = build_maintained_program_sources(
-        MAINTAINED_EVALUATOR_REVISION,
-        MAINTAINED_WGSL.as_str(),
-        u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
-        TEMPORAL_RECONSTRUCTION_WGSL,
-        u64::from(CAMERA_REPROJECTION_REVISION),
-        CAMERA_REPROJECTION_WGSL.as_str(),
-    )
-    .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
+    let programs = build_maintained_program_sources()
+        .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
     let source = programs.evaluator().clone();
     assert_eq!(
         source.identity().revision().get(),
@@ -1482,15 +1462,8 @@ fn every_runengpu_preparation_owner_remains_a_typed_source() {
         "transfer-preparation",
     );
 
-    let programs = build_maintained_program_sources(
-        MAINTAINED_EVALUATOR_REVISION,
-        MAINTAINED_WGSL.as_str(),
-        u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
-        TEMPORAL_RECONSTRUCTION_WGSL,
-        u64::from(CAMERA_REPROJECTION_REVISION),
-        CAMERA_REPROJECTION_WGSL.as_str(),
-    )
-    .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
+    let programs = build_maintained_program_sources()
+        .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
     let program_contract = GpuComputePipelineDescriptor::ordinary(programs.evaluator().clone(), "")
         .expect_err("empty entry point must fail in RunenGPU program authority");
     assert_owner(
