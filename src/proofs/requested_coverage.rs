@@ -9,6 +9,7 @@ use crate::request::{
     RenderRequest, RenderRequestedOutput, RenderResultTopology, RenderSemanticTolerance,
 };
 use crate::runtime::admission::admit_deterministic_render_with_semantic_inputs;
+use crate::runtime::program::abi::{execution_mode, geometry, header};
 use crate::space_time::{RenderAffineTransform3, RenderTemporalSupport};
 use crate::surface_input::RenderSurfaceSemanticInput;
 use runen_gpu::{
@@ -269,7 +270,7 @@ fn packed_admitted(
 /// Execute the actual maintained shader; sentinel scratch proves coverage never enters ordinary
 /// invalidation/sidecar writes, even for undefined primary geometry. This is not a CPU query oracle.
 fn evaluate(context: &GpuContext, packed: PackedOutput) -> Vec<Vec<u32>> {
-    let coverage = packed.input_words[6] == EXECUTION_REQUESTED_COVERAGE;
+    let coverage = packed.input_words[6] == execution_mode::REQUESTED_COVERAGE;
     let count = packed.sample_count as usize;
     let padded = packed.output_byte_len as usize / 4;
     let initial = if coverage { 0x1234abcd } else { 0 };
@@ -611,11 +612,11 @@ fn requested_coverage_invalid_primary_is_distinct_from_background_and_skips_ligh
         "coverage does not pack emitters"
     );
     assert_eq!(
-        coverage.input_words[HEADER_WORDS + 2],
+        coverage.input_words[header::WORDS + 2],
         0,
         "coverage does not require reflectance"
     );
-    coverage.input_words[HEADER_WORDS + 2] = f32::NAN.to_bits(); // Lighting-only invalidity is irrelevant to primary visibility.
+    coverage.input_words[header::WORDS + 2] = f32::NAN.to_bits(); // Lighting-only invalidity is irrelevant to primary visibility.
     let coverage = evaluate(&context, coverage);
     assert!(coverage[1].contains(&1) && coverage[1].contains(&2));
 }
@@ -783,7 +784,7 @@ fn requested_coverage_preserves_field_payload_generations_and_invalid_vs_backgro
             radiance.input_words[5], 1,
             "lighting fixture must exercise shifted field payload offsets"
         );
-        let field_base = HEADER_WORDS;
+        let field_base = header::WORDS;
         let coverage_samples = coverage.input_words[field_base + 34] as usize;
         let radiance_samples = radiance.input_words[field_base + 34] as usize;
         assert_ne!(coverage_samples, radiance_samples);
@@ -793,7 +794,7 @@ fn requested_coverage_preserves_field_payload_generations_and_invalid_vs_backgro
             "same resolved field payload, despite omitted emitter block"
         );
         // All transform/query policy words are identical; reflectance and sample pointer differ.
-        for word in 0..GEOMETRY_WORDS {
+        for word in 0..geometry::WORDS {
             if word != 2 && word != 34 {
                 assert_eq!(
                     coverage.input_words[field_base + word],
