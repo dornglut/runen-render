@@ -83,8 +83,7 @@ mod submission;
 
 pub use lifecycle::{
     PreparedDeterministicRadianceOutput, PreparedDeterministicRender, RenderObjectIdentityDecoder,
-    RenderTemporalExecutionEvidence,
-    SubmittedDeterministicRender,
+    RenderTemporalExecutionEvidence, SubmittedDeterministicRender,
 };
 pub use prepare::{
     prepare_deterministic_render, submit_deterministic_render,

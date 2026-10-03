@@ -1,3 +1,7 @@
+use super::super::program::{
+    CAMERA_REPROJECTION_REVISION, TEMPORAL_RECONSTRUCTION_REVISION,
+    abi::{camera, temporal},
+};
 use super::errors::RenderDeterministicLoweringError;
 use super::packing::OutputTemporalPackingFacts;
 use super::state::{
@@ -5,10 +9,6 @@ use super::state::{
     DeterministicTemporalHistorySelection, DeterministicTemporalHistoryUse,
     DeterministicTemporalHistoryUseStorage, DeterministicTemporalSignature,
     temporal_evaluation_extent_supported, temporal_observation_compatibility,
-};
-use super::super::program::{
-    CAMERA_REPROJECTION_REVISION, TEMPORAL_RECONSTRUCTION_REVISION,
-    abi::{camera, temporal},
 };
 use crate::admission::AdmittedRenderPlan;
 use crate::request::{RenderObservationSpec, RenderOutputValue};

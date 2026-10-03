@@ -1,3 +1,8 @@
+use super::super::program::{
+    CAMERA_REPROJECTION_REVISION, MAINTAINED_EVALUATOR_REVISION, TEMPORAL_RECONSTRUCTION_REVISION,
+    abi::{camera, requested_coverage, temporal},
+};
+use super::WORD_BYTES;
 use super::errors::{
     RenderDeterministicLoweringError, gpu_readback_request, gpu_resource_descriptor,
     gpu_work_authoring, gpu_work_operation,
@@ -11,19 +16,12 @@ use super::output_context::{PreparedTemporalState, ResolvedOutputContext};
 use super::packing::PackedOutput;
 use super::passes::{PreparedPrimaryPass, PreparedRequestedCoverage, PreparedTemporalPass};
 use super::state::DeterministicTemporalHistoryUseStorage;
-use super::super::program::{
-    CAMERA_REPROJECTION_REVISION, MAINTAINED_EVALUATOR_REVISION,
-    TEMPORAL_RECONSTRUCTION_REVISION,
-    abi::{camera, requested_coverage, temporal},
-};
-use super::WORD_BYTES;
 use crate::admission::{AdmittedRenderPlan, RenderOutputDestination};
 use crate::request::RenderOutputValue;
 use runen_gpu::{
-    GpuBufferRegion, GpuBufferTextureLayout, GpuCopyOperation, GpuExportKey,
-    GpuExportRelationship, GpuInitialCoverage, GpuReadbackOperation,
-    GpuResourceAccessIntent, GpuResourceProvenance, GpuResourceRef,
-    GpuTextureAccessResource, GpuTextureCopyRegion, GpuTextureFormat,
+    GpuBufferRegion, GpuBufferTextureLayout, GpuCopyOperation, GpuExportKey, GpuExportRelationship,
+    GpuInitialCoverage, GpuReadbackOperation, GpuResourceAccessIntent, GpuResourceProvenance,
+    GpuResourceRef, GpuTextureAccessResource, GpuTextureCopyRegion, GpuTextureFormat,
     GpuWorkFragment, GpuWorkOutput,
 };
 
@@ -396,4 +394,3 @@ pub(super) fn finalize_output(
         composable_radiance_output,
     })
 }
-

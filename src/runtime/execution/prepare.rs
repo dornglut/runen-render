@@ -295,4 +295,3 @@ pub(super) fn lower_output(
         intent,
     )
 }
-
