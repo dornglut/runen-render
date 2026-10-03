@@ -31,14 +31,14 @@ use super::program::{
 };
 use crate::admission::{AdmittedRenderPlan, RenderOutputDestination};
 use crate::field_input::{
-    RenderFieldSemanticInput, RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration,
+    RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration,
 };
 use crate::lowering::RenderWorkSet;
 use crate::render_result::RenderResult;
 use crate::representation::RenderRepresentationId;
 use crate::request::{
-    RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
-    RenderPerspectiveObservation, RenderSamplingSupport,
+    RenderObservationSpec, RenderOutputSpec, RenderOutputValue, RenderPerspectiveObservation,
+    RenderSamplingSupport,
 };
 use crate::scene::{RenderObjectId, RenderSceneRevision};
 use crate::space_time::RenderTimeInterval;
@@ -49,7 +49,7 @@ use runen_gpu::{
     GpuAdmittedProgramSource, GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization,
     GpuBufferRegion, GpuBufferTextureLayout, GpuBufferUsage, GpuClearOperation,
     GpuComputeOperation, GpuComputePipelineDescriptor, GpuContext, GpuContextAffinity,
-    GpuCopyOperation, GpuDispatchIntent, GpuDispatchSize, GpuExportKey, GpuExportRelationship,
+    GpuCopyOperation, GpuDispatchIntent, GpuExportKey, GpuExportRelationship,
     GpuInitialCoverage, GpuOrdinaryTransferPreparationError, GpuProgramContractError,
     GpuProgramSourceError, GpuReadbackId, GpuReadbackOperation, GpuReadbackRequestError,
     GpuReadbackStatus, GpuReconstruction, GpuResourceAccessIntent, GpuResourceDescriptorError,

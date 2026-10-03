@@ -634,41 +634,6 @@ fn encode_output_packing(
     })
 }
 
-#[cfg(test)]
-mod packing_layout_tests {
-    use super::*;
-
-    #[test]
-    fn scalar_layout_does_not_require_row_alignment() {
-        let layout =
-            derive_output_physical_layout(0, None, None, None).expect("scalar physical layout");
-        assert_eq!(layout.requested_extent, (1, 1));
-        assert_eq!(layout.sample_count, 1);
-        assert_eq!(layout.row_stride_words, 1);
-        assert_eq!(layout.output_byte_len, WORD_BYTES);
-        assert_eq!(layout.texture_row_bytes, None);
-    }
-
-    #[test]
-    fn one_by_one_lattice_keeps_texture_row_layout() {
-        let layout = derive_output_physical_layout(0, Some((1, 1)), None, Some(256))
-            .expect("lattice physical layout");
-        assert_eq!(layout.requested_extent, (1, 1));
-        assert_eq!(layout.sample_count, 1);
-        assert_eq!(layout.row_stride_words, 64);
-        assert_eq!(layout.output_byte_len, 256);
-        assert_eq!(layout.texture_row_bytes, Some(256));
-    }
-
-    #[test]
-    fn lattice_layout_requires_row_alignment() {
-        assert!(matches!(
-            derive_output_physical_layout(0, Some((2, 2)), None, None),
-            Err(RenderDeterministicLoweringError::MissingBytesPerRowAlignment)
-        ));
-    }
-}
-
 pub(super) fn matching_emitters(
     admitted: &AdmittedRenderPlan,
     wavelength_meters: f64,
@@ -998,4 +963,39 @@ pub(super) fn deterministic_dispatch_size(
         u32::try_from(groups_y).expect("admitted dispatch y dimension must fit u32"),
         1,
     ))
+}
+
+#[cfg(test)]
+mod packing_layout_tests {
+    use super::*;
+
+    #[test]
+    fn scalar_layout_does_not_require_row_alignment() {
+        let layout =
+            derive_output_physical_layout(0, None, None, None).expect("scalar physical layout");
+        assert_eq!(layout.requested_extent, (1, 1));
+        assert_eq!(layout.sample_count, 1);
+        assert_eq!(layout.row_stride_words, 1);
+        assert_eq!(layout.output_byte_len, WORD_BYTES);
+        assert_eq!(layout.texture_row_bytes, None);
+    }
+
+    #[test]
+    fn one_by_one_lattice_keeps_texture_row_layout() {
+        let layout = derive_output_physical_layout(0, Some((1, 1)), None, Some(256))
+            .expect("lattice physical layout");
+        assert_eq!(layout.requested_extent, (1, 1));
+        assert_eq!(layout.sample_count, 1);
+        assert_eq!(layout.row_stride_words, 64);
+        assert_eq!(layout.output_byte_len, 256);
+        assert_eq!(layout.texture_row_bytes, Some(256));
+    }
+
+    #[test]
+    fn lattice_layout_requires_row_alignment() {
+        assert!(matches!(
+            derive_output_physical_layout(0, Some((2, 2)), None, None),
+            Err(RenderDeterministicLoweringError::MissingBytesPerRowAlignment)
+        ));
+    }
 }
