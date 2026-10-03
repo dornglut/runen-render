@@ -6,7 +6,9 @@ use crate::runtime::program::{
     abi::{camera, emitter, execution_mode, geometry, header, observation_kind, shape},
     build_maintained_program_sources,
 };
-use runen_gpu::{GpuCapabilityProfile, GpuContextDescriptor, GpuContextRequestErrorCategory};
+use runen_gpu::{
+    GpuCapabilityProfile, GpuContextDescriptor, GpuContextRequestErrorCategory, GpuDispatchSize,
+};
 use std::time::{Duration, Instant};
 
 fn context() -> Option<GpuContext> {

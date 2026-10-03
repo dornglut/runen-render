@@ -4,9 +4,11 @@
 use super::prepare::build_object_identity_decoder;
 use super::*;
 use crate::admission::{RenderOutputBinding, RenderOutputDestination};
+use crate::field_input::RenderFieldSemanticInput;
 use crate::proofs::execution::{MaintainedExecutionFixture, maintained_fixture};
 use crate::request::{
-    RenderRequest, RenderRequestedOutput, RenderResultTopology, RenderSemanticTolerance,
+    RenderDistanceConvention, RenderRequest, RenderRequestedOutput, RenderResultTopology,
+    RenderSemanticTolerance,
 };
 use crate::runtime::admission::admit_deterministic_render_with_semantic_inputs;
 use crate::runtime::program::abi::{execution_mode, geometry, header};
