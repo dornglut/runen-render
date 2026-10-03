@@ -66,6 +66,7 @@ enum GeometryPackingEntry<'a> {
 }
 
 struct OutputPackingPlan<'a> {
+    output_index: usize,
     layout: OutputPhysicalLayout,
     execution_mode: u32,
     observation: PhysicalObservation,
@@ -101,6 +102,7 @@ fn derive_output_physical_layout(
     finite_evaluation_extent: Option<(u32, u32)>,
     bytes_per_row_alignment: Option<u64>,
 ) -> Result<OutputPhysicalLayout, RenderDeterministicLoweringError> {
+    let is_lattice = requested_extent.is_some();
     let physical_extent = match (requested_extent, finite_evaluation_extent) {
         (Some(_), Some(extent)) => extent,
         (Some(extent), None) => extent,
@@ -110,7 +112,7 @@ fn derive_output_physical_layout(
         (None, None) => (1, 1),
     };
     let requested_extent = requested_extent.unwrap_or((1, 1));
-    if requested_extent != (1, 1) || finite_evaluation_extent.is_some() {
+    if is_lattice {
         let (width, height) = physical_extent;
         let sample_count = width.checked_mul(height).ok_or(
             RenderDeterministicLoweringError::SizeOverflow {
@@ -396,6 +398,7 @@ fn plan_output_packing<'a>(
     }
 
     Ok(OutputPackingPlan {
+        output_index,
         layout,
         execution_mode,
         observation,
@@ -411,6 +414,7 @@ fn encode_output_packing(
     plan: OutputPackingPlan<'_>,
 ) -> Result<PackedOutput, RenderDeterministicLoweringError> {
     let OutputPackingPlan {
+        output_index,
         layout,
         execution_mode,
         observation,
@@ -577,9 +581,7 @@ fn encode_output_packing(
 
                 for sample_index in 0..input.sample_count() {
                     let sample = input.signed_distance_sample_meters(sample_index).ok_or(
-                        RenderDeterministicLoweringError::OutputCorrelationChanged {
-                            output_index: usize::MAX,
-                        },
+                        RenderDeterministicLoweringError::OutputCorrelationChanged { output_index },
                     )?;
                     words[sample_offset + sample_index] =
                         f32_bits(sample, "field signed-distance sample")?;
@@ -607,6 +609,41 @@ fn encode_output_packing(
         output_byte_len: layout.output_byte_len,
         texture_row_bytes: layout.texture_row_bytes,
     })
+}
+
+#[cfg(test)]
+mod packing_layout_tests {
+    use super::*;
+
+    #[test]
+    fn scalar_layout_does_not_require_row_alignment() {
+        let layout =
+            derive_output_physical_layout(0, None, None, None).expect("scalar physical layout");
+        assert_eq!(layout.requested_extent, (1, 1));
+        assert_eq!(layout.sample_count, 1);
+        assert_eq!(layout.row_stride_words, 1);
+        assert_eq!(layout.output_byte_len, WORD_BYTES);
+        assert_eq!(layout.texture_row_bytes, None);
+    }
+
+    #[test]
+    fn one_by_one_lattice_keeps_texture_row_layout() {
+        let layout = derive_output_physical_layout(0, Some((1, 1)), None, Some(256))
+            .expect("lattice physical layout");
+        assert_eq!(layout.requested_extent, (1, 1));
+        assert_eq!(layout.sample_count, 1);
+        assert_eq!(layout.row_stride_words, 64);
+        assert_eq!(layout.output_byte_len, 256);
+        assert_eq!(layout.texture_row_bytes, Some(256));
+    }
+
+    #[test]
+    fn lattice_layout_requires_row_alignment() {
+        assert!(matches!(
+            derive_output_physical_layout(0, Some((2, 2)), None, None),
+            Err(RenderDeterministicLoweringError::MissingBytesPerRowAlignment)
+        ));
+    }
 }
 
 pub(super) fn matching_emitters(
