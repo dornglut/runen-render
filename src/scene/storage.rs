@@ -100,7 +100,11 @@ impl SceneObjects {
         (Self { root }, copied_nodes)
     }
 
-    pub(super) fn replaced(&self, object_id: RenderObjectId, state: RenderObjectState) -> (Self, usize) {
+    pub(super) fn replaced(
+        &self,
+        object_id: RenderObjectId,
+        state: RenderObjectState,
+    ) -> (Self, usize) {
         debug_assert!(self.contains(object_id));
         let state = Arc::new(state);
         let (root, copied_nodes) = replace_state_node(&self.root, object_id.raw(), 0, &state);
