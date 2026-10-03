@@ -44,17 +44,18 @@ use crate::surface_input::{
     RenderSurfaceSemanticInputBinding, RenderSurfaceSemanticInputGeneration,
 };
 use runen_gpu::{
-GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization,
-    GpuBufferRegion, GpuBufferUsage, GpuClearOperation,
-    GpuComputeOperation, GpuComputePipelineDescriptor, GpuContext, GpuContextAffinity,
-GpuDispatchIntent, GpuExportRelationship,     GpuOrdinaryTransferPreparationError, GpuProgramContractError, GpuProgramSourceError,
+    GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization, GpuBufferRegion, GpuBufferUsage,
+    GpuClearOperation, GpuComputeOperation, GpuComputePipelineDescriptor, GpuContext,
+    GpuContextAffinity, GpuDispatchIntent, GpuExportRelationship,
+    GpuOrdinaryTransferPreparationError, GpuProgramContractError, GpuProgramSourceError,
     GpuReadbackId, GpuReadbackOperation, GpuReadbackRequestError, GpuReadbackStatus,
     GpuReconstruction, GpuResourceAccessIntent, GpuResourceDescriptorError, GpuResourceLifetime,
     GpuResourceProvenance, GpuResourceRef, GpuRuntimeBindingValue, GpuSubmission,
-    GpuSubmissionFailureKind, GpuSubmissionStatus,     GpuTextureFormat, GpuTextureHandle, GpuUploadOperation, GpuWorkAuthoringError, GpuWorkFragment,
-    GpuWorkImport, GpuWorkOperationError, GpuWorkResourceIdAllocationError,
-    GpuWorkResourceIdAllocator, GpuWorkSubmissionError, PreparedGpuData, TransferData,
-};
+    GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureFormat, GpuTextureHandle,
+    GpuUploadOperation, GpuWorkAuthoringError, GpuWorkFragment, GpuWorkImport,
+    GpuWorkOperationError, GpuWorkResourceIdAllocationError, GpuWorkResourceIdAllocator,
+    GpuWorkSubmissionError, PreparedGpuData, TransferData,
+}
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
