@@ -284,8 +284,7 @@ pub(super) fn lower_output(
     };
 
     let primary = prepare_primary_pass(&packed, resolved, resources)?;
-    let temporal =
-        prepare_temporal_pass(&packed, resolved, &temporal_state, &primary, resources)?;
+    let temporal = prepare_temporal_pass(&packed, resolved, &temporal_state, &primary, resources)?;
     finalize_output(
         admitted,
         resolved,

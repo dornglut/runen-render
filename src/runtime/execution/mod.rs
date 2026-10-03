@@ -17,28 +17,27 @@ pub use super::capture::{
     RenderDeterministicRadianceCaptureRequest, RenderDeterministicRadianceCaptureRequestError,
 };
 use super::carrier;
-use super::program::{
-    RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError,
-    abi::{camera, temporal},
-};
 #[cfg(test)]
 use super::program::{
     CAMERA_REPROJECTION_REVISION, CAMERA_REPROJECTION_WGSL, EVALUATOR_WGSL,
-    MAINTAINED_EVALUATOR_REVISION, TEMPORAL_RECONSTRUCTION_REVISION,
-    TEMPORAL_RECONSTRUCTION_WGSL, build_maintained_program_sources,
-    retained_camera_reprojection_source, retained_maintained_evaluator_source,
-    retained_temporal_reconstruction_source,
+    MAINTAINED_EVALUATOR_REVISION, TEMPORAL_RECONSTRUCTION_REVISION, TEMPORAL_RECONSTRUCTION_WGSL,
+    build_maintained_program_sources, retained_camera_reprojection_source,
+    retained_maintained_evaluator_source, retained_temporal_reconstruction_source,
+};
+use super::program::{
+    RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError,
+    abi::{camera, temporal},
 };
 use crate::admission::AdmittedRenderPlan;
 use crate::field_input::{RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration};
 use crate::lowering::RenderWorkSet;
 use crate::render_result::RenderResult;
 use crate::representation::RenderRepresentationId;
+#[cfg(test)]
+use crate::request::RenderOutputValue;
 use crate::request::{
     RenderObservationSpec, RenderOutputSpec, RenderPerspectiveObservation, RenderSamplingSupport,
 };
-#[cfg(test)]
-use crate::request::RenderOutputValue;
 use crate::scene::{RenderObjectId, RenderSceneRevision};
 use crate::space_time::RenderTimeInterval;
 use crate::surface_input::{
@@ -113,13 +112,13 @@ use packing::*;
 use prepare::lower_deterministic_render;
 #[cfg(test)]
 use state::DeterministicTemporalStorage;
-use state::{DeterministicOutputExecutionSelection, DeterministicRenderExecutionSelection};
 #[cfg(test)]
 use state::{
     DeterministicBufferKind, DeterministicTemporalHistorySelection,
     DeterministicTemporalHistoryUseStorage, DeterministicTemporalSignature,
     temporal_evaluation_extent_supported, temporal_observation_compatibility,
 };
+use state::{DeterministicOutputExecutionSelection, DeterministicRenderExecutionSelection};
 use submission::submit_prepared_deterministic_render;
 
 #[cfg(test)]
