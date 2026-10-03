@@ -1,3 +1,10 @@
+use super::super::program::{
+    CAMERA_REPROJECTION_REVISION,
+    abi::{WORKGROUP_SIZE, camera, temporal},
+    retained_camera_reprojection_source, retained_maintained_evaluator_source,
+    retained_temporal_reconstruction_source,
+};
+use super::WORD_BYTES;
 use super::errors::{
     RenderDeterministicLoweringError, gpu_program_contract, gpu_resource_descriptor,
     gpu_transfer_preparation, gpu_work_operation, map_maintained_program_build_error,
@@ -7,19 +14,12 @@ use super::packing::{PackedOutput, pack_matrix3, pack_vec3, positive_f32_bits};
 use super::state::{
     DeterministicBufferKind, DeterministicResourceCache, DeterministicTemporalHistoryUseStorage,
 };
-use super::super::program::{
-    CAMERA_REPROJECTION_REVISION,
-    abi::{camera, temporal, WORKGROUP_SIZE},
-    retained_camera_reprojection_source, retained_maintained_evaluator_source,
-    retained_temporal_reconstruction_source,
-};
-use super::WORD_BYTES;
 use crate::request::{RenderObservationSpec, RenderPerspectiveObservation};
 use runen_gpu::{
-    GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization, GpuBufferRegion,
-    GpuBufferUsage, GpuClearOperation, GpuComputeOperation, GpuComputePipelineDescriptor,
-    GpuDispatchIntent, GpuDispatchSize, GpuReconstruction, GpuResourceLifetime,
-    GpuRuntimeBindingValue, GpuUploadOperation, PreparedGpuData, TransferData,
+    GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization, GpuBufferRegion, GpuBufferUsage,
+    GpuClearOperation, GpuComputeOperation, GpuComputePipelineDescriptor, GpuDispatchIntent,
+    GpuDispatchSize, GpuReconstruction, GpuResourceLifetime, GpuRuntimeBindingValue,
+    GpuUploadOperation, PreparedGpuData, TransferData,
 };
 
 pub(super) struct PreparedPrimaryPass {
@@ -333,8 +333,8 @@ pub(super) fn prepare_temporal_pass(
                 GpuUploadOperation::whole_buffer(&parameters, payload).map_err(|error| {
                     gpu_work_operation("camera-reprojection parameter upload", error)
                 })?;
-            let source =
-                retained_camera_reprojection_source().map_err(map_maintained_program_build_error)?;
+            let source = retained_camera_reprojection_source()
+                .map_err(map_maintained_program_build_error)?;
             let pipeline = GpuComputePipelineDescriptor::ordinary(source, "main")
                 .map_err(|error| gpu_program_contract("camera-reprojection pipeline", error))?;
             let runtime_bindings = pipeline
@@ -600,10 +600,8 @@ pub(super) fn prepare_requested_coverage(
             GpuRuntimeBindingValue::whole_buffer(0, binding as u32, handle)
         }))
         .map_err(|error| gpu_program_contract("coverage runtime bindings", error))?;
-    let dispatch = deterministic_dispatch_size(
-        packed.sample_count,
-        max_compute_workgroups_per_dimension,
-    )?;
+    let dispatch =
+        deterministic_dispatch_size(packed.sample_count, max_compute_workgroups_per_dimension)?;
     let compute = GpuComputeOperation::new(pipeline, bindings, GpuDispatchIntent::direct(dispatch))
         .map_err(|error| gpu_work_operation("coverage compute", error))?;
     Ok(PreparedRequestedCoverage {

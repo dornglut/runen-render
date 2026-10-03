@@ -33,16 +33,18 @@ pub(super) struct PreparedTemporalState {
 
 impl PreparedTemporalState {
     pub(super) fn packing_facts(&self) -> Option<OutputTemporalPackingFacts> {
-        self.history.as_ref().map(|history| OutputTemporalPackingFacts {
-            phase: history.phase,
-            age: history.age,
-            static_history_row_stride_words: match &history.storage {
-                DeterministicTemporalHistoryUseStorage::Static {
-                    row_stride_words, ..
-                } => Some(*row_stride_words),
-                DeterministicTemporalHistoryUseStorage::Camera { .. } => None,
-            },
-        })
+        self.history
+            .as_ref()
+            .map(|history| OutputTemporalPackingFacts {
+                phase: history.phase,
+                age: history.age,
+                static_history_row_stride_words: match &history.storage {
+                    DeterministicTemporalHistoryUseStorage::Static {
+                        row_stride_words, ..
+                    } => Some(*row_stride_words),
+                    DeterministicTemporalHistoryUseStorage::Camera { .. } => None,
+                },
+            })
     }
 }
 
@@ -192,4 +194,3 @@ pub(super) fn prepare_temporal_state(
         history: Some(history),
     })
 }
-

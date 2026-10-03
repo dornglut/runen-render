@@ -1292,18 +1292,18 @@ fn temporal_four_phase_extent_requires_half_to_native_coverage() {
 fn maintained_program_sources_are_retained_by_the_program_owner() {
     let first_evaluator =
         retained_maintained_evaluator_source().expect("maintained evaluator should admit");
-    let first_temporal = retained_temporal_reconstruction_source()
-        .expect("temporal reconstruction should admit");
+    let first_temporal =
+        retained_temporal_reconstruction_source().expect("temporal reconstruction should admit");
     let first_camera =
         retained_camera_reprojection_source().expect("camera reprojection should admit");
 
     for _ in 0..120 {
-        let next_evaluator =
-            retained_maintained_evaluator_source().expect("maintained evaluator should remain available");
+        let next_evaluator = retained_maintained_evaluator_source()
+            .expect("maintained evaluator should remain available");
         let next_temporal = retained_temporal_reconstruction_source()
             .expect("temporal reconstruction should remain available");
-        let next_camera =
-            retained_camera_reprojection_source().expect("camera reprojection should remain available");
+        let next_camera = retained_camera_reprojection_source()
+            .expect("camera reprojection should remain available");
 
         assert!(first_evaluator.is_same_record(&next_evaluator));
         assert!(first_temporal.is_same_record(&next_temporal));
@@ -1361,7 +1361,8 @@ fn deterministic_dispatch_tiles_samples_within_the_admitted_dimension_limit() {
 
 #[test]
 fn deterministic_dispatch_rejects_work_beyond_two_dimensional_capacity() {
-    let error = super::passes::deterministic_dispatch_size(4097, 8).expect_err("dispatch must reject");
+    let error =
+        super::passes::deterministic_dispatch_size(4097, 8).expect_err("dispatch must reject");
     assert_eq!(
         error,
         RenderDeterministicLoweringError::DispatchCapacityExceeded {

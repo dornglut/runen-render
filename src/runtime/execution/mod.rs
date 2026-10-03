@@ -20,7 +20,7 @@ use super::carrier;
 use super::program::{
     CAMERA_REPROJECTION_REVISION, MAINTAINED_EVALUATOR_REVISION, RenderMaintainedProgramBuildError,
     RenderRunenShaderCompilationError, TEMPORAL_RECONSTRUCTION_REVISION,
-    abi::{camera, requested_coverage, temporal},
+    abi::{camera, temporal},
     retained_camera_reprojection_source, retained_maintained_evaluator_source,
     retained_temporal_reconstruction_source,
 };
@@ -29,7 +29,7 @@ use super::program::{
     CAMERA_REPROJECTION_WGSL, EVALUATOR_WGSL, TEMPORAL_RECONSTRUCTION_WGSL,
     build_maintained_program_sources,
 };
-use crate::admission::{AdmittedRenderPlan, RenderOutputDestination};
+use crate::admission::AdmittedRenderPlan;
 use crate::field_input::{RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration};
 use crate::lowering::RenderWorkSet;
 use crate::render_result::RenderResult;
@@ -44,17 +44,15 @@ use crate::surface_input::{
     RenderSurfaceSemanticInputBinding, RenderSurfaceSemanticInputGeneration,
 };
 use runen_gpu::{
-    GpuAdmittedProgramSource, GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization,
-    GpuBufferRegion, GpuBufferTextureLayout, GpuBufferUsage, GpuClearOperation,
+GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization,
+    GpuBufferRegion, GpuBufferUsage, GpuClearOperation,
     GpuComputeOperation, GpuComputePipelineDescriptor, GpuContext, GpuContextAffinity,
-    GpuCopyOperation, GpuDispatchIntent, GpuExportKey, GpuExportRelationship, GpuInitialCoverage,
-    GpuOrdinaryTransferPreparationError, GpuProgramContractError, GpuProgramSourceError,
+GpuDispatchIntent, GpuExportRelationship,     GpuOrdinaryTransferPreparationError, GpuProgramContractError, GpuProgramSourceError,
     GpuReadbackId, GpuReadbackOperation, GpuReadbackRequestError, GpuReadbackStatus,
     GpuReconstruction, GpuResourceAccessIntent, GpuResourceDescriptorError, GpuResourceLifetime,
     GpuResourceProvenance, GpuResourceRef, GpuRuntimeBindingValue, GpuSubmission,
-    GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureAccessResource, GpuTextureCopyRegion,
-    GpuTextureFormat, GpuTextureHandle, GpuUploadOperation, GpuWorkAuthoringError, GpuWorkFragment,
-    GpuWorkImport, GpuWorkOperationError, GpuWorkOutput, GpuWorkResourceIdAllocationError,
+    GpuSubmissionFailureKind, GpuSubmissionStatus,     GpuTextureFormat, GpuTextureHandle, GpuUploadOperation, GpuWorkAuthoringError, GpuWorkFragment,
+    GpuWorkImport, GpuWorkOperationError, GpuWorkResourceIdAllocationError,
     GpuWorkResourceIdAllocator, GpuWorkSubmissionError, PreparedGpuData, TransferData,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -84,7 +82,7 @@ mod submission;
 
 pub use lifecycle::{
     PreparedDeterministicRadianceOutput, PreparedDeterministicRender, RenderObjectIdentityDecoder,
-    RenderRequestedCoveragePreparation, RenderTemporalExecutionEvidence,
+    RenderTemporalExecutionEvidence,
     SubmittedDeterministicRender,
 };
 pub use prepare::{
@@ -105,11 +103,7 @@ pub(crate) use prepare::prepare_deterministic_render_with_cache_in_scope_and_eva
 pub(crate) use state::DeterministicResourceCache;
 pub(crate) use submission::submit_deterministic_render_for_verification;
 
-use errors::{
-    gpu_program_contract, gpu_readback_request, gpu_resource_allocation, gpu_resource_descriptor,
-    gpu_transfer_preparation, gpu_work_authoring, gpu_work_operation,
-    map_maintained_program_build_error,
-};
+use errors::{gpu_resource_allocation, gpu_resource_descriptor};
 use lifecycle::{DeterministicObservationIntent, DeterministicVerificationState};
 use packing::*;
 use prepare::lower_deterministic_render;

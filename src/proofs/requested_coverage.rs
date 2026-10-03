@@ -328,7 +328,7 @@ fn evaluate(context: &GpuContext, packed: PackedOutput) -> Vec<Vec<u32>> {
         pipeline,
         bindings,
         GpuDispatchIntent::direct(
-            deterministic_dispatch_size(
+            super::passes::deterministic_dispatch_size(
                 count as u32,
                 context
                     .device_facts()

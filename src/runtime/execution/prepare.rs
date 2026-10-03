@@ -1,7 +1,7 @@
-use super::*;
 use super::finalize::{LoweredDeterministicOutput, finalize_output};
 use super::output_context::{prepare_temporal_state, resolve_output_context};
 use super::passes::{prepare_primary_pass, prepare_requested_coverage, prepare_temporal_pass};
+use super::*;
 
 pub(super) struct LoweredDeterministicRender {
     pub(super) work_set: RenderWorkSet,
@@ -224,7 +224,6 @@ pub(super) fn build_object_identity_decoder(
         objects_by_code: objects.into_iter().collect(),
     })
 }
-
 
 pub(super) fn lower_output(
     admitted: &AdmittedRenderPlan,
