@@ -288,12 +288,38 @@ mod tests {
         assert_eq!(execution_mode::FORWARD_DEPTH, 2);
         assert_eq!(execution_mode::OBJECT_IDENTITY, 3);
         assert_eq!(execution_mode::REQUESTED_COVERAGE, 4);
+        for mode in [
+            execution_mode::RADIANCE,
+            execution_mode::FORWARD_DEPTH,
+            execution_mode::OBJECT_IDENTITY,
+            execution_mode::REQUESTED_COVERAGE,
+        ] {
+            assert!(
+                EVALUATOR_WGSL.contains(&format!("execution_mode == {mode}u")),
+                "evaluator WGSL must retain execution mode {mode}"
+            );
+        }
+
         assert_eq!(observation_kind::PERSPECTIVE, 1);
         assert_eq!(observation_kind::PROBE, 2);
         assert_eq!(observation_kind::PERSPECTIVE_FOOTPRINT, 3);
+        for kind in [observation_kind::PROBE, observation_kind::PERSPECTIVE_FOOTPRINT] {
+            assert!(
+                EVALUATOR_WGSL.contains(&format!("input_words[7u] == {kind}u")),
+                "evaluator WGSL must retain observation kind {kind}"
+            );
+        }
+
         assert_eq!(shape::SPHERE, 1);
         assert_eq!(shape::PLANE, 2);
         assert_eq!(shape::FIELD, 3);
+        for shape in [shape::SPHERE, shape::PLANE, shape::FIELD] {
+            assert!(
+                SCENE_QUERY_WGSL.contains(&format!("input_words[base] == {shape}u")),
+                "scene-query WGSL must retain shape value {shape}"
+            );
+        }
+
         assert_eq!(temporal::PHASE_COUNT, 4);
         assert_eq!(WORKGROUP_SIZE, 64);
     }
