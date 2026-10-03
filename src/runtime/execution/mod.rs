@@ -83,8 +83,8 @@ mod requested_coverage_proof;
 const WORD_BYTES: u64 = carrier::WORD_BYTES as u64;
 
 mod errors;
-mod lifecycle;
 mod layout;
+mod lifecycle;
 mod packing;
 mod prepare;
 mod state;

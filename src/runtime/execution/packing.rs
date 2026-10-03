@@ -1,20 +1,21 @@
-use super::errors::RenderDeterministicLoweringError;
 use super::super::program::{
     CAMERA_REPROJECTION_REVISION, TEMPORAL_RECONSTRUCTION_REVISION,
     abi::{
-        WORKGROUP_SIZE, camera, emitter, execution_mode, geometry, header, observation_kind,
-        shape, temporal,
+        WORKGROUP_SIZE, camera, emitter, execution_mode, geometry, header, observation_kind, shape,
+        temporal,
     },
 };
 use super::super::transform::{
     RenderCompiledMetricSimilarityTransform, RenderCompiledMetricSimilarityTransformError,
     RenderCompiledObjectTransform, RenderCompiledObjectTransformError,
 };
+use super::errors::RenderDeterministicLoweringError;
 use crate::admission::AdmittedRenderPlan;
 use crate::field_input::RenderFieldSemanticInput;
 use crate::representation::RenderRepresentationProtocol;
 use crate::request::{
-    RenderDistanceConvention, RenderObservationSpec, RenderOutputValue, RenderPerspectiveObservation,
+    RenderDistanceConvention, RenderObservationSpec, RenderOutputValue,
+    RenderPerspectiveObservation,
 };
 use crate::scene::RenderObjectId;
 use crate::surface_input::RenderSurfaceSemanticInputView;
@@ -137,11 +138,12 @@ fn derive_output_physical_layout(
     let requested_extent = requested_extent.unwrap_or((1, 1));
     if is_lattice {
         let (width, height) = physical_extent;
-        let sample_count = width.checked_mul(height).ok_or(
-            RenderDeterministicLoweringError::SizeOverflow {
-                field: "lattice sample count",
-            },
-        )?;
+        let sample_count =
+            width
+                .checked_mul(height)
+                .ok_or(RenderDeterministicLoweringError::SizeOverflow {
+                    field: "lattice sample count",
+                })?;
         let logical_row_bytes = u64::from(width).checked_mul(WORD_BYTES).ok_or(
             RenderDeterministicLoweringError::SizeOverflow {
                 field: "lattice logical row bytes",
@@ -151,9 +153,9 @@ fn derive_output_physical_layout(
             .ok_or(RenderDeterministicLoweringError::MissingBytesPerRowAlignment)?;
         let row_bytes = super::layout::align_up(logical_row_bytes, alignment)?;
         if row_bytes % WORD_BYTES != 0 {
-            return Err(RenderDeterministicLoweringError::InvalidBytesPerRowAlignment {
-                alignment,
-            });
+            return Err(
+                RenderDeterministicLoweringError::InvalidBytesPerRowAlignment { alignment },
+            );
         }
         let row_stride_words = u32::try_from(row_bytes / WORD_BYTES).map_err(|_| {
             RenderDeterministicLoweringError::SizeOverflow {
@@ -202,7 +204,9 @@ fn execution_realization(
     execution_kind: MaintainedExecutionKind,
 ) -> Result<(u32, Option<f64>), RenderDeterministicLoweringError> {
     match execution_kind {
-        MaintainedExecutionKind::RequestedCoverage => Ok((execution_mode::REQUESTED_COVERAGE, None)),
+        MaintainedExecutionKind::RequestedCoverage => {
+            Ok((execution_mode::REQUESTED_COVERAGE, None))
+        }
         MaintainedExecutionKind::Semantic(value) => match value {
             RenderOutputValue::Radiance { representation } => Ok((
                 execution_mode::RADIANCE,
@@ -294,8 +298,7 @@ fn plan_output_packing<'a>(
         }
         geometry_keys.push((object.object_id(), representation_id, protocol));
     }
-    geometry_keys
-        .sort_by_key(|(object_id, representation_id, _)| (*object_id, *representation_id));
+    geometry_keys.sort_by_key(|(object_id, representation_id, _)| (*object_id, *representation_id));
 
     let emitters = if let Some(wavelength) = wavelength {
         matching_emitters(admitted, wavelength)?
@@ -303,14 +306,11 @@ fn plan_output_packing<'a>(
         Vec::new()
     };
     let emitter_offset = header::WORDS
-        .checked_add(
-            geometry_keys
-                .len()
-                .checked_mul(geometry::WORDS)
-                .ok_or(RenderDeterministicLoweringError::SizeOverflow {
-                    field: "geometry input words",
-                })?,
-        )
+        .checked_add(geometry_keys.len().checked_mul(geometry::WORDS).ok_or(
+            RenderDeterministicLoweringError::SizeOverflow {
+                field: "geometry input words",
+            },
+        )?)
         .ok_or(RenderDeterministicLoweringError::SizeOverflow {
             field: "emitter input offset",
         })?;
@@ -404,11 +404,11 @@ fn plan_output_packing<'a>(
                     },
                 )?;
                 let sample_offset = field_sample_cursor;
-                field_sample_cursor = field_sample_cursor.checked_add(input.sample_count()).ok_or(
-                    RenderDeterministicLoweringError::SizeOverflow {
+                field_sample_cursor = field_sample_cursor
+                    .checked_add(input.sample_count())
+                    .ok_or(RenderDeterministicLoweringError::SizeOverflow {
                         field: "field sample input words",
-                    },
-                )?;
+                    })?;
                 geometry.push(GeometryPackingEntry::Field {
                     object_code,
                     reflectance,

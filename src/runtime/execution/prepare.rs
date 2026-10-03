@@ -350,16 +350,18 @@ pub(super) fn lower_output(
         None
     };
 
-    let temporal_packing = temporal_history.as_ref().map(|history| OutputTemporalPackingFacts {
-        phase: history.phase,
-        age: history.age,
-        static_history_row_stride_words: match &history.storage {
-            DeterministicTemporalHistoryUseStorage::Static {
-                row_stride_words, ..
-            } => Some(*row_stride_words),
-            DeterministicTemporalHistoryUseStorage::Camera { .. } => None,
-        },
-    });
+    let temporal_packing = temporal_history
+        .as_ref()
+        .map(|history| OutputTemporalPackingFacts {
+            phase: history.phase,
+            age: history.age,
+            static_history_row_stride_words: match &history.storage {
+                DeterministicTemporalHistoryUseStorage::Static {
+                    row_stride_words, ..
+                } => Some(*row_stride_words),
+                DeterministicTemporalHistoryUseStorage::Camera { .. } => None,
+            },
+        });
     let packed = pack_output(
         admitted,
         admitted_output,
