@@ -13,7 +13,7 @@ Repository-local `xtask` owns the merge-readiness baseline. It proves:
 - complete GPLv3 license text;
 - exact immutable RunenGPU and RunenShader dependency revisions;
 - no moving sibling branch/tag dependency;
-- public semantic modules plus private maintained/deterministic implementation topology;
+- public semantic modules plus private runtime/proof ownership boundaries;
 - no `Deterministic*` vocabulary in the package-level ordinary public consumer;
 - no Runenwerk/App/ECS/Winit/World/UI/Editor/product env/fs/JSON/private-WGPU
   coupling in production source;
@@ -77,10 +77,16 @@ retained proof surface establishes:
 - exact frozen transfer/adaptation/provenance evidence;
 - no predecessor mirror/forwarder/private sibling reach-through.
 
-These are accepted baseline properties, not a claim that the extraction-era
-internal module layout is permanently frozen. Future changes must preserve or
-deliberately replace the relevant evidence under their owning issue and must be
-validated on the exact reviewed head.
+These are accepted baseline properties, not a claim that one physical
+implementation layout is permanently frozen. The post-RX structural program
+replaced transfer-era path authority with durable source-boundary guards,
+grouped private maintained realization under `runtime`, grouped conformance
+proofs under `src/proofs`, made the host/WGSL ABI explicit, decomposed
+execution and the ordinary façade by responsibility, and isolated persistent
+scene storage behind `scene::storage`.
+
+Future changes must preserve or deliberately replace the relevant evidence
+under their owning issue and must be validated on the exact reviewed head.
 
 Runenwerk downstream native/product integration remains downstream consumer
 evidence. Its predecessor cutover is complete and is no longer an activation
