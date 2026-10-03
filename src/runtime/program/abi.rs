@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn record_widths_and_mode_values_match_maintained_contract() {
         assert_eq!(header::WORDS, header::EMITTER_OFFSET + 1);
-        assert!(geometry::FIELD_MAX_QUERY_ERROR < geometry::WORDS);
+        const { assert!(geometry::FIELD_MAX_QUERY_ERROR < geometry::WORDS) };
         assert_eq!(emitter::WORDS, emitter::SPECTRAL_IRRADIANCE + 1);
         assert_eq!(
             camera::parameters::WORDS,
