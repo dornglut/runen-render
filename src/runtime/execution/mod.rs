@@ -59,7 +59,7 @@ use runen_gpu::{
     GpuBufferRegion, GpuClearOperation, GpuComputeOperation, GpuComputePipelineDescriptor,
     GpuDispatchIntent, GpuReadbackOperation, GpuRuntimeBindingValue, GpuTextureFormat,
     GpuUploadOperation, GpuWorkFragment, PreparedGpuData, TransferData,
-}
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
