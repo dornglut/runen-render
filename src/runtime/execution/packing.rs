@@ -1,4 +1,27 @@
-use super::*;
+use super::errors::RenderDeterministicLoweringError;
+use super::super::program::{
+    CAMERA_REPROJECTION_REVISION, TEMPORAL_RECONSTRUCTION_REVISION,
+    abi::{
+        WORKGROUP_SIZE, camera, emitter, execution_mode, geometry, header, observation_kind,
+        shape, temporal,
+    },
+};
+use super::super::transform::{
+    RenderCompiledMetricSimilarityTransform, RenderCompiledMetricSimilarityTransformError,
+    RenderCompiledObjectTransform, RenderCompiledObjectTransformError,
+};
+use crate::admission::AdmittedRenderPlan;
+use crate::field_input::RenderFieldSemanticInput;
+use crate::representation::RenderRepresentationProtocol;
+use crate::request::{
+    RenderDistanceConvention, RenderObservationSpec, RenderOutputValue, RenderPerspectiveObservation,
+};
+use crate::scene::RenderObjectId;
+use crate::surface_input::RenderSurfaceSemanticInputView;
+use runen_gpu::GpuDispatchSize;
+use std::collections::BTreeMap;
+
+use super::WORD_BYTES;
 
 pub(super) struct PackedOutput {
     pub(super) input_words: Vec<u32>,
