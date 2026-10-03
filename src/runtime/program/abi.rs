@@ -213,18 +213,9 @@ mod tests {
                 "scene-query WGSL must retain geometry offset {index}"
             );
         }
-        assert!(SCENE_QUERY_WGSL.contains(&indexed(
-            "input_words",
-            header::EMITTER_OFFSET
-        )));
-        assert!(SCENE_QUERY_WGSL.contains(&format!(
-            "index * {}u",
-            emitter::WORDS
-        )));
-        assert!(SCENE_QUERY_WGSL.contains(&format!(
-            "base + {}u",
-            emitter::SPECTRAL_IRRADIANCE
-        )));
+        assert!(SCENE_QUERY_WGSL.contains(&indexed("input_words", header::EMITTER_OFFSET)));
+        assert!(SCENE_QUERY_WGSL.contains(&format!("index * {}u", emitter::WORDS)));
+        assert!(SCENE_QUERY_WGSL.contains(&format!("base + {}u", emitter::SPECTRAL_IRRADIANCE)));
     }
 
     #[test]
@@ -242,16 +233,15 @@ mod tests {
         ] {
             assert!(
                 CAMERA_REPROJECTION_WGSL.contains(&indexed("camera_words", index))
-                    || CAMERA_REPROJECTION_WGSL
-                        .contains(&format!("load_camera_f32({index}u)")),
+                    || CAMERA_REPROJECTION_WGSL.contains(&format!("load_camera_f32({index}u)")),
                 "camera WGSL must retain camera parameter offset {index}"
             );
         }
 
-        assert!(CAMERA_REPROJECTION_WGSL.contains(&format!(
-            "index * {}u",
-            camera::history::WORDS_PER_SAMPLE
-        )));
+        assert!(
+            CAMERA_REPROJECTION_WGSL
+                .contains(&format!("index * {}u", camera::history::WORDS_PER_SAMPLE))
+        );
         assert!(CAMERA_REPROJECTION_WGSL.contains(&format!(
             "output_index * {}u",
             camera::history::CURRENT_HIT_WORDS_PER_SAMPLE
@@ -290,7 +280,10 @@ mod tests {
         assert_eq!(header::WORDS, header::EMITTER_OFFSET + 1);
         assert!(geometry::FIELD_MAX_QUERY_ERROR < geometry::WORDS);
         assert_eq!(emitter::WORDS, emitter::SPECTRAL_IRRADIANCE + 1);
-        assert_eq!(camera::parameters::WORDS, camera::parameters::CURRENT_ONLY_FIRST_MOTION + 1);
+        assert_eq!(
+            camera::parameters::WORDS,
+            camera::parameters::CURRENT_ONLY_FIRST_MOTION + 1
+        );
         assert_eq!(execution_mode::RADIANCE, 1);
         assert_eq!(execution_mode::FORWARD_DEPTH, 2);
         assert_eq!(execution_mode::OBJECT_IDENTITY, 3);

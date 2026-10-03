@@ -279,8 +279,8 @@ pub(crate) fn build_camera_reprojection_program(
     })
 }
 
-pub(crate) fn retained_maintained_evaluator_source(
-) -> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
+pub(crate) fn retained_maintained_evaluator_source()
+-> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
     retained_program_source(
         &EVALUATOR_PROGRAM,
         MaintainedShaderSpec {
@@ -291,8 +291,8 @@ pub(crate) fn retained_maintained_evaluator_source(
     )
 }
 
-pub(crate) fn retained_temporal_reconstruction_source(
-) -> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
+pub(crate) fn retained_temporal_reconstruction_source()
+-> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
     retained_program_source(
         &TEMPORAL_RECONSTRUCTION_PROGRAM,
         MaintainedShaderSpec {
@@ -303,8 +303,8 @@ pub(crate) fn retained_temporal_reconstruction_source(
     )
 }
 
-pub(crate) fn retained_camera_reprojection_source(
-) -> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
+pub(crate) fn retained_camera_reprojection_source()
+-> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
     retained_program_source(
         &CAMERA_REPROJECTION_PROGRAM,
         MaintainedShaderSpec {
@@ -358,8 +358,8 @@ fn build_maintained_program(
 }
 
 #[cfg(test)]
-pub(crate) fn build_maintained_program_sources(
-) -> Result<RenderMaintainedProgramSources, RenderMaintainedProgramBuildError> {
+pub(crate) fn build_maintained_program_sources()
+-> Result<RenderMaintainedProgramSources, RenderMaintainedProgramBuildError> {
     Ok(RenderMaintainedProgramSources {
         evaluator: build_maintained_evaluator_program(
             MAINTAINED_EVALUATOR_REVISION,

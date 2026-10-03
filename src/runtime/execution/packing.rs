@@ -86,9 +86,10 @@ pub(super) fn pack_output(
     let (execution_mode, wavelength) = match execution_kind {
         MaintainedExecutionKind::RequestedCoverage => (execution_mode::REQUESTED_COVERAGE, None),
         MaintainedExecutionKind::Semantic(value) => match value {
-            RenderOutputValue::Radiance { representation } => {
-                (execution_mode::RADIANCE, Some(representation.wavelength_meters()))
-            }
+            RenderOutputValue::Radiance { representation } => (
+                execution_mode::RADIANCE,
+                Some(representation.wavelength_meters()),
+            )
             RenderOutputValue::Distance {
                 convention: RenderDistanceConvention::ObservationForwardDepth,
             } => (execution_mode::FORWARD_DEPTH, None),
@@ -258,7 +259,8 @@ pub(super) fn pack_output(
         words[base + geometry::OBJECT_CODE] = *object_codes
             .get(&object_id)
             .ok_or(RenderDeterministicLoweringError::OutputCorrelationChanged { output_index })?;
-        words[base + geometry::RADIANCE_REFLECTANCE] = if execution_mode == execution_mode::RADIANCE {
+        words[base + geometry::RADIANCE_REFLECTANCE] = if execution_mode == execution_mode::RADIANCE
+        {
             let material = admitted
                 .plan()
                 .scene()
@@ -290,7 +292,11 @@ pub(super) fn pack_output(
                     transform.scene_to_local_units_row_major(),
                     "object scene-to-local transform",
                 )?;
-                pack_vec3(&mut words, base + geometry::TRANSLATION, transform.translation_scene())?;
+                pack_vec3(
+                    &mut words,
+                    base + geometry::TRANSLATION,
+                    transform.translation_scene(),
+                )?;
                 pack_matrix3(
                     &mut words,
                     base + geometry::NORMAL_LOCAL_TO_SCENE,
@@ -340,7 +346,11 @@ pub(super) fn pack_output(
                     transform.scene_to_local_meters_row_major(),
                     "field scene-to-local metric transform",
                 )?;
-                pack_vec3(&mut words, base + geometry::TRANSLATION, transform.translation_scene())?;
+                pack_vec3(
+                    &mut words,
+                    base + geometry::TRANSLATION,
+                    transform.translation_scene(),
+                )?;
                 pack_matrix3(
                     &mut words,
                     base + geometry::NORMAL_LOCAL_TO_SCENE,
@@ -359,17 +369,24 @@ pub(super) fn pack_output(
                     transform.scene_meters_per_local_meter(),
                     "field scene metres per local metre",
                 )?;
-                pack_vec3(&mut words, base + geometry::FIELD_ORIGIN, input.origin_local_meters())?;
-                pack_vec3(&mut words, base + geometry::FIELD_SAMPLE_SPACING, input.sample_spacing_meters())?;
+                pack_vec3(
+                    &mut words,
+                    base + geometry::FIELD_ORIGIN,
+                    input.origin_local_meters(),
+                )?;
+                pack_vec3(
+                    &mut words,
+                    base + geometry::FIELD_SAMPLE_SPACING,
+                    input.sample_spacing_meters(),
+                )?;
                 let dimensions = input.dimensions();
                 words[base + geometry::FIELD_DIMENSION_X] = dimensions[0];
                 words[base + geometry::FIELD_DIMENSION_Y] = dimensions[1];
                 words[base + geometry::FIELD_DIMENSION_Z] = dimensions[2];
-                words[base + geometry::FIELD_SAMPLE_OFFSET] = u32::try_from(field_sample_cursor).map_err(|_| {
-                    RenderDeterministicLoweringError::SizeOverflow {
+                words[base + geometry::FIELD_SAMPLE_OFFSET] = u32::try_from(field_sample_cursor)
+                    .map_err(|_| RenderDeterministicLoweringError::SizeOverflow {
                         field: "field sample input offset",
-                    }
-                })?;
+                    })?;
                 words[base + geometry::FIELD_MAX_QUERY_ERROR] = conservative_nonnegative_f32_bits(
                     input.max_absolute_query_error_local_meters(),
                     "field maximum absolute query error",
@@ -389,7 +406,11 @@ pub(super) fn pack_output(
 
     for (index, emitter) in emitters.into_iter().enumerate() {
         let base = emitter_offset + index * emitter::WORDS;
-        pack_vec3(&mut words, base + emitter::DIRECTION, emitter.direction_to_source_scene())?;
+        pack_vec3(
+            &mut words,
+            base + emitter::DIRECTION,
+            emitter.direction_to_source_scene(),
+        )?;
         words[base + emitter::SPECTRAL_IRRADIANCE] = f32_bits(
             emitter.spectral_irradiance_w_m3(),
             "directional-emitter spectral irradiance",
@@ -465,15 +486,17 @@ pub(super) fn camera_reprojection_parameter_words(
         ],
         "current observation linear transform",
     )?;
-    pack_matrix3(&mut words, camera::parameters::CURRENT_SCENE_TO_OBSERVATION, inverse)?;
+    pack_matrix3(
+        &mut words,
+        camera::parameters::CURRENT_SCENE_TO_OBSERVATION,
+        inverse,
+    )?;
     words[camera::parameters::PREVIOUS_AVAILABLE] = if previous.is_some() { 1 } else { 0 };
     words[camera::parameters::POSE_CHANGED] = if pose_changed { 1 } else { 0 };
     words[camera::parameters::DEPTH_POLICY_REVISION] = camera::DEPTH_POLICY_REVISION;
     words[camera::parameters::REPROJECTION_REVISION] = CAMERA_REPROJECTION_REVISION;
-    words[camera::parameters::DEPTH_ABSOLUTE_EPSILON] =
-        camera::DEPTH_ABSOLUTE_EPSILON.to_bits();
-    words[camera::parameters::DEPTH_RELATIVE_EPSILON] =
-        camera::DEPTH_RELATIVE_EPSILON.to_bits();
+    words[camera::parameters::DEPTH_ABSOLUTE_EPSILON] = camera::DEPTH_ABSOLUTE_EPSILON.to_bits();
+    words[camera::parameters::DEPTH_RELATIVE_EPSILON] = camera::DEPTH_RELATIVE_EPSILON.to_bits();
     // These former proof controls remain part of the retained shader parameter layout but are
     // deliberately disabled in ordinary production execution.
     words[camera::parameters::MOTION_DIAGNOSTICS_ENABLED] = 0;
@@ -482,7 +505,11 @@ pub(super) fn camera_reprojection_parameter_words(
         same_pose_completed_frames.min(temporal::PHASE_COUNT);
     if let Some(previous) = previous {
         let matrix = previous.observation_to_scene().row_major_3x4();
-        pack_vec3(&mut words, camera::parameters::PREVIOUS_ORIGIN, [matrix[3], matrix[7], matrix[11]])?;
+        pack_vec3(
+            &mut words,
+            camera::parameters::PREVIOUS_ORIGIN,
+            [matrix[3], matrix[7], matrix[11]],
+        )?;
         let inverse = invert_matrix3(
             [
                 matrix[0], matrix[1], matrix[2], matrix[4], matrix[5], matrix[6], matrix[8],
@@ -490,7 +517,11 @@ pub(super) fn camera_reprojection_parameter_words(
             ],
             "previous observation linear transform",
         )?;
-        pack_matrix3(&mut words, camera::parameters::PREVIOUS_SCENE_TO_OBSERVATION, inverse)?;
+        pack_matrix3(
+            &mut words,
+            camera::parameters::PREVIOUS_SCENE_TO_OBSERVATION,
+            inverse,
+        )?;
         let forward = normalize_private_vec3(
             [-matrix[2], -matrix[6], -matrix[10]],
             "previous observation forward",
@@ -556,7 +587,11 @@ pub(super) fn pack_observation(
     aspect_ratio: Option<f64>,
 ) -> Result<(), RenderDeterministicLoweringError> {
     let matrix = transform.row_major_3x4();
-    pack_vec3(words, header::OBSERVATION_TRANSLATION, [matrix[3], matrix[7], matrix[11]])?;
+    pack_vec3(
+        words,
+        header::OBSERVATION_TRANSLATION,
+        [matrix[3], matrix[7], matrix[11]],
+    )?;
     pack_invertible_matrix3(
         words,
         header::OBSERVATION_SCENE_TO_LOCAL,

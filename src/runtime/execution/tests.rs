@@ -4,8 +4,9 @@ use runen_gpu::GpuBufferRange;
 
 #[test]
 fn maintained_programs_compile_through_runenshader_and_preserve_exact_gpu_source_bytes() {
-    let programs = build_maintained_program_sources()
-        .expect("all maintained programs must compile through RunenShader and admit through RunenGPU");
+    let programs = build_maintained_program_sources().expect(
+        "all maintained programs must compile through RunenShader and admit through RunenGPU",
+    );
 
     assert_eq!(
         programs.evaluator_artifact().canonical_wgsl().as_bytes(),
@@ -1236,7 +1237,7 @@ fn camera_reprojection_shader_matches_the_reference_rejection_contract() {
 #[test]
 fn camera_reprojection_wgsl_forms_a_canonical_compute_pipeline() {
     let programs = build_maintained_program_sources()
-    .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
+        .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
     GpuComputePipelineDescriptor::ordinary(programs.camera_reprojection().clone(), "main")
         .expect("camera reprojection must form a canonical compute pipeline");
 }
@@ -1321,7 +1322,7 @@ fn maintained_program_sources_are_retained_across_fresh_renderer_resource_caches
 #[test]
 fn maintained_wgsl_forms_a_canonical_compute_pipeline() {
     let programs = build_maintained_program_sources()
-    .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
+        .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
     let source = programs.evaluator().clone();
     assert_eq!(
         source.identity().revision().get(),
@@ -1462,7 +1463,7 @@ fn every_runengpu_preparation_owner_remains_a_typed_source() {
     );
 
     let programs = build_maintained_program_sources()
-    .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
+        .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
     let program_contract = GpuComputePipelineDescriptor::ordinary(programs.evaluator().clone(), "")
         .expect_err("empty entry point must fail in RunenGPU program authority");
     assert_owner(

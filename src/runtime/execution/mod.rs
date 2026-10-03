@@ -17,21 +17,20 @@ pub use super::capture::{
     RenderDeterministicRadianceCaptureRequest, RenderDeterministicRadianceCaptureRequestError,
 };
 use super::carrier;
-#[cfg(test)]
 use super::program::{
-    CAMERA_REPROJECTION_WGSL, EVALUATOR_WGSL, TEMPORAL_RECONSTRUCTION_WGSL,
-    build_maintained_program_sources,
-};
-use super::program::{
-    CAMERA_REPROJECTION_REVISION, MAINTAINED_EVALUATOR_REVISION,
-    TEMPORAL_RECONSTRUCTION_REVISION, RenderMaintainedProgramBuildError,
-    RenderRunenShaderCompilationError,
+    CAMERA_REPROJECTION_REVISION, MAINTAINED_EVALUATOR_REVISION, RenderMaintainedProgramBuildError,
+    RenderRunenShaderCompilationError, TEMPORAL_RECONSTRUCTION_REVISION,
     abi::{
         WORKGROUP_SIZE, camera, emitter, execution_mode, geometry, header, observation_kind,
         requested_coverage, shape, temporal,
     },
     retained_camera_reprojection_source, retained_maintained_evaluator_source,
     retained_temporal_reconstruction_source,
+};
+#[cfg(test)]
+use super::program::{
+    CAMERA_REPROJECTION_WGSL, EVALUATOR_WGSL, TEMPORAL_RECONSTRUCTION_WGSL,
+    build_maintained_program_sources,
 };
 use super::transform::{
     RenderCompiledMetricSimilarityTransform, RenderCompiledMetricSimilarityTransformError,
