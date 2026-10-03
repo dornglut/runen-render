@@ -1,4 +1,21 @@
-use super::*;
+use super::super::program::abi::{camera, temporal};
+use super::WORD_BYTES;
+use super::errors::{
+    RenderDeterministicLoweringError, gpu_resource_allocation, gpu_resource_descriptor,
+};
+use crate::field_input::RenderFieldSemanticInputBinding;
+use crate::request::{
+    RenderObservationSpec, RenderOutputSpec, RenderPerspectiveObservation, RenderSamplingSupport,
+};
+use crate::scene::RenderSceneRevision;
+use crate::space_time::RenderTimeInterval;
+use crate::surface_input::RenderSurfaceSemanticInputBinding;
+use runen_gpu::{
+    GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization, GpuBufferUsage,
+    GpuReconstruction, GpuResourceLifetime, GpuSubmission, GpuSubmissionStatus,
+    GpuWorkResourceIdAllocator,
+};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum DeterministicBufferKind {
@@ -217,24 +234,6 @@ impl DeterministicResourceCache {
             self.temporal_histories
                 .retain(|(history_scope, _), _| *history_scope != scope);
         }
-    }
-
-    pub(super) fn maintained_source(
-        &mut self,
-    ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        retained_maintained_evaluator_source().map_err(map_maintained_program_build_error)
-    }
-
-    pub(super) fn reconstruction_source(
-        &mut self,
-    ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        retained_temporal_reconstruction_source().map_err(map_maintained_program_build_error)
-    }
-
-    pub(super) fn camera_reprojection_source(
-        &mut self,
-    ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        retained_camera_reprojection_source().map_err(map_maintained_program_build_error)
     }
 
     pub(super) fn temporal_history(

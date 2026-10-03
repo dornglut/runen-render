@@ -313,9 +313,11 @@ fn evaluate(context: &GpuContext, packed: PackedOutput) -> Vec<Vec<u32>> {
                 .unwrap()
         })
         .collect::<Vec<_>>();
-    let mut cache = DeterministicResourceCache::default();
-    let pipeline =
-        GpuComputePipelineDescriptor::ordinary(cache.maintained_source().unwrap(), "main").unwrap();
+    let pipeline = GpuComputePipelineDescriptor::ordinary(
+        crate::runtime::program::retained_maintained_evaluator_source().unwrap(),
+        "main",
+    )
+    .unwrap();
     let bindings =
         pipeline
             .runtime_bindings(handles.iter().enumerate().map(|(index, handle)| {
@@ -326,7 +328,7 @@ fn evaluate(context: &GpuContext, packed: PackedOutput) -> Vec<Vec<u32>> {
         pipeline,
         bindings,
         GpuDispatchIntent::direct(
-            deterministic_dispatch_size(
+            super::passes::deterministic_dispatch_size(
                 count as u32,
                 context
                     .device_facts()
