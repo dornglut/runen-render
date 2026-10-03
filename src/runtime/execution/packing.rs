@@ -89,7 +89,7 @@ pub(super) fn pack_output(
             RenderOutputValue::Radiance { representation } => (
                 execution_mode::RADIANCE,
                 Some(representation.wavelength_meters()),
-            )
+            ),
             RenderOutputValue::Distance {
                 convention: RenderDistanceConvention::ObservationForwardDepth,
             } => (execution_mode::FORWARD_DEPTH, None),
