@@ -125,8 +125,9 @@ struct CameraProofPipelines {
 }
 
 fn camera_proof_pipelines() -> CameraProofPipelines {
-    let programs = build_maintained_program_sources()
-        .expect("camera proof programs must compile through RunenShader and admit through RunenGPU");
+    let programs = build_maintained_program_sources().expect(
+        "camera proof programs must compile through RunenShader and admit through RunenGPU",
+    );
     CameraProofPipelines {
         evaluation: GpuComputePipelineDescriptor::ordinary(programs.evaluator().clone(), "main")
             .unwrap(),
