@@ -1235,14 +1235,7 @@ fn camera_reprojection_shader_matches_the_reference_rejection_contract() {
 
 #[test]
 fn camera_reprojection_wgsl_forms_a_canonical_compute_pipeline() {
-    let programs = build_maintained_program_sources(
-        MAINTAINED_EVALUATOR_REVISION,
-        EVALUATOR_WGSL.as_str(),
-        u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
-        TEMPORAL_RECONSTRUCTION_WGSL,
-        u64::from(CAMERA_REPROJECTION_REVISION),
-        CAMERA_REPROJECTION_WGSL.as_str(),
-    )
+    let programs = build_maintained_program_sources()
     .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
     GpuComputePipelineDescriptor::ordinary(programs.camera_reprojection().clone(), "main")
         .expect("camera reprojection must form a canonical compute pipeline");
@@ -1250,8 +1243,8 @@ fn camera_reprojection_wgsl_forms_a_canonical_compute_pipeline() {
 
 #[test]
 fn camera_reprojection_shader_carries_versioned_depth_policy() {
-    assert!(CAMERA_REPROJECTION_WGSL.contains("camera::DEPTH_ABSOLUTE_EPSILON: f32 = 0.001"));
-    assert!(CAMERA_REPROJECTION_WGSL.contains("camera::DEPTH_RELATIVE_EPSILON: f32 = 0.001"));
+    assert!(CAMERA_REPROJECTION_WGSL.contains("CAMERA_DEPTH_ABSOLUTE_EPSILON: f32 = 0.001"));
+    assert!(CAMERA_REPROJECTION_WGSL.contains("CAMERA_DEPTH_RELATIVE_EPSILON: f32 = 0.001"));
     assert_eq!(camera::DEPTH_POLICY_REVISION, 1);
     assert_eq!(CAMERA_REPROJECTION_REVISION, 3);
 }
@@ -1327,14 +1320,7 @@ fn maintained_program_sources_are_retained_across_fresh_renderer_resource_caches
 
 #[test]
 fn maintained_wgsl_forms_a_canonical_compute_pipeline() {
-    let programs = build_maintained_program_sources(
-        MAINTAINED_EVALUATOR_REVISION,
-        EVALUATOR_WGSL.as_str(),
-        u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
-        TEMPORAL_RECONSTRUCTION_WGSL,
-        u64::from(CAMERA_REPROJECTION_REVISION),
-        CAMERA_REPROJECTION_WGSL.as_str(),
-    )
+    let programs = build_maintained_program_sources()
     .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
     let source = programs.evaluator().clone();
     assert_eq!(
@@ -1475,14 +1461,7 @@ fn every_runengpu_preparation_owner_remains_a_typed_source() {
         "transfer-preparation",
     );
 
-    let programs = build_maintained_program_sources(
-        MAINTAINED_EVALUATOR_REVISION,
-        EVALUATOR_WGSL.as_str(),
-        u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
-        TEMPORAL_RECONSTRUCTION_WGSL,
-        u64::from(CAMERA_REPROJECTION_REVISION),
-        CAMERA_REPROJECTION_WGSL.as_str(),
-    )
+    let programs = build_maintained_program_sources()
     .expect("maintained programs must compile through RunenShader and admit through RunenGPU");
     let program_contract = GpuComputePipelineDescriptor::ordinary(programs.evaluator().clone(), "")
         .expect_err("empty entry point must fail in RunenGPU program authority");

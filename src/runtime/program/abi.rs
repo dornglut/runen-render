@@ -124,7 +124,8 @@ mod tests {
     use super::*;
     use crate::runtime::carrier;
     use crate::runtime::program::{
-        CAMERA_REPROJECTION_WGSL, EVALUATOR_WGSL, SCENE_QUERY_WGSL,
+        CAMERA_REPROJECTION_REVISION, CAMERA_REPROJECTION_WGSL, EVALUATOR_WGSL,
+        MAINTAINED_EVALUATOR_REVISION, SCENE_QUERY_WGSL, TEMPORAL_RECONSTRUCTION_REVISION,
         TEMPORAL_RECONSTRUCTION_WGSL,
     };
 
@@ -263,7 +264,25 @@ mod tests {
             "const CAMERA_DEPTH_RELATIVE_EPSILON: f32 = {};",
             camera::DEPTH_RELATIVE_EPSILON
         )));
+        assert!(CAMERA_REPROJECTION_WGSL.contains(&format!(
+            "mul_camera3({}u",
+            camera::parameters::PREVIOUS_SCENE_TO_OBSERVATION
+        )));
+        assert!(CAMERA_REPROJECTION_WGSL.contains(&format!(
+            "mul_camera3({}u",
+            camera::parameters::CURRENT_SCENE_TO_OBSERVATION
+        )));
         assert_eq!(carrier::WORD_BYTES, core::mem::size_of::<u32>());
+    }
+
+    #[test]
+    fn program_and_policy_revisions_are_explicit() {
+        assert_eq!(MAINTAINED_EVALUATOR_REVISION, 3);
+        assert_eq!(TEMPORAL_RECONSTRUCTION_REVISION, 2);
+        assert_eq!(CAMERA_REPROJECTION_REVISION, 3);
+        assert_eq!(requested_coverage::POLICY_REVISION, 1);
+        assert_eq!(temporal::SEQUENCE_REVISION, 1);
+        assert_eq!(camera::DEPTH_POLICY_REVISION, 1);
     }
 
     #[test]
