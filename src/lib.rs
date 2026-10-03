@@ -1,9 +1,9 @@
 //! RunenRender's reusable semantic rendering and maintained image-formation contract.
 //!
-//! This crate contains the transferred standalone renderer implementation. Under Engineering
-//! ADR 0008, physical source presence does not determine semantic authority: Runenwerk remains the
-//! accepted authority before the first accepted standalone successor revision, and the exact
-//! accepted `runen-render/main` revision becomes authority at that switch.
+//! This crate is the accepted standalone authority for reusable renderer semantics and maintained
+//! image formation. Public semantic contracts are intentionally separated from the private
+//! maintained runtime realization. The completed Engineering ADR 0008 transfer is provenance;
+//! see `BOOTSTRAP.md` for the historical authority transition.
 
 pub mod admission;
 pub mod appearance;
