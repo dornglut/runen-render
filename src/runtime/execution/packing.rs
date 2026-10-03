@@ -1,23 +1,106 @@
 use super::*;
 
+pub(super) struct PackedOutput {
+    pub(super) input_words: Vec<u32>,
+    pub(super) sample_count: u32,
+    pub(super) output_byte_len: u64,
+    pub(super) texture_row_bytes: Option<u32>,
+}
+
+/// Physical execution selection; private coverage is not a requested semantic depth output.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum MaintainedExecutionKind {
+    Semantic(RenderOutputValue),
+    RequestedCoverage,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct OutputTemporalPackingFacts {
+    pub(super) phase: u32,
+    pub(super) age: u32,
+    /// Static histories retain their own physical row stride. Camera histories use the
+    /// current output layout, so `None` deliberately means "use current row stride".
+    pub(super) static_history_row_stride_words: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct OutputPackingInput {
+    pub(super) finite_evaluation_extent: Option<(u32, u32)>,
+    pub(super) bytes_per_row_alignment: Option<u64>,
+    pub(super) temporal: Option<OutputTemporalPackingFacts>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OutputPhysicalLayout {
+    requested_extent: (u32, u32),
+    sample_count: u32,
+    width: u32,
+    height: u32,
+    row_stride_words: u32,
+    output_byte_len: u64,
+    texture_row_bytes: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PhysicalObservation {
+    kind: u32,
+    transform: crate::space_time::RenderAffineTransform3,
+    tan_half_fov: Option<f64>,
+    aspect_ratio: Option<f64>,
+}
+
+enum GeometryPackingEntry<'a> {
+    Surface {
+        object_code: u32,
+        reflectance: Option<f64>,
+        transform: RenderCompiledObjectTransform,
+        input: RenderSurfaceSemanticInputView,
+    },
+    Field {
+        object_code: u32,
+        reflectance: Option<f64>,
+        transform: RenderCompiledMetricSimilarityTransform,
+        input: &'a RenderFieldSemanticInput,
+        sample_offset: usize,
+    },
+}
+
+struct OutputPackingPlan<'a> {
+    layout: OutputPhysicalLayout,
+    execution_mode: u32,
+    observation: PhysicalObservation,
+    geometry: Vec<GeometryPackingEntry<'a>>,
+    emitters: Vec<crate::appearance::RenderDirectionalEmitter>,
+    emitter_offset: usize,
+    total_words: usize,
+    temporal: Option<OutputTemporalPackingFacts>,
+}
+
 pub(super) fn pack_output(
     admitted: &AdmittedRenderPlan,
     admitted_output: &crate::admission::RenderAdmittedOutput,
     execution_kind: MaintainedExecutionKind,
     observation: RenderObservationSpec,
     object_codes: &BTreeMap<RenderObjectId, u32>,
-    context: &GpuContext,
-    packing: DeterministicOutputPackingState<'_>,
+    packing: OutputPackingInput,
 ) -> Result<PackedOutput, RenderDeterministicLoweringError> {
-    let DeterministicOutputPackingState {
-        finite_evaluation_extent,
-        temporal_history,
-    } = packing;
-    let output_index = admitted_output.output_index();
-    let topology = admitted.plan().request().outputs()[output_index]
-        .spec()
-        .topology();
-    let requested_extent = topology.sample_lattice_dimensions();
+    let plan = plan_output_packing(
+        admitted,
+        admitted_output,
+        execution_kind,
+        observation,
+        object_codes,
+        packing,
+    )?;
+    encode_output_packing(plan)
+}
+
+fn derive_output_physical_layout(
+    output_index: usize,
+    requested_extent: Option<(u32, u32)>,
+    finite_evaluation_extent: Option<(u32, u32)>,
+    bytes_per_row_alignment: Option<u64>,
+) -> Result<OutputPhysicalLayout, RenderDeterministicLoweringError> {
     let physical_extent = match (requested_extent, finite_evaluation_extent) {
         (Some(_), Some(extent)) => extent,
         (Some(extent), None) => extent,
@@ -26,101 +109,136 @@ pub(super) fn pack_output(
         }
         (None, None) => (1, 1),
     };
-    let (sample_count, width, height, row_stride_words, output_byte_len, texture_row_bytes) =
-        if requested_extent.is_some() {
-            let (width, height) = physical_extent;
-            let sample_count = width.checked_mul(height).ok_or(
-                RenderDeterministicLoweringError::SizeOverflow {
-                    field: "lattice sample count",
-                },
-            )?;
-            let logical_row_bytes = u64::from(width).checked_mul(WORD_BYTES).ok_or(
-                RenderDeterministicLoweringError::SizeOverflow {
-                    field: "lattice logical row bytes",
-                },
-            )?;
-            let alignment = context
-                .device_facts()
-                .device_limits()
-                .alignments()
-                .bytes_per_row
-                .ok_or(RenderDeterministicLoweringError::MissingBytesPerRowAlignment)?;
-            let row_bytes = align_up(logical_row_bytes, alignment)?;
-            if row_bytes % WORD_BYTES != 0 {
-                return Err(
-                    RenderDeterministicLoweringError::InvalidBytesPerRowAlignment { alignment },
-                );
+    let requested_extent = requested_extent.unwrap_or((1, 1));
+    if requested_extent != (1, 1) || finite_evaluation_extent.is_some() {
+        let (width, height) = physical_extent;
+        let sample_count = width.checked_mul(height).ok_or(
+            RenderDeterministicLoweringError::SizeOverflow {
+                field: "lattice sample count",
+            },
+        )?;
+        let logical_row_bytes = u64::from(width).checked_mul(WORD_BYTES).ok_or(
+            RenderDeterministicLoweringError::SizeOverflow {
+                field: "lattice logical row bytes",
+            },
+        )?;
+        let alignment = bytes_per_row_alignment
+            .ok_or(RenderDeterministicLoweringError::MissingBytesPerRowAlignment)?;
+        let row_bytes = super::layout::align_up(logical_row_bytes, alignment)?;
+        if row_bytes % WORD_BYTES != 0 {
+            return Err(RenderDeterministicLoweringError::InvalidBytesPerRowAlignment {
+                alignment,
+            });
+        }
+        let row_stride_words = u32::try_from(row_bytes / WORD_BYTES).map_err(|_| {
+            RenderDeterministicLoweringError::SizeOverflow {
+                field: "lattice row stride",
             }
-            let row_stride_words = u32::try_from(row_bytes / WORD_BYTES).map_err(|_| {
-                RenderDeterministicLoweringError::SizeOverflow {
-                    field: "lattice row stride",
-                }
-            })?;
-            let output_words = row_stride_words.checked_mul(height).ok_or(
-                RenderDeterministicLoweringError::SizeOverflow {
-                    field: "canonical lattice word count",
-                },
-            )?;
-            let output_byte_len = u64::from(output_words).checked_mul(WORD_BYTES).ok_or(
-                RenderDeterministicLoweringError::SizeOverflow {
-                    field: "canonical lattice byte length",
-                },
-            )?;
-            let row_bytes = u32::try_from(row_bytes).map_err(|_| {
-                RenderDeterministicLoweringError::SizeOverflow {
-                    field: "lattice row bytes",
-                }
-            })?;
-            (
-                sample_count,
-                width,
-                height,
-                row_stride_words,
-                output_byte_len,
-                Some(row_bytes),
-            )
-        } else {
-            (1, 1, 1, 1, WORD_BYTES, None)
-        };
+        })?;
+        let output_words = row_stride_words.checked_mul(height).ok_or(
+            RenderDeterministicLoweringError::SizeOverflow {
+                field: "canonical lattice word count",
+            },
+        )?;
+        let output_byte_len = u64::from(output_words).checked_mul(WORD_BYTES).ok_or(
+            RenderDeterministicLoweringError::SizeOverflow {
+                field: "canonical lattice byte length",
+            },
+        )?;
+        let texture_row_bytes = u32::try_from(row_bytes).map_err(|_| {
+            RenderDeterministicLoweringError::SizeOverflow {
+                field: "lattice row bytes",
+            }
+        })?;
+        Ok(OutputPhysicalLayout {
+            requested_extent,
+            sample_count,
+            width,
+            height,
+            row_stride_words,
+            output_byte_len,
+            texture_row_bytes: Some(texture_row_bytes),
+        })
+    } else {
+        Ok(OutputPhysicalLayout {
+            requested_extent,
+            sample_count: 1,
+            width: 1,
+            height: 1,
+            row_stride_words: 1,
+            output_byte_len: WORD_BYTES,
+            texture_row_bytes: None,
+        })
+    }
+}
 
-    let (execution_mode, wavelength) = match execution_kind {
-        MaintainedExecutionKind::RequestedCoverage => (execution_mode::REQUESTED_COVERAGE, None),
+fn execution_realization(
+    output_index: usize,
+    execution_kind: MaintainedExecutionKind,
+) -> Result<(u32, Option<f64>), RenderDeterministicLoweringError> {
+    match execution_kind {
+        MaintainedExecutionKind::RequestedCoverage => Ok((execution_mode::REQUESTED_COVERAGE, None)),
         MaintainedExecutionKind::Semantic(value) => match value {
-            RenderOutputValue::Radiance { representation } => (
+            RenderOutputValue::Radiance { representation } => Ok((
                 execution_mode::RADIANCE,
                 Some(representation.wavelength_meters()),
-            ),
+            )),
             RenderOutputValue::Distance {
                 convention: RenderDistanceConvention::ObservationForwardDepth,
-            } => (execution_mode::FORWARD_DEPTH, None),
-            RenderOutputValue::ObjectIdentity => (execution_mode::OBJECT_IDENTITY, None),
+            } => Ok((execution_mode::FORWARD_DEPTH, None)),
+            RenderOutputValue::ObjectIdentity => Ok((execution_mode::OBJECT_IDENTITY, None)),
             RenderOutputValue::Distance { .. } => {
-                return Err(RenderDeterministicLoweringError::UnsupportedOutput { output_index });
+                Err(RenderDeterministicLoweringError::UnsupportedOutput { output_index })
             }
         },
-    };
+    }
+}
 
-    let (observation_kind, transform, tan_half_fov, aspect_ratio) = match observation {
-        RenderObservationSpec::Perspective(observation) => (
-            if observation.sampling_support().is_perspective_lattice_cell() {
+fn physical_observation(observation: RenderObservationSpec) -> PhysicalObservation {
+    match observation {
+        RenderObservationSpec::Perspective(observation) => PhysicalObservation {
+            kind: if observation.sampling_support().is_perspective_lattice_cell() {
                 observation_kind::PERSPECTIVE_FOOTPRINT
             } else {
                 observation_kind::PERSPECTIVE
             },
-            observation.observation_to_scene(),
-            Some((observation.vertical_field_of_view_radians() * 0.5).tan()),
-            Some(observation.aspect_ratio()),
-        ),
-        RenderObservationSpec::Probe(observation) => (
-            observation_kind::PROBE,
-            observation.observation_to_scene(),
-            None,
-            None,
-        ),
-    };
+            transform: observation.observation_to_scene(),
+            tan_half_fov: Some((observation.vertical_field_of_view_radians() * 0.5).tan()),
+            aspect_ratio: Some(observation.aspect_ratio()),
+        },
+        RenderObservationSpec::Probe(observation) => PhysicalObservation {
+            kind: observation_kind::PROBE,
+            transform: observation.observation_to_scene(),
+            tan_half_fov: None,
+            aspect_ratio: None,
+        },
+    }
+}
 
-    let mut geometry = Vec::new();
-    geometry
+fn plan_output_packing<'a>(
+    admitted: &'a AdmittedRenderPlan,
+    admitted_output: &crate::admission::RenderAdmittedOutput,
+    execution_kind: MaintainedExecutionKind,
+    observation: RenderObservationSpec,
+    object_codes: &BTreeMap<RenderObjectId, u32>,
+    packing: OutputPackingInput,
+) -> Result<OutputPackingPlan<'a>, RenderDeterministicLoweringError> {
+    let output_index = admitted_output.output_index();
+    let requested_extent = admitted.plan().request().outputs()[output_index]
+        .spec()
+        .topology()
+        .sample_lattice_dimensions();
+    let layout = derive_output_physical_layout(
+        output_index,
+        requested_extent,
+        packing.finite_evaluation_extent,
+        packing.bytes_per_row_alignment,
+    )?;
+    let (execution_mode, wavelength) = execution_realization(output_index, execution_kind)?;
+    let observation = physical_observation(observation);
+
+    let mut geometry_keys = Vec::new();
+    geometry_keys
         .try_reserve_exact(admitted_output.object_representations().len())
         .map_err(|_| RenderDeterministicLoweringError::HostAllocation {
             field: "maintained geometry records",
@@ -149,9 +267,10 @@ pub(super) fn pack_output(
                 )?;
             }
         }
-        geometry.push((object.object_id(), representation_id, protocol));
+        geometry_keys.push((object.object_id(), representation_id, protocol));
     }
-    geometry.sort_by_key(|(object_id, representation_id, _)| (*object_id, *representation_id));
+    geometry_keys
+        .sort_by_key(|(object_id, representation_id, _)| (*object_id, *representation_id));
 
     let emitters = if let Some(wavelength) = wavelength {
         matching_emitters(admitted, wavelength)?
@@ -159,11 +278,14 @@ pub(super) fn pack_output(
         Vec::new()
     };
     let emitter_offset = header::WORDS
-        .checked_add(geometry.len().checked_mul(geometry::WORDS).ok_or(
-            RenderDeterministicLoweringError::SizeOverflow {
-                field: "geometry input words",
-            },
-        )?)
+        .checked_add(
+            geometry_keys
+                .len()
+                .checked_mul(geometry::WORDS)
+                .ok_or(RenderDeterministicLoweringError::SizeOverflow {
+                    field: "geometry input words",
+                })?,
+        )
         .ok_or(RenderDeterministicLoweringError::SizeOverflow {
             field: "emitter input offset",
         })?;
@@ -172,107 +294,45 @@ pub(super) fn pack_output(
             field: "emitter input words",
         },
     )?;
-    let field_sample_offset = emitter_offset.checked_add(emitter_words).ok_or(
+    let mut field_sample_cursor = emitter_offset.checked_add(emitter_words).ok_or(
         RenderDeterministicLoweringError::SizeOverflow {
             field: "field sample input offset",
         },
     )?;
-    let field_sample_words = geometry.iter().try_fold(
-        0_usize,
-        |count, (object_id, representation_id, protocol)| {
-            if !matches!(protocol, RenderRepresentationProtocol::FieldDistance) {
-                return Ok(count);
-            }
-            let input = admitted.field_semantic_input(*representation_id).ok_or(
-                RenderDeterministicLoweringError::MissingFieldInput {
-                    output_index,
-                    object_id: *object_id,
-                    representation_id: *representation_id,
-                },
-            )?;
-            count.checked_add(input.sample_count()).ok_or(
-                RenderDeterministicLoweringError::SizeOverflow {
-                    field: "field sample input words",
-                },
-            )
-        },
-    )?;
-    let total_words = field_sample_offset.checked_add(field_sample_words).ok_or(
-        RenderDeterministicLoweringError::SizeOverflow {
-            field: "packed input words",
-        },
-    )?;
-    let mut words = Vec::new();
-    words.try_reserve_exact(total_words).map_err(|_| {
-        RenderDeterministicLoweringError::HostAllocation {
-            field: "packed maintained semantic input",
-        }
-    })?;
-    words.resize(total_words, 0_u32);
 
-    words[header::SAMPLE_COUNT] = sample_count;
-    words[header::EVALUATION_WIDTH] = width;
-    words[header::EVALUATION_HEIGHT] = height;
-    words[header::ROW_STRIDE_WORDS] = row_stride_words;
-    words[header::GEOMETRY_COUNT] = u32::try_from(geometry.len()).map_err(|_| {
-        RenderDeterministicLoweringError::SizeOverflow {
-            field: "geometry count",
-        }
-    })?;
-    words[header::EMITTER_COUNT] = u32::try_from(emitters.len()).map_err(|_| {
-        RenderDeterministicLoweringError::SizeOverflow {
-            field: "emitter count",
-        }
-    })?;
-    words[header::EXECUTION_MODE] = execution_mode;
-    words[header::OBSERVATION_KIND] = observation_kind;
-    pack_observation(&mut words, transform, tan_half_fov, aspect_ratio)?;
-    let requested_extent = requested_extent.unwrap_or((1, 1));
-    words[header::REQUESTED_WIDTH] = requested_extent.0;
-    words[header::REQUESTED_HEIGHT] = requested_extent.1;
-    words[header::TEMPORAL_PHASE] = temporal_history.map_or(0, |history| history.phase);
-    words[header::TEMPORAL_SEQUENCE_REVISION] = temporal::SEQUENCE_REVISION;
-    words[header::TEMPORAL_HISTORY_AGE] = temporal_history.map_or(0, |history| history.age);
-    words[header::TEMPORAL_HISTORY_ROW_STRIDE] =
-        temporal_history.map_or(row_stride_words, |history| match &history.storage {
-            DeterministicTemporalHistoryUseStorage::Static {
-                row_stride_words, ..
-            } => *row_stride_words,
-            DeterministicTemporalHistoryUseStorage::Camera { .. } => row_stride_words,
-        });
-    words[header::TEMPORAL_RECONSTRUCTION_REVISION] = TEMPORAL_RECONSTRUCTION_REVISION;
-    words[header::EMITTER_OFFSET] = u32::try_from(emitter_offset).map_err(|_| {
-        RenderDeterministicLoweringError::SizeOverflow {
-            field: "emitter input offset",
-        }
-    })?;
+    let mut geometry = Vec::new();
+    geometry
+        .try_reserve_exact(geometry_keys.len())
+        .map_err(|_| RenderDeterministicLoweringError::HostAllocation {
+            field: "maintained geometry packing plan",
+        })?;
 
-    let mut field_sample_cursor = field_sample_offset;
-    for (index, (object_id, representation_id, protocol)) in geometry.into_iter().enumerate() {
-        let base = header::WORDS + index * geometry::WORDS;
+    for (object_id, representation_id, protocol) in geometry_keys {
         let state = admitted.plan().scene().object_state(object_id).ok_or(
             RenderDeterministicLoweringError::MissingObjectState {
                 output_index,
                 object_id,
             },
         )?;
-        words[base + geometry::OBJECT_CODE] = *object_codes
+        let object_code = *object_codes
             .get(&object_id)
             .ok_or(RenderDeterministicLoweringError::OutputCorrelationChanged { output_index })?;
-        words[base + geometry::RADIANCE_REFLECTANCE] = if execution_mode == execution_mode::RADIANCE
-        {
-            let material = admitted
-                .plan()
-                .scene()
-                .object_participation(object_id)
-                .and_then(|participation| participation.material_assignment())
-                .ok_or(RenderDeterministicLoweringError::MissingMaterial {
-                    output_index,
-                    object_id,
-                })?;
-            f32_bits(material.material().reflectance(), "diffuse reflectance")?
+        let reflectance = if execution_mode == execution_mode::RADIANCE {
+            Some(
+                admitted
+                    .plan()
+                    .scene()
+                    .object_participation(object_id)
+                    .and_then(|participation| participation.material_assignment())
+                    .ok_or(RenderDeterministicLoweringError::MissingMaterial {
+                        output_index,
+                        object_id,
+                    })?
+                    .material()
+                    .reflectance(),
+            )
         } else {
-            0
+            None
         };
 
         match protocol {
@@ -286,6 +346,149 @@ pub(super) fn pack_output(
                         }
                     },
                 )?;
+                let input = admitted
+                    .surface_semantic_input(representation_id)
+                    .ok_or(RenderDeterministicLoweringError::MissingSurfaceInput {
+                        output_index,
+                        object_id,
+                        representation_id,
+                    })?
+                    .execution_view();
+                geometry.push(GeometryPackingEntry::Surface {
+                    object_code,
+                    reflectance,
+                    transform,
+                    input,
+                });
+            }
+            RenderRepresentationProtocol::FieldDistance => {
+                let transform = RenderCompiledMetricSimilarityTransform::compile(state.spatial())
+                    .map_err(
+                    |RenderCompiledMetricSimilarityTransformError::NotPositiveSimilarity| {
+                        RenderDeterministicLoweringError::NonSimilarityFieldTransform {
+                            output_index,
+                            object_id,
+                        }
+                    },
+                )?;
+                let input = admitted.field_semantic_input(representation_id).ok_or(
+                    RenderDeterministicLoweringError::MissingFieldInput {
+                        output_index,
+                        object_id,
+                        representation_id,
+                    },
+                )?;
+                let sample_offset = field_sample_cursor;
+                field_sample_cursor = field_sample_cursor.checked_add(input.sample_count()).ok_or(
+                    RenderDeterministicLoweringError::SizeOverflow {
+                        field: "field sample input words",
+                    },
+                )?;
+                geometry.push(GeometryPackingEntry::Field {
+                    object_code,
+                    reflectance,
+                    transform,
+                    input,
+                    sample_offset,
+                });
+            }
+        }
+    }
+
+    Ok(OutputPackingPlan {
+        layout,
+        execution_mode,
+        observation,
+        geometry,
+        emitters,
+        emitter_offset,
+        total_words: field_sample_cursor,
+        temporal: packing.temporal,
+    })
+}
+
+fn encode_output_packing(
+    plan: OutputPackingPlan<'_>,
+) -> Result<PackedOutput, RenderDeterministicLoweringError> {
+    let OutputPackingPlan {
+        layout,
+        execution_mode,
+        observation,
+        geometry,
+        emitters,
+        emitter_offset,
+        total_words,
+        temporal,
+    } = plan;
+    let mut words = Vec::new();
+    words.try_reserve_exact(total_words).map_err(|_| {
+        RenderDeterministicLoweringError::HostAllocation {
+            field: "packed maintained semantic input",
+        }
+    })?;
+    words.resize(total_words, 0_u32);
+
+    words[header::SAMPLE_COUNT] = layout.sample_count;
+    words[header::EVALUATION_WIDTH] = layout.width;
+    words[header::EVALUATION_HEIGHT] = layout.height;
+    words[header::ROW_STRIDE_WORDS] = layout.row_stride_words;
+    words[header::GEOMETRY_COUNT] = u32::try_from(geometry.len()).map_err(|_| {
+        RenderDeterministicLoweringError::SizeOverflow {
+            field: "geometry count",
+        }
+    })?;
+    words[header::EMITTER_COUNT] = u32::try_from(emitters.len()).map_err(|_| {
+        RenderDeterministicLoweringError::SizeOverflow {
+            field: "emitter count",
+        }
+    })?;
+    words[header::EXECUTION_MODE] = execution_mode;
+    words[header::OBSERVATION_KIND] = observation.kind;
+    pack_observation(
+        &mut words,
+        observation.transform,
+        observation.tan_half_fov,
+        observation.aspect_ratio,
+    )?;
+    words[header::REQUESTED_WIDTH] = layout.requested_extent.0;
+    words[header::REQUESTED_HEIGHT] = layout.requested_extent.1;
+    words[header::TEMPORAL_PHASE] = temporal.map_or(0, |history| history.phase);
+    words[header::TEMPORAL_SEQUENCE_REVISION] = temporal::SEQUENCE_REVISION;
+    words[header::TEMPORAL_HISTORY_AGE] = temporal.map_or(0, |history| history.age);
+    words[header::TEMPORAL_HISTORY_ROW_STRIDE] = temporal
+        .and_then(|history| history.static_history_row_stride_words)
+        .unwrap_or(layout.row_stride_words);
+    words[header::TEMPORAL_RECONSTRUCTION_REVISION] = TEMPORAL_RECONSTRUCTION_REVISION;
+    words[header::EMITTER_OFFSET] = u32::try_from(emitter_offset).map_err(|_| {
+        RenderDeterministicLoweringError::SizeOverflow {
+            field: "emitter input offset",
+        }
+    })?;
+
+    for (index, entry) in geometry.into_iter().enumerate() {
+        let base = header::WORDS + index * geometry::WORDS;
+        let (object_code, reflectance) = match &entry {
+            GeometryPackingEntry::Surface {
+                object_code,
+                reflectance,
+                ..
+            }
+            | GeometryPackingEntry::Field {
+                object_code,
+                reflectance,
+                ..
+            } => (*object_code, *reflectance),
+        };
+        words[base + geometry::OBJECT_CODE] = object_code;
+        words[base + geometry::RADIANCE_REFLECTANCE] = match reflectance {
+            Some(value) => f32_bits(value, "diffuse reflectance")?,
+            None => 0,
+        };
+
+        match entry {
+            GeometryPackingEntry::Surface {
+                transform, input, ..
+            } => {
                 pack_invertible_matrix3(
                     &mut words,
                     base + geometry::SCENE_TO_LOCAL,
@@ -302,15 +505,7 @@ pub(super) fn pack_output(
                     base + geometry::NORMAL_LOCAL_TO_SCENE,
                     transform.normal_local_to_scene_row_major(),
                 )?;
-
-                let input = admitted.surface_semantic_input(representation_id).ok_or(
-                    RenderDeterministicLoweringError::MissingSurfaceInput {
-                        output_index,
-                        object_id,
-                        representation_id,
-                    },
-                )?;
-                match input.execution_view() {
+                match input {
                     RenderSurfaceSemanticInputView::Sphere {
                         center_local_units,
                         radius_local_units,
@@ -330,16 +525,12 @@ pub(super) fn pack_output(
                     }
                 }
             }
-            RenderRepresentationProtocol::FieldDistance => {
-                let transform = RenderCompiledMetricSimilarityTransform::compile(state.spatial())
-                    .map_err(
-                    |RenderCompiledMetricSimilarityTransformError::NotPositiveSimilarity| {
-                        RenderDeterministicLoweringError::NonSimilarityFieldTransform {
-                            output_index,
-                            object_id,
-                        }
-                    },
-                )?;
+            GeometryPackingEntry::Field {
+                transform,
+                input,
+                sample_offset,
+                ..
+            } => {
                 pack_invertible_matrix3(
                     &mut words,
                     base + geometry::SCENE_TO_LOCAL,
@@ -356,14 +547,6 @@ pub(super) fn pack_output(
                     base + geometry::NORMAL_LOCAL_TO_SCENE,
                     transform.normal_local_to_scene_row_major(),
                 )?;
-
-                let input: &RenderFieldSemanticInput = admitted
-                    .field_semantic_input(representation_id)
-                    .ok_or(RenderDeterministicLoweringError::MissingFieldInput {
-                        output_index,
-                        object_id,
-                        representation_id,
-                    })?;
                 words[base + geometry::SHAPE] = shape::FIELD;
                 words[base + geometry::FIELD_SCENE_SCALE] = conservative_positive_f32_bits(
                     transform.scene_meters_per_local_meter(),
@@ -383,7 +566,7 @@ pub(super) fn pack_output(
                 words[base + geometry::FIELD_DIMENSION_X] = dimensions[0];
                 words[base + geometry::FIELD_DIMENSION_Y] = dimensions[1];
                 words[base + geometry::FIELD_DIMENSION_Z] = dimensions[2];
-                words[base + geometry::FIELD_SAMPLE_OFFSET] = u32::try_from(field_sample_cursor)
+                words[base + geometry::FIELD_SAMPLE_OFFSET] = u32::try_from(sample_offset)
                     .map_err(|_| RenderDeterministicLoweringError::SizeOverflow {
                         field: "field sample input offset",
                     })?;
@@ -394,15 +577,16 @@ pub(super) fn pack_output(
 
                 for sample_index in 0..input.sample_count() {
                     let sample = input.signed_distance_sample_meters(sample_index).ok_or(
-                        RenderDeterministicLoweringError::OutputCorrelationChanged { output_index },
+                        RenderDeterministicLoweringError::OutputCorrelationChanged {
+                            output_index: usize::MAX,
+                        },
                     )?;
-                    words[field_sample_cursor] = f32_bits(sample, "field signed-distance sample")?;
-                    field_sample_cursor += 1;
+                    words[sample_offset + sample_index] =
+                        f32_bits(sample, "field signed-distance sample")?;
                 }
             }
         }
     }
-    debug_assert_eq!(field_sample_cursor, total_words);
 
     for (index, emitter) in emitters.into_iter().enumerate() {
         let base = emitter_offset + index * emitter::WORDS;
@@ -419,9 +603,9 @@ pub(super) fn pack_output(
 
     Ok(PackedOutput {
         input_words: words,
-        sample_count,
-        output_byte_len,
-        texture_row_bytes,
+        sample_count: layout.sample_count,
+        output_byte_len: layout.output_byte_len,
+        texture_row_bytes: layout.texture_row_bytes,
     })
 }
 
@@ -715,25 +899,6 @@ pub(super) fn conservative_nonnegative_f32_bits(
         }
     }
     Ok(physical.to_bits())
-}
-
-pub(super) fn align_up(
-    value: u64,
-    alignment: u64,
-) -> Result<u64, RenderDeterministicLoweringError> {
-    if alignment == 0 {
-        return Err(RenderDeterministicLoweringError::InvalidBytesPerRowAlignment { alignment });
-    }
-    let remainder = value % alignment;
-    if remainder == 0 {
-        Ok(value)
-    } else {
-        value.checked_add(alignment - remainder).ok_or(
-            RenderDeterministicLoweringError::SizeOverflow {
-                field: "aligned lattice row bytes",
-            },
-        )
-    }
 }
 
 pub(super) fn deterministic_dispatch_size(

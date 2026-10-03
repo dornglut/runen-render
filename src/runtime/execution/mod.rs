@@ -84,6 +84,7 @@ const WORD_BYTES: u64 = carrier::WORD_BYTES as u64;
 
 mod errors;
 mod lifecycle;
+mod layout;
 mod packing;
 mod prepare;
 mod state;
@@ -119,15 +120,14 @@ use errors::{
 };
 use lifecycle::{DeterministicObservationIntent, DeterministicVerificationState};
 use packing::*;
-use prepare::{PackedOutput, lower_deterministic_render};
+use prepare::lower_deterministic_render;
 #[cfg(test)]
 use state::DeterministicTemporalStorage;
 use state::{
     DeterministicBufferKind, DeterministicOutputExecutionSelection,
-    DeterministicOutputPackingState, DeterministicRenderExecutionSelection,
-    DeterministicTemporalHistorySelection, DeterministicTemporalHistoryUseStorage,
-    DeterministicTemporalSignature, MaintainedExecutionKind, temporal_evaluation_extent_supported,
-    temporal_observation_compatibility,
+    DeterministicRenderExecutionSelection, DeterministicTemporalHistorySelection,
+    DeterministicTemporalHistoryUseStorage, DeterministicTemporalSignature,
+    temporal_evaluation_extent_supported, temporal_observation_compatibility,
 };
 use submission::submit_prepared_deterministic_render;
 

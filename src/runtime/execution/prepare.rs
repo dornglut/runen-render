@@ -13,13 +13,6 @@ pub(super) struct LoweredDeterministicOutput {
     pub(super) composable_radiance_output: Option<PreparedDeterministicRadianceOutput>,
 }
 
-pub(super) struct PackedOutput {
-    pub(super) input_words: Vec<u32>,
-    pub(super) sample_count: u32,
-    pub(super) output_byte_len: u64,
-    pub(super) texture_row_bytes: Option<u32>,
-}
-
 pub(super) struct VerificationReadbackOperations {
     pub(super) correlation: DeterministicVerificationReadbacks,
     pub(super) canonical_output: GpuReadbackOperation,
@@ -279,6 +272,11 @@ pub(super) fn lower_output(
         .copied()
         .ok_or(RenderDeterministicLoweringError::OutputCorrelationChanged { output_index })?;
 
+    let bytes_per_row_alignment = context
+        .device_facts()
+        .device_limits()
+        .alignments()
+        .bytes_per_row;
     let temporal_history = if let Some(evaluation_extent) = finite_evaluation_extent {
         let RenderObservationSpec::Perspective(perspective) = observation else {
             return Err(RenderDeterministicLoweringError::UnsupportedOutput { output_index });
@@ -302,11 +300,7 @@ pub(super) fn lower_output(
                 },
             );
         }
-        let alignment = context
-            .device_facts()
-            .device_limits()
-            .alignments()
-            .bytes_per_row
+        let alignment = bytes_per_row_alignment
             .ok_or(RenderDeterministicLoweringError::MissingBytesPerRowAlignment)?;
         for binding in admitted.surface_semantic_inputs() {
             if binding.generation().is_none() {
@@ -356,16 +350,26 @@ pub(super) fn lower_output(
         None
     };
 
+    let temporal_packing = temporal_history.as_ref().map(|history| OutputTemporalPackingFacts {
+        phase: history.phase,
+        age: history.age,
+        static_history_row_stride_words: match &history.storage {
+            DeterministicTemporalHistoryUseStorage::Static {
+                row_stride_words, ..
+            } => Some(*row_stride_words),
+            DeterministicTemporalHistoryUseStorage::Camera { .. } => None,
+        },
+    });
     let packed = pack_output(
         admitted,
         admitted_output,
         MaintainedExecutionKind::Semantic(requested.spec().value()),
         observation,
         object_codes,
-        context,
-        DeterministicOutputPackingState {
+        OutputPackingInput {
             finite_evaluation_extent,
-            temporal_history: temporal_history.as_ref(),
+            bytes_per_row_alignment,
+            temporal: temporal_packing,
         },
     )?;
     let requested_extent = requested.spec().topology().sample_lattice_dimensions();
@@ -378,10 +382,10 @@ pub(super) fn lower_output(
             MaintainedExecutionKind::RequestedCoverage,
             observation,
             object_codes,
-            context,
-            DeterministicOutputPackingState {
+            OutputPackingInput {
                 finite_evaluation_extent: None,
-                temporal_history: temporal_history.as_ref(),
+                bytes_per_row_alignment,
+                temporal: temporal_packing,
             },
         )?;
         Some(prepare_requested_coverage(

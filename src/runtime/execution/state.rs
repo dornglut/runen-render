@@ -110,19 +110,6 @@ pub(super) struct DeterministicOutputExecutionSelection {
     pub(super) produce_requested_coverage: bool,
 }
 
-/// Physical execution selection; private coverage is not a requested semantic depth output.
-#[derive(Debug, Clone, Copy)]
-pub(super) enum MaintainedExecutionKind {
-    Semantic(RenderOutputValue),
-    RequestedCoverage,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct DeterministicOutputPackingState<'a> {
-    pub(super) finite_evaluation_extent: Option<(u32, u32)>,
-    pub(super) temporal_history: Option<&'a DeterministicTemporalHistoryUse>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DeterministicTemporalHistorySelection {
     pub(super) current_observation: RenderPerspectiveObservation,
@@ -268,7 +255,7 @@ impl DeterministicResourceCache {
             .ok_or(RenderDeterministicLoweringError::SizeOverflow {
                 field: "temporal history logical row bytes",
             })?;
-        let row_bytes = align_up(logical_row_bytes, bytes_per_row_alignment)?;
+        let row_bytes = super::layout::align_up(logical_row_bytes, bytes_per_row_alignment)?;
         if row_bytes % WORD_BYTES != 0 {
             return Err(
                 RenderDeterministicLoweringError::InvalidBytesPerRowAlignment {
