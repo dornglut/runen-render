@@ -45,7 +45,7 @@ fn maintained_programs_compile_through_runenshader_and_preserve_exact_gpu_source
 
 fn assert_dispatch(sample_count: u32, maximum: u32, expected: [u32; 3]) {
     assert_eq!(
-        super::prepare::deterministic_dispatch_size(sample_count, maximum)
+        super::passes::deterministic_dispatch_size(sample_count, maximum)
             .expect("dispatch should fit the admitted 2D capacity")
             .as_array(),
         expected
@@ -1361,7 +1361,7 @@ fn deterministic_dispatch_tiles_samples_within_the_admitted_dimension_limit() {
 
 #[test]
 fn deterministic_dispatch_rejects_work_beyond_two_dimensional_capacity() {
-    let error = super::prepare::deterministic_dispatch_size(4097, 8).expect_err("dispatch must reject");
+    let error = super::passes::deterministic_dispatch_size(4097, 8).expect_err("dispatch must reject");
     assert_eq!(
         error,
         RenderDeterministicLoweringError::DispatchCapacityExceeded {
