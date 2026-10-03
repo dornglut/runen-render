@@ -45,7 +45,7 @@ fn maintained_programs_compile_through_runenshader_and_preserve_exact_gpu_source
 
 fn assert_dispatch(sample_count: u32, maximum: u32, expected: [u32; 3]) {
     assert_eq!(
-        deterministic_dispatch_size(sample_count, maximum)
+        super::prepare::deterministic_dispatch_size(sample_count, maximum)
             .expect("dispatch should fit the admitted 2D capacity")
             .as_array(),
         expected
@@ -1289,29 +1289,21 @@ fn temporal_four_phase_extent_requires_half_to_native_coverage() {
 }
 
 #[test]
-fn maintained_program_sources_are_retained_across_fresh_renderer_resource_caches() {
-    let mut first_cache = DeterministicResourceCache::default();
-    let first_evaluator = first_cache
-        .maintained_source()
-        .expect("maintained evaluator should admit");
-    let first_temporal = first_cache
-        .reconstruction_source()
+fn maintained_program_sources_are_retained_by_the_program_owner() {
+    let first_evaluator =
+        retained_maintained_evaluator_source().expect("maintained evaluator should admit");
+    let first_temporal = retained_temporal_reconstruction_source()
         .expect("temporal reconstruction should admit");
-    let first_camera = first_cache
-        .camera_reprojection_source()
-        .expect("camera reprojection should admit");
+    let first_camera =
+        retained_camera_reprojection_source().expect("camera reprojection should admit");
 
     for _ in 0..120 {
-        let mut next_cache = DeterministicResourceCache::default();
-        let next_evaluator = next_cache
-            .maintained_source()
-            .expect("maintained evaluator should remain available");
-        let next_temporal = next_cache
-            .reconstruction_source()
+        let next_evaluator =
+            retained_maintained_evaluator_source().expect("maintained evaluator should remain available");
+        let next_temporal = retained_temporal_reconstruction_source()
             .expect("temporal reconstruction should remain available");
-        let next_camera = next_cache
-            .camera_reprojection_source()
-            .expect("camera reprojection should remain available");
+        let next_camera =
+            retained_camera_reprojection_source().expect("camera reprojection should remain available");
 
         assert!(first_evaluator.is_same_record(&next_evaluator));
         assert!(first_temporal.is_same_record(&next_temporal));
@@ -1369,7 +1361,7 @@ fn deterministic_dispatch_tiles_samples_within_the_admitted_dimension_limit() {
 
 #[test]
 fn deterministic_dispatch_rejects_work_beyond_two_dimensional_capacity() {
-    let error = deterministic_dispatch_size(4097, 8).expect_err("dispatch must reject");
+    let error = super::prepare::deterministic_dispatch_size(4097, 8).expect_err("dispatch must reject");
     assert_eq!(
         error,
         RenderDeterministicLoweringError::DispatchCapacityExceeded {

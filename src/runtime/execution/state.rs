@@ -219,24 +219,6 @@ impl DeterministicResourceCache {
         }
     }
 
-    pub(super) fn maintained_source(
-        &mut self,
-    ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        retained_maintained_evaluator_source().map_err(map_maintained_program_build_error)
-    }
-
-    pub(super) fn reconstruction_source(
-        &mut self,
-    ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        retained_temporal_reconstruction_source().map_err(map_maintained_program_build_error)
-    }
-
-    pub(super) fn camera_reprojection_source(
-        &mut self,
-    ) -> Result<GpuAdmittedProgramSource, RenderDeterministicLoweringError> {
-        retained_camera_reprojection_source().map_err(map_maintained_program_build_error)
-    }
-
     pub(super) fn temporal_history(
         &mut self,
         scope: u64,

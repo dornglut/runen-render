@@ -235,15 +235,72 @@ pub(super) fn build_object_identity_decoder(
     })
 }
 
-pub(super) fn lower_output(
-    admitted: &AdmittedRenderPlan,
+
+#[derive(Clone, Copy)]
+struct ResolvedOutputContext<'a> {
     output_index: usize,
-    object_codes: &BTreeMap<RenderObjectId, u32>,
+    admitted_output: &'a crate::admission::RenderAdmittedOutput,
+    requested: crate::request::RenderRequestedOutput,
+    observation: RenderObservationSpec,
+    scope: u64,
+    finite_evaluation_extent: Option<(u32, u32)>,
+    produce_requested_coverage: bool,
+    bytes_per_row_alignment: Option<u64>,
+    max_compute_workgroups_per_dimension: u32,
+}
+
+struct PreparedTemporalState {
+    history: Option<DeterministicTemporalHistoryUse>,
+}
+
+impl PreparedTemporalState {
+    fn packing_facts(&self) -> Option<OutputTemporalPackingFacts> {
+        self.history.as_ref().map(|history| OutputTemporalPackingFacts {
+            phase: history.phase,
+            age: history.age,
+            static_history_row_stride_words: match &history.storage {
+                DeterministicTemporalHistoryUseStorage::Static {
+                    row_stride_words, ..
+                } => Some(*row_stride_words),
+                DeterministicTemporalHistoryUseStorage::Camera { .. } => None,
+            },
+        })
+    }
+}
+
+struct PreparedPrimaryPass {
+    input: GpuBufferHandle,
+    canonical_output: GpuBufferHandle,
+    definedness: GpuBufferHandle,
+    status: GpuBufferHandle,
+    current_depth: GpuBufferHandle,
+    current_hit: GpuBufferHandle,
+    input_upload: GpuUploadOperation,
+    output_clear: GpuClearOperation,
+    definedness_clear: GpuClearOperation,
+    status_clear: GpuClearOperation,
+    current_depth_clear: GpuClearOperation,
+    current_hit_clear: GpuClearOperation,
+    compute: GpuComputeOperation,
+}
+
+struct PreparedTemporalPass {
+    camera_parameter_upload: Option<GpuUploadOperation>,
+    reconstruction_compute: Option<GpuComputeOperation>,
+}
+
+struct PreparedDestination {
+    copy: GpuCopyOperation,
+    gpu_output: Option<GpuWorkOutput>,
+    radiance_output: Option<PreparedDeterministicRadianceOutput>,
+}
+
+fn resolve_output_context<'a>(
+    admitted: &'a AdmittedRenderPlan,
+    output_index: usize,
     context: &GpuContext,
-    resources: &mut DeterministicResourceCache,
-    intent: DeterministicObservationIntent,
     execution: DeterministicOutputExecutionSelection,
-) -> Result<LoweredDeterministicOutput, RenderDeterministicLoweringError> {
+) -> Result<ResolvedOutputContext<'a>, RenderDeterministicLoweringError> {
     let DeterministicOutputExecutionSelection {
         scope,
         finite_evaluation_extent,
@@ -272,134 +329,125 @@ pub(super) fn lower_output(
         .copied()
         .ok_or(RenderDeterministicLoweringError::OutputCorrelationChanged { output_index })?;
 
-    let bytes_per_row_alignment = context
-        .device_facts()
-        .device_limits()
-        .alignments()
-        .bytes_per_row;
-    let temporal_history = if let Some(evaluation_extent) = finite_evaluation_extent {
-        let RenderObservationSpec::Perspective(perspective) = observation else {
-            return Err(RenderDeterministicLoweringError::UnsupportedOutput { output_index });
-        };
-        if !perspective.sampling_support().is_perspective_lattice_cell()
-            || !matches!(requested.spec().value(), RenderOutputValue::Radiance { .. })
-        {
-            return Err(RenderDeterministicLoweringError::UnsupportedOutput { output_index });
-        }
-        let requested_extent = requested
-            .spec()
-            .topology()
-            .sample_lattice_dimensions()
-            .ok_or(RenderDeterministicLoweringError::UnsupportedOutput { output_index })?;
-        if !temporal_evaluation_extent_supported(requested_extent, evaluation_extent) {
+    Ok(ResolvedOutputContext {
+        output_index,
+        admitted_output,
+        requested,
+        observation,
+        scope,
+        finite_evaluation_extent,
+        produce_requested_coverage,
+        bytes_per_row_alignment: context
+            .device_facts()
+            .device_limits()
+            .alignments()
+            .bytes_per_row,
+        max_compute_workgroups_per_dimension: context
+            .device_facts()
+            .workload_budget()
+            .limits()
+            .max_compute_workgroups_per_dimension(),
+    })
+}
+
+fn prepare_temporal_state(
+    admitted: &AdmittedRenderPlan,
+    resolved: ResolvedOutputContext<'_>,
+    resources: &mut DeterministicResourceCache,
+) -> Result<PreparedTemporalState, RenderDeterministicLoweringError> {
+    let Some(evaluation_extent) = resolved.finite_evaluation_extent else {
+        return Ok(PreparedTemporalState { history: None });
+    };
+    let RenderObservationSpec::Perspective(perspective) = resolved.observation else {
+        return Err(RenderDeterministicLoweringError::UnsupportedOutput {
+            output_index: resolved.output_index,
+        });
+    };
+    if !perspective.sampling_support().is_perspective_lattice_cell()
+        || !matches!(
+            resolved.requested.spec().value(),
+            RenderOutputValue::Radiance { .. }
+        )
+    {
+        return Err(RenderDeterministicLoweringError::UnsupportedOutput {
+            output_index: resolved.output_index,
+        });
+    }
+    let requested_extent = resolved
+        .requested
+        .spec()
+        .topology()
+        .sample_lattice_dimensions()
+        .ok_or(RenderDeterministicLoweringError::UnsupportedOutput {
+            output_index: resolved.output_index,
+        })?;
+    if !temporal_evaluation_extent_supported(requested_extent, evaluation_extent) {
+        return Err(
+            RenderDeterministicLoweringError::UnsupportedTemporalEvaluationExtent {
+                output_index: resolved.output_index,
+                requested_extent,
+                evaluation_extent,
+            },
+        );
+    }
+    let alignment = resolved
+        .bytes_per_row_alignment
+        .ok_or(RenderDeterministicLoweringError::MissingBytesPerRowAlignment)?;
+    for binding in admitted.surface_semantic_inputs() {
+        if binding.generation().is_none() {
             return Err(
-                RenderDeterministicLoweringError::UnsupportedTemporalEvaluationExtent {
-                    output_index,
-                    requested_extent,
-                    evaluation_extent,
+                RenderDeterministicLoweringError::MissingTemporalSurfaceInputGeneration {
+                    output_index: resolved.output_index,
+                    representation_id: binding.representation_id(),
                 },
             );
         }
-        let alignment = bytes_per_row_alignment
-            .ok_or(RenderDeterministicLoweringError::MissingBytesPerRowAlignment)?;
-        for binding in admitted.surface_semantic_inputs() {
-            if binding.generation().is_none() {
-                return Err(
-                    RenderDeterministicLoweringError::MissingTemporalSurfaceInputGeneration {
-                        output_index,
-                        representation_id: binding.representation_id(),
-                    },
-                );
-            }
+    }
+    for binding in admitted.field_semantic_inputs() {
+        if binding.generation().is_none() {
+            return Err(
+                RenderDeterministicLoweringError::MissingTemporalFieldInputGeneration {
+                    output_index: resolved.output_index,
+                    representation_id: binding.representation_id(),
+                },
+            );
         }
-        for binding in admitted.field_semantic_inputs() {
-            if binding.generation().is_none() {
-                return Err(
-                    RenderDeterministicLoweringError::MissingTemporalFieldInputGeneration {
-                        output_index,
-                        representation_id: binding.representation_id(),
-                    },
-                );
-            }
-        }
-        let camera_capable = evaluation_extent == requested_extent;
-        let signature = DeterministicTemporalSignature {
-            scene_revision: admitted.scene_revision(),
-            observation: temporal_observation_compatibility(observation, camera_capable),
-            output: requested.spec(),
-            semantic_inputs: admitted.surface_semantic_inputs().to_vec(),
-            field_semantic_inputs: admitted.field_semantic_inputs().to_vec(),
-            evaluation_extent,
-            sequence_revision: temporal::SEQUENCE_REVISION,
-            reconstruction_revision: TEMPORAL_RECONSTRUCTION_REVISION,
-            camera_reprojection_revision: camera_capable.then_some(CAMERA_REPROJECTION_REVISION),
-            depth_policy_revision: camera_capable.then_some(camera::DEPTH_POLICY_REVISION),
-        };
-        Some(resources.temporal_history(
-            scope,
-            output_index,
-            signature,
-            requested_extent,
-            alignment,
-            DeterministicTemporalHistorySelection {
-                current_observation: perspective,
-                camera_capable,
-            },
-        )?)
-    } else {
-        None
+    }
+    let camera_capable = evaluation_extent == requested_extent;
+    let signature = DeterministicTemporalSignature {
+        scene_revision: admitted.scene_revision(),
+        observation: temporal_observation_compatibility(resolved.observation, camera_capable),
+        output: resolved.requested.spec(),
+        semantic_inputs: admitted.surface_semantic_inputs().to_vec(),
+        field_semantic_inputs: admitted.field_semantic_inputs().to_vec(),
+        evaluation_extent,
+        sequence_revision: temporal::SEQUENCE_REVISION,
+        reconstruction_revision: TEMPORAL_RECONSTRUCTION_REVISION,
+        camera_reprojection_revision: camera_capable.then_some(CAMERA_REPROJECTION_REVISION),
+        depth_policy_revision: camera_capable.then_some(camera::DEPTH_POLICY_REVISION),
     };
-
-    let temporal_packing = temporal_history
-        .as_ref()
-        .map(|history| OutputTemporalPackingFacts {
-            phase: history.phase,
-            age: history.age,
-            static_history_row_stride_words: match &history.storage {
-                DeterministicTemporalHistoryUseStorage::Static {
-                    row_stride_words, ..
-                } => Some(*row_stride_words),
-                DeterministicTemporalHistoryUseStorage::Camera { .. } => None,
-            },
-        });
-    let packed = pack_output(
-        admitted,
-        admitted_output,
-        MaintainedExecutionKind::Semantic(requested.spec().value()),
-        observation,
-        object_codes,
-        OutputPackingInput {
-            finite_evaluation_extent,
-            bytes_per_row_alignment,
-            temporal: temporal_packing,
+    let history = resources.temporal_history(
+        resolved.scope,
+        resolved.output_index,
+        signature,
+        requested_extent,
+        alignment,
+        DeterministicTemporalHistorySelection {
+            current_observation: perspective,
+            camera_capable,
         },
     )?;
-    let requested_extent = requested.spec().topology().sample_lattice_dimensions();
-    let requested_coverage = if produce_requested_coverage
-        && finite_evaluation_extent.is_some_and(|extent| Some(extent) != requested_extent)
-    {
-        let coverage_packed = pack_output(
-            admitted,
-            admitted_output,
-            MaintainedExecutionKind::RequestedCoverage,
-            observation,
-            object_codes,
-            OutputPackingInput {
-                finite_evaluation_extent: None,
-                bytes_per_row_alignment,
-                temporal: temporal_packing,
-            },
-        )?;
-        Some(prepare_requested_coverage(
-            coverage_packed,
-            context,
-            resources,
-            scope,
-            output_index,
-        )?)
-    } else {
-        None
-    };
+    Ok(PreparedTemporalState {
+        history: Some(history),
+    })
+}
+
+fn prepare_primary_pass(
+    packed: &PackedOutput,
+    resolved: ResolvedOutputContext<'_>,
+    resources: &mut DeterministicResourceCache,
+) -> Result<PreparedPrimaryPass, RenderDeterministicLoweringError> {
+    let output_index = resolved.output_index;
     let sample_byte_len = u64::from(packed.sample_count)
         .checked_mul(WORD_BYTES)
         .ok_or(RenderDeterministicLoweringError::SizeOverflow {
@@ -412,7 +460,7 @@ pub(super) fn lower_output(
     .map_err(|error| gpu_transfer_preparation("semantic-input preparation", error))?;
 
     let input = resources.buffer(
-        scope,
+        resolved.scope,
         output_index,
         DeterministicBufferKind::Input,
         GpuBufferDescriptor::ordinary_owned(
@@ -426,7 +474,7 @@ pub(super) fn lower_output(
         .map_err(|error| gpu_resource_descriptor("input-buffer descriptor", error))?,
     )?;
     let canonical_output = resources.buffer(
-        scope,
+        resolved.scope,
         output_index,
         DeterministicBufferKind::CanonicalOutput,
         GpuBufferDescriptor::ordinary_owned(
@@ -444,7 +492,7 @@ pub(super) fn lower_output(
         .map_err(|error| gpu_resource_descriptor("canonical-output descriptor", error))?,
     )?;
     let definedness = resources.buffer(
-        scope,
+        resolved.scope,
         output_index,
         DeterministicBufferKind::Definedness,
         GpuBufferDescriptor::ordinary_owned(
@@ -462,7 +510,7 @@ pub(super) fn lower_output(
         .map_err(|error| gpu_resource_descriptor("definedness descriptor", error))?,
     )?;
     let status = resources.buffer(
-        scope,
+        resolved.scope,
         output_index,
         DeterministicBufferKind::Status,
         GpuBufferDescriptor::ordinary_owned(
@@ -479,9 +527,8 @@ pub(super) fn lower_output(
         )
         .map_err(|error| gpu_resource_descriptor("status descriptor", error))?,
     )?;
-
     let current_depth = resources.buffer(
-        scope,
+        resolved.scope,
         output_index,
         DeterministicBufferKind::CurrentDepth,
         GpuBufferDescriptor::ordinary_owned(
@@ -495,7 +542,7 @@ pub(super) fn lower_output(
         .map_err(|error| gpu_resource_descriptor("current-depth descriptor", error))?,
     )?;
     let current_hit = resources.buffer(
-        scope,
+        resolved.scope,
         output_index,
         DeterministicBufferKind::CurrentHit,
         GpuBufferDescriptor::ordinary_owned(
@@ -542,7 +589,8 @@ pub(super) fn lower_output(
     )
     .map_err(|error| gpu_work_operation("current-hit clear", error))?;
 
-    let source = resources.maintained_source()?;
+    let source =
+        retained_maintained_evaluator_source().map_err(map_maintained_program_build_error)?;
     let pipeline = GpuComputePipelineDescriptor::ordinary(source, "main")
         .map_err(|error| gpu_program_contract("compute-pipeline descriptor", error))?;
     let runtime_bindings = pipeline
@@ -557,11 +605,7 @@ pub(super) fn lower_output(
         .map_err(|error| gpu_program_contract("compute runtime bindings", error))?;
     let dispatch_size = deterministic_dispatch_size(
         packed.sample_count,
-        context
-            .device_facts()
-            .workload_budget()
-            .limits()
-            .max_compute_workgroups_per_dimension(),
+        resolved.max_compute_workgroups_per_dimension,
     )?;
     let compute = GpuComputeOperation::new(
         pipeline,
@@ -570,359 +614,431 @@ pub(super) fn lower_output(
     )
     .map_err(|error| gpu_work_operation("compute operation", error))?;
 
-    let mut camera_parameter_upload = None;
-    let reconstruction_compute = if let Some(history) = temporal_history.as_ref() {
-        match &history.storage {
-            DeterministicTemporalHistoryUseStorage::Static {
-                handle,
-                sample_counts,
-                ..
-            } => {
-                let source = resources.reconstruction_source()?;
-                let pipeline =
-                    GpuComputePipelineDescriptor::ordinary(source, "main").map_err(|error| {
-                        gpu_program_contract("temporal reconstruction pipeline", error)
-                    })?;
-                let runtime_bindings = pipeline
-                    .runtime_bindings([
-                        GpuRuntimeBindingValue::whole_buffer(0, 0, &input),
-                        GpuRuntimeBindingValue::whole_buffer(0, 1, &canonical_output),
-                        GpuRuntimeBindingValue::whole_buffer(0, 2, &definedness),
-                        GpuRuntimeBindingValue::whole_buffer(0, 3, handle),
-                        GpuRuntimeBindingValue::whole_buffer(0, 4, sample_counts),
-                    ])
-                    .map_err(|error| {
-                        gpu_program_contract("temporal reconstruction runtime bindings", error)
-                    })?;
-                let dispatch_size = deterministic_dispatch_size(
-                    packed.sample_count,
-                    context
-                        .device_facts()
-                        .workload_budget()
-                        .limits()
-                        .max_compute_workgroups_per_dimension(),
-                )?;
-                Some(
-                    GpuComputeOperation::new(
-                        pipeline,
-                        runtime_bindings,
-                        GpuDispatchIntent::direct(dispatch_size),
-                    )
-                    .map_err(|error| {
-                        gpu_work_operation("temporal reconstruction operation", error)
-                    })?,
-                )
-            }
-            DeterministicTemporalHistoryUseStorage::Camera {
-                previous_history,
-                current_history,
-                previous_observation,
-                pose_changed,
-                same_pose_completed_frames,
-            } => {
-                let parameter_words = camera_reprojection_parameter_words(
-                    match observation {
-                        RenderObservationSpec::Perspective(perspective) => perspective,
-                        _ => {
-                            return Err(RenderDeterministicLoweringError::UnsupportedOutput {
-                                output_index,
-                            });
-                        }
-                    },
-                    *previous_observation,
-                    *pose_changed,
-                    *same_pose_completed_frames,
-                )?;
-                let payload = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
-                    format!("RunenRender output {output_index} camera reprojection parameters"),
-                    &parameter_words,
+    Ok(PreparedPrimaryPass {
+        input,
+        canonical_output,
+        definedness,
+        status,
+        current_depth,
+        current_hit,
+        input_upload,
+        output_clear,
+        definedness_clear,
+        status_clear,
+        current_depth_clear,
+        current_hit_clear,
+        compute,
+    })
+}
+
+fn prepare_temporal_pass(
+    packed: &PackedOutput,
+    resolved: ResolvedOutputContext<'_>,
+    temporal_state: &PreparedTemporalState,
+    primary: &PreparedPrimaryPass,
+    resources: &mut DeterministicResourceCache,
+) -> Result<PreparedTemporalPass, RenderDeterministicLoweringError> {
+    let Some(history) = temporal_state.history.as_ref() else {
+        return Ok(PreparedTemporalPass {
+            camera_parameter_upload: None,
+            reconstruction_compute: None,
+        });
+    };
+
+    match &history.storage {
+        DeterministicTemporalHistoryUseStorage::Static {
+            handle,
+            sample_counts,
+            ..
+        } => {
+            let source = retained_temporal_reconstruction_source()
+                .map_err(map_maintained_program_build_error)?;
+            let pipeline = GpuComputePipelineDescriptor::ordinary(source, "main")
+                .map_err(|error| gpu_program_contract("temporal reconstruction pipeline", error))?;
+            let runtime_bindings = pipeline
+                .runtime_bindings([
+                    GpuRuntimeBindingValue::whole_buffer(0, 0, &primary.input),
+                    GpuRuntimeBindingValue::whole_buffer(0, 1, &primary.canonical_output),
+                    GpuRuntimeBindingValue::whole_buffer(0, 2, &primary.definedness),
+                    GpuRuntimeBindingValue::whole_buffer(0, 3, handle),
+                    GpuRuntimeBindingValue::whole_buffer(0, 4, sample_counts),
+                ])
+                .map_err(|error| {
+                    gpu_program_contract("temporal reconstruction runtime bindings", error)
+                })?;
+            let dispatch_size = deterministic_dispatch_size(
+                packed.sample_count,
+                resolved.max_compute_workgroups_per_dimension,
+            )?;
+            let compute = GpuComputeOperation::new(
+                pipeline,
+                runtime_bindings,
+                GpuDispatchIntent::direct(dispatch_size),
+            )
+            .map_err(|error| gpu_work_operation("temporal reconstruction operation", error))?;
+            Ok(PreparedTemporalPass {
+                camera_parameter_upload: None,
+                reconstruction_compute: Some(compute),
+            })
+        }
+        DeterministicTemporalHistoryUseStorage::Camera {
+            previous_history,
+            current_history,
+            previous_observation,
+            pose_changed,
+            same_pose_completed_frames,
+        } => {
+            let RenderObservationSpec::Perspective(perspective) = resolved.observation else {
+                return Err(RenderDeterministicLoweringError::UnsupportedOutput {
+                    output_index: resolved.output_index,
+                });
+            };
+            let parameter_words = camera_reprojection_parameter_words(
+                perspective,
+                *previous_observation,
+                *pose_changed,
+                *same_pose_completed_frames,
+            )?;
+            let payload = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
+                format!(
+                    "RunenRender output {} camera reprojection parameters",
+                    resolved.output_index
+                ),
+                &parameter_words,
+            )
+            .map_err(|error| {
+                gpu_transfer_preparation("camera-reprojection parameter preparation", error)
+            })?;
+            let parameters = resources.buffer(
+                resolved.scope,
+                resolved.output_index,
+                DeterministicBufferKind::CameraParameters,
+                GpuBufferDescriptor::ordinary_owned(
+                    format!(
+                        "RunenRender output {} camera reprojection parameters",
+                        resolved.output_index
+                    ),
+                    GpuResourceLifetime::Transient,
+                    GpuReconstruction::SourceBacked,
+                    payload.layout().byte_len(),
+                    [GpuBufferUsage::Storage, GpuBufferUsage::CopyDestination],
+                    GpuBufferInitialization::Uninitialized,
                 )
                 .map_err(|error| {
-                    gpu_transfer_preparation("camera-reprojection parameter preparation", error)
+                    gpu_resource_descriptor("camera-reprojection parameter descriptor", error)
+                })?,
+            )?;
+            let parameter_upload =
+                GpuUploadOperation::whole_buffer(&parameters, payload).map_err(|error| {
+                    gpu_work_operation("camera-reprojection parameter upload", error)
                 })?;
-                let parameters = resources.buffer(
-                    scope,
-                    output_index,
-                    DeterministicBufferKind::CameraParameters,
-                    GpuBufferDescriptor::ordinary_owned(
-                        format!("RunenRender output {output_index} camera reprojection parameters"),
-                        GpuResourceLifetime::Transient,
-                        GpuReconstruction::SourceBacked,
-                        payload.layout().byte_len(),
-                        [GpuBufferUsage::Storage, GpuBufferUsage::CopyDestination],
-                        GpuBufferInitialization::Uninitialized,
-                    )
-                    .map_err(|error| {
-                        gpu_resource_descriptor("camera-reprojection parameter descriptor", error)
-                    })?,
-                )?;
-                camera_parameter_upload = Some(
-                    GpuUploadOperation::whole_buffer(&parameters, payload).map_err(|error| {
-                        gpu_work_operation("camera-reprojection parameter upload", error)
-                    })?,
-                );
-                let source = resources.camera_reprojection_source()?;
-                let pipeline = GpuComputePipelineDescriptor::ordinary(source, "main")
-                    .map_err(|error| gpu_program_contract("camera-reprojection pipeline", error))?;
-                let runtime_bindings = pipeline
-                    .runtime_bindings([
-                        GpuRuntimeBindingValue::whole_buffer(0, 0, &input),
-                        GpuRuntimeBindingValue::whole_buffer(0, 1, &canonical_output),
-                        GpuRuntimeBindingValue::whole_buffer(0, 2, &definedness),
-                        GpuRuntimeBindingValue::whole_buffer(0, 3, &current_depth),
-                        GpuRuntimeBindingValue::whole_buffer(0, 4, &current_hit),
-                        GpuRuntimeBindingValue::whole_buffer(0, 5, previous_history),
-                        GpuRuntimeBindingValue::whole_buffer(0, 6, current_history),
-                        GpuRuntimeBindingValue::whole_buffer(0, 7, &parameters),
-                    ])
-                    .map_err(|error| {
-                        gpu_program_contract("camera-reprojection runtime bindings", error)
-                    })?;
-                let dispatch_size = deterministic_dispatch_size(
-                    packed.sample_count,
-                    context
-                        .device_facts()
-                        .workload_budget()
-                        .limits()
-                        .max_compute_workgroups_per_dimension(),
-                )?;
-                Some(
-                    GpuComputeOperation::new(
-                        pipeline,
-                        runtime_bindings,
-                        GpuDispatchIntent::direct(dispatch_size),
-                    )
-                    .map_err(|error| gpu_work_operation("camera-reprojection operation", error))?,
-                )
-            }
+            let source =
+                retained_camera_reprojection_source().map_err(map_maintained_program_build_error)?;
+            let pipeline = GpuComputePipelineDescriptor::ordinary(source, "main")
+                .map_err(|error| gpu_program_contract("camera-reprojection pipeline", error))?;
+            let runtime_bindings = pipeline
+                .runtime_bindings([
+                    GpuRuntimeBindingValue::whole_buffer(0, 0, &primary.input),
+                    GpuRuntimeBindingValue::whole_buffer(0, 1, &primary.canonical_output),
+                    GpuRuntimeBindingValue::whole_buffer(0, 2, &primary.definedness),
+                    GpuRuntimeBindingValue::whole_buffer(0, 3, &primary.current_depth),
+                    GpuRuntimeBindingValue::whole_buffer(0, 4, &primary.current_hit),
+                    GpuRuntimeBindingValue::whole_buffer(0, 5, previous_history),
+                    GpuRuntimeBindingValue::whole_buffer(0, 6, current_history),
+                    GpuRuntimeBindingValue::whole_buffer(0, 7, &parameters),
+                ])
+                .map_err(|error| {
+                    gpu_program_contract("camera-reprojection runtime bindings", error)
+                })?;
+            let dispatch_size = deterministic_dispatch_size(
+                packed.sample_count,
+                resolved.max_compute_workgroups_per_dimension,
+            )?;
+            let compute = GpuComputeOperation::new(
+                pipeline,
+                runtime_bindings,
+                GpuDispatchIntent::direct(dispatch_size),
+            )
+            .map_err(|error| gpu_work_operation("camera-reprojection operation", error))?;
+            Ok(PreparedTemporalPass {
+                camera_parameter_upload: Some(parameter_upload),
+                reconstruction_compute: Some(compute),
+            })
         }
-    } else {
-        None
-    };
+    }
+}
 
-    let (destination_copy, composable_gpu_output, composable_radiance_output) =
-        match admitted_output.binding().destination() {
-            RenderOutputDestination::ScalarBuffer(destination) => {
-                GpuCopyOperation::buffer_to_buffer(
-                    GpuBufferRegion::whole(&canonical_output)
-                        .map_err(|error| gpu_work_operation("scalar source region", error))?,
-                    GpuBufferRegion::whole(destination)
-                        .map_err(|error| gpu_work_operation("scalar destination region", error))?,
+fn temporal_execution_evidence(
+    admitted: &AdmittedRenderPlan,
+    resolved: ResolvedOutputContext<'_>,
+    temporal_state: &PreparedTemporalState,
+    requested_coverage: Option<&PreparedRequestedCoverage>,
+) -> Option<RenderTemporalExecutionEvidence> {
+    let history = temporal_state.history.as_ref()?;
+    Some(RenderTemporalExecutionEvidence {
+        requested_extent: resolved
+            .requested
+            .spec()
+            .topology()
+            .sample_lattice_dimensions()
+            .expect("temporal radiance output is a sample lattice"),
+        evaluation_extent: resolved
+            .finite_evaluation_extent
+            .expect("temporal history requires finite evaluation"),
+        current_coverage: requested_coverage.map(|_| RenderRequestedCoveragePreparation {
+            extent: resolved
+                .requested
+                .spec()
+                .topology()
+                .sample_lattice_dimensions()
+                .expect("coverage lattice"),
+            policy_revision: requested_coverage::POLICY_REVISION,
+            evaluator_revision: MAINTAINED_EVALUATOR_REVISION,
+        }),
+        semantic_input_generations: admitted
+            .surface_semantic_inputs()
+            .iter()
+            .map(|binding| {
+                (
+                    binding.representation_id(),
+                    binding
+                        .generation()
+                        .expect("temporal lowering required surface source generation"),
                 )
-                .map(|copy| (copy, None, None))
-                .map_err(|error| gpu_work_operation("scalar destination copy", error))?
+            })
+            .collect(),
+        field_semantic_input_generations: admitted
+            .field_semantic_inputs()
+            .iter()
+            .map(|binding| {
+                (
+                    binding.representation_id(),
+                    binding
+                        .generation()
+                        .expect("temporal lowering required field source generation"),
+                )
+            })
+            .collect(),
+        sequence_revision: temporal::SEQUENCE_REVISION,
+        reconstruction_revision: TEMPORAL_RECONSTRUCTION_REVISION,
+        phase: history.phase,
+        history_generation: history.generation,
+        history_age: history.age,
+        history_reset: history.reset,
+        camera_reprojection_eligible: matches!(
+            &history.storage,
+            DeterministicTemporalHistoryUseStorage::Camera { .. }
+        ),
+        previous_observation_available: matches!(
+            &history.storage,
+            DeterministicTemporalHistoryUseStorage::Camera {
+                previous_observation: Some(_),
+                ..
             }
-            RenderOutputDestination::SampleLatticeTexture(destination) => {
-                let (copy_source, row_bytes) = if let Some(history) = temporal_history.as_ref() {
-                    match &history.storage {
-                        DeterministicTemporalHistoryUseStorage::Static {
-                            handle,
-                            row_stride_words,
-                            ..
-                        } => {
-                            let row_bytes = row_stride_words
-                                .checked_mul(u32::try_from(WORD_BYTES).expect("word bytes fit u32"))
-                                .ok_or(RenderDeterministicLoweringError::SizeOverflow {
-                                    field: "temporal history row bytes",
-                                })?;
-                            (handle, row_bytes)
-                        }
-                        DeterministicTemporalHistoryUseStorage::Camera { .. } => {
-                            let row_bytes = packed.texture_row_bytes.ok_or(
-                                RenderDeterministicLoweringError::OutputCorrelationChanged {
-                                    output_index,
-                                },
-                            )?;
-                            (&canonical_output, row_bytes)
-                        }
+        ),
+        camera_pose_changed: matches!(
+            &history.storage,
+            DeterministicTemporalHistoryUseStorage::Camera {
+                pose_changed: true,
+                ..
+            }
+        ),
+        camera_same_pose_completed_frames: match &history.storage {
+            DeterministicTemporalHistoryUseStorage::Camera {
+                same_pose_completed_frames,
+                ..
+            } => Some(*same_pose_completed_frames),
+            DeterministicTemporalHistoryUseStorage::Static { .. } => None,
+        },
+        camera_reprojection_revision: matches!(
+            &history.storage,
+            DeterministicTemporalHistoryUseStorage::Camera { .. }
+        )
+        .then_some(CAMERA_REPROJECTION_REVISION),
+        depth_policy_revision: matches!(
+            &history.storage,
+            DeterministicTemporalHistoryUseStorage::Camera { .. }
+        )
+        .then_some(camera::DEPTH_POLICY_REVISION),
+    })
+}
+
+fn prepare_destination(
+    admitted: &AdmittedRenderPlan,
+    resolved: ResolvedOutputContext<'_>,
+    packed: &PackedOutput,
+    temporal_state: &PreparedTemporalState,
+    requested_coverage: Option<&PreparedRequestedCoverage>,
+    primary: &PreparedPrimaryPass,
+    intent: DeterministicObservationIntent,
+) -> Result<PreparedDestination, RenderDeterministicLoweringError> {
+    match resolved.admitted_output.binding().destination() {
+        RenderOutputDestination::ScalarBuffer(destination) => {
+            let copy = GpuCopyOperation::buffer_to_buffer(
+                GpuBufferRegion::whole(&primary.canonical_output)
+                    .map_err(|error| gpu_work_operation("scalar source region", error))?,
+                GpuBufferRegion::whole(destination)
+                    .map_err(|error| gpu_work_operation("scalar destination region", error))?,
+            )
+            .map_err(|error| gpu_work_operation("scalar destination copy", error))?;
+            Ok(PreparedDestination {
+                copy,
+                gpu_output: None,
+                radiance_output: None,
+            })
+        }
+        RenderOutputDestination::SampleLatticeTexture(destination) => {
+            let (copy_source, row_bytes) = if let Some(history) = temporal_state.history.as_ref() {
+                match &history.storage {
+                    DeterministicTemporalHistoryUseStorage::Static {
+                        handle,
+                        row_stride_words,
+                        ..
+                    } => {
+                        let row_bytes = row_stride_words
+                            .checked_mul(u32::try_from(WORD_BYTES).expect("word bytes fit u32"))
+                            .ok_or(RenderDeterministicLoweringError::SizeOverflow {
+                                field: "temporal history row bytes",
+                            })?;
+                        (handle, row_bytes)
                     }
-                } else {
-                    let row_bytes = packed.texture_row_bytes.ok_or(
-                        RenderDeterministicLoweringError::OutputCorrelationChanged { output_index },
-                    )?;
-                    (&canonical_output, row_bytes)
-                };
-                let source = GpuBufferTextureLayout::new(copy_source, 0, row_bytes, 0)
-                    .map_err(|error| gpu_work_operation("lattice source layout", error))?;
-                let destination_region = GpuTextureCopyRegion::whole_base_mip(destination)
-                    .map_err(|error| gpu_work_operation("lattice destination region", error))?;
-                let destination_copy =
-                    GpuCopyOperation::buffer_to_texture(source, destination_region.clone())
-                        .map_err(|error| gpu_work_operation("lattice destination copy", error))?;
-                let composable = if matches!(intent, DeterministicObservationIntent::Ordinary)
-                    && matches!(requested.spec().value(), RenderOutputValue::Radiance { .. })
-                    && destination.descriptor().format() == GpuTextureFormat::R32Float
-                {
-                    let relationship = GpuExportRelationship::new(
-                        GpuResourceRef::Texture(destination.clone()),
-                        GpuExportKey::new(format!(
-                            "runenrender.maintained.radiance.scope.{scope}.output.{output_index}"
-                        ))
-                        .map_err(|error| gpu_resource_descriptor("radiance export key", error))?,
-                        GpuResourceAccessIntent::Write,
-                        GpuResourceProvenance::new(
-                            destination.descriptor().common().label().clone(),
-                            None,
-                            None,
-                        ),
-                    );
-                    let coverage = GpuInitialCoverage::texture_subresources(
-                        &GpuTextureAccessResource::Texture(destination.clone()),
-                        [destination_region.subresources()],
-                    )
-                    .map_err(|error| gpu_work_authoring("radiance output coverage", error))?;
-                    let output =
-                        GpuWorkOutput::new(relationship.clone(), coverage).map_err(|error| {
-                            gpu_work_authoring("radiance output relationship", error)
-                        })?;
-                    Some((
-                        output,
-                        PreparedDeterministicRadianceOutput {
-                            output_index,
-                            relationship,
-                            temporal_evidence: temporal_history.as_ref().map(|history| {
-                                RenderTemporalExecutionEvidence {
-                                    requested_extent: requested
-                                        .spec()
-                                        .topology()
-                                        .sample_lattice_dimensions()
-                                        .expect("temporal radiance output is a sample lattice"),
-                                    evaluation_extent: finite_evaluation_extent
-                                        .expect("temporal history requires finite evaluation"),
-                                    current_coverage: requested_coverage.as_ref().map(|_| {
-                                        RenderRequestedCoveragePreparation {
-                                            extent: requested_extent.expect("coverage lattice"),
-                                            policy_revision: requested_coverage::POLICY_REVISION,
-                                            evaluator_revision: MAINTAINED_EVALUATOR_REVISION,
-                                        }
-                                    }),
-                                    semantic_input_generations: admitted
-                                        .surface_semantic_inputs()
-                                        .iter()
-                                        .map(|binding| {
-                                            (
-                                                binding.representation_id(),
-                                                binding.generation().expect(
-                                                    "temporal lowering required surface source generation",
-                                                ),
-                                            )
-                                        })
-                                        .collect(),
-                                    field_semantic_input_generations: admitted
-                                        .field_semantic_inputs()
-                                        .iter()
-                                        .map(|binding| {
-                                            (
-                                                binding.representation_id(),
-                                                binding.generation().expect(
-                                                    "temporal lowering required field source generation",
-                                                ),
-                                            )
-                                        })
-                                        .collect(),
-                                    sequence_revision: temporal::SEQUENCE_REVISION,
-                                    reconstruction_revision: TEMPORAL_RECONSTRUCTION_REVISION,
-                                    phase: history.phase,
-                                    history_generation: history.generation,
-                                    history_age: history.age,
-                                    history_reset: history.reset,
-                                    camera_reprojection_eligible: matches!(
-                                        &history.storage,
-                                        DeterministicTemporalHistoryUseStorage::Camera { .. }
-                                    ),
-                                    previous_observation_available: matches!(
-                                        &history.storage,
-                                        DeterministicTemporalHistoryUseStorage::Camera {
-                                            previous_observation: Some(_),
-                                            ..
-                                        }
-                                    ),
-                                    camera_pose_changed: matches!(
-                                        &history.storage,
-                                        DeterministicTemporalHistoryUseStorage::Camera {
-                                            pose_changed: true,
-                                            ..
-                                        }
-                                    ),
-                                    camera_same_pose_completed_frames: match &history.storage {
-                                        DeterministicTemporalHistoryUseStorage::Camera {
-                                            same_pose_completed_frames,
-                                            ..
-                                        } => Some(*same_pose_completed_frames),
-                                        DeterministicTemporalHistoryUseStorage::Static { .. } => {
-                                            None
-                                        }
-                                    },
-                                    camera_reprojection_revision: matches!(
-                                        &history.storage,
-                                        DeterministicTemporalHistoryUseStorage::Camera { .. }
-                                    )
-                                    .then_some(CAMERA_REPROJECTION_REVISION),
-                                    depth_policy_revision: matches!(
-                                        &history.storage,
-                                        DeterministicTemporalHistoryUseStorage::Camera { .. }
-                                    )
-                                    .then_some(camera::DEPTH_POLICY_REVISION),
-                                }
-                            }),
-                        },
+                    DeterministicTemporalHistoryUseStorage::Camera { .. } => {
+                        let row_bytes = packed.texture_row_bytes.ok_or(
+                            RenderDeterministicLoweringError::OutputCorrelationChanged {
+                                output_index: resolved.output_index,
+                            },
+                        )?;
+                        (&primary.canonical_output, row_bytes)
+                    }
+                }
+            } else {
+                let row_bytes = packed.texture_row_bytes.ok_or(
+                    RenderDeterministicLoweringError::OutputCorrelationChanged {
+                        output_index: resolved.output_index,
+                    },
+                )?;
+                (&primary.canonical_output, row_bytes)
+            };
+            let source = GpuBufferTextureLayout::new(copy_source, 0, row_bytes, 0)
+                .map_err(|error| gpu_work_operation("lattice source layout", error))?;
+            let destination_region = GpuTextureCopyRegion::whole_base_mip(destination)
+                .map_err(|error| gpu_work_operation("lattice destination region", error))?;
+            let copy = GpuCopyOperation::buffer_to_texture(source, destination_region.clone())
+                .map_err(|error| gpu_work_operation("lattice destination copy", error))?;
+            let composable = if matches!(intent, DeterministicObservationIntent::Ordinary)
+                && matches!(
+                    resolved.requested.spec().value(),
+                    RenderOutputValue::Radiance { .. }
+                )
+                && destination.descriptor().format() == GpuTextureFormat::R32Float
+            {
+                let relationship = GpuExportRelationship::new(
+                    GpuResourceRef::Texture(destination.clone()),
+                    GpuExportKey::new(format!(
+                        "runenrender.maintained.radiance.scope.{}.output.{}",
+                        resolved.scope, resolved.output_index
                     ))
-                } else {
-                    None
-                };
-                let (gpu_output, correlation) = match composable {
-                    Some((output, correlation)) => (Some(output), Some(correlation)),
-                    None => (None, None),
-                };
-                (destination_copy, gpu_output, correlation)
-            }
-        };
+                    .map_err(|error| gpu_resource_descriptor("radiance export key", error))?,
+                    GpuResourceAccessIntent::Write,
+                    GpuResourceProvenance::new(
+                        destination.descriptor().common().label().clone(),
+                        None,
+                        None,
+                    ),
+                );
+                let coverage = GpuInitialCoverage::texture_subresources(
+                    &GpuTextureAccessResource::Texture(destination.clone()),
+                    [destination_region.subresources()],
+                )
+                .map_err(|error| gpu_work_authoring("radiance output coverage", error))?;
+                let output = GpuWorkOutput::new(relationship.clone(), coverage)
+                    .map_err(|error| gpu_work_authoring("radiance output relationship", error))?;
+                Some((
+                    output,
+                    PreparedDeterministicRadianceOutput {
+                        output_index: resolved.output_index,
+                        relationship,
+                        temporal_evidence: temporal_execution_evidence(
+                            admitted,
+                            resolved,
+                            temporal_state,
+                            requested_coverage,
+                        ),
+                    },
+                ))
+            } else {
+                None
+            };
+            let (gpu_output, radiance_output) = match composable {
+                Some((output, correlation)) => (Some(output), Some(correlation)),
+                None => (None, None),
+            };
+            Ok(PreparedDestination {
+                copy,
+                gpu_output,
+                radiance_output,
+            })
+        }
+    }
+}
 
-    let verification = if intent.requires_private_readback() {
-        let canonical_readback = GpuReadbackOperation::ordinary(
-            GpuBufferRegion::whole(&canonical_output)
-                .map_err(|error| gpu_work_operation("canonical-output readback region", error))?
-                .into(),
-        )
-        .map_err(|error| gpu_readback_request("canonical-output readback", error))?;
-        let definedness_readback = GpuReadbackOperation::ordinary(
-            GpuBufferRegion::whole(&definedness)
-                .map_err(|error| gpu_work_operation("definedness readback region", error))?
-                .into(),
-        )
-        .map_err(|error| gpu_readback_request("definedness readback", error))?;
-        let status_readback = GpuReadbackOperation::ordinary(
-            GpuBufferRegion::whole(&status)
-                .map_err(|error| gpu_work_operation("status readback region", error))?
-                .into(),
-        )
-        .map_err(|error| gpu_readback_request("status readback", error))?;
-        Some(VerificationReadbackOperations {
-            correlation: DeterministicVerificationReadbacks {
-                output_index,
-                canonical_output: canonical_readback.id(),
-                definedness: definedness_readback.id(),
-                status: status_readback.id(),
-            },
-            canonical_output: canonical_readback,
-            definedness: definedness_readback,
-            status: status_readback,
-        })
-    } else {
-        None
-    };
-    let verification_readbacks = verification.as_ref().map(|readbacks| readbacks.correlation);
+fn prepare_verification_readbacks(
+    intent: DeterministicObservationIntent,
+    output_index: usize,
+    primary: &PreparedPrimaryPass,
+) -> Result<Option<VerificationReadbackOperations>, RenderDeterministicLoweringError> {
+    if !intent.requires_private_readback() {
+        return Ok(None);
+    }
+    let canonical_readback = GpuReadbackOperation::ordinary(
+        GpuBufferRegion::whole(&primary.canonical_output)
+            .map_err(|error| gpu_work_operation("canonical-output readback region", error))?
+            .into(),
+    )
+    .map_err(|error| gpu_readback_request("canonical-output readback", error))?;
+    let definedness_readback = GpuReadbackOperation::ordinary(
+        GpuBufferRegion::whole(&primary.definedness)
+            .map_err(|error| gpu_work_operation("definedness readback region", error))?
+            .into(),
+    )
+    .map_err(|error| gpu_readback_request("definedness readback", error))?;
+    let status_readback = GpuReadbackOperation::ordinary(
+        GpuBufferRegion::whole(&primary.status)
+            .map_err(|error| gpu_work_operation("status readback region", error))?
+            .into(),
+    )
+    .map_err(|error| gpu_readback_request("status readback", error))?;
+    Ok(Some(VerificationReadbackOperations {
+        correlation: DeterministicVerificationReadbacks {
+            output_index,
+            canonical_output: canonical_readback.id(),
+            definedness: definedness_readback.id(),
+            status: status_readback.id(),
+        },
+        canonical_output: canonical_readback,
+        definedness: definedness_readback,
+        status: status_readback,
+    }))
+}
 
-    let fragment = GpuWorkFragment::build(
+fn build_output_fragment(
+    output_index: usize,
+    primary: PreparedPrimaryPass,
+    requested_coverage: Option<PreparedRequestedCoverage>,
+    temporal_pass: PreparedTemporalPass,
+    destination: PreparedDestination,
+    verification: Option<VerificationReadbackOperations>,
+) -> Result<GpuWorkFragment, RenderDeterministicLoweringError> {
+    GpuWorkFragment::build(
         format!("RunenRender maintained output {output_index}"),
         |work| {
-            work.operation("upload deterministic semantic input", input_upload)?;
-            work.operation("clear canonical output", output_clear)?;
-            work.operation("clear semantic definedness", definedness_clear)?;
-            work.operation("clear evaluator status", status_clear)?;
-            work.operation("clear current hit depth", current_depth_clear)?;
-            work.operation("clear current hit validity", current_hit_clear)?;
-            work.compute("evaluate deterministic output", compute)?;
+            work.operation("upload deterministic semantic input", primary.input_upload)?;
+            work.operation("clear canonical output", primary.output_clear)?;
+            work.operation("clear semantic definedness", primary.definedness_clear)?;
+            work.operation("clear evaluator status", primary.status_clear)?;
+            work.operation("clear current hit depth", primary.current_depth_clear)?;
+            work.operation("clear current hit validity", primary.current_hit_clear)?;
+            work.compute("evaluate deterministic output", primary.compute)?;
             if let Some(coverage) = requested_coverage {
                 work.operation(
                     "upload current requested coverage input",
@@ -936,17 +1052,17 @@ pub(super) fn lower_output(
                     coverage.compute,
                 )?;
             }
-            if let Some(upload) = camera_parameter_upload {
+            if let Some(upload) = temporal_pass.camera_parameter_upload {
                 work.operation("upload camera reprojection parameters", upload)?;
             }
-            if let Some(reconstruction) = reconstruction_compute {
+            if let Some(reconstruction) = temporal_pass.reconstruction_compute {
                 work.compute("reconstruct deterministic footprint output", reconstruction)?;
             }
             work.operation(
                 "copy reconstructed output to admitted destination",
-                destination_copy,
+                destination.copy,
             )?;
-            if let Some(output) = composable_gpu_output {
+            if let Some(output) = destination.gpu_output {
                 work.add_output(output)?;
             }
             if let Some(readbacks) = verification {
@@ -963,13 +1079,240 @@ pub(super) fn lower_output(
             Ok(())
         },
     )
-    .map_err(|error| gpu_work_authoring("work-fragment construction", error))?;
+    .map_err(|error| gpu_work_authoring("work-fragment construction", error))
+}
+
+pub(super) fn lower_output(
+    admitted: &AdmittedRenderPlan,
+    output_index: usize,
+    object_codes: &BTreeMap<RenderObjectId, u32>,
+    context: &GpuContext,
+    resources: &mut DeterministicResourceCache,
+    intent: DeterministicObservationIntent,
+    execution: DeterministicOutputExecutionSelection,
+) -> Result<LoweredDeterministicOutput, RenderDeterministicLoweringError> {
+    let resolved = resolve_output_context(admitted, output_index, context, execution)?;
+    let temporal_state = prepare_temporal_state(admitted, resolved, resources)?;
+    let packed = pack_output(
+        admitted,
+        resolved.admitted_output,
+        MaintainedExecutionKind::Semantic(resolved.requested.spec().value()),
+        resolved.observation,
+        object_codes,
+        OutputPackingInput {
+            finite_evaluation_extent: resolved.finite_evaluation_extent,
+            bytes_per_row_alignment: resolved.bytes_per_row_alignment,
+            temporal: temporal_state.packing_facts(),
+        },
+    )?;
+    let requested_extent = resolved
+        .requested
+        .spec()
+        .topology()
+        .sample_lattice_dimensions();
+    let requested_coverage = if resolved.produce_requested_coverage
+        && resolved
+            .finite_evaluation_extent
+            .is_some_and(|extent| Some(extent) != requested_extent)
+    {
+        let coverage_packed = pack_output(
+            admitted,
+            resolved.admitted_output,
+            MaintainedExecutionKind::RequestedCoverage,
+            resolved.observation,
+            object_codes,
+            OutputPackingInput {
+                finite_evaluation_extent: None,
+                bytes_per_row_alignment: resolved.bytes_per_row_alignment,
+                temporal: temporal_state.packing_facts(),
+            },
+        )?;
+        Some(prepare_requested_coverage(
+            coverage_packed,
+            context,
+            resources,
+            resolved.scope,
+            resolved.output_index,
+        )?)
+    } else {
+        None
+    };
+
+    let primary = prepare_primary_pass(&packed, resolved, resources)?;
+    let temporal_pass =
+        prepare_temporal_pass(&packed, resolved, &temporal_state, &primary, resources)?;
+    let destination = prepare_destination(
+        admitted,
+        resolved,
+        &packed,
+        &temporal_state,
+        requested_coverage.as_ref(),
+        &primary,
+        intent,
+    )?;
+    let verification = prepare_verification_readbacks(intent, resolved.output_index, &primary)?;
+    let verification_readbacks = verification.as_ref().map(|readbacks| readbacks.correlation);
+    let radiance_output = destination.radiance_output.clone();
+    let fragment = build_output_fragment(
+        resolved.output_index,
+        primary,
+        requested_coverage,
+        temporal_pass,
+        destination,
+        verification,
+    )?;
 
     Ok(LoweredDeterministicOutput {
         fragment,
         verification_readbacks,
-        composable_radiance_output,
+        composable_radiance_output: radiance_output,
     })
+}
+
+fn camera_reprojection_parameter_words(
+    current: RenderPerspectiveObservation,
+    previous: Option<RenderPerspectiveObservation>,
+    pose_changed: bool,
+    same_pose_completed_frames: u32,
+) -> Result<[u32; camera::parameters::WORDS], RenderDeterministicLoweringError> {
+    let mut words = [0_u32; camera::parameters::WORDS];
+    let matrix = current.observation_to_scene().row_major_3x4();
+    let inverse = invert_matrix3(
+        [
+            matrix[0], matrix[1], matrix[2], matrix[4], matrix[5], matrix[6], matrix[8], matrix[9],
+            matrix[10],
+        ],
+        "current observation linear transform",
+    )?;
+    pack_matrix3(
+        &mut words,
+        camera::parameters::CURRENT_SCENE_TO_OBSERVATION,
+        inverse,
+    )?;
+    words[camera::parameters::PREVIOUS_AVAILABLE] = if previous.is_some() { 1 } else { 0 };
+    words[camera::parameters::POSE_CHANGED] = if pose_changed { 1 } else { 0 };
+    words[camera::parameters::DEPTH_POLICY_REVISION] = camera::DEPTH_POLICY_REVISION;
+    words[camera::parameters::REPROJECTION_REVISION] = CAMERA_REPROJECTION_REVISION;
+    words[camera::parameters::DEPTH_ABSOLUTE_EPSILON] = camera::DEPTH_ABSOLUTE_EPSILON.to_bits();
+    words[camera::parameters::DEPTH_RELATIVE_EPSILON] = camera::DEPTH_RELATIVE_EPSILON.to_bits();
+    words[camera::parameters::MOTION_DIAGNOSTICS_ENABLED] = 0;
+    words[camera::parameters::CURRENT_ONLY_FIRST_MOTION] = 0;
+    words[camera::parameters::SAME_POSE_COMPLETED_FRAMES] =
+        same_pose_completed_frames.min(temporal::PHASE_COUNT);
+    if let Some(previous) = previous {
+        let matrix = previous.observation_to_scene().row_major_3x4();
+        pack_vec3(
+            &mut words,
+            camera::parameters::PREVIOUS_ORIGIN,
+            [matrix[3], matrix[7], matrix[11]],
+        )?;
+        let inverse = invert_matrix3(
+            [
+                matrix[0], matrix[1], matrix[2], matrix[4], matrix[5], matrix[6], matrix[8],
+                matrix[9], matrix[10],
+            ],
+            "previous observation linear transform",
+        )?;
+        pack_matrix3(
+            &mut words,
+            camera::parameters::PREVIOUS_SCENE_TO_OBSERVATION,
+            inverse,
+        )?;
+        let forward = normalize_private_vec3(
+            [-matrix[2], -matrix[6], -matrix[10]],
+            "previous observation forward",
+        )?;
+        pack_vec3(&mut words, camera::parameters::PREVIOUS_FORWARD, forward)?;
+        words[camera::parameters::PREVIOUS_TAN_HALF_FOV] = positive_f32_bits(
+            (previous.vertical_field_of_view_radians() * 0.5).tan(),
+            "previous perspective tangent half field of view",
+        )?;
+        words[camera::parameters::PREVIOUS_ASPECT_RATIO] =
+            positive_f32_bits(previous.aspect_ratio(), "previous perspective aspect ratio")?;
+    }
+    Ok(words)
+}
+
+fn normalize_private_vec3(
+    values: [f64; 3],
+    field: &'static str,
+) -> Result<[f64; 3], RenderDeterministicLoweringError> {
+    let magnitude_squared = values.iter().map(|value| value * value).sum::<f64>();
+    if !magnitude_squared.is_finite() || magnitude_squared <= 0.0 {
+        return Err(RenderDeterministicLoweringError::NumericRealization { field });
+    }
+    let reciprocal = magnitude_squared.sqrt().recip();
+    let normalized = values.map(|value| value * reciprocal);
+    if normalized.iter().any(|value| !value.is_finite()) {
+        return Err(RenderDeterministicLoweringError::NumericRealization { field });
+    }
+    Ok(normalized)
+}
+
+fn invert_matrix3(
+    values: [f64; 9],
+    field: &'static str,
+) -> Result<[f64; 9], RenderDeterministicLoweringError> {
+    let [a, b, c, d, e, f, g, h, i] = values;
+    let determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if !determinant.is_finite() || determinant == 0.0 {
+        return Err(RenderDeterministicLoweringError::NumericRealization { field });
+    }
+    let reciprocal = determinant.recip();
+    let inverse = [
+        (e * i - f * h) * reciprocal,
+        (c * h - b * i) * reciprocal,
+        (b * f - c * e) * reciprocal,
+        (f * g - d * i) * reciprocal,
+        (a * i - c * g) * reciprocal,
+        (c * d - a * f) * reciprocal,
+        (d * h - e * g) * reciprocal,
+        (b * g - a * h) * reciprocal,
+        (a * e - b * d) * reciprocal,
+    ];
+    if inverse.iter().any(|value| !value.is_finite()) {
+        return Err(RenderDeterministicLoweringError::NumericRealization { field });
+    }
+    Ok(inverse)
+}
+
+pub(super) fn deterministic_dispatch_size(
+    sample_count: u32,
+    max_workgroups_per_dimension: u32,
+) -> Result<GpuDispatchSize, RenderDeterministicLoweringError> {
+    let sample_count_u64 = u64::from(sample_count);
+    let workgroup_size = u64::from(WORKGROUP_SIZE);
+    let admitted_max = u64::from(max_workgroups_per_dimension);
+    let required_groups = sample_count_u64.div_ceil(workgroup_size);
+    let capacity = admitted_max * admitted_max;
+
+    if required_groups == 0 || required_groups > capacity {
+        return Err(RenderDeterministicLoweringError::DispatchCapacityExceeded {
+            sample_count,
+            workgroup_size: WORKGROUP_SIZE,
+            required_workgroups: required_groups,
+            max_workgroups_per_dimension,
+            capacity_workgroups: capacity,
+        });
+    }
+
+    let groups_x = required_groups.min(admitted_max);
+    let groups_y = required_groups.div_ceil(groups_x);
+    if groups_x > admitted_max || groups_y > admitted_max {
+        return Err(RenderDeterministicLoweringError::DispatchCapacityExceeded {
+            sample_count,
+            workgroup_size: WORKGROUP_SIZE,
+            required_workgroups: required_groups,
+            max_workgroups_per_dimension,
+            capacity_workgroups: capacity,
+        });
+    }
+
+    Ok(GpuDispatchSize::new(
+        u32::try_from(groups_x).expect("admitted dispatch x dimension must fit u32"),
+        u32::try_from(groups_y).expect("admitted dispatch y dimension must fit u32"),
+        1,
+    ))
 }
 
 pub(super) struct PreparedRequestedCoverage {
@@ -1048,7 +1391,9 @@ pub(super) fn prepare_requested_coverage(
             .map_err(|error| gpu_work_operation("coverage clear", error))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let pipeline = GpuComputePipelineDescriptor::ordinary(resources.maintained_source()?, "main")
+    let source =
+        retained_maintained_evaluator_source().map_err(map_maintained_program_build_error)?;
+    let pipeline = GpuComputePipelineDescriptor::ordinary(source, "main")
         .map_err(|error| gpu_program_contract("coverage pipeline", error))?;
     let bindings = pipeline
         .runtime_bindings(handles.iter().enumerate().map(|(binding, handle)| {
