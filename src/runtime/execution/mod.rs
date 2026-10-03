@@ -21,7 +21,8 @@ use super::carrier;
 use super::program::{
     CAMERA_REPROJECTION_REVISION, CAMERA_REPROJECTION_WGSL, EVALUATOR_WGSL,
     MAINTAINED_EVALUATOR_REVISION, TEMPORAL_RECONSTRUCTION_REVISION, TEMPORAL_RECONSTRUCTION_WGSL,
-    abi::{camera, temporal}, build_maintained_program_sources, retained_camera_reprojection_source,
+    abi::{camera, temporal},
+    build_maintained_program_sources, retained_camera_reprojection_source,
     retained_maintained_evaluator_source, retained_temporal_reconstruction_source,
 };
 use super::program::{RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError};
@@ -36,22 +37,14 @@ use crate::request::{
     RenderObservationSpec, RenderOutputSpec, RenderOutputValue, RenderPerspectiveObservation,
     RenderSamplingSupport,
 };
+use crate::scene::RenderObjectId;
 #[cfg(test)]
 use crate::scene::RenderSceneRevision;
-use crate::scene::RenderObjectId;
 #[cfg(test)]
 use crate::space_time::RenderTimeInterval;
 #[cfg(test)]
 use crate::surface_input::RenderSurfaceSemanticInputBinding;
 use crate::surface_input::RenderSurfaceSemanticInputGeneration;
-use runen_gpu::{
-    GpuContext, GpuContextAffinity, GpuExportRelationship, GpuOrdinaryTransferPreparationError,
-    GpuProgramContractError, GpuProgramSourceError, GpuReadbackId, GpuReadbackRequestError,
-    GpuReadbackStatus, GpuResourceAccessIntent, GpuResourceDescriptorError, GpuResourceProvenance,
-    GpuResourceRef, GpuSubmission, GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureHandle,
-    GpuWorkAuthoringError, GpuWorkImport, GpuWorkOperationError, GpuWorkResourceIdAllocationError,
-    GpuWorkSubmissionError,
-};
 #[cfg(test)]
 use runen_gpu::{
     GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization, GpuBufferRegion, GpuBufferUsage,
@@ -59,6 +52,14 @@ use runen_gpu::{
     GpuReadbackOperation, GpuReconstruction, GpuResourceLifetime, GpuRuntimeBindingValue,
     GpuTextureFormat, GpuUploadOperation, GpuWorkFragment, GpuWorkResourceIdAllocator,
     PreparedGpuData, TransferData,
+};
+use runen_gpu::{
+    GpuContext, GpuContextAffinity, GpuExportRelationship, GpuOrdinaryTransferPreparationError,
+    GpuProgramContractError, GpuProgramSourceError, GpuReadbackId, GpuReadbackRequestError,
+    GpuReadbackStatus, GpuResourceAccessIntent, GpuResourceDescriptorError, GpuResourceProvenance,
+    GpuResourceRef, GpuSubmission, GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureHandle,
+    GpuWorkAuthoringError, GpuWorkImport, GpuWorkOperationError, GpuWorkResourceIdAllocationError,
+    GpuWorkSubmissionError,
 };
 #[cfg(test)]
 use std::collections::BTreeSet;
@@ -110,6 +111,7 @@ use lifecycle::{DeterministicObservationIntent, DeterministicVerificationState};
 #[cfg(test)]
 use packing::*;
 use prepare::lower_deterministic_render;
+use state::DeterministicRenderExecutionSelection;
 #[cfg(test)]
 use state::DeterministicTemporalStorage;
 #[cfg(test)]
@@ -118,7 +120,6 @@ use state::{
     DeterministicTemporalHistoryUseStorage, DeterministicTemporalSignature,
     temporal_evaluation_extent_supported, temporal_observation_compatibility,
 };
-use state::DeterministicRenderExecutionSelection;
 
 #[cfg(test)]
 mod tests;
