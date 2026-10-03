@@ -28,38 +28,43 @@ use super::program::{
     RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError,
     abi::{camera, temporal},
 };
-use crate::admission::AdmittedRenderPlan;
-use crate::field_input::{RenderFieldSemanticInputBinding, RenderFieldSemanticInputGeneration};
+#[cfg(test)]
+use crate::field_input::RenderFieldSemanticInputBinding;
+use crate::field_input::RenderFieldSemanticInputGeneration;
 use crate::lowering::RenderWorkSet;
 use crate::render_result::RenderResult;
 use crate::representation::RenderRepresentationId;
 #[cfg(test)]
-use crate::request::RenderOutputValue;
 use crate::request::{
-    RenderObservationSpec, RenderOutputSpec, RenderPerspectiveObservation, RenderSamplingSupport,
+    RenderObservationSpec, RenderOutputSpec, RenderOutputValue, RenderPerspectiveObservation,
+    RenderSamplingSupport,
 };
-use crate::scene::{RenderObjectId, RenderSceneRevision};
+#[cfg(test)]
+use crate::scene::RenderSceneRevision;
+use crate::scene::RenderObjectId;
+#[cfg(test)]
 use crate::space_time::RenderTimeInterval;
-use crate::surface_input::{
-    RenderSurfaceSemanticInputBinding, RenderSurfaceSemanticInputGeneration,
-};
+#[cfg(test)]
+use crate::surface_input::RenderSurfaceSemanticInputBinding;
+use crate::surface_input::RenderSurfaceSemanticInputGeneration;
 use runen_gpu::{
-    GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization, GpuBufferUsage, GpuContext,
-    GpuContextAffinity, GpuExportRelationship, GpuOrdinaryTransferPreparationError,
+    GpuContext, GpuContextAffinity, GpuExportRelationship, GpuOrdinaryTransferPreparationError,
     GpuProgramContractError, GpuProgramSourceError, GpuReadbackId, GpuReadbackRequestError,
-    GpuReadbackStatus, GpuReconstruction, GpuResourceAccessIntent, GpuResourceDescriptorError,
-    GpuResourceLifetime, GpuResourceProvenance, GpuResourceRef, GpuSubmission,
-    GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureHandle, GpuWorkAuthoringError,
-    GpuWorkImport, GpuWorkOperationError, GpuWorkResourceIdAllocationError,
-    GpuWorkResourceIdAllocator, GpuWorkSubmissionError,
+    GpuReadbackStatus, GpuResourceAccessIntent, GpuResourceDescriptorError, GpuResourceProvenance,
+    GpuResourceRef, GpuSubmission, GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureHandle,
+    GpuWorkAuthoringError, GpuWorkImport, GpuWorkOperationError, GpuWorkResourceIdAllocationError,
+    GpuWorkSubmissionError,
 };
 #[cfg(test)]
 use runen_gpu::{
-    GpuBufferRegion, GpuClearOperation, GpuComputeOperation, GpuComputePipelineDescriptor,
-    GpuDispatchIntent, GpuReadbackOperation, GpuRuntimeBindingValue, GpuTextureFormat,
-    GpuUploadOperation, GpuWorkFragment, PreparedGpuData, TransferData,
+    GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization, GpuBufferRegion, GpuBufferUsage,
+    GpuClearOperation, GpuComputeOperation, GpuComputePipelineDescriptor, GpuDispatchIntent,
+    GpuReadbackOperation, GpuReconstruction, GpuResourceLifetime, GpuRuntimeBindingValue,
+    GpuTextureFormat, GpuUploadOperation, GpuWorkFragment, GpuWorkResourceIdAllocator,
+    PreparedGpuData, TransferData,
 };
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
@@ -99,15 +104,13 @@ pub(crate) use errors::{
 };
 #[cfg(test)]
 use errors::{RenderRunenGpuPreparationError, gpu_program_source};
-pub(crate) use lifecycle::{
-    DeterministicVerificationReadbacks, DeterministicVerificationSubmission,
-};
+pub(crate) use lifecycle::DeterministicVerificationSubmission;
 pub(crate) use prepare::prepare_deterministic_render_with_cache_in_scope_and_evaluation;
 pub(crate) use state::DeterministicResourceCache;
 pub(crate) use submission::submit_deterministic_render_for_verification;
 
-use errors::{gpu_resource_allocation, gpu_resource_descriptor};
 use lifecycle::{DeterministicObservationIntent, DeterministicVerificationState};
+#[cfg(test)]
 use packing::*;
 use prepare::lower_deterministic_render;
 #[cfg(test)]
@@ -118,8 +121,7 @@ use state::{
     DeterministicTemporalHistoryUseStorage, DeterministicTemporalSignature,
     temporal_evaluation_extent_supported, temporal_observation_compatibility,
 };
-use state::{DeterministicOutputExecutionSelection, DeterministicRenderExecutionSelection};
-use submission::submit_prepared_deterministic_render;
+use state::DeterministicRenderExecutionSelection;
 
 #[cfg(test)]
 mod tests;
