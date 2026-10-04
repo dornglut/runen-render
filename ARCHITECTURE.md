@@ -28,6 +28,160 @@ The crate root also re-exports the ordinary progressive-disclosure API and
 generic result vocabulary. Proof-era `Deterministic*` vocabulary is private
 implementation terminology, not a second public renderer ontology.
 
+## 2D composition extension contract
+
+The 2D composition extension is a target architecture for the
+separately sequenced production implementation. This section defines durable
+semantic and ownership authority; it does not claim that the complete 2D
+production subsystem is already implemented.
+
+The reusable semantic root is one lifetime-neutral immutable 2D composition
+value. It represents resolved renderer meaning such as:
+
+- exact painter and atomic-group order, with group opacity applied once;
+- structural rectangle, rounded-rectangle, ellipse, and arbitrary path geometry,
+  including explicit fill rule, centered stroke, cap, join, and miter semantics;
+- item/group transforms, conjunctive clips, fills, strokes, and opacity;
+- straight-alpha sRGB literal color meaning, gradient interpolation in
+  premultiplied linear-sRGB, and ordered linear-light source-over composition;
+- ordinary-shadow/effect meaning derived from neutral semantic support geometry
+  rather than cached sampled source alpha, including effects from transparent
+  child color;
+- resolved image source/destination mapping plus immutable semantic resource
+  identity;
+- already-shaped glyph occurrences plus semantic shaped-resource identities
+  whose immutable bindings carry exact font/face, variation, synthesis, size,
+  and glyph facts required for realization.
+
+This is a sibling renderer-semantic domain to the existing
+surface/field/query representation protocols. Ordered 2D composition must not
+be encoded as a `SurfaceQuery`, `FieldDistance`, display-list/GPU command
+stream, source-framework paint type, or universal vector/field ontology merely
+to reuse an existing physical path.
+
+Source adapters project already-resolved renderer facts into RunenRender-owned
+values. Source-framework publication/object identities, authoring policy, and
+native presentation identity remain outside RunenRender semantic identity.
+
+One execution combines one immutable composition value with one compatible
+immutable semantic-resource binding set and target/output fact set. Private
+parallel preparation is permitted only when it cannot observe mutable source
+state, alter painter/group order, or change semantic results.
+
+### Admission and private realization
+
+The 2D path preserves the same architectural law as the existing renderer
+without reusing incompatible 3D semantic types:
+
+```text
+immutable 2D composition semantics
+    -> semantic validation
+    -> invocation-compatible resource and target binding
+    -> semantically admissible private realizations
+    -> private cost/quality/availability selection
+    -> private compilation and retained derived state
+    -> RunenGPU work
+    -> source-neutral contribution/execution correlation
+```
+
+Semantic admissibility and physical policy are separate. Cache residency,
+device capability, preprocessing cost, or a preferred implementation cannot
+make a semantically incompatible realization admissible. A cache miss may
+change cost or select another already-admitted equivalent realization; it must
+not rewrite content, ordering, resource identity, color/composition meaning, or
+text metrics.
+
+A realization family is replaceable only within its admitted semantic
+obligation. When one semantic class has a single initial realization, no second
+implementation is required merely to demonstrate replaceability. A later
+alternative must consume the same semantic input and prove the same admitted
+semantics before policy may select it.
+
+### Resources, text, and derived state
+
+Semantic resource identity is distinct from every prepared or resident form:
+
+```text
+semantic resource identity
+    -> immutable semantic binding / intrinsic representation
+        -> private realization descriptor
+            -> prepared/cache realization
+                -> atlas / buffer / texture / RunenGPU residency
+```
+
+Cache keys may contain private reproducibility facts such as field quality,
+range, generator revision, or tessellation parameters. Atlas coordinates,
+cache buckets, device generations, and RunenGPU handles are never semantic
+identity. Derived state must be reconstructible from immutable semantic facts or
+fail with an owner-oriented structural/capability outcome.
+
+Text is shaped before RunenRender. The renderer must not perform fallback,
+line breaking, reshaping, font rediscovery, or metric authority. The initial
+admitted text class is already-shaped scalable monochrome outline content with
+supported exact synthesis. Its physical outline/field/coverage preparation is
+renderer-private. Missing compatible derived state is reconstructed from the
+immutable shaped resource before execution; another realization family is not
+required solely for cache misses.
+
+Intrinsic COLR, SVG, bitmap glyph content and unsupported synthesis remain
+distinct capability classes and fail closed until an exact separately accepted
+realization exists. They must not be silently flattened to monochrome outline
+semantics.
+
+The initial admitted image payload class is immutable tightly packed
+unpremultiplied RGBA8 sRGB plus exact non-zero intrinsic extent and resolved
+source/destination mapping. Sampled textures, uploads, caches, and device
+residency remain private.
+
+### Private realization boundary
+
+Concrete implementation-library selection is not part of this semantic
+contract. Implementations may privately use backend-neutral tessellation,
+analytic coverage, signed-distance fields, direct curves, intrinsic sampled resources,
+intermediate masks/targets, or other realization families when they preserve
+the admitted semantic obligation and lower through RunenGPU. Concrete library,
+algorithm, threshold, atlas, cache, batching, and pass-topology choices remain
+replaceable implementation policy.
+
+Adding, replacing, or deleting one private realization family does not require a
+public semantic-contract change when the replacement preserves the same
+admitted semantics. A new performance-driven selection requires evidence
+appropriate to the claim; the architecture itself does not claim native-GPU
+superiority for one family.
+
+### Failure, evidence, and evolution
+
+Caller-material failures remain owner-oriented and distinguish at least:
+
+- malformed semantic composition;
+- unsupported semantic or intrinsic capability;
+- missing, incompatible, or unavailable semantic resource binding;
+- valid content with no currently admitted realization;
+- private realization/lowering failure;
+- RunenShader compilation failure;
+- RunenGPU preparation/submission/execution failure.
+
+Native Present and source-publication failures remain downstream-owned.
+Diagnostics identify the affected semantic/resource subject without exposing
+private cache/backend identity as source truth.
+
+RunenRender execution evidence identifies the admitted/executed renderer
+contribution without depending on source-framework publication IDs or native
+Present policy. The downstream combining boundary owns the correspondence
+between that contribution, the source publication, and terminal presentation.
+
+While RunenRender is pre-1.0 and consumers are revision-pinned, a public 2D
+semantic change requires explicit RunenRender authority, a validated accepted
+revision, downstream compatibility review, and downstream repin/adaptation.
+Do not introduce duplicate versioned types, compatibility aliases, runtime
+schema-version fields, or persistence/wire machinery without a real
+compatibility obligation.
+
+The 2D semantic/compiler responsibility remains inside the RunenRender crate.
+A separate public text/path/image renderer, `runen-render-2d` package, or
+backend-specific public namespace would duplicate composition authority without
+a demonstrated independent owner.
+
 ## Private maintained realization
 
 The maintained physical renderer is private under `runtime`:
@@ -128,10 +282,16 @@ reach-through is part of this architecture.
 
 ## Extension laws
 
-New renderer capabilities should extend the existing semantic stages or add
-private physical realization behind them. A private acceleration structure,
-cache, atlas, compiled representation, GPU resource, or backend choice is not
-public semantic identity merely because it improves realization.
+New renderer capabilities should extend an existing semantic domain when it can
+express the required meaning losslessly. A new sibling semantic domain is
+justified only when forcing the behavior into an existing ontology would erase
+or falsify owned semantics; the 2D composition contract defined above is such
+a case.
+
+Private physical realization remains behind the owning semantic domain. A
+private acceleration structure, cache, atlas, compiled representation, GPU
+resource, or backend choice is not public semantic identity merely because it
+improves realization.
 
 A public contract change requires explicit authority and consumer evidence. Do
 not expose a physical implementation strategy simply to make one feature easier
