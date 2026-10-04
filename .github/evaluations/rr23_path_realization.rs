@@ -98,11 +98,7 @@ fn summarize_timing(mut samples: Vec<u128>) -> Timing {
     }
 }
 
-fn sample_lyon(
-    case: &Case,
-    scale: f32,
-    changing: bool,
-) -> Result<Timing, Box<dyn Error>> {
+fn sample_lyon(case: &Case, scale: f32, changing: bool) -> Result<Timing, Box<dyn Error>> {
     let mut samples = Vec::with_capacity(TIMING_SAMPLES);
     for _ in 0..TIMING_SAMPLES {
         samples.push(time_lyon(case, scale, changing)?);
@@ -528,14 +524,7 @@ fn op_label(op: Operation) -> &'static str {
     }
 }
 
-fn report(
-    case: &Case,
-    scale: f32,
-    name: &str,
-    stats: Stats,
-    reused: &Timing,
-    changing: &Timing,
-) {
+fn report(case: &Case, scale: f32, name: &str, stats: Stats, reused: &Timing, changing: &Timing) {
     println!(
         "candidate={name} case={} operation={} scale={scale:.2} hash={:016x} primary_count={} secondary_count={} output_bytes={} reused_min_ns={} reused_median_ns={} reused_p90_ns={} reused_max_ns={} reused_samples_ns={} changing_min_ns={} changing_median_ns={} changing_p90_ns={} changing_max_ns={} changing_samples_ns={}",
         case.label,
