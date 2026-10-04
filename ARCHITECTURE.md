@@ -49,8 +49,9 @@ value. It represents resolved renderer meaning such as:
   child color;
 - resolved image source/destination mapping plus immutable semantic resource
   identity;
-- already-shaped glyph occurrences plus exact immutable font, variation,
-  synthesis, size, and glyph-position facts required for realization.
+- already-shaped glyph occurrences plus semantic shaped-resource identities
+  whose immutable bindings carry exact font/face, variation, synthesis, size,
+  and glyph facts required for realization.
 
 This is a sibling renderer-semantic domain to the existing
 surface/field/query representation protocols. Ordered 2D composition must not
@@ -165,7 +166,7 @@ Native Present and source-publication failures remain downstream-owned.
 Diagnostics identify the affected semantic/resource subject without exposing
 private cache/backend identity as source truth.
 
-RunenRender execution evidence identifies the accepted/executed renderer
+RunenRender execution evidence identifies the admitted/executed renderer
 contribution without depending on source-framework publication IDs or native
 Present policy. The downstream combining boundary owns the correspondence
 between that contribution, the source publication, and terminal presentation.
