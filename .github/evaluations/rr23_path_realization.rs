@@ -620,17 +620,15 @@ fn corpus() -> Vec<Case> {
 }
 
 fn star() -> Vec<Cmd> {
+    // True self-intersecting pentagram: visit every second outer point rather than
+    // alternating outer/inner points. EvenOdd and NonZero therefore exercise
+    // materially different winding semantics in the central overlap.
     vec![
         Cmd::Move(100.0, 0.0),
-        Cmd::Line(124.0, 72.0),
-        Cmd::Line(200.0, 72.0),
-        Cmd::Line(138.0, 116.0),
-        Cmd::Line(162.0, 190.0),
-        Cmd::Line(100.0, 145.0),
-        Cmd::Line(38.0, 190.0),
-        Cmd::Line(62.0, 116.0),
-        Cmd::Line(0.0, 72.0),
-        Cmd::Line(76.0, 72.0),
+        Cmd::Line(158.78, 180.90),
+        Cmd::Line(4.89, 69.10),
+        Cmd::Line(195.11, 69.10),
+        Cmd::Line(41.22, 180.90),
         Cmd::Close,
     ]
 }
