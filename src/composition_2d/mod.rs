@@ -22,8 +22,7 @@ mod resource;
 pub use geometry::{
     Render2dAffineTransform, Render2dClip, Render2dCornerRadii, Render2dFillRule,
     Render2dGeometryError, Render2dPath, Render2dPathCommand, Render2dPoint, Render2dRect,
-    Render2dShape, Render2dShapeKind, Render2dStrokeCap, Render2dStrokeJoin,
-    Render2dStrokeStyle,
+    Render2dShape, Render2dShapeKind, Render2dStrokeCap, Render2dStrokeJoin, Render2dStrokeStyle,
 };
 pub use paint::{
     Render2dBrush, Render2dColorRgba8, Render2dDropShadow, Render2dGradientStop,
@@ -197,10 +196,12 @@ impl Render2dImagePrimitive {
         let patches = patches.into();
         for (patch_index, patch) in patches.iter().enumerate() {
             if !patch.source.fits_within(intrinsic_extent) {
-                return Err(Render2dCompositionError::ImageSourceOutsideIntrinsicExtent {
-                    id: resource_id,
-                    patch_index,
-                });
+                return Err(
+                    Render2dCompositionError::ImageSourceOutsideIntrinsicExtent {
+                        id: resource_id,
+                        patch_index,
+                    },
+                );
             }
         }
         Ok(Self {

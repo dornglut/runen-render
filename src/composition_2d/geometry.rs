@@ -52,12 +52,7 @@ impl Render2dRect {
     /// # Errors
     ///
     /// Returns a geometry error for non-finite components or negative extents.
-    pub fn new(
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
-    ) -> Result<Self, Render2dGeometryError> {
+    pub fn new(x: f64, y: f64, width: f64, height: f64) -> Result<Self, Render2dGeometryError> {
         if ![x, y, width, height].into_iter().all(f64::is_finite) {
             return Err(Render2dGeometryError::NonFiniteScalar);
         }
@@ -206,10 +201,7 @@ impl Render2dAffineTransform {
         tx: f64,
         ty: f64,
     ) -> Result<Self, Render2dGeometryError> {
-        if [m11, m12, m21, m22, tx, ty]
-            .into_iter()
-            .all(f64::is_finite)
-        {
+        if [m11, m12, m21, m22, tx, ty].into_iter().all(f64::is_finite) {
             Ok(Self {
                 m11,
                 m12,
@@ -472,13 +464,9 @@ impl Render2dShape {
             _ => None,
         }
     }
-
 }
 
-fn normalize_corner_radii(
-    rect: Render2dRect,
-    radii: Render2dCornerRadii,
-) -> Render2dCornerRadii {
+fn normalize_corner_radii(rect: Render2dRect, radii: Render2dCornerRadii) -> Render2dCornerRadii {
     let values = [
         radii.top_left,
         radii.top_right,
@@ -604,10 +592,7 @@ pub struct Render2dClip {
 impl Render2dClip {
     /// Creates one already-validated clip.
     #[must_use]
-    pub const fn new(
-        shape: Render2dShape,
-        local_to_parent: Render2dAffineTransform,
-    ) -> Self {
+    pub const fn new(shape: Render2dShape, local_to_parent: Render2dAffineTransform) -> Self {
         Self {
             shape,
             local_to_parent,
@@ -668,9 +653,7 @@ impl fmt::Display for Render2dGeometryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NonFiniteScalar => formatter.write_str("2D geometry scalar must be finite"),
-            Self::NegativeExtent => {
-                formatter.write_str("2D rectangle extent must be non-negative")
-            }
+            Self::NegativeExtent => formatter.write_str("2D rectangle extent must be non-negative"),
             Self::ExtentOverflow => {
                 formatter.write_str("2D rectangle derived bounds must remain finite")
             }
@@ -682,7 +665,10 @@ impl fmt::Display for Render2dGeometryError {
                 formatter.write_str("2D stroke miter limit must be at least 1")
             }
             Self::SegmentWithoutContour { index } => {
-                write!(formatter, "2D path segment at {index} requires a preceding move")
+                write!(
+                    formatter,
+                    "2D path segment at {index} requires a preceding move"
+                )
             }
             Self::CloseWithoutSegment { index } => write!(
                 formatter,
@@ -731,8 +717,7 @@ mod tests {
 
     #[test]
     fn empty_and_move_only_paths_are_valid_non_painting_structure() {
-        Render2dPath::new(Render2dFillRule::NonZero, Vec::new())
-            .expect("empty path is valid");
+        Render2dPath::new(Render2dFillRule::NonZero, Vec::new()).expect("empty path is valid");
         Render2dPath::new(
             Render2dFillRule::NonZero,
             vec![Render2dPathCommand::MoveTo(point(0.0, 0.0))],
