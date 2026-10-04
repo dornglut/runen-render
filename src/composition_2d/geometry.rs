@@ -272,7 +272,8 @@ pub enum Render2dPathCommand {
 ///
 /// Empty and move-only paths are valid non-painting semantic values. Point-degenerate authored
 /// segments remain structural content. Open segment-bearing contours remain structurally open;
-/// physical fill realization may derive an implicit closing edge without rewriting this value.
+/// fill evaluation derives the implicit closing edge required by the selected fill rule without
+/// rewriting this structural value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Render2dPath {
     fill_rule: Render2dFillRule,
@@ -582,20 +583,25 @@ impl Render2dStrokeStyle {
     }
 }
 
-/// One conjunctive clip: structural local geometry plus its local-to-parent mapping.
+/// One self-contained conjunctive clip in an owner's parent coordinate space.
+///
+/// `clip_to_parent` maps clip-local geometry directly into the same parent space reached by the
+/// attached item's or group's `local_to_parent`. The owner transform is not applied to the clip
+/// again; an adapter that wants a clip to follow owner-local motion must resolve that relationship
+/// into `clip_to_parent` before constructing the semantic value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Render2dClip {
     shape: Render2dShape,
-    local_to_parent: Render2dAffineTransform,
+    clip_to_parent: Render2dAffineTransform,
 }
 
 impl Render2dClip {
-    /// Creates one already-validated clip.
+    /// Creates one already-validated self-contained clip.
     #[must_use]
-    pub const fn new(shape: Render2dShape, local_to_parent: Render2dAffineTransform) -> Self {
+    pub const fn new(shape: Render2dShape, clip_to_parent: Render2dAffineTransform) -> Self {
         Self {
             shape,
-            local_to_parent,
+            clip_to_parent,
         }
     }
 
@@ -605,10 +611,10 @@ impl Render2dClip {
         &self.shape
     }
 
-    /// Returns the clip-local to parent transform.
+    /// Returns the clip-local to owner-parent transform.
     #[must_use]
-    pub const fn local_to_parent(&self) -> Render2dAffineTransform {
-        self.local_to_parent
+    pub const fn clip_to_parent(&self) -> Render2dAffineTransform {
+        self.clip_to_parent
     }
 }
 

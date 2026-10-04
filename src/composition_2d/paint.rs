@@ -109,8 +109,11 @@ impl Render2dGradientStop {
 
 /// Immutable validated authored gradient stops.
 ///
-/// Stops retain stable nondecreasing authored order. Equal offsets are preserved exactly and
-/// therefore retain deterministic hard-stop semantics.
+/// Stops retain stable nondecreasing authored order. Sampling extends the first and last
+/// authored colors outside their stop offsets. At an exact shared-offset hard stop, the first
+/// authored color at that offset is the boundary value; immediately on the increasing side, the
+/// last authored color at that offset becomes the interpolation source. Interpolation between
+/// distinct offsets is premultiplied linear-sRGB.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Render2dGradientStops(Arc<[Render2dGradientStop]>);
 
@@ -140,7 +143,9 @@ impl Render2dGradientStops {
 
 /// Primitive-local nondegenerate linear gradient.
 ///
-/// Color interpolation is semantically premultiplied linear-sRGB between the stable stops.
+/// Sampling projects a primitive-local point onto the start-to-end axis, clamps that normalized
+/// coordinate to `0..=1`, then applies the stable stop function. Color interpolation between
+/// distinct stop offsets is premultiplied linear-sRGB.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Render2dLinearGradient {
     start: Render2dPoint,
@@ -186,7 +191,9 @@ impl Render2dLinearGradient {
 
 /// Primitive-local concentric radial gradient.
 ///
-/// Color interpolation is semantically premultiplied linear-sRGB between the stable stops.
+/// Sampling uses primitive-local distance from center divided by radius, clamps that normalized
+/// coordinate to `0..=1`, then applies the stable stop function. Color interpolation between
+/// distinct stop offsets is premultiplied linear-sRGB.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Render2dRadialGradient {
     center: Render2dPoint,

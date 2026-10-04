@@ -11,9 +11,10 @@
 //! Entries compose in exact authored order using ordinary linear-light source-over semantics.
 //! Literal colors are straight-alpha sRGB8. Gradient interpolation is defined in premultiplied
 //! linear-sRGB. Item opacity applies once to its item; group opacity applies once to the composed
-//! atomic group result. Clips are conjunctive. Ordered group shadows derive support from neutral
-//! semantic child geometry rather than cached sampled alpha, so transparent child color does not
-//! erase semantic shadow support.
+//! atomic group result. Clips are conjunctive and self-contained in the attached owner's parent
+//! coordinate space; an item/group transform is not implicitly re-applied to its clips. Ordered
+//! group shadows derive support from neutral semantic child geometry rather than cached sampled
+//! alpha, so transparent child color does not erase semantic shadow support.
 
 mod geometry;
 mod paint;

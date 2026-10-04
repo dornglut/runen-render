@@ -10,8 +10,10 @@ use std::{
 /// Opaque semantic identity of one immutable 2D resource value.
 ///
 /// The same identity denotes the same immutable semantic value across compatible
-/// executions. Cache entries, atlas locations, device generations, backend handles,
-/// and other prepared/resident forms are never part of this identity.
+/// executions. Rebinding an already-observed identity to different semantic content is invalid;
+/// a later retained execution boundary must reject such a remap rather than treating it as cache
+/// invalidation. Cache entries, atlas locations, device generations, backend handles, and other
+/// prepared/resident forms are never part of this identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Render2dResourceId(NonZeroU64);
 
@@ -187,7 +189,7 @@ impl Render2dFontBinding {
         self.faux_bold
     }
 
-    /// Returns exact faux skew when required.
+    /// Returns exact faux skew angle in radians when required.
     #[must_use]
     pub const fn faux_skew(&self) -> Option<f64> {
         self.faux_skew
