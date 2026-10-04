@@ -60,9 +60,8 @@ stream, source-framework paint type, or universal vector/field ontology merely
 to reuse an existing physical path.
 
 Source adapters project already-resolved renderer facts into RunenRender-owned
-values. Source-framework publication revisions, widget/mounted identities,
-authoring policy, and native presentation identity remain outside RunenRender
-semantic identity.
+values. Source-framework publication/object identities, authoring policy, and
+native presentation identity remain outside RunenRender semantic identity.
 
 One execution combines one immutable composition value with one compatible
 immutable semantic-resource binding set and target/output fact set. Private
@@ -137,8 +136,8 @@ residency remain private.
 ### Private realization boundary
 
 Concrete implementation-library selection is not part of this semantic
-contract. Implementations may privately use backend-neutral tessellation, analytic
-coverage, signed-distance fields, direct curves, intrinsic sampled resources,
+contract. Implementations may privately use backend-neutral tessellation,
+analytic coverage, signed-distance fields, direct curves, intrinsic sampled resources,
 intermediate masks/targets, or other realization families when they preserve
 the admitted semantic obligation and lower through RunenGPU. Concrete library,
 algorithm, threshold, atlas, cache, batching, and pass-topology choices remain
@@ -171,12 +170,12 @@ contribution without depending on source-framework publication IDs or native
 Present policy. The downstream combining boundary owns the correspondence
 between that contribution, the source publication, and terminal presentation.
 
-RunenRender is pre-1.0 and current consumers use accepted immutable revisions.
-A public 2D semantic change therefore requires explicit RunenRender authority,
-validated accepted revision, downstream compatibility review, and downstream
-repin/adaptation. Do not introduce duplicate versioned types, compatibility
-aliases, runtime schema-version fields, or persistence/wire machinery without a
-real compatibility obligation.
+While RunenRender is pre-1.0 and consumers are revision-pinned, a public 2D
+semantic change requires explicit RunenRender authority, a validated accepted
+revision, downstream compatibility review, and downstream repin/adaptation.
+Do not introduce duplicate versioned types, compatibility aliases, runtime
+schema-version fields, or persistence/wire machinery without a real
+compatibility obligation.
 
 The 2D semantic/compiler responsibility remains inside the RunenRender crate.
 A separate public text/path/image renderer, `runen-render-2d` package, or
