@@ -1,0 +1,114 @@
+name: RR23 path realization evaluation
+
+on:
+  pull_request:
+    paths:
+      - ".github/evaluations/rr23_path_realization.rs"
+      - ".github/workflows/rr23-path-evaluation.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rr23-path-evaluation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    name: Lyon vs Sparse Strips preprocessing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prove exact PR head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          actual_head="$(git rev-parse HEAD)"
+          printf 'expected_head=%s\nactual_head=%s\n' "$EXPECTED_HEAD" "$actual_head"
+          test "$actual_head" = "$EXPECTED_HEAD"
+
+      - name: Install stable Rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup component add rustfmt --toolchain stable
+
+      - name: Materialize isolated evaluator
+        shell: bash
+        run: |
+          set -euo pipefail
+          eval_dir=target/rr23-e1-workspace
+          evidence_dir=target/rr23-e1-evidence
+          mkdir -p "$eval_dir/src" "$evidence_dir"
+          cp .github/evaluations/rr23_path_realization.rs "$eval_dir/src/main.rs"
+          cat > "$eval_dir/Cargo.toml" <<'EOF'
+          [package]
+          name = "runenrender-rr23-path-realization-evaluation"
+          version = "0.0.0"
+          edition = "2024"
+          rust-version = "1.97.1"
+          publish = false
+
+          [workspace]
+
+          [dependencies]
+          lyon_tessellation = "=1.0.22"
+          vello_common = { version = "=0.3.0", default-features = false, features = ["std"] }
+          EOF
+
+          cargo +stable fmt --manifest-path "$eval_dir/Cargo.toml"
+          cargo +stable generate-lockfile --manifest-path "$eval_dir/Cargo.toml"
+          sha256sum "$eval_dir/Cargo.lock" | tee "$evidence_dir/temporary-lock.sha256"
+          cargo +stable tree --manifest-path "$eval_dir/Cargo.toml" --locked -e normal | tee "$evidence_dir/dependency-tree.txt"
+          cp "$eval_dir/Cargo.lock" "$evidence_dir/Cargo.lock"
+
+      - name: Build isolated evaluator
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +stable build \
+            --manifest-path target/rr23-e1-workspace/Cargo.toml \
+            --release \
+            --locked
+
+      - name: Run bounded path evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir=target/rr23-e1-evidence
+          /usr/bin/time -v \
+            target/rr23-e1-workspace/target/release/runenrender-rr23-path-realization-evaluation \
+            > "$evidence_dir/results.tsv" \
+            2> "$evidence_dir/process-time.txt"
+          test -s "$evidence_dir/results.tsv"
+          cat "$evidence_dir/results.tsv"
+          cat "$evidence_dir/process-time.txt"
+
+      - name: Check repository hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          status="$(git status --short --untracked-files=all)"
+          if [ -n "$status" ]; then
+            printf 'RR23 evaluation changed tracked/unignored repository state:\n%s\n' "$status" >&2
+            exit 1
+          fi
+
+      - name: Upload evaluation evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rr23-path-realization-${{ github.event.pull_request.head.sha }}
+          path: target/rr23-e1-evidence
+          if-no-files-found: error
+          retention-days: 14
