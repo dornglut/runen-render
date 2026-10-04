@@ -369,7 +369,7 @@ pub enum Render2dShapeKind {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(super) enum Render2dShapeData {
+enum Render2dShapeData {
     Rect(Render2dRect),
     RoundedRect {
         rect: Render2dRect,
@@ -473,9 +473,6 @@ impl Render2dShape {
         }
     }
 
-    pub(super) const fn data(&self) -> &Render2dShapeData {
-        &self.data
-    }
 }
 
 fn normalize_corner_radii(
