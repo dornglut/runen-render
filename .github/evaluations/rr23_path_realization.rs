@@ -293,7 +293,7 @@ fn lyon_stats(case: &Case, path: &LyonPath, scale: f32) -> Result<Stats, Box<dyn
 }
 
 fn vello_stats(case: &Case, path: &BezPath, scale: f32) -> Stats {
-    let mut generator = StripGenerator::new(VIEWPORT_WIDTH, VIEWPORT_HEIGHT, Level::baseline());
+    let mut generator = StripGenerator::new(VIEWPORT_WIDTH, VIEWPORT_HEIGHT, Level::new());
     let mut storage = StripStorage::default();
     match case.operation {
         Operation::Fill(rule) => generator.generate_filled_path(
@@ -483,10 +483,11 @@ fn generate_vello(
             );
         }
     }
+    generator.reset(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
 }
 
 fn time_vello(case: &Case, scale: f32, changing: bool) -> u128 {
-    let mut generator = StripGenerator::new(VIEWPORT_WIDTH, VIEWPORT_HEIGHT, Level::baseline());
+    let mut generator = StripGenerator::new(VIEWPORT_WIDTH, VIEWPORT_HEIGHT, Level::new());
     let mut storage = StripStorage::default();
     let mut sink = 0usize;
     let start = Instant::now();
