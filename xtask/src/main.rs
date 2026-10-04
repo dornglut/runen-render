@@ -196,7 +196,7 @@ fn validate_product_identity(root: &Path) -> Result<(), String> {
 fn validate_source_contract(root: &Path) -> Result<(), String> {
     let manifest = read_file(root, "Cargo.toml")?;
     for required in [
-        "runen-gpu = { git = \"https://github.com/dornglut/runen-gpu\", rev = \"789b430fdefeda89bfe59de86d548618b8f8ab9a\" }",
+        "runen-gpu = { git = \"https://github.com/dornglut/runen-gpu\", rev = \"822d7b1d90078ec8155eaab49cd8e0f8a916c244\" }",
         "runen-shader = { git = \"https://github.com/dornglut/runen-shader\", rev = \"406f8165da92caa2d296b3a2f774ba534279870d\" }",
     ] {
         require_contains("Cargo.toml", &manifest, required)?;
