@@ -20,6 +20,7 @@ const REQUIRED_FILES: &[&str] = &[
     "TESTING.md",
     "rust-toolchain.toml",
     "src/lib.rs",
+    "tests/composition_2d_public_api.rs",
     "xtask/Cargo.toml",
     "xtask/src/main.rs",
 ];
@@ -253,6 +254,7 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
     for required in [
         "pub mod admission;",
         "pub mod appearance;",
+        "pub mod composition_2d;",
         "pub mod derived_state;",
         "pub mod field_input;",
         "pub mod lowering;",
@@ -289,12 +291,22 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
         }
     }
 
-    let public_consumer = read_file(root, "tests/ordinary_public_api.rs")?;
-    if public_consumer.contains("Deterministic") {
-        return Err(
-            "ordinary public package consumer references deterministic implementation vocabulary"
-                .to_owned(),
-        );
+    for (path, description) in [
+        (
+            "tests/ordinary_public_api.rs",
+            "ordinary public package consumer",
+        ),
+        (
+            "tests/composition_2d_public_api.rs",
+            "2D public package consumer",
+        ),
+    ] {
+        let public_consumer = read_file(root, path)?;
+        if public_consumer.contains("Deterministic") {
+            return Err(format!(
+                "{description} references deterministic implementation vocabulary"
+            ));
+        }
     }
 
     let workflow = read_file(root, ".github/workflows/validation.yml")?;

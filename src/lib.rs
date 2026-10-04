@@ -7,6 +7,7 @@
 
 pub mod admission;
 pub mod appearance;
+pub mod composition_2d;
 pub mod derived_state;
 pub mod field_input;
 pub mod lowering;
