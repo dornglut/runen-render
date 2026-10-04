@@ -4,6 +4,10 @@
 //! publication identity, GPU/display-list commands, caches, atlas residency, device handles,
 //! native presentation policy, and concrete physical realization-family names.
 //!
+//! Geometry, transforms, paint scalars, and shaped-text metrics use finite `f64` semantic
+//! precision. A later admitted realization may narrow or quantize only as private physical
+//! policy when it preserves the public semantic obligation.
+//!
 //! Entries compose in exact authored order using ordinary linear-light source-over semantics.
 //! Literal colors are straight-alpha sRGB8. Gradient interpolation is defined in premultiplied
 //! linear-sRGB. Item opacity applies once to its item; group opacity applies once to the composed
@@ -18,7 +22,8 @@ mod resource;
 pub use geometry::{
     Render2dAffineTransform, Render2dClip, Render2dCornerRadii, Render2dFillRule,
     Render2dGeometryError, Render2dPath, Render2dPathCommand, Render2dPoint, Render2dRect,
-    Render2dShape, Render2dStrokeCap, Render2dStrokeJoin, Render2dStrokeStyle,
+    Render2dShape, Render2dShapeKind, Render2dStrokeCap, Render2dStrokeJoin,
+    Render2dStrokeStyle,
 };
 pub use paint::{
     Render2dBrush, Render2dColorRgba8, Render2dDropShadow, Render2dGradientStop,
@@ -707,7 +712,7 @@ impl Error for Render2dCompositionError {}
 mod tests {
     use super::*;
 
-    fn point(x: f32, y: f32) -> Render2dPoint {
+    fn point(x: f64, y: f64) -> Render2dPoint {
         Render2dPoint::new(x, y).expect("finite point")
     }
 
@@ -718,7 +723,7 @@ mod tests {
     fn solid_item(color: Render2dColorRgba8) -> Render2dEntry {
         Render2dEntry::item(Render2dItem::new(
             Render2dPrimitive::Fill {
-                shape: Render2dShape::Rect(rect()),
+                shape: Render2dShape::rect(rect()),
                 brush: Render2dBrush::solid(color),
             },
             Render2dAffineTransform::IDENTITY,

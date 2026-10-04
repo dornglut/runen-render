@@ -6,8 +6,8 @@ use std::sync::Arc;
 /// One finite point in source-neutral two-dimensional logical coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Render2dPoint {
-    x: f32,
-    y: f32,
+    x: f64,
+    y: f64,
 }
 
 impl Render2dPoint {
@@ -16,7 +16,7 @@ impl Render2dPoint {
     /// # Errors
     ///
     /// Returns [`Render2dGeometryError::NonFiniteScalar`] when either component is non-finite.
-    pub fn new(x: f32, y: f32) -> Result<Self, Render2dGeometryError> {
+    pub fn new(x: f64, y: f64) -> Result<Self, Render2dGeometryError> {
         if x.is_finite() && y.is_finite() {
             Ok(Self { x, y })
         } else {
@@ -26,13 +26,13 @@ impl Render2dPoint {
 
     /// Returns the x coordinate.
     #[must_use]
-    pub const fn x(self) -> f32 {
+    pub const fn x(self) -> f64 {
         self.x
     }
 
     /// Returns the y coordinate.
     #[must_use]
-    pub const fn y(self) -> f32 {
+    pub const fn y(self) -> f64 {
         self.y
     }
 }
@@ -40,10 +40,10 @@ impl Render2dPoint {
 /// One finite non-negative logical rectangle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Render2dRect {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
 }
 
 impl Render2dRect {
@@ -53,16 +53,19 @@ impl Render2dRect {
     ///
     /// Returns a geometry error for non-finite components or negative extents.
     pub fn new(
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
     ) -> Result<Self, Render2dGeometryError> {
-        if ![x, y, width, height].into_iter().all(f32::is_finite) {
+        if ![x, y, width, height].into_iter().all(f64::is_finite) {
             return Err(Render2dGeometryError::NonFiniteScalar);
         }
         if width < 0.0 || height < 0.0 {
             return Err(Render2dGeometryError::NegativeExtent);
+        }
+        if !(x + width).is_finite() || !(y + height).is_finite() {
+            return Err(Render2dGeometryError::ExtentOverflow);
         }
         Ok(Self {
             x,
@@ -74,25 +77,25 @@ impl Render2dRect {
 
     /// Returns the left coordinate.
     #[must_use]
-    pub const fn x(self) -> f32 {
+    pub const fn x(self) -> f64 {
         self.x
     }
 
     /// Returns the top coordinate.
     #[must_use]
-    pub const fn y(self) -> f32 {
+    pub const fn y(self) -> f64 {
         self.y
     }
 
     /// Returns the non-negative width.
     #[must_use]
-    pub const fn width(self) -> f32 {
+    pub const fn width(self) -> f64 {
         self.width
     }
 
     /// Returns the non-negative height.
     #[must_use]
-    pub const fn height(self) -> f32 {
+    pub const fn height(self) -> f64 {
         self.height
     }
 
@@ -103,32 +106,33 @@ impl Render2dRect {
     }
 }
 
-/// Authored circular corner radii for one rounded rectangle.
+/// Finite non-negative circular corner radii.
 ///
-/// These values remain structural semantic content. Any normalization against a rectangle's
-/// extents is derived realization policy and does not rewrite this value.
+/// A standalone radius tuple is not yet rectangle-relative semantic geometry.
+/// [`Render2dShape::rounded_rect`] applies the single-factor corner-overlap
+/// normalization and stores only the canonical renderer-semantic radii.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Render2dCornerRadii {
-    top_left: f32,
-    top_right: f32,
-    bottom_right: f32,
-    bottom_left: f32,
+    top_left: f64,
+    top_right: f64,
+    bottom_right: f64,
+    bottom_left: f64,
 }
 
 impl Render2dCornerRadii {
-    /// Creates finite non-negative authored corner radii.
+    /// Creates finite non-negative corner radii.
     ///
     /// # Errors
     ///
     /// Returns a geometry error for non-finite or negative radii.
     pub fn new(
-        top_left: f32,
-        top_right: f32,
-        bottom_right: f32,
-        bottom_left: f32,
+        top_left: f64,
+        top_right: f64,
+        bottom_right: f64,
+        bottom_left: f64,
     ) -> Result<Self, Render2dGeometryError> {
         let values = [top_left, top_right, bottom_right, bottom_left];
-        if !values.into_iter().all(f32::is_finite) {
+        if !values.into_iter().all(f64::is_finite) {
             return Err(Render2dGeometryError::NonFiniteScalar);
         }
         if values.into_iter().any(|value| value < 0.0) {
@@ -144,25 +148,25 @@ impl Render2dCornerRadii {
 
     /// Returns the top-left radius.
     #[must_use]
-    pub const fn top_left(self) -> f32 {
+    pub const fn top_left(self) -> f64 {
         self.top_left
     }
 
     /// Returns the top-right radius.
     #[must_use]
-    pub const fn top_right(self) -> f32 {
+    pub const fn top_right(self) -> f64 {
         self.top_right
     }
 
     /// Returns the bottom-right radius.
     #[must_use]
-    pub const fn bottom_right(self) -> f32 {
+    pub const fn bottom_right(self) -> f64 {
         self.bottom_right
     }
 
     /// Returns the bottom-left radius.
     #[must_use]
-    pub const fn bottom_left(self) -> f32 {
+    pub const fn bottom_left(self) -> f64 {
         self.bottom_left
     }
 }
@@ -170,12 +174,12 @@ impl Render2dCornerRadii {
 /// Finite affine transform mapping local 2D coordinates into one parent coordinate space.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Render2dAffineTransform {
-    m11: f32,
-    m12: f32,
-    m21: f32,
-    m22: f32,
-    tx: f32,
-    ty: f32,
+    m11: f64,
+    m12: f64,
+    m21: f64,
+    m22: f64,
+    tx: f64,
+    ty: f64,
 }
 
 impl Render2dAffineTransform {
@@ -195,16 +199,16 @@ impl Render2dAffineTransform {
     ///
     /// Returns [`Render2dGeometryError::NonFiniteScalar`] when a component is non-finite.
     pub fn new(
-        m11: f32,
-        m12: f32,
-        m21: f32,
-        m22: f32,
-        tx: f32,
-        ty: f32,
+        m11: f64,
+        m12: f64,
+        m21: f64,
+        m22: f64,
+        tx: f64,
+        ty: f64,
     ) -> Result<Self, Render2dGeometryError> {
         if [m11, m12, m21, m22, tx, ty]
             .into_iter()
-            .all(f32::is_finite)
+            .all(f64::is_finite)
         {
             Ok(Self {
                 m11,
@@ -224,13 +228,13 @@ impl Render2dAffineTransform {
     /// # Errors
     ///
     /// Returns [`Render2dGeometryError::NonFiniteScalar`] for a non-finite offset.
-    pub fn translation(x: f32, y: f32) -> Result<Self, Render2dGeometryError> {
+    pub fn translation(x: f64, y: f64) -> Result<Self, Render2dGeometryError> {
         Self::new(1.0, 0.0, 0.0, 1.0, x, y)
     }
 
     /// Returns `(m11, m12, m21, m22, tx, ty)`.
     #[must_use]
-    pub const fn components(self) -> [f32; 6] {
+    pub const fn components(self) -> [f64; 6] {
         [self.m11, self.m12, self.m21, self.m22, self.tx, self.ty]
     }
 }
@@ -351,22 +355,159 @@ fn validate_path_commands(commands: &[Render2dPathCommand]) -> Result<(), Render
     Ok(())
 }
 
-/// Source-neutral structural geometry.
+/// Public source-neutral shape category.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Render2dShapeKind {
+    /// Rectangle.
+    Rect,
+    /// Canonical rounded rectangle.
+    RoundedRect,
+    /// Analytic ellipse.
+    Ellipse,
+    /// Structural path.
+    Path,
+}
+
 #[derive(Clone, Debug, PartialEq)]
-pub enum Render2dShape {
-    /// Finite rectangle.
+pub(super) enum Render2dShapeData {
     Rect(Render2dRect),
-    /// Finite rectangle with authored circular corner radii.
     RoundedRect {
-        /// Base rectangle.
         rect: Render2dRect,
-        /// Authored radii.
         radii: Render2dCornerRadii,
     },
-    /// Analytic ellipse inscribed in the supplied rectangle.
     Ellipse(Render2dRect),
-    /// Structural arbitrary path.
     Path(Render2dPath),
+}
+
+/// Canonical source-neutral structural geometry.
+///
+/// Rounded rectangles are normalized at construction with one uniform factor so
+/// semantically equivalent oversized corner-radius inputs cannot create distinct
+/// renderer-semantic values. That normalization is semantic, not a later physical
+/// tessellation or coverage policy.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Render2dShape {
+    data: Render2dShapeData,
+}
+
+impl Render2dShape {
+    /// Creates rectangular geometry.
+    #[must_use]
+    pub const fn rect(rect: Render2dRect) -> Self {
+        Self {
+            data: Render2dShapeData::Rect(rect),
+        }
+    }
+
+    /// Creates canonical rounded-rectangle geometry.
+    #[must_use]
+    pub fn rounded_rect(rect: Render2dRect, radii: Render2dCornerRadii) -> Self {
+        Self {
+            data: Render2dShapeData::RoundedRect {
+                rect,
+                radii: normalize_corner_radii(rect, radii),
+            },
+        }
+    }
+
+    /// Creates analytic ellipse geometry inscribed in the supplied rectangle.
+    #[must_use]
+    pub const fn ellipse(rect: Render2dRect) -> Self {
+        Self {
+            data: Render2dShapeData::Ellipse(rect),
+        }
+    }
+
+    /// Creates structural arbitrary-path geometry.
+    #[must_use]
+    pub const fn path(path: Render2dPath) -> Self {
+        Self {
+            data: Render2dShapeData::Path(path),
+        }
+    }
+
+    /// Returns the public geometry category.
+    #[must_use]
+    pub const fn kind(&self) -> Render2dShapeKind {
+        match &self.data {
+            Render2dShapeData::Rect(_) => Render2dShapeKind::Rect,
+            Render2dShapeData::RoundedRect { .. } => Render2dShapeKind::RoundedRect,
+            Render2dShapeData::Ellipse(_) => Render2dShapeKind::Ellipse,
+            Render2dShapeData::Path(_) => Render2dShapeKind::Path,
+        }
+    }
+
+    /// Returns rectangular geometry when this shape is a rectangle.
+    #[must_use]
+    pub const fn as_rect(&self) -> Option<Render2dRect> {
+        match &self.data {
+            Render2dShapeData::Rect(rect) => Some(*rect),
+            _ => None,
+        }
+    }
+
+    /// Returns canonical rounded-rectangle geometry when present.
+    #[must_use]
+    pub const fn as_rounded_rect(&self) -> Option<(Render2dRect, Render2dCornerRadii)> {
+        match &self.data {
+            Render2dShapeData::RoundedRect { rect, radii } => Some((*rect, *radii)),
+            _ => None,
+        }
+    }
+
+    /// Returns the ellipse bounding rectangle when present.
+    #[must_use]
+    pub const fn as_ellipse(&self) -> Option<Render2dRect> {
+        match &self.data {
+            Render2dShapeData::Ellipse(rect) => Some(*rect),
+            _ => None,
+        }
+    }
+
+    /// Returns structural path geometry when present.
+    #[must_use]
+    pub const fn as_path(&self) -> Option<&Render2dPath> {
+        match &self.data {
+            Render2dShapeData::Path(path) => Some(path),
+            _ => None,
+        }
+    }
+
+    pub(super) const fn data(&self) -> &Render2dShapeData {
+        &self.data
+    }
+}
+
+fn normalize_corner_radii(
+    rect: Render2dRect,
+    radii: Render2dCornerRadii,
+) -> Render2dCornerRadii {
+    let values = [
+        radii.top_left,
+        radii.top_right,
+        radii.bottom_right,
+        radii.bottom_left,
+    ];
+    let mut factor = 1.0_f64;
+    for (extent, first, second) in [
+        (rect.width, values[0], values[1]),
+        (rect.width, values[3], values[2]),
+        (rect.height, values[0], values[3]),
+        (rect.height, values[1], values[2]),
+    ] {
+        let scale = first.max(second);
+        if scale > 0.0 {
+            let normalized_sum = first / scale + second / scale;
+            factor = factor.min((extent / scale) / normalized_sum);
+        }
+    }
+
+    Render2dCornerRadii {
+        top_left: values[0] * factor,
+        top_right: values[1] * factor,
+        bottom_right: values[2] * factor,
+        bottom_left: values[3] * factor,
+    }
 }
 
 /// Centered stroke endpoint cap.
@@ -396,10 +537,10 @@ pub enum Render2dStrokeJoin {
 /// Validated centered stroke semantics.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Render2dStrokeStyle {
-    width: f32,
+    width: f64,
     cap: Render2dStrokeCap,
     join: Render2dStrokeJoin,
-    miter_limit: f32,
+    miter_limit: f64,
 }
 
 impl Render2dStrokeStyle {
@@ -409,10 +550,10 @@ impl Render2dStrokeStyle {
     ///
     /// Returns a geometry error for non-finite values, negative width, or miter limit below one.
     pub fn new(
-        width: f32,
+        width: f64,
         cap: Render2dStrokeCap,
         join: Render2dStrokeJoin,
-        miter_limit: f32,
+        miter_limit: f64,
     ) -> Result<Self, Render2dGeometryError> {
         if !width.is_finite() || !miter_limit.is_finite() {
             return Err(Render2dGeometryError::NonFiniteScalar);
@@ -433,7 +574,7 @@ impl Render2dStrokeStyle {
 
     /// Returns centered stroke width.
     #[must_use]
-    pub const fn width(self) -> f32 {
+    pub const fn width(self) -> f64 {
         self.width
     }
 
@@ -451,7 +592,7 @@ impl Render2dStrokeStyle {
 
     /// Returns miter-limit ratio.
     #[must_use]
-    pub const fn miter_limit(self) -> f32 {
+    pub const fn miter_limit(self) -> f64 {
         self.miter_limit
     }
 }
@@ -496,6 +637,8 @@ pub enum Render2dGeometryError {
     NonFiniteScalar,
     /// Rectangle extent was negative.
     NegativeExtent,
+    /// Finite rectangle origin plus extent overflowed to a non-finite bound.
+    ExtentOverflow,
     /// Corner radius was negative.
     NegativeRadius,
     /// Stroke width was negative.
@@ -531,6 +674,9 @@ impl fmt::Display for Render2dGeometryError {
             Self::NegativeExtent => {
                 formatter.write_str("2D rectangle extent must be non-negative")
             }
+            Self::ExtentOverflow => {
+                formatter.write_str("2D rectangle derived bounds must remain finite")
+            }
             Self::NegativeRadius => formatter.write_str("2D corner radius must be non-negative"),
             Self::NegativeStrokeWidth => {
                 formatter.write_str("2D stroke width must be non-negative")
@@ -562,8 +708,28 @@ impl Error for Render2dGeometryError {}
 mod tests {
     use super::*;
 
-    fn point(x: f32, y: f32) -> Render2dPoint {
+    fn point(x: f64, y: f64) -> Render2dPoint {
         Render2dPoint::new(x, y).expect("finite point")
+    }
+
+    #[test]
+    fn rounded_rectangles_store_only_canonical_semantic_radii() {
+        let rect = Render2dRect::new(0.0, 0.0, 10.0, 4.0).expect("rect");
+        let radii = Render2dCornerRadii::new(8.0, 8.0, 8.0, 8.0).expect("radii");
+        let shape = Render2dShape::rounded_rect(rect, radii);
+        let (_, normalized) = shape.as_rounded_rect().expect("rounded rect");
+        assert_eq!(normalized.top_left(), 2.0);
+        assert_eq!(normalized.top_right(), 2.0);
+        assert_eq!(normalized.bottom_right(), 2.0);
+        assert_eq!(normalized.bottom_left(), 2.0);
+    }
+
+    #[test]
+    fn rectangle_derived_bounds_must_remain_finite() {
+        assert_eq!(
+            Render2dRect::new(f64::MAX, 0.0, f64::MAX, 1.0),
+            Err(Render2dGeometryError::ExtentOverflow)
+        );
     }
 
     #[test]

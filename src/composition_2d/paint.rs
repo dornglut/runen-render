@@ -41,7 +41,7 @@ impl Render2dColorRgba8 {
 
 /// Validated item/group opacity applied once at its semantic owner.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Render2dOpacity(f32);
+pub struct Render2dOpacity(f64);
 
 impl Render2dOpacity {
     /// Fully opaque.
@@ -54,7 +54,7 @@ impl Render2dOpacity {
     /// # Errors
     ///
     /// Returns [`Render2dPaintError`] for non-finite or out-of-range values.
-    pub fn new(value: f32) -> Result<Self, Render2dPaintError> {
+    pub fn new(value: f64) -> Result<Self, Render2dPaintError> {
         if !value.is_finite() {
             return Err(Render2dPaintError::NonFiniteScalar);
         }
@@ -66,7 +66,7 @@ impl Render2dOpacity {
 
     /// Returns the validated opacity scalar.
     #[must_use]
-    pub const fn get(self) -> f32 {
+    pub const fn get(self) -> f64 {
         self.0
     }
 }
@@ -74,7 +74,7 @@ impl Render2dOpacity {
 /// One exact authored gradient stop.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Render2dGradientStop {
-    offset: f32,
+    offset: f64,
     color: Render2dColorRgba8,
 }
 
@@ -85,7 +85,7 @@ impl Render2dGradientStop {
     ///
     /// Returns [`Render2dPaintError`] for non-finite or out-of-range offset.
     pub fn new(
-        offset: f32,
+        offset: f64,
         color: Render2dColorRgba8,
     ) -> Result<Self, Render2dPaintError> {
         if !offset.is_finite() {
@@ -99,7 +99,7 @@ impl Render2dGradientStop {
 
     /// Returns the normalized stop offset.
     #[must_use]
-    pub const fn offset(self) -> f32 {
+    pub const fn offset(self) -> f64 {
         self.offset
     }
 
@@ -198,7 +198,7 @@ impl Render2dLinearGradient {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Render2dRadialGradient {
     center: Render2dPoint,
-    radius: f32,
+    radius: f64,
     stops: Render2dGradientStops,
 }
 
@@ -210,7 +210,7 @@ impl Render2dRadialGradient {
     /// Returns a paint error for non-finite or non-positive radius.
     pub fn new(
         center: Render2dPoint,
-        radius: f32,
+        radius: f64,
         stops: Render2dGradientStops,
     ) -> Result<Self, Render2dPaintError> {
         if !radius.is_finite() {
@@ -234,7 +234,7 @@ impl Render2dRadialGradient {
 
     /// Returns positive radius.
     #[must_use]
-    pub const fn radius(&self) -> f32 {
+    pub const fn radius(&self) -> f64 {
         self.radius
     }
 
@@ -270,10 +270,10 @@ impl Render2dBrush {
 /// Offset and signed spread are logical semantic values; sigma is finite and non-negative.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Render2dDropShadow {
-    offset_x: f32,
-    offset_y: f32,
-    sigma: f32,
-    spread: f32,
+    offset_x: f64,
+    offset_y: f64,
+    sigma: f64,
+    spread: f64,
     color: Render2dColorRgba8,
 }
 
@@ -284,15 +284,15 @@ impl Render2dDropShadow {
     ///
     /// Returns a paint error for non-finite values or negative sigma.
     pub fn new(
-        offset_x: f32,
-        offset_y: f32,
-        sigma: f32,
-        spread: f32,
+        offset_x: f64,
+        offset_y: f64,
+        sigma: f64,
+        spread: f64,
         color: Render2dColorRgba8,
     ) -> Result<Self, Render2dPaintError> {
         if ![offset_x, offset_y, sigma, spread]
             .into_iter()
-            .all(f32::is_finite)
+            .all(f64::is_finite)
         {
             return Err(Render2dPaintError::NonFiniteScalar);
         }
@@ -310,25 +310,25 @@ impl Render2dDropShadow {
 
     /// Returns horizontal offset.
     #[must_use]
-    pub const fn offset_x(self) -> f32 {
+    pub const fn offset_x(self) -> f64 {
         self.offset_x
     }
 
     /// Returns vertical offset.
     #[must_use]
-    pub const fn offset_y(self) -> f32 {
+    pub const fn offset_y(self) -> f64 {
         self.offset_y
     }
 
     /// Returns non-negative Gaussian sigma.
     #[must_use]
-    pub const fn sigma(self) -> f32 {
+    pub const fn sigma(self) -> f64 {
         self.sigma
     }
 
     /// Returns signed Euclidean spread radius.
     #[must_use]
-    pub const fn spread(self) -> f32 {
+    pub const fn spread(self) -> f64 {
         self.spread
     }
 

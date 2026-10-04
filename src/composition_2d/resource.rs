@@ -125,7 +125,7 @@ pub struct Render2dFontBinding {
     face_index: u32,
     normalized_coords: Arc<[i16]>,
     faux_bold: bool,
-    faux_skew: Option<f32>,
+    faux_skew: Option<f64>,
 }
 
 impl Render2dFontBinding {
@@ -144,7 +144,7 @@ impl Render2dFontBinding {
         face_index: u32,
         normalized_coords: impl Into<Vec<i16>>,
         faux_bold: bool,
-        faux_skew: Option<f32>,
+        faux_skew: Option<f64>,
     ) -> Result<Self, Render2dResourceError> {
         let bytes = bytes.into();
         if bytes.is_empty() {
@@ -189,7 +189,7 @@ impl Render2dFontBinding {
 
     /// Returns exact faux skew when required.
     #[must_use]
-    pub const fn faux_skew(&self) -> Option<f32> {
+    pub const fn faux_skew(&self) -> Option<f64> {
         self.faux_skew
     }
 }
@@ -211,9 +211,9 @@ impl fmt::Debug for Render2dFontBinding {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Render2dGlyph {
     id: u32,
-    x: f32,
-    y: f32,
-    advance: f32,
+    x: f64,
+    y: f64,
+    advance: f64,
 }
 
 impl Render2dGlyph {
@@ -224,11 +224,11 @@ impl Render2dGlyph {
     /// Returns NonFiniteShapedTextScalar for non-finite position or advance.
     pub fn new(
         id: u32,
-        x: f32,
-        y: f32,
-        advance: f32,
+        x: f64,
+        y: f64,
+        advance: f64,
     ) -> Result<Self, Render2dResourceError> {
-        if [x, y, advance].into_iter().all(f32::is_finite) {
+        if [x, y, advance].into_iter().all(f64::is_finite) {
             Ok(Self { id, x, y, advance })
         } else {
             Err(Render2dResourceError::NonFiniteShapedTextScalar)
@@ -243,19 +243,19 @@ impl Render2dGlyph {
 
     /// Returns resource-local logical x position.
     #[must_use]
-    pub const fn x(self) -> f32 {
+    pub const fn x(self) -> f64 {
         self.x
     }
 
     /// Returns resource-local logical y position.
     #[must_use]
-    pub const fn y(self) -> f32 {
+    pub const fn y(self) -> f64 {
         self.y
     }
 
     /// Returns caller-owned logical inline advance.
     #[must_use]
-    pub const fn advance(self) -> f32 {
+    pub const fn advance(self) -> f64 {
         self.advance
     }
 }
@@ -268,7 +268,7 @@ impl Render2dGlyph {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Render2dShapedTextResource {
     font: Render2dFontBinding,
-    font_size: f32,
+    font_size: f64,
     glyphs: Arc<[Render2dGlyph]>,
 }
 
@@ -282,7 +282,7 @@ impl Render2dShapedTextResource {
     /// Returns NonFiniteShapedTextScalar for non-finite logical font size.
     pub fn new(
         font: Render2dFontBinding,
-        font_size: f32,
+        font_size: f64,
         glyphs: impl Into<Vec<Render2dGlyph>>,
     ) -> Result<Self, Render2dResourceError> {
         if !font_size.is_finite() {
@@ -304,7 +304,7 @@ impl Render2dShapedTextResource {
 
     /// Returns logical font size used during upstream shaping.
     #[must_use]
-    pub const fn font_size(&self) -> f32 {
+    pub const fn font_size(&self) -> f64 {
         self.font_size
     }
 
