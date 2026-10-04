@@ -28,9 +28,9 @@ The crate root also re-exports the ordinary progressive-disclosure API and
 generic result vocabulary. Proof-era `Deterministic*` vocabulary is private
 implementation terminology, not a second public renderer ontology.
 
-## Accepted 2D composition extension contract
+## 2D composition extension contract
 
-The accepted 2D composition extension is a target architecture for the
+The 2D composition extension is a target architecture for the
 separately sequenced production implementation. This section defines durable
 semantic and ownership authority; it does not claim that the complete 2D
 production subsystem is already implemented.
@@ -135,11 +135,8 @@ residency remain private.
 
 ### Private realization boundary
 
-Durable architecture does not authorize work or freeze implementation-library
-selection. Repository issues own delivery authority and evidence-backed
-selection of the current physical implementation.
-
-The implementation may privately use backend-neutral tessellation, analytic
+Concrete implementation-library selection is not part of this semantic
+contract. Implementations may privately use backend-neutral tessellation, analytic
 coverage, signed-distance fields, direct curves, intrinsic sampled resources,
 intermediate masks/targets, or other realization families when they preserve
 the admitted semantic obligation and lower through RunenGPU. Concrete library,
@@ -184,7 +181,6 @@ The 2D semantic/compiler responsibility remains inside the RunenRender crate.
 A separate public text/path/image renderer, `runen-render-2d` package, or
 backend-specific public namespace would duplicate composition authority without
 a demonstrated independent owner.
-
 
 ## Private maintained realization
 
@@ -289,8 +285,8 @@ reach-through is part of this architecture.
 New renderer capabilities should extend an existing semantic domain when it can
 express the required meaning losslessly. A new sibling semantic domain is
 justified only when forcing the behavior into an existing ontology would erase
-or falsify owned semantics; the accepted 2D composition contract is such a
-case.
+or falsify owned semantics; the 2D composition contract defined above is such
+a case.
 
 Private physical realization remains behind the owning semantic domain. A
 private acceleration structure, cache, atlas, compiled representation, GPU
