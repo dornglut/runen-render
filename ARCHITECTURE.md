@@ -38,9 +38,15 @@ production subsystem is already implemented.
 The reusable semantic root is one lifetime-neutral immutable 2D composition
 value. It represents resolved renderer meaning such as:
 
-- exact painter and atomic-group order;
-- generic 2D geometry, transforms, clips, fills, strokes, and opacity;
-- explicit color, gradient, source-over, and ordinary-shadow/effect meaning;
+- exact painter and atomic-group order, with group opacity applied once;
+- structural rectangle, rounded-rectangle, ellipse, and arbitrary path geometry,
+  including explicit fill rule, centered stroke, cap, join, and miter semantics;
+- item/group transforms, conjunctive clips, fills, strokes, and opacity;
+- straight-alpha sRGB literal color meaning, gradient interpolation in
+  premultiplied linear-sRGB, and ordered linear-light source-over composition;
+- ordinary-shadow/effect meaning derived from neutral semantic support geometry
+  rather than cached sampled source alpha, including effects from transparent
+  child color;
 - resolved image source/destination mapping plus immutable semantic resource
   identity;
 - already-shaped glyph occurrences plus exact immutable font, variation,
@@ -112,44 +118,39 @@ fail with an owner-oriented structural/capability outcome.
 Text is shaped before RunenRender. The renderer must not perform fallback,
 line breaking, reshaping, font rediscovery, or metric authority. The initial
 admitted text class is already-shaped scalable monochrome outline content with
-supported exact synthesis, privately realized through an MSDF/MTSDF-family
-field representation. Missing compatible field state is reconstructed
-synchronously from the immutable shaped resource before execution; a second
-vector/alpha realization is not required solely for cache misses.
+supported exact synthesis. Its physical outline/field/coverage preparation is
+renderer-private. Missing compatible derived state is reconstructed from the
+immutable shaped resource before execution; another realization family is not
+required solely for cache misses.
 
 Intrinsic COLR, SVG, bitmap glyph content and unsupported synthesis remain
 distinct capability classes and fail closed until an exact separately accepted
 realization exists. They must not be silently flattened to monochrome outline
 semantics.
 
-The initial image resource contract admits the known-consumer immutable RGBA8
-sRGB payload plus exact intrinsic extent and resolved source/destination
-mapping. Its sampled texture, upload, cache, and device residency remain
-private.
+The initial admitted image payload class is immutable tightly packed
+unpremultiplied RGBA8 sRGB plus exact non-zero intrinsic extent and resolved
+source/destination mapping. Sampled textures, uploads, caches, and device
+residency remain private.
 
-### Initial private realization disposition
+### Private realization boundary
 
-The first production implementation is authorized to target this private
-portfolio without making the listed implementation families public semantics:
+Durable architecture does not authorize work or freeze implementation-library
+selection. Repository issues own delivery authority and evidence-backed
+selection of the current physical implementation.
 
-- general fills, paths, strokes, clip/support geometry: Lyon-class
-  backend-neutral tessellation lowered into RunenGPU geometry work;
-- scalable monochrome outline text: MSDF/MTSDF-family retained field
-  realization with synchronous cache-miss reconstruction;
-- images: intrinsic sampled-resource realization;
-- atomic groups, clips, and ordinary shadows: private intermediate/mask work
-  derived from the same ordered semantic composition.
+The implementation may privately use backend-neutral tessellation, analytic
+coverage, signed-distance fields, direct curves, intrinsic sampled resources,
+intermediate masks/targets, or other realization families when they preserve
+the admitted semantic obligation and lower through RunenGPU. Concrete library,
+algorithm, threshold, atlas, cache, batching, and pass-topology choices remain
+replaceable implementation policy.
 
-Analytic simple-shape specialization, Sparse Strips, direct-curve rendering,
-direct-vector/hinted/alpha text alternatives, and other acceleration families
-remain deferred replaceable implementation options. They require new evidence
-when a real workload or capability need makes their additional machinery
-material; they do not require a public-contract change when they preserve the
-same admitted semantics.
-
-No current architectural decision claims native-GPU superiority for one
-realization family. Concrete future performance selections require evidence
-appropriate to the claim.
+Adding, replacing, or deleting one private realization family does not require a
+public semantic-contract change when the replacement preserves the same
+admitted semantics. A new performance-driven selection requires evidence
+appropriate to the claim; the architecture itself does not claim native-GPU
+superiority for one family.
 
 ### Failure, evidence, and evolution
 
