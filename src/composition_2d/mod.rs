@@ -786,7 +786,10 @@ mod tests {
         let id = Render2dResourceId::new(3).expect("id");
         let extent = Render2dPixelExtent::new(8, 8).expect("extent");
         let source = Render2dImageSourceRect::new(0.5, 1.25, 0.0, 2.5).expect("source");
-        let patch = Render2dImagePatch::new(source, Render2dRect::new(1.0, 2.0, 0.0, 4.0).expect("destination"));
+        let patch = Render2dImagePatch::new(
+            source,
+            Render2dRect::new(1.0, 2.0, 0.0, 4.0).expect("destination"),
+        );
         let image = Render2dImagePrimitive::new(id, extent, vec![patch]).expect("image");
         assert_eq!(image.patches(), &[patch]);
     }
@@ -801,10 +804,7 @@ mod tests {
         );
         assert_eq!(
             Render2dImagePrimitive::new(id, extent, vec![patch]),
-            Err(Render2dCompositionError::ImageSourceOutsideIntrinsicExtent {
-                id,
-                patch_index: 0,
-            })
+            Err(Render2dCompositionError::ImageSourceOutsideIntrinsicExtent { id, patch_index: 0 })
         );
     }
 

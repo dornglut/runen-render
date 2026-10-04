@@ -222,12 +222,7 @@ impl Render2dGlyph {
     /// # Errors
     ///
     /// Returns NonFiniteShapedTextScalar for non-finite position or advance.
-    pub fn new(
-        id: u32,
-        x: f64,
-        y: f64,
-        advance: f64,
-    ) -> Result<Self, Render2dResourceError> {
+    pub fn new(id: u32, x: f64, y: f64, advance: f64) -> Result<Self, Render2dResourceError> {
         if [x, y, advance].into_iter().all(f64::is_finite) {
             Ok(Self { id, x, y, advance })
         } else {
@@ -540,9 +535,8 @@ mod tests {
     fn empty_glyph_sequence_is_valid_shaped_semantic_content() {
         let font =
             Render2dFontBinding::new(vec![1], 0, Vec::<i16>::new(), false, None).expect("font");
-        let shaped =
-            Render2dShapedTextResource::new(font, 16.0, Vec::<Render2dGlyph>::new())
-                .expect("shaped resource");
+        let shaped = Render2dShapedTextResource::new(font, 16.0, Vec::<Render2dGlyph>::new())
+            .expect("shaped resource");
         assert!(shaped.glyphs().is_empty());
     }
 }

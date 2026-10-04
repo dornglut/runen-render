@@ -2,9 +2,9 @@ use runen_render::composition_2d::{
     Render2dAffineTransform, Render2dColorRgba8, Render2dComposition, Render2dEntry,
     Render2dFontBinding, Render2dGlyph, Render2dImagePatch, Render2dImagePrimitive,
     Render2dImageResource, Render2dImageSourceRect, Render2dItem, Render2dOpacity,
-    Render2dPixelExtent, Render2dPoint, Render2dPrimitive, Render2dRect,
-    Render2dResourceBinding, Render2dResourceBindings, Render2dResourceId,
-    Render2dResourceValue, Render2dShapedTextPrimitive, Render2dShapedTextResource,
+    Render2dPixelExtent, Render2dPoint, Render2dPrimitive, Render2dRect, Render2dResourceBinding,
+    Render2dResourceBindings, Render2dResourceId, Render2dResourceValue,
+    Render2dShapedTextPrimitive, Render2dShapedTextResource,
 };
 
 #[test]
@@ -44,12 +44,10 @@ fn source_neutral_2d_semantics_are_publicly_composable() {
 
     let image_resource =
         Render2dImageResource::new(image_extent, vec![255; 16]).expect("image resource");
-    let font =
-        Render2dFontBinding::new(vec![0, 1, 2, 3], 0, Vec::<i16>::new(), false, None)
-            .expect("font facts");
+    let font = Render2dFontBinding::new(vec![0, 1, 2, 3], 0, Vec::<i16>::new(), false, None)
+        .expect("font facts");
     let glyph = Render2dGlyph::new(42, 0.0, 0.0, 9.0).expect("glyph");
-    let shaped =
-        Render2dShapedTextResource::new(font, 16.0, vec![glyph]).expect("shaped resource");
+    let shaped = Render2dShapedTextResource::new(font, 16.0, vec![glyph]).expect("shaped resource");
 
     let bindings = Render2dResourceBindings::new(vec![
         Render2dResourceBinding::new(

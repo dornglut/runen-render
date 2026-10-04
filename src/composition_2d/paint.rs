@@ -84,10 +84,7 @@ impl Render2dGradientStop {
     /// # Errors
     ///
     /// Returns [`Render2dPaintError`] for non-finite or out-of-range offset.
-    pub fn new(
-        offset: f64,
-        color: Render2dColorRgba8,
-    ) -> Result<Self, Render2dPaintError> {
+    pub fn new(offset: f64, color: Render2dColorRgba8) -> Result<Self, Render2dPaintError> {
         if !offset.is_finite() {
             return Err(Render2dPaintError::NonFiniteScalar);
         }
@@ -123,17 +120,12 @@ impl Render2dGradientStops {
     /// # Errors
     ///
     /// Returns [`Render2dPaintError`] for fewer than two stops or decreasing offsets.
-    pub fn new(
-        stops: impl Into<Vec<Render2dGradientStop>>,
-    ) -> Result<Self, Render2dPaintError> {
+    pub fn new(stops: impl Into<Vec<Render2dGradientStop>>) -> Result<Self, Render2dPaintError> {
         let stops = stops.into();
         if stops.len() < 2 {
             return Err(Render2dPaintError::TooFewGradientStops);
         }
-        if stops
-            .windows(2)
-            .any(|pair| pair[0].offset > pair[1].offset)
-        {
+        if stops.windows(2).any(|pair| pair[0].offset > pair[1].offset) {
             return Err(Render2dPaintError::DecreasingGradientOffsets);
         }
         Ok(Self(stops.into()))
@@ -369,12 +361,8 @@ impl fmt::Display for Render2dPaintError {
                 "2D gradient offset must be in the inclusive range 0..=1"
             }
             Self::TooFewGradientStops => "2D gradient requires at least two stops",
-            Self::DecreasingGradientOffsets => {
-                "2D gradient stop offsets must be nondecreasing"
-            }
-            Self::EqualLinearGradientEndpoints => {
-                "2D linear gradient endpoints must differ"
-            }
+            Self::DecreasingGradientOffsets => "2D gradient stop offsets must be nondecreasing",
+            Self::EqualLinearGradientEndpoints => "2D linear gradient endpoints must differ",
             Self::NonPositiveRadialRadius => "2D radial gradient radius must be positive",
             Self::NegativeShadowSigma => "2D shadow sigma must be non-negative",
         })
@@ -389,21 +377,16 @@ mod tests {
 
     #[test]
     fn equal_gradient_offsets_are_preserved_for_hard_stops() {
-        let first =
-            Render2dGradientStop::new(0.5, Render2dColorRgba8::BLACK).expect("stop");
-        let second =
-            Render2dGradientStop::new(0.5, Render2dColorRgba8::WHITE).expect("stop");
-        let stops =
-            Render2dGradientStops::new(vec![first, second]).expect("stable hard stop");
+        let first = Render2dGradientStop::new(0.5, Render2dColorRgba8::BLACK).expect("stop");
+        let second = Render2dGradientStop::new(0.5, Render2dColorRgba8::WHITE).expect("stop");
+        let stops = Render2dGradientStops::new(vec![first, second]).expect("stable hard stop");
         assert_eq!(stops.as_slice(), &[first, second]);
     }
 
     #[test]
     fn decreasing_gradient_offsets_reject() {
-        let first =
-            Render2dGradientStop::new(0.8, Render2dColorRgba8::BLACK).expect("stop");
-        let second =
-            Render2dGradientStop::new(0.2, Render2dColorRgba8::WHITE).expect("stop");
+        let first = Render2dGradientStop::new(0.8, Render2dColorRgba8::BLACK).expect("stop");
+        let second = Render2dGradientStop::new(0.2, Render2dColorRgba8::WHITE).expect("stop");
         assert_eq!(
             Render2dGradientStops::new(vec![first, second]),
             Err(Render2dPaintError::DecreasingGradientOffsets)
