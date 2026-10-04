@@ -434,29 +434,48 @@ impl Render2dEntry {
 
 /// Exact semantic resource requirement derived from immutable composition content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Render2dResourceRequirement {
-    id: Render2dResourceId,
-    kind: Render2dResourceKind,
-    image_intrinsic_extent: Option<Render2dPixelExtent>,
+pub enum Render2dResourceRequirement {
+    /// Exact immutable RGBA8 sRGB image plus intrinsic extent.
+    ImageRgba8Srgb {
+        /// Semantic resource identity.
+        id: Render2dResourceId,
+        /// Exact intrinsic pixel extent required by resolved image mapping.
+        intrinsic_extent: Render2dPixelExtent,
+    },
+    /// Exact already-shaped text resource.
+    ShapedText {
+        /// Semantic resource identity.
+        id: Render2dResourceId,
+    },
 }
 
 impl Render2dResourceRequirement {
     /// Returns semantic identity.
     #[must_use]
     pub const fn id(self) -> Render2dResourceId {
-        self.id
+        match self {
+            Self::ImageRgba8Srgb { id, .. } | Self::ShapedText { id } => id,
+        }
     }
 
     /// Returns required semantic resource class.
     #[must_use]
     pub const fn kind(self) -> Render2dResourceKind {
-        self.kind
+        match self {
+            Self::ImageRgba8Srgb { .. } => Render2dResourceKind::ImageRgba8Srgb,
+            Self::ShapedText { .. } => Render2dResourceKind::ShapedText,
+        }
     }
 
     /// Returns exact intrinsic image extent when this requirement is image-kind.
     #[must_use]
     pub const fn image_intrinsic_extent(self) -> Option<Render2dPixelExtent> {
-        self.image_intrinsic_extent
+        match self {
+            Self::ImageRgba8Srgb {
+                intrinsic_extent, ..
+            } => Some(intrinsic_extent),
+            Self::ShapedText { .. } => None,
+        }
     }
 }
 
@@ -489,20 +508,17 @@ impl Render2dComposition {
                     Render2dPrimitive::Image(image) => {
                         collect_requirement(
                             &mut requirements,
-                            Render2dResourceRequirement {
+                            Render2dResourceRequirement::ImageRgba8Srgb {
                                 id: image.resource_id(),
-                                kind: Render2dResourceKind::ImageRgba8Srgb,
-                                image_intrinsic_extent: Some(image.intrinsic_extent()),
+                                intrinsic_extent: image.intrinsic_extent(),
                             },
                         )?;
                     }
                     Render2dPrimitive::ShapedText(text) => {
                         collect_requirement(
                             &mut requirements,
-                            Render2dResourceRequirement {
+                            Render2dResourceRequirement::ShapedText {
                                 id: text.resource_id(),
-                                kind: Render2dResourceKind::ShapedText,
-                                image_intrinsic_extent: None,
                             },
                         )?;
                     }
@@ -544,32 +560,41 @@ impl Render2dComposition {
         bindings: &Render2dResourceBindings,
     ) -> Result<(), Render2dResourceBindingError> {
         for requirement in self.resource_requirements.iter().copied() {
-            let Some(value) = bindings.get(requirement.id) else {
+            let id = requirement.id();
+            let expected_kind = requirement.kind();
+            let Some(value) = bindings.get(id) else {
                 return Err(Render2dResourceBindingError::MissingResource {
-                    id: requirement.id,
-                    expected: requirement.kind,
+                    id,
+                    expected: expected_kind,
                 });
             };
-            let actual = value.kind();
-            if actual != requirement.kind {
-                return Err(Render2dResourceBindingError::ResourceKindMismatch {
-                    id: requirement.id,
-                    expected: requirement.kind,
-                    actual,
-                });
-            }
 
-            if let (
-                Some(expected),
-                Render2dResourceValue::ImageRgba8Srgb(image),
-            ) = (requirement.image_intrinsic_extent, value)
-            {
-                let actual = image.extent();
-                if actual != expected {
-                    return Err(Render2dResourceBindingError::ImageIntrinsicExtentMismatch {
-                        id: requirement.id,
-                        expected,
-                        actual,
+            match (requirement, value) {
+                (
+                    Render2dResourceRequirement::ImageRgba8Srgb {
+                        intrinsic_extent: expected,
+                        ..
+                    },
+                    Render2dResourceValue::ImageRgba8Srgb(image),
+                ) => {
+                    let actual = image.extent();
+                    if actual != expected {
+                        return Err(Render2dResourceBindingError::ImageIntrinsicExtentMismatch {
+                            id,
+                            expected,
+                            actual,
+                        });
+                    }
+                }
+                (
+                    Render2dResourceRequirement::ShapedText { .. },
+                    Render2dResourceValue::ShapedText(_),
+                ) => {}
+                (_, value) => {
+                    return Err(Render2dResourceBindingError::ResourceKindMismatch {
+                        id,
+                        expected: expected_kind,
+                        actual: value.kind(),
                     });
                 }
             }
@@ -582,31 +607,45 @@ fn collect_requirement(
     requirements: &mut BTreeMap<Render2dResourceId, Render2dResourceRequirement>,
     requirement: Render2dResourceRequirement,
 ) -> Result<(), Render2dCompositionError> {
-    if let Some(existing) = requirements.get(&requirement.id).copied() {
-        if existing.kind != requirement.kind {
-            return Err(Render2dCompositionError::ConflictingResourceKinds {
-                id: requirement.id,
-                first: existing.kind,
-                second: requirement.kind,
-            });
-        }
-        if existing.image_intrinsic_extent != requirement.image_intrinsic_extent {
-            let (Some(first), Some(second)) = (
-                existing.image_intrinsic_extent,
-                requirement.image_intrinsic_extent,
-            ) else {
-                unreachable!("equal image resource kinds carry image extents");
-            };
-            return Err(Render2dCompositionError::ConflictingImageIntrinsicExtent {
-                id: requirement.id,
-                first,
-                second,
-            });
+    let id = requirement.id();
+    if let Some(existing) = requirements.get(&id).copied() {
+        match (existing, requirement) {
+            (
+                Render2dResourceRequirement::ImageRgba8Srgb {
+                    intrinsic_extent: first,
+                    ..
+                },
+                Render2dResourceRequirement::ImageRgba8Srgb {
+                    intrinsic_extent: second,
+                    ..
+                },
+            ) if first != second => {
+                return Err(Render2dCompositionError::ConflictingImageIntrinsicExtent {
+                    id,
+                    first,
+                    second,
+                });
+            }
+            (
+                Render2dResourceRequirement::ImageRgba8Srgb { .. },
+                Render2dResourceRequirement::ShapedText { .. },
+            )
+            | (
+                Render2dResourceRequirement::ShapedText { .. },
+                Render2dResourceRequirement::ImageRgba8Srgb { .. },
+            ) => {
+                return Err(Render2dCompositionError::ConflictingResourceKinds {
+                    id,
+                    first: existing.kind(),
+                    second: requirement.kind(),
+                });
+            }
+            _ => {}
         }
         return Ok(());
     }
 
-    requirements.insert(requirement.id, requirement);
+    requirements.insert(id, requirement);
     Ok(())
 }
 
