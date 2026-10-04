@@ -17,6 +17,7 @@ const VIEWPORT_WIDTH: u16 = 1024;
 const VIEWPORT_HEIGHT: u16 = 768;
 const REPEATS: usize = 5;
 const ITERATIONS: usize = 64;
+const TIMING_SAMPLES: usize = 11;
 const SCALES: [f32; 4] = [0.75, 1.0, 2.0, 4.0];
 
 #[derive(Clone, Copy)]
@@ -75,6 +76,54 @@ struct Stats {
     primary_count: usize,
     secondary_count: usize,
     bytes: usize,
+}
+
+struct Timing {
+    samples: Vec<u128>,
+    min: u128,
+    median: u128,
+    p90: u128,
+    max: u128,
+}
+
+fn summarize_timing(mut samples: Vec<u128>) -> Timing {
+    samples.sort_unstable();
+    let last = samples.len() - 1;
+    Timing {
+        min: samples[0],
+        median: samples[samples.len() / 2],
+        p90: samples[last * 9 / 10],
+        max: samples[last],
+        samples,
+    }
+}
+
+fn sample_lyon(
+    case: &Case,
+    scale: f32,
+    changing: bool,
+) -> Result<Timing, Box<dyn Error>> {
+    let mut samples = Vec::with_capacity(TIMING_SAMPLES);
+    for _ in 0..TIMING_SAMPLES {
+        samples.push(time_lyon(case, scale, changing)?);
+    }
+    Ok(summarize_timing(samples))
+}
+
+fn sample_vello(case: &Case, scale: f32, changing: bool) -> Timing {
+    let mut samples = Vec::with_capacity(TIMING_SAMPLES);
+    for _ in 0..TIMING_SAMPLES {
+        samples.push(time_vello(case, scale, changing));
+    }
+    summarize_timing(samples)
+}
+
+fn format_samples(samples: &[u128]) -> String {
+    samples
+        .iter()
+        .map(u128::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn xy(x: f32, y: f32, scale: f32, translate: (f32, f32)) -> (f32, f32) {
@@ -479,15 +528,32 @@ fn op_label(op: Operation) -> &'static str {
     }
 }
 
-fn report(case: &Case, scale: f32, name: &str, stats: Stats, reused: u128, changing: u128) {
+fn report(
+    case: &Case,
+    scale: f32,
+    name: &str,
+    stats: Stats,
+    reused: &Timing,
+    changing: &Timing,
+) {
     println!(
-        "candidate={name} case={} operation={} scale={scale:.2} hash={:016x} primary_count={} secondary_count={} output_bytes={} reused_ns_per_iter={reused} changing_ns_per_iter={changing}",
+        "candidate={name} case={} operation={} scale={scale:.2} hash={:016x} primary_count={} secondary_count={} output_bytes={} reused_min_ns={} reused_median_ns={} reused_p90_ns={} reused_max_ns={} reused_samples_ns={} changing_min_ns={} changing_median_ns={} changing_p90_ns={} changing_max_ns={} changing_samples_ns={}",
         case.label,
         op_label(case.operation),
         stats.hash,
         stats.primary_count,
         stats.secondary_count,
         stats.bytes,
+        reused.min,
+        reused.median,
+        reused.p90,
+        reused.max,
+        format_samples(&reused.samples),
+        changing.min,
+        changing.median,
+        changing.p90,
+        changing.max,
+        format_samples(&changing.samples),
     );
 }
 
@@ -658,7 +724,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         VIEWPORT_WIDTH, VIEWPORT_HEIGHT, REPEATS, ITERATIONS
     );
     println!(
-        "scope=cpu_preprocessing_and_output_pressure_only no_gpu_performance_claim=true vello_common_production_adoption=false"
+        "scope=cpu_preprocessing_and_output_pressure_only no_gpu_performance_claim=true output_bytes_not_total_render_cost=true vello_common_production_adoption=false"
     );
 
     let cases = corpus();
@@ -666,31 +732,36 @@ fn main() -> Result<(), Box<dyn Error>> {
     for case in &cases {
         for scale in SCALES {
             let (lyon, vello) = verify(case, scale)?;
+            let lyon_reused = sample_lyon(case, scale, false)?;
+            let lyon_changing = sample_lyon(case, scale, true)?;
+            let vello_reused = sample_vello(case, scale, false);
+            let vello_changing = sample_vello(case, scale, true);
             report(
                 case,
                 scale,
                 "lyon_tessellation@1.0.22",
                 lyon,
-                time_lyon(case, scale, false)?,
-                time_lyon(case, scale, true)?,
+                &lyon_reused,
+                &lyon_changing,
             );
             report(
                 case,
                 scale,
                 "vello_common@0.3.0-sparse-strips",
                 vello,
-                time_vello(case, scale, false),
-                time_vello(case, scale, true),
+                &vello_reused,
+                &vello_changing,
             );
             measurements += 2;
         }
     }
     println!(
-        "summary cases={} scales={} measurements={} deterministic_repeats={} timed_iterations_per_mode={}",
+        "summary cases={} scales={} measurements={} deterministic_repeats={} timing_samples={} timed_iterations_per_sample={}",
         cases.len(),
         SCALES.len(),
         measurements,
         REPEATS,
+        TIMING_SAMPLES,
         ITERATIONS
     );
     Ok(())
