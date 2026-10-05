@@ -22,10 +22,13 @@ const TEMPORAL_MODULE_ID: u64 = 2;
 const TEMPORAL_SOURCE_UNIT_ID: u64 = 2;
 const CAMERA_MODULE_ID: u64 = 3;
 const CAMERA_SOURCE_UNIT_ID: u64 = 3;
+const SHAPED_TEXT_MODULE_ID: u64 = 4;
+const SHAPED_TEXT_SOURCE_UNIT_ID: u64 = 4;
 
 pub(crate) const MAINTAINED_EVALUATOR_REVISION: u64 = 3;
 pub(crate) const TEMPORAL_RECONSTRUCTION_REVISION: u32 = 2;
 pub(crate) const CAMERA_REPROJECTION_REVISION: u32 = 3;
+pub(crate) const SHAPED_TEXT_REVISION: u64 = 1;
 
 pub(crate) const SCENE_QUERY_WGSL: &str = include_str!("shaders/scene_query.wgsl");
 pub(crate) static EVALUATOR_WGSL: LazyLock<String> = LazyLock::new(|| {
@@ -42,16 +45,19 @@ pub(crate) static CAMERA_REPROJECTION_WGSL: LazyLock<String> = LazyLock::new(|| 
         include_str!("shaders/camera_reprojection.wgsl")
     )
 });
+pub(crate) const SHAPED_TEXT_WGSL: &str = include_str!("shaders/shaped_text.wgsl");
 
 static EVALUATOR_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
 static TEMPORAL_RECONSTRUCTION_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
 static CAMERA_REPROJECTION_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
+static SHAPED_TEXT_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MaintainedShaderProgram {
     Evaluator,
     TemporalReconstruction,
     CameraReprojection,
+    ShapedText,
 }
 
 impl MaintainedShaderProgram {
@@ -60,6 +66,7 @@ impl MaintainedShaderProgram {
             Self::Evaluator => "maintained evaluator",
             Self::TemporalReconstruction => "temporal reconstruction",
             Self::CameraReprojection => "camera reprojection",
+            Self::ShapedText => "2D shaped text",
         }
     }
 
@@ -68,6 +75,7 @@ impl MaintainedShaderProgram {
             Self::Evaluator => "runenrender.maintained.deterministic",
             Self::TemporalReconstruction => "runenrender.maintained.temporal_reconstruction",
             Self::CameraReprojection => "runenrender.maintained.camera_reprojection",
+            Self::ShapedText => "runenrender.maintained.shaped_text",
         }
     }
 
@@ -76,6 +84,7 @@ impl MaintainedShaderProgram {
             Self::Evaluator => EVALUATOR_MODULE_ID,
             Self::TemporalReconstruction => TEMPORAL_MODULE_ID,
             Self::CameraReprojection => CAMERA_MODULE_ID,
+            Self::ShapedText => SHAPED_TEXT_MODULE_ID,
         }
     }
 
@@ -84,6 +93,7 @@ impl MaintainedShaderProgram {
             Self::Evaluator => EVALUATOR_SOURCE_UNIT_ID,
             Self::TemporalReconstruction => TEMPORAL_SOURCE_UNIT_ID,
             Self::CameraReprojection => CAMERA_SOURCE_UNIT_ID,
+            Self::ShapedText => SHAPED_TEXT_SOURCE_UNIT_ID,
         }
     }
 }
@@ -207,6 +217,7 @@ pub(crate) struct RenderMaintainedProgramSources {
     evaluator: RenderMaintainedProgram,
     temporal_reconstruction: RenderMaintainedProgram,
     camera_reprojection: RenderMaintainedProgram,
+    shaped_text: RenderMaintainedProgram,
 }
 
 #[cfg(test)]
@@ -223,6 +234,10 @@ impl RenderMaintainedProgramSources {
         self.camera_reprojection.admitted()
     }
 
+    pub(crate) fn shaped_text(&self) -> &GpuAdmittedProgramSource {
+        self.shaped_text.admitted()
+    }
+
     pub(crate) fn evaluator_artifact(&self) -> &ShaderArtifact {
         self.evaluator.artifact()
     }
@@ -233,6 +248,10 @@ impl RenderMaintainedProgramSources {
 
     pub(crate) fn camera_reprojection_artifact(&self) -> &ShaderArtifact {
         self.camera_reprojection.artifact()
+    }
+
+    pub(crate) fn shaped_text_artifact(&self) -> &ShaderArtifact {
+        self.shaped_text.artifact()
     }
 }
 
@@ -279,6 +298,18 @@ pub(crate) fn build_camera_reprojection_program(
     })
 }
 
+#[cfg(test)]
+pub(crate) fn build_shaped_text_program(
+    revision: u64,
+    wgsl: &str,
+) -> Result<RenderMaintainedProgram, RenderMaintainedProgramBuildError> {
+    build_maintained_program(MaintainedShaderSpec {
+        program: MaintainedShaderProgram::ShapedText,
+        revision,
+        wgsl,
+    })
+}
+
 pub(crate) fn retained_maintained_evaluator_source()
 -> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
     retained_program_source(
@@ -311,6 +342,18 @@ pub(crate) fn retained_camera_reprojection_source()
             program: MaintainedShaderProgram::CameraReprojection,
             revision: u64::from(CAMERA_REPROJECTION_REVISION),
             wgsl: CAMERA_REPROJECTION_WGSL.as_str(),
+        },
+    )
+}
+
+pub(crate) fn retained_shaped_text_source()
+-> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
+    retained_program_source(
+        &SHAPED_TEXT_PROGRAM,
+        MaintainedShaderSpec {
+            program: MaintainedShaderProgram::ShapedText,
+            revision: SHAPED_TEXT_REVISION,
+            wgsl: SHAPED_TEXT_WGSL,
         },
     )
 }
@@ -373,6 +416,7 @@ pub(crate) fn build_maintained_program_sources()
             u64::from(CAMERA_REPROJECTION_REVISION),
             CAMERA_REPROJECTION_WGSL.as_str(),
         )?,
+        shaped_text: build_shaped_text_program(SHAPED_TEXT_REVISION, SHAPED_TEXT_WGSL)?,
     })
 }
 fn compile_exact_program(
@@ -469,4 +513,20 @@ fn admit_artifact(
         _artifact: artifact,
         admitted,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shaped_text_program_is_part_of_the_maintained_exact_wgsl_set() {
+        let programs = build_maintained_program_sources()
+            .expect("all maintained RunenRender programs must compile and admit");
+        let _ = programs.shaped_text();
+        assert_eq!(
+            programs.shaped_text_artifact().canonical_wgsl().as_bytes(),
+            SHAPED_TEXT_WGSL.as_bytes()
+        );
+    }
 }

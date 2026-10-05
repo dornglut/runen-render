@@ -21,6 +21,13 @@ const REQUIRED_FILES: &[&str] = &[
     "rust-toolchain.toml",
     "src/lib.rs",
     "tests/composition_2d_public_api.rs",
+    "tests/execution_2d_public_api.rs",
+    "tests/fixtures/f2_bitmap.ttf",
+    "tests/fixtures/f2_colrv0.ttf",
+    "tests/fixtures/f2_colrv1.ttf",
+    "tests/fixtures/f2_outline.ttf",
+    "tests/fixtures/f2_svg.ttf",
+    "tests/fixtures/generate_f2_fonts.py",
     "xtask/Cargo.toml",
     "xtask/src/main.rs",
 ];
@@ -196,8 +203,10 @@ fn validate_product_identity(root: &Path) -> Result<(), String> {
 fn validate_source_contract(root: &Path) -> Result<(), String> {
     let manifest = read_file(root, "Cargo.toml")?;
     for required in [
+        "bymsdfgen-core = { version = \"=0.1.1\", default-features = false }",
         "runen-gpu = { git = \"https://github.com/dornglut/runen-gpu\", rev = \"822d7b1d90078ec8155eaab49cd8e0f8a916c244\" }",
         "runen-shader = { git = \"https://github.com/dornglut/runen-shader\", rev = \"406f8165da92caa2d296b3a2f774ba534279870d\" }",
+        "skrifa = { version = \"=0.44.0\", default-features = false, features = [\"std\"] }",
     ] {
         require_contains("Cargo.toml", &manifest, required)?;
     }
@@ -256,6 +265,7 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
         "pub mod appearance;",
         "pub mod composition_2d;",
         "pub mod derived_state;",
+        "pub mod execution_2d;",
         "pub mod field_input;",
         "pub mod lowering;",
         "pub mod method;",
@@ -300,6 +310,10 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
             "tests/composition_2d_public_api.rs",
             "2D public package consumer",
         ),
+        (
+            "tests/execution_2d_public_api.rs",
+            "2D execution public package consumer",
+        ),
     ] {
         let public_consumer = read_file(root, path)?;
         if public_consumer.contains("Deterministic") {
@@ -317,6 +331,7 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
         "WGPU_BACKEND=vulkan",
         "cargo +stable test -p runen-render",
         "--test ordinary_public_api",
+        "--test execution_2d_public_api",
     ] {
         require_contains(".github/workflows/validation.yml", &workflow, required)?;
     }
