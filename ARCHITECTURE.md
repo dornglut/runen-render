@@ -30,10 +30,12 @@ implementation terminology, not a second public renderer ontology.
 
 ## 2D composition extension contract
 
-The 2D composition extension is a target architecture for the
-separately sequenced production implementation. This section defines durable
-semantic and ownership authority; it does not claim that the complete 2D
-production subsystem is already implemented.
+The 2D composition extension defines durable semantic and ownership authority.
+The immutable composition/resource model is implemented, and the initial F2
+execution slice realizes the bounded direct-root shaped-text subset described
+below. This section does not claim that the complete 2D production subsystem,
+other primitive families, groups, clips, effects, or native presentation are
+already implemented.
 
 The reusable semantic root is one lifetime-neutral immutable 2D composition
 value. It represents resolved renderer meaning such as:
@@ -128,6 +130,32 @@ distinct capability classes and fail closed until an exact separately accepted
 realization exists. They must not be silently flattened to monochrome outline
 semantics.
 
+The initial F2 production execution boundary is `execution_2d`. It accepts a
+caller-owned RunenGPU color view plus logical canvas extent and raster scale,
+admits only the exact bounded direct-root shaped-text subset, and returns
+composable RunenGPU work wrapped with source-neutral execution correlation.
+Retained semantic identity observations are separate from the private derived
+field cache: cache discard may remove derived MSDF fields but cannot make an
+already-observed resource identity legal to rebind. F2 retains reconstructible
+CPU-side field data by semantic resource and quality tier while GPU
+field textures, vertex buffers, sampler state, and draw bindings are
+contribution-local disposable realization state. No global atlas or device
+residency authority is introduced by this slice.
+
+A painting F2 contribution prepares one private RunenGPU render operation containing
+painter-ordered glyph draws. Consuming it appends one renderer-authored node to a
+caller-owned RunenGPU fragment, or authors a separate fragment. Both paths use
+the same lowering. Caller-owned `Render2dWorkBinding` keys connect
+prior target contents and the resulting target output through RunenGPU's typed
+import/export relationships. They are graph wiring, not semantic identity or
+execution evidence. Non-painting contributions expose no fabricated output;
+callers retain the prior target-content relationship when no render work exists.
+Successful contribution evidence requires exact
+membership of that authored `GpuWorkNodeId` in the downstream-composed
+submission and terminal `Completed` status from that same submission. Valid
+non-painting content authors no synthetic draw or sentinel and therefore has no
+execution token.
+
 The initial admitted image payload class is immutable tightly packed
 unpremultiplied RGBA8 sRGB plus exact non-zero intrinsic extent and resolved
 source/destination mapping. Sampled textures, uploads, caches, and device
@@ -167,8 +195,11 @@ private cache/backend identity as source truth.
 
 RunenRender execution evidence identifies the admitted/executed renderer
 contribution without depending on source-framework publication IDs or native
-Present policy. The downstream combining boundary owns the correspondence
-between that contribution, the source publication, and terminal presentation.
+Present policy. For the initial F2 slice, that evidence is exact authored
+RunenGPU work-node membership plus terminal completion, not labels, cache
+identity, readback contents, or sentinel inference. The downstream combining
+boundary owns the correspondence between that contribution, the source
+publication, and terminal presentation.
 
 While RunenRender is pre-1.0 and consumers are revision-pinned, a public 2D
 semantic change requires explicit RunenRender authority, a validated accepted
@@ -206,6 +237,10 @@ runtime
 │  ├─ prepare        render/output orchestration
 │  ├─ submission     RunenGPU submission
 │  └─ errors         typed owner-preserving error projection
+├─ execution_2d
+│  ├─ intrinsic      fail-closed font/glyph representation admission
+│  ├─ field          retained reconstructible shaped-outline/MSDF field realization
+│  └─ lowering       contribution-local RunenGPU resources, ordered draws, and work
 ├─ capture
 └─ verification
 ```

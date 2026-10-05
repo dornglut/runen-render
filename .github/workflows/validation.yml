@@ -96,3 +96,5 @@ jobs:
           cargo +stable test -p runen-render             --lib camera_history_proof             --locked -- --nocapture --test-threads=1
 
           cargo +stable test -p runen-render             --test ordinary_public_api             --locked -- --nocapture --test-threads=1
+
+          cargo +stable test -p runen-render             --test execution_2d_public_api             --locked -- --nocapture --test-threads=1

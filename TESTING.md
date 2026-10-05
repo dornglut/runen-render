@@ -11,7 +11,8 @@ Repository-local `xtask` owns the merge-readiness baseline. It proves:
 - a clean starting repository and required authority/source files;
 - RunenRender package/repository/version/license/MSRV identity;
 - complete GPLv3 license text;
-- exact immutable RunenGPU and RunenShader dependency revisions;
+- exact immutable RunenGPU and RunenShader dependency revisions plus exact
+  private F2 shaped-text realization dependency declarations;
 - no moving sibling branch/tag dependency;
 - public semantic modules plus private runtime/proof ownership boundaries;
 - no `Deterministic*` vocabulary in the package-level ordinary public consumer;
@@ -48,7 +49,19 @@ That job:
 - pins WGPU to Vulkan through the discovered Lavapipe ICD;
 - proves the software Vulkan adapter with `vulkaninfo --summary`;
 - sets `RUNEN_RENDER_REQUIRE_GPU=1`;
-- runs the standalone `runen-render` package tests serially.
+- runs the standalone `runen-render` package tests serially;
+- runs the external F2 2D execution consumer proof with the Vulkan adapter
+  required, including downstream graph composition, exact work-node completion
+  evidence, shaped-outline readback, cache reconstruction, non-painting glyphs,
+  and fail-closed COLR v0/v1, SVG, bitmap, and faux-bold cases.
+
+F2 proofs also cover caller-owned clear -> appended F2 -> readback ordering,
+typed prior-target imports independent of fragment array order, rejection of
+unrelated/in-flight submission evidence, transactional failed preparation,
+fresh-device reconstruction, exact raster scale/translation/continuous-canvas
+clipping, and malformed intrinsic tables or glyph IDs failing closed. CPU
+field proofs establish deterministic reconstruction and later texture-limit
+revalidation without requiring an adapter.
 
 The environment variable is test-only enforcement. It converts
 `NoAdapterAvailable` from an allowed local skip into CI failure; production
@@ -65,7 +78,8 @@ baseline through unchanged reviewed-head and accepted-main evidence. The
 retained proof surface establishes:
 
 - package-level ordinary public conformance;
-- exact three-effective-program RunenShader artifact -> RunenGPU admission;
+- exact four-maintained-program RunenShader artifact -> RunenGPU admission,
+  including the F2 shaped-text program;
 - successful maintained-program compilation/admission retained across both
   one-shot and stateful renderer resource-cache lifetimes rather than per-frame
   compilation;
@@ -84,6 +98,10 @@ grouped private maintained realization under `runtime`, grouped conformance
 proofs under `src/proofs`, made the host/WGSL ABI explicit, decomposed
 execution and the ordinary façade by responsibility, and isolated persistent
 scene storage behind `scene::storage`.
+
+The F2 execution consumer uses repository-owned tiny OpenType fixtures. Their
+generator fixes FontTools 4.63.0 and asserts exact SHA-256 outputs so proof
+content does not depend on host fonts or opaque downstream assets.
 
 Future changes must preserve or deliberately replace the relevant evidence
 under their owning issue and must be validated on the exact reviewed head.
