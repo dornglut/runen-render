@@ -747,7 +747,7 @@ fn sub_native_camera_pose_change_recreates_temporal_history() {
     );
     let moved = cache
         .temporal_history(
-                        0,
+            0,
             moved_signature,
             (4, 4),
             4,
@@ -780,7 +780,7 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
 
     let first = cache
         .temporal_history(
-                        0,
+            0,
             signature.clone(),
             (4, 4),
             4,
@@ -813,7 +813,7 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
 
     let retry = cache
         .temporal_history(
-                        0,
+            0,
             signature.clone(),
             (4, 4),
             4,
@@ -857,7 +857,7 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
     );
     let reused = cache
         .temporal_history(
-                        0,
+            0,
             signature,
             (4, 4),
             4,
@@ -893,7 +893,7 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
 
     let bootstrap = cache
         .temporal_history(
-                        0,
+            0,
             signature.clone(),
             (4, 4),
             4,
@@ -913,7 +913,7 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
 
     let retry = cache
         .temporal_history(
-                        0,
+            0,
             signature.clone(),
             (4, 4),
             4,
@@ -935,7 +935,7 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
     for expected_completed in 1..=temporal::PHASE_COUNT {
         let use_state = cache
             .temporal_history(
-                                0,
+                0,
                 signature.clone(),
                 (4, 4),
                 4,
@@ -964,7 +964,7 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
     );
     let moving = cache
         .temporal_history(
-                        0,
+            0,
             signature,
             (4, 4),
             4,
@@ -996,7 +996,7 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
 
     let stopped = cache
         .temporal_history(
-                        0,
+            0,
             camera_temporal_signature(7, moved, (4, 4)),
             (4, 4),
             4,

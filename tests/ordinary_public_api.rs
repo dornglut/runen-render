@@ -30,10 +30,9 @@ use runen_render::surface_input::{
     RenderSurfaceSemanticInputGeneration, RenderSurfaceSemanticInputRequirement,
 };
 use runen_render::{
-    AdmittedRender, PreparedRadianceOutput, PreparedRender, RenderAdmissionError,
-    PreparedRenderOccurrence, RenderCapturedRadiance, RenderEvaluationSelection,
-    RenderExecutionError, RenderExecutionErrorKind, RenderExecutionSession,
-    RenderExecutionSessionError,
+    AdmittedRender, PreparedRadianceOutput, PreparedRender, PreparedRenderOccurrence,
+    RenderAdmissionError, RenderCapturedRadiance, RenderEvaluationSelection, RenderExecutionError,
+    RenderExecutionErrorKind, RenderExecutionSession, RenderExecutionSessionError,
     RenderRadianceCaptureError, RenderRadianceCaptureErrorKind, RenderRadianceCaptureRequest,
     RenderRadianceCaptureRequestError, RenderRadianceCaptureRequestErrorKind,
     RenderResultFormationError, RenderResultFormationErrorKind, RenderResultSubmissionError,
@@ -335,12 +334,11 @@ fn wait_for_submission(context: &GpuContext, submission: &GpuSubmission) {
     }
 }
 
-fn retained_context(
-    format: GpuTextureFormat,
-) -> Option<(GpuContext, GpuContextDescriptor)> {
-    let descriptor = GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
-        .require_format_role(format, GpuFormatRole::CopyDestination)
-        .with_label("RunenRender retained-session public consumer");
+fn retained_context(format: GpuTextureFormat) -> Option<(GpuContext, GpuContextDescriptor)> {
+    let descriptor =
+        GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
+            .require_format_role(format, GpuFormatRole::CopyDestination)
+            .with_label("RunenRender retained-session public consumer");
     match pollster::block_on(GpuContext::request(descriptor.clone())) {
         Ok(context) => Some((context, descriptor)),
         Err(error) if error.category() == GpuContextRequestErrorCategory::NoAdapterAvailable => {
@@ -361,7 +359,9 @@ fn admitted_identity_render(
     output_count: usize,
 ) -> AdmittedRender {
     let mut scene = RenderSceneStore::new();
-    let object_id = scene.allocate_object_id().expect("retained public object id");
+    let object_id = scene
+        .allocate_object_id()
+        .expect("retained public object id");
     let object_state = RenderObjectState::new(
         RenderObjectSpatialState::new(
             RenderSpaceSpec::new(1.0, RenderHandedness::Right).expect("metric object space"),
@@ -424,8 +424,8 @@ fn admitted_identity_render(
             )
         })
         .collect::<Vec<_>>();
-    let request = RenderRequest::new(shutter, vec![observation], outputs)
-        .expect("retained render request");
+    let request =
+        RenderRequest::new(shutter, vec![observation], outputs).expect("retained render request");
 
     let semantic_inputs = [RenderSurfaceSemanticInputBinding::new(
         representation_id,
@@ -479,7 +479,9 @@ fn admitted_identity_render(
 
 fn admitted_temporal_radiance_render(context: &GpuContext, label: &str) -> AdmittedRender {
     let mut scene = RenderSceneStore::new();
-    let object_id = scene.allocate_object_id().expect("temporal public object id");
+    let object_id = scene
+        .allocate_object_id()
+        .expect("temporal public object id");
     let object_state = RenderObjectState::new(
         RenderObjectSpatialState::new(
             RenderSpaceSpec::new(1.0, RenderHandedness::Right).expect("metric object space"),
@@ -580,7 +582,10 @@ fn admitted_temporal_radiance_render(context: &GpuContext, label: &str) -> Admit
                 2,
                 2,
                 GpuTextureFormat::R32Float,
-                [GpuTextureUsage::CopyDestination, GpuTextureUsage::CopySource],
+                [
+                    GpuTextureUsage::CopyDestination,
+                    GpuTextureUsage::CopySource,
+                ],
                 GpuTextureInitialization::Uninitialized,
             )
             .expect("temporal output descriptor"),
