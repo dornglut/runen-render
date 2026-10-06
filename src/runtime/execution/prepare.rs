@@ -139,6 +139,7 @@ pub(super) fn lower_deterministic_render(
         });
     }
 
+    let graph_wiring_namespace = resources.graph_wiring_namespace()?;
     let object_identity_decoder = build_object_identity_decoder(admitted)?;
     let object_codes = object_identity_decoder
         .objects_by_code
@@ -181,6 +182,7 @@ pub(super) fn lower_deterministic_render(
             resources,
             intent,
             DeterministicOutputExecutionSelection {
+                graph_wiring_namespace,
                 finite_evaluation_extent: finite_evaluation.and_then(
                     |(selected_output, extent)| {
                         (selected_output == output.output_index()).then_some(extent)

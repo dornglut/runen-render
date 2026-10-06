@@ -14,7 +14,22 @@ use runen_gpu::{
     GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization, GpuBufferUsage,
     GpuReconstruction, GpuResourceLifetime, GpuWorkResourceIdAllocator,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroU64,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+static NEXT_GRAPH_WIRING_NAMESPACE: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_graph_wiring_namespace() -> Result<NonZeroU64, RenderDeterministicLoweringError> {
+    let raw = NEXT_GRAPH_WIRING_NAMESPACE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            (current != 0).then_some(if current == u64::MAX { 0 } else { current + 1 })
+        })
+        .map_err(|_| RenderDeterministicLoweringError::GraphWiringIdentityExhausted)?;
+    Ok(NonZeroU64::new(raw).expect("graph-wiring allocator never returns zero"))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum DeterministicBufferKind {
@@ -120,6 +135,7 @@ pub(super) struct DeterministicRenderExecutionSelection {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DeterministicOutputExecutionSelection {
+    pub(super) graph_wiring_namespace: NonZeroU64,
     pub(super) finite_evaluation_extent: Option<(u32, u32)>,
     pub(super) produce_requested_coverage: bool,
 }
@@ -138,6 +154,7 @@ pub(super) struct DeterministicTemporalHistorySelection {
 /// changes, such as resize, deliberately allocate replacement identities.
 #[derive(Debug, Default)]
 pub(crate) struct DeterministicResourceCache {
+    graph_wiring_namespace: Option<NonZeroU64>,
     pub(super) identities: GpuWorkResourceIdAllocator,
     pub(super) buffers: BTreeMap<(usize, DeterministicBufferKind), GpuBufferHandle>,
     pub(super) temporal_histories: BTreeMap<usize, DeterministicTemporalHistory>,
@@ -146,6 +163,17 @@ pub(crate) struct DeterministicResourceCache {
 }
 
 impl DeterministicResourceCache {
+    pub(crate) fn graph_wiring_namespace(
+        &mut self,
+    ) -> Result<NonZeroU64, RenderDeterministicLoweringError> {
+        if let Some(namespace) = self.graph_wiring_namespace {
+            return Ok(namespace);
+        }
+        let namespace = allocate_graph_wiring_namespace()?;
+        self.graph_wiring_namespace = Some(namespace);
+        Ok(namespace)
+    }
+
     pub(crate) fn discard_prepared_temporal_outputs(&mut self) {
         let outputs = std::mem::take(&mut self.prepared_temporal_outputs);
         for output_index in outputs {
@@ -159,8 +187,10 @@ impl DeterministicResourceCache {
     }
 
     pub(crate) fn reset_for_context_change(&mut self) {
+        let graph_wiring_namespace = self.graph_wiring_namespace;
         let next_temporal_generation = self.next_temporal_generation;
         *self = Self::default();
+        self.graph_wiring_namespace = graph_wiring_namespace;
         self.next_temporal_generation = next_temporal_generation;
     }
 

@@ -213,8 +213,8 @@ fn prepare_destination(
                 let relationship = GpuExportRelationship::new(
                     GpuResourceRef::Texture(destination.clone()),
                     GpuExportKey::new(format!(
-                        "runenrender.maintained.radiance.resource.{}.output.{}",
-                        primary.canonical_output.diagnostic_identity(),
+                        "runenrender.maintained.radiance.graph.{}.output.{}",
+                        resolved.graph_wiring_namespace,
                         resolved.output_index
                     ))
                     .map_err(|error| gpu_resource_descriptor("radiance export key", error))?,

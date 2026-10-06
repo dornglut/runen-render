@@ -703,6 +703,64 @@ fn retained_sessions_require_exact_occurrence_membership_and_compose_independent
 }
 
 #[test]
+fn retained_radiance_sessions_use_independent_composable_graph_wiring() {
+    let Some((context, _)) = retained_context(GpuTextureFormat::R32Float) else {
+        return;
+    };
+    let mut first = RenderExecutionSession::new();
+    let mut second = RenderExecutionSession::new();
+
+    let first_occurrence = first
+        .prepare(
+            admitted_temporal_radiance_render(&context, "first radiance output"),
+            &context,
+            None,
+        )
+        .expect("first radiance preparation");
+    let second_occurrence = second
+        .prepare(
+            admitted_temporal_radiance_render(&context, "second radiance output"),
+            &context,
+            None,
+        )
+        .expect("second radiance preparation");
+
+    let first_key = first_occurrence
+        .radiance_output(0)
+        .expect("first composable radiance output")
+        .export_relationship()
+        .export_key()
+        .clone();
+    let second_key = second_occurrence
+        .radiance_output(0)
+        .expect("second composable radiance output")
+        .export_relationship()
+        .export_key()
+        .clone();
+    assert_ne!(first_key, second_key);
+
+    let fragments = first_occurrence
+        .work_set()
+        .fragments()
+        .iter()
+        .cloned()
+        .chain(second_occurrence.work_set().fragments().iter().cloned())
+        .collect::<Vec<_>>();
+    let submission =
+        pollster::block_on(context.submit_work("independent radiance sessions", fragments))
+            .expect("combined radiance submission");
+    first
+        .associate_submission(first_occurrence, &submission)
+        .expect("first radiance association");
+    second
+        .associate_submission(second_occurrence, &submission)
+        .expect("second radiance association");
+    wait_for_submission(&context, &submission);
+    first.reconcile();
+    second.reconcile();
+}
+
+#[test]
 fn retained_session_abandonment_and_device_generation_reset_preserve_temporal_truth() {
     let Some((mut context, descriptor)) = retained_context(GpuTextureFormat::R32Float) else {
         return;
