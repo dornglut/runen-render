@@ -1586,7 +1586,14 @@ fn failed_retained_occurrence_discards_committed_temporal_history() {
     };
 
     resources
-        .temporal_history(scope, output_index, signature.clone(), (2, 2), 256, selection)
+        .temporal_history(
+            scope,
+            output_index,
+            signature.clone(),
+            (2, 2),
+            256,
+            selection,
+        )
         .expect("first temporal history preparation");
     resources.reconcile_temporal_outputs(scope, true);
     let committed = resources
@@ -1600,7 +1607,9 @@ fn failed_retained_occurrence_discards_committed_temporal_history() {
         .expect("second temporal history preparation");
     resources.reconcile_temporal_outputs(scope, false);
     assert!(
-        !resources.temporal_histories.contains_key(&(scope, output_index)),
+        !resources
+            .temporal_histories
+            .contains_key(&(scope, output_index)),
         "failed accepted occurrence must not preserve successful temporal history"
     );
 }

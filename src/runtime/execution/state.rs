@@ -464,4 +464,3 @@ pub(super) fn temporal_observation_compatibility(
         }
     }
 }
-
