@@ -51,6 +51,14 @@ and physical destinations remain distinguishable. Current RunenGPU context and
 device facts remain outside the aggregate until capability-dependent execution
 admission.
 
+Semantic planning remains a public responsibility and advanced inspection
+surface; its public contract describes conditional renderer-semantic choices,
+not one permanent materialized storage layout or scan algorithm. Planning MUST
+remain free to use indexing, culling, sharing, lazy representation, or other
+semantics-preserving scale strategies. Public API design MUST NOT require an
+all-object × all-method materialization merely because the founding planner
+currently uses one.
+
 Observation/output correlation on the ordinary path MUST use request-owned
 opaque correlation or an equivalently strong typed construction contract. Raw
 collection positions may remain an internal ordered representation, but a
@@ -346,7 +354,9 @@ Ordinary admission SHOULD consume one validated invocation aggregate rather than
 requiring callers to repeatedly transport parallel scene/request/input/
 availability/output collections as unrelated arguments. The façade MUST use the
 same canonical planning, semantic binding, execution admission, and lowering
-authorities as advanced consumers.
+authorities as advanced consumers. Those canonical stages remain independently
+inspectable for advanced consumers; ordinary convenience MUST NOT become the
+only path to renderer-owned semantic evidence.
 
 Retained ordinary execution has an explicit continuity owner. One independent
 logical renderer continuity MUST map to one independent retained session/state
