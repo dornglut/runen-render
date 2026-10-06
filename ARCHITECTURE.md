@@ -30,10 +30,12 @@ implementation terminology, not a second public renderer ontology.
 
 ### Public integration laws
 
-The normal framework consumer is a source adapter or engine integration layer
+The normal game-engine consumer is a source adapter or engine integration layer
 that projects source-owned world, asset, UI, camera, and product facts into
-RunenRender-owned semantic contracts. RunenRender MUST NOT read live mutable
-RunenECS, RunenUI, Runenwerk, native-window, or product-frame state.
+RunenRender-owned semantic contracts. Standalone/framework consumers construct
+the same canonical renderer semantics directly; they do not use a second
+standalone semantic model. RunenRender MUST NOT read live mutable RunenECS,
+RunenUI, Runenwerk, native-window, or product-frame state.
 
 One bounded ordinary renderer invocation may aggregate:
 
