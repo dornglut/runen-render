@@ -154,6 +154,85 @@ impl Error for RenderExecutionError {
     }
 }
 
+/// Retained ordinary execution lifecycle failure.
+#[derive(Debug)]
+pub enum RenderExecutionSessionError {
+    /// Process-local retained-session identity allocation was exhausted.
+    IdentityExhausted,
+    /// A previously prepared occurrence is still alive and must be accepted or dropped first.
+    PreparedOccurrenceOutstanding,
+    /// The exact accepted submission for this continuity has not terminalized.
+    SubmissionInFlight,
+    /// The supplied occurrence was not prepared by this session or is no longer current.
+    OccurrenceNotCurrent,
+    /// Preparation attempted to move this continuity to a different logical RunenGPU context.
+    ForeignContext {
+        expected: GpuContextAffinity,
+        actual: GpuContextAffinity,
+    },
+    /// The supplied submission belongs to a different RunenGPU context/device generation.
+    SubmissionAffinityMismatch {
+        expected: GpuContextAffinity,
+        actual: GpuContextAffinity,
+    },
+    /// The supplied submission does not contain every renderer-authored node from the occurrence.
+    SubmissionMissingRendererWork,
+    /// Maintained lowering/preparation failed before an occurrence could be established.
+    Execution(RenderExecutionError),
+}
+
+impl fmt::Display for RenderExecutionSessionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IdentityExhausted => formatter.write_str(
+                "retained render session identity allocation is exhausted",
+            ),
+            Self::PreparedOccurrenceOutstanding => formatter.write_str(
+                "this retained render session still owns a live prepared occurrence",
+            ),
+            Self::SubmissionInFlight => formatter.write_str(
+                "this retained render session still has an accepted RunenGPU submission in flight",
+            ),
+            Self::OccurrenceNotCurrent => formatter.write_str(
+                "prepared render occurrence does not belong to the current retained session state",
+            ),
+            Self::ForeignContext { expected, actual } => write!(
+                formatter,
+                "retained render session belongs to RunenGPU context {expected:?}, got foreign context {actual:?}"
+            ),
+            Self::SubmissionAffinityMismatch { expected, actual } => write!(
+                formatter,
+                "prepared render occurrence requires RunenGPU affinity {expected:?}, got {actual:?}"
+            ),
+            Self::SubmissionMissingRendererWork => formatter.write_str(
+                "RunenGPU submission does not contain every node from the exact prepared render occurrence",
+            ),
+            Self::Execution(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for RenderExecutionSessionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Execution(error) => Some(error),
+            Self::IdentityExhausted
+            | Self::PreparedOccurrenceOutstanding
+            | Self::SubmissionInFlight
+            | Self::OccurrenceNotCurrent
+            | Self::ForeignContext { .. }
+            | Self::SubmissionAffinityMismatch { .. }
+            | Self::SubmissionMissingRendererWork => None,
+        }
+    }
+}
+
+impl From<RenderExecutionError> for RenderExecutionSessionError {
+    fn from(error: RenderExecutionError) -> Self {
+        Self::Execution(error)
+    }
+}
+
 /// Stable category for verifier-domain eligibility failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderVerificationEligibilityErrorKind {

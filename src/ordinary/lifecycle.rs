@@ -48,6 +48,48 @@ impl PreparedRender {
     }
 }
 
+/// One exact retained renderer occurrence prepared for caller-owned RunenGPU composition.
+///
+/// This value is intentionally not cloneable. It belongs to the exact RenderExecutionSession that
+/// prepared it and is consumed by session acceptance. Dropping it abandons the provisional
+/// retained transition; preparation itself is never execution evidence.
+#[derive(Debug)]
+pub struct PreparedRenderOccurrence {
+    pub(super) inner: PreparedDeterministicRender,
+    pub(super) session_identity: std::sync::Arc<()>,
+    pub(super) occurrence_identity: std::sync::Arc<()>,
+    pub(super) affinity: GpuContextAffinity,
+}
+
+impl PreparedRenderOccurrence {
+    /// Exact admitted semantic plan from which this occurrence was lowered.
+    pub const fn admitted_plan(&self) -> &AdmittedRenderPlan {
+        self.inner.admitted().admitted()
+    }
+
+    /// Exact backend-neutral RunenGPU work that must participate in accepted execution.
+    pub const fn work_set(&self) -> &RenderWorkSet {
+        self.inner.work_set()
+    }
+
+    /// Prepared radiance outputs available for caller-owned product composition.
+    pub fn radiance_outputs(
+        &self,
+    ) -> impl ExactSizeIterator<Item = PreparedRadianceOutput<'_>> + '_ {
+        self.inner
+            .radiance_outputs()
+            .iter()
+            .map(|inner| PreparedRadianceOutput { inner })
+    }
+
+    /// Prepared radiance output for one requested output index, when applicable.
+    pub fn radiance_output(&self, output_index: usize) -> Option<PreparedRadianceOutput<'_>> {
+        self.inner
+            .radiance_output(output_index)
+            .map(|inner| PreparedRadianceOutput { inner })
+    }
+}
+
 /// Borrowed correlation for one prepared radiance destination and its public RunenGPU export.
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedRadianceOutput<'a> {

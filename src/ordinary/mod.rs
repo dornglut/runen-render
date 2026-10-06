@@ -39,7 +39,8 @@ use super::surface_input::{
     RenderSurfaceSemanticInputBinding, RenderSurfaceSemanticInputGeneration,
 };
 use runen_gpu::{
-    GpuContext, GpuExportRelationship, GpuReadbackId, GpuResourceProvenance, GpuResourceRef,
+    GpuContext, GpuContextAffinity, GpuExportRelationship, GpuReadbackId, GpuResourceProvenance,
+    GpuResourceRef,
     GpuSubmission, GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureHandle,
     GpuTransferRegion, GpuWorkImport, GpuWorkSubmissionError,
 };

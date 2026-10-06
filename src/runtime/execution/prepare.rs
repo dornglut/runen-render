@@ -168,7 +168,7 @@ pub(super) fn lower_deterministic_render(
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
 
-    resources.prepared_temporal_outputs.remove(&scope);
+    resources.discard_prepared_temporal_outputs(scope);
 
     let mut fragments = Vec::new();
     fragments

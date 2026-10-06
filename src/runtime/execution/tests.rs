@@ -1542,3 +1542,65 @@ fn maintained_execution_has_no_string_flattening_gpu_authoring_bucket() {
     assert!(!source.contains(concat!("gpu_", "authoring(")));
     assert!(!source.contains(concat!("RunenGpu", "Authoring")));
 }
+
+#[test]
+fn failed_retained_occurrence_discards_committed_temporal_history() {
+    let mut resources = DeterministicResourceCache::default();
+    let scope = 91;
+    let output_index = 0;
+    let shutter = crate::space_time::RenderTimeInterval::instant(
+        crate::space_time::RenderTimePoint::from_seconds(0.0).expect("finite temporal test time"),
+    );
+    let perspective = RenderPerspectiveObservation::new(
+        RenderAffineTransform3::identity(),
+        std::f64::consts::FRAC_PI_3,
+        1.0,
+        shutter,
+        RenderSamplingSupport::perspective_lattice_cell(),
+    )
+    .expect("valid temporal test observation");
+    let signature = DeterministicTemporalSignature {
+        scene_revision: crate::scene::RenderSceneStore::new().revision(),
+        observation: temporal_observation_compatibility(
+            RenderObservationSpec::Perspective(perspective),
+            true,
+        ),
+        output: RenderOutputSpec::new(
+            RenderOutputValue::ObjectIdentity,
+            crate::request::RenderResultTopology::sample_lattice_2d(2, 2)
+                .expect("temporal test lattice"),
+            crate::request::RenderSemanticTolerance::exact(),
+        )
+        .expect("temporal test output"),
+        semantic_inputs: Vec::new(),
+        field_semantic_inputs: Vec::new(),
+        evaluation_extent: (2, 2),
+        sequence_revision: 1,
+        reconstruction_revision: 1,
+        camera_reprojection_revision: Some(1),
+        depth_policy_revision: Some(1),
+    };
+    let selection = DeterministicTemporalHistorySelection {
+        current_observation: perspective,
+        camera_capable: true,
+    };
+
+    resources
+        .temporal_history(scope, output_index, signature.clone(), (2, 2), 256, selection)
+        .expect("first temporal history preparation");
+    resources.reconcile_temporal_outputs(scope, true);
+    let committed = resources
+        .temporal_histories
+        .get(&(scope, output_index))
+        .expect("completed temporal history");
+    assert_eq!(committed.age, 1);
+
+    resources
+        .temporal_history(scope, output_index, signature, (2, 2), 256, selection)
+        .expect("second temporal history preparation");
+    resources.reconcile_temporal_outputs(scope, false);
+    assert!(
+        !resources.temporal_histories.contains_key(&(scope, output_index)),
+        "failed accepted occurrence must not preserve successful temporal history"
+    );
+}
