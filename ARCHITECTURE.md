@@ -28,6 +28,64 @@ The crate root also re-exports the ordinary progressive-disclosure API and
 generic result vocabulary. Proof-era `Deterministic*` vocabulary is private
 implementation terminology, not a second public renderer ontology.
 
+### Public integration laws
+
+The normal game-engine consumer is a source adapter or engine integration layer
+that projects source-owned world, asset, UI, camera, and product facts into
+RunenRender-owned semantic contracts. Standalone/framework consumers construct
+the same canonical renderer semantics directly; they do not use a second
+standalone semantic model. RunenRender MUST NOT read live mutable RunenECS,
+RunenUI, Runenwerk, native-window, or product-frame state.
+
+One bounded ordinary renderer invocation may aggregate:
+
+```text
+immutable RenderSceneSnapshot
++ RenderRequest
++ typed request-scoped semantic input bindings
++ current representation availability facts
++ physical output bindings
+```
+
+The aggregate is invocation plumbing, not a new semantic authority or global
+revision. Scene meaning, request meaning, foreign semantic inputs, availability,
+and physical destinations remain distinguishable. Current RunenGPU context and
+device facts remain outside the aggregate until capability-dependent execution
+admission.
+
+Semantic planning remains a public responsibility and advanced inspection
+surface; its public contract describes conditional renderer-semantic choices,
+not one permanent materialized storage layout or scan algorithm. Planning MUST
+remain free to use indexing, culling, sharing, lazy representation, or other
+semantics-preserving scale strategies. Public API design MUST NOT require an
+all-object × all-method materialization merely because the founding planner
+currently uses one.
+
+Observation/output correlation on the ordinary path MUST use request-owned
+opaque correlation or an equivalently strong typed construction contract. Raw
+collection positions may remain an internal ordered representation, but a
+physical output binding, finite evaluation selection, prepared-output lookup,
+capture request, or result correlation MUST NOT silently select a different
+semantic output merely because two requests reuse the same numeric index.
+
+Large immutable request-scoped semantic payloads MUST be cheap to retain across
+binding normalization, admission, prepared execution, and result/evidence
+formation. Public semantics do not prescribe `Arc` or another concrete storage
+type, but ordinary ownership transfer MUST NOT require repeated deep copies of
+large immutable sample arrays.
+
+Caller-material ordinary failures MUST expose stable machine-actionable
+owner-level outcomes. Callers MUST NOT need to parse diagnostic strings or
+depend on private implementation error types to distinguish invalid invocation
+facts, unavailable representations, unsupported semantics, target/capability
+mismatch, private realization failure, RunenShader failure, or RunenGPU
+execution failure.
+
+Pre-1.0 public corrections use clean revision-pinned cutovers when no concrete
+compatibility obligation exists. Historical overloads, raw-scope helpers, and
+compatibility aliases MUST NOT remain solely to avoid updating repository-owned
+consumers.
+
 ## 2D composition extension contract
 
 The 2D composition extension defines durable semantic and ownership authority.
@@ -64,6 +122,13 @@ to reuse an existing physical path.
 Source adapters project already-resolved renderer facts into RunenRender-owned
 values. Source-framework publication/object identities, authoring policy, and
 native presentation identity remain outside RunenRender semantic identity.
+
+An ergonomic 2D authoring frontend MAY provide mutable builders, scoped group or
+clip construction, and typed resource-binding conveniences only when the
+resulting value is exactly the canonical immutable 2D composition/resource
+model. Such authoring helpers are ephemeral construction state, not a second
+composition authority, immediate GPU canvas, RunenUI replacement, or
+source-framework display list.
 
 One execution combines one immutable composition value with one compatible
 immutable semantic-resource binding set and target/output fact set. Private
@@ -155,6 +220,13 @@ membership of that authored `GpuWorkNodeId` in the downstream-composed
 submission and terminal `Completed` status from that same submission. Valid
 non-painting content authors no synthetic draw or sentinel and therefore has no
 execution token.
+
+The one-node shape is specific to the initial F2 realization and is not a
+permanent contribution contract. Later 2D realization may require multiple
+renderer-authored nodes, but successful evidence MUST still correlate the exact
+required authored work with the containing submission and terminal completion.
+Legitimate no-work remains an explicit semantic execution outcome and MUST NOT
+be represented by fabricated GPU work, output, or sentinel identity.
 
 The initial admitted image payload class is immutable tightly packed
 unpremultiplied RGBA8 sRGB plus exact non-zero intrinsic extent and resolved
@@ -280,16 +352,86 @@ stages, not a second architecture. Its implementation is private under
 `ordinary` and separates state, lifecycle, operations, and error projection
 while preserving the crate-root public API.
 
+Ordinary admission SHOULD consume one validated invocation aggregate rather than
+requiring callers to repeatedly transport parallel scene/request/input/
+availability/output collections as unrelated arguments. The façade MUST use the
+same canonical planning, semantic binding, execution admission, and lowering
+authorities as advanced consumers. Those canonical stages remain independently
+inspectable for advanced consumers; ordinary convenience MUST NOT become the
+only path to renderer-owned semantic evidence.
+
+Retained ordinary execution has an explicit continuity owner. One independent
+logical renderer continuity MUST map to one independent retained session/state
+owner rather than multiplexing unrelated continuities through caller-chosen raw
+integer namespaces. Product producer, surface, view, ECS, window, and native
+presentation identities may map to that owner in downstream integration, but
+they are not renderer continuity identity.
+
+Stateful preparation and caller-owned RunenGPU composition obey this lifecycle:
+
+```text
+admitted renderer invocation
+    -> prepare one exact renderer occurrence
+        -> renderer-authored RunenGPU work
+        -> caller composes arbitrary peer RunenGPU work
+        -> caller obtains GpuSubmission
+        -> exact occurrence/submission association
+        -> terminal reconciliation
+```
+
+The prepared occurrence MUST carry or identify the exact renderer-authored work
+required for its retained-state transition. A raw continuity/session identifier,
+label, provenance string, cache identity, or output resource is insufficient
+execution evidence. Association MUST fail when the supplied submission does not
+contain the occurrence's required RunenGPU work. Only the exact accepted
+occurrence may become pending retained history, and only successful terminal
+execution may advance successful temporal history. Abandoned or failed
+occurrences MUST NOT later become successful history by scope convention.
+
+One continuity may serialize its own pending lifecycle when correctness requires
+it. Independent continuities MUST NOT be serialized merely because an
+implementation stores them in one global mutable map. A future renderer-wide
+derived cache may share immutable/reconstructible work across sessions when
+concrete reuse justifies that owner, but renderer-wide cache identity is
+distinct from temporal continuity identity.
+
+RunenGPU context affinity includes both logical context and device generation.
+When the device generation changes, renderer-derived temporal history and other
+current-content state that depends on prior completed renderer execution MUST
+reset unless RunenRender has an explicitly proven reconstruction source for that
+exact state. This does not forbid RunenGPU from reconstructing retained physical
+resources whose owner contract already provides a truthful reconstruction
+source. Semantic scene/request/source identity may survive the renderer-history
+reset. Reset must remain observable through renderer-owned temporal
+history/generation evidence. A new device generation requires fresh
+capability-dependent admission.
+
+One-shot ordinary submission and verified-result paths MAY omit a retained
+session when no cross-invocation continuity is requested.
+
 ## Scene storage
 
 `runen_render::scene` owns public object identity, scene revisions, updates,
 change sets, immutable snapshots, commits, resync, allocation, and store
 semantics.
 
+One accepted scene update is an atomic renderer-semantic transaction. An update
+MUST be able to change multiple independent owned facets of one existing object
+within the same transaction when those changes are jointly valid, for example
+spatial/temporal state plus renderer participation. Insert/remove conflicts and
+other incompatible mutations remain fail-before-commit validation errors.
+
+One successful transaction establishes one new scene revision and precise change
+evidence for every affected facet. Callers MUST NOT need multiple scene
+revisions merely because independently owned facets were encoded as separate
+operation variants.
+
 The persistent structurally shared radix storage is private under
 `scene::storage`. Radix nodes, path-copy mechanics, and storage continuity are
 implementation details and are not part of public scene identity or persistence
-semantics.
+semantics. Storage remains free to apply one optimized path copy per changed
+object or use another persistent representation while preserving the same
+transaction/snapshot/change-set contract.
 
 ## Proof and validation topology
 
