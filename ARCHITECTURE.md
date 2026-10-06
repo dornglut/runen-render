@@ -394,12 +394,15 @@ concrete reuse justifies that owner, but renderer-wide cache identity is
 distinct from temporal continuity identity.
 
 RunenGPU context affinity includes both logical context and device generation.
-When the device generation changes, renderer-derived temporal/physical history
-MUST reset unless RunenRender has an explicitly proven source from which that
-exact current history can be reconstructed. Semantic scene/request/source
-identity may survive that reset. Reset must remain observable through the
-renderer-owned temporal history/generation evidence. A new device generation
-requires fresh capability-dependent admission.
+When the device generation changes, renderer-derived temporal history and other
+current-content state that depends on prior completed renderer execution MUST
+reset unless RunenRender has an explicitly proven reconstruction source for that
+exact state. This does not forbid RunenGPU from reconstructing retained physical
+resources whose owner contract already provides a truthful reconstruction
+source. Semantic scene/request/source identity may survive the renderer-history
+reset. Reset must remain observable through renderer-owned temporal
+history/generation evidence. A new device generation requires fresh
+capability-dependent admission.
 
 One-shot ordinary submission and verified-result paths MAY omit a retained
 session when no cross-invocation continuity is requested.
