@@ -127,39 +127,38 @@ fn conservative_field_error_packing_never_narrows_scene_space_bound() {
 fn deterministic_cache_reuses_matching_descriptors_and_replaces_resizes() {
     let mut cache = DeterministicResourceCache::default();
     let first = cache
-        .buffer(0, 0, DeterministicBufferKind::Input, cache_descriptor(16))
+        .buffer(0, DeterministicBufferKind::Input, cache_descriptor(16))
         .expect("first deterministic buffer should allocate");
     let same = cache
-        .buffer(0, 0, DeterministicBufferKind::Input, cache_descriptor(16))
+        .buffer(0, DeterministicBufferKind::Input, cache_descriptor(16))
         .expect("matching deterministic buffer should reuse");
     assert_eq!(first.diagnostic_identity(), same.diagnostic_identity());
 
     let resized = cache
-        .buffer(0, 0, DeterministicBufferKind::Input, cache_descriptor(32))
+        .buffer(0, DeterministicBufferKind::Input, cache_descriptor(32))
         .expect("changed descriptor should allocate a replacement");
     assert_ne!(first.diagnostic_identity(), resized.diagnostic_identity());
 }
 
 #[test]
-fn deterministic_cache_scopes_equal_descriptors_by_producer() {
-    let mut cache = DeterministicResourceCache::default();
-    let first = cache
-        .buffer(11, 0, DeterministicBufferKind::Input, cache_descriptor(16))
-        .expect("first producer buffer should allocate");
-    let same_producer = cache
-        .buffer(11, 0, DeterministicBufferKind::Input, cache_descriptor(16))
-        .expect("same producer should reuse its buffer");
-    let other_producer = cache
-        .buffer(12, 0, DeterministicBufferKind::Input, cache_descriptor(16))
-        .expect("other producer should allocate an independent buffer");
+fn deterministic_caches_own_distinct_graph_wiring_namespaces() {
+    let mut first = DeterministicResourceCache::default();
+    let mut second = DeterministicResourceCache::default();
 
+    let first_namespace = first
+        .graph_wiring_namespace()
+        .expect("first graph-wiring namespace");
     assert_eq!(
-        first.diagnostic_identity(),
-        same_producer.diagnostic_identity()
+        first_namespace,
+        first
+            .graph_wiring_namespace()
+            .expect("stable first graph-wiring namespace")
     );
     assert_ne!(
-        first.diagnostic_identity(),
-        other_producer.diagnostic_identity()
+        first_namespace,
+        second
+            .graph_wiring_namespace()
+            .expect("second graph-wiring namespace")
     );
 }
 
@@ -171,7 +170,6 @@ fn deterministic_cache_stays_bounded_across_frames_and_resize() {
         let byte_len = if frame < 60 { 16 } else { 32 };
         let handle = cache
             .buffer(
-                11,
                 0,
                 DeterministicBufferKind::Input,
                 cache_descriptor(byte_len),

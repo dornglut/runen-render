@@ -397,7 +397,7 @@ fn ordinary_sub_native_preparation_omits_unconsumed_requested_coverage() {
         DeterministicBufferKind::CoverageHitScratch,
     ] {
         assert!(
-            !cache.buffers.contains_key(&(6, 0, kind)),
+            !cache.buffers.contains_key(&(0, kind)),
             "ordinary runtime must not allocate unconsumed requested coverage {kind:?}"
         );
     }
@@ -420,7 +420,7 @@ fn requested_coverage_executes_all_profiles_phases_and_odd_extents_without_alias
                     admit(&fixture, &context),
                     &context,
                     &mut cache,
-                                        Some((0, evaluation)),
+                    Some((0, evaluation)),
                 )
                 .unwrap();
                 assert!(
@@ -534,7 +534,7 @@ fn requested_coverage_overwrites_camera_and_source_changes_and_keeps_subnative_r
             admit(&fixture, &context),
             &context,
             &mut cache,
-                        Some((0, (4, 4))),
+            Some((0, (4, 4))),
         )
         .unwrap();
         let evidence = prepared
@@ -583,7 +583,7 @@ fn requested_coverage_overwrites_camera_and_source_changes_and_keeps_subnative_r
             admit(&fixture, &context),
             &context,
             &mut cache,
-                        Some((0, (4, 4)))
+            Some((0, (4, 4)))
         ),
         Err(RenderDeterministicExecutionError::Lowering(
             RenderDeterministicLoweringError::MissingTemporalSurfaceInputGeneration { .. }
@@ -874,7 +874,7 @@ fn requested_coverage_preserves_field_payload_generations_and_invalid_vs_backgro
             admit_inputs(&fixture, &fields, &context),
             &context,
             &mut cache,
-                        Some((0, (4, 4)))
+            Some((0, (4, 4)))
         ),
         Err(RenderDeterministicExecutionError::Lowering(
             RenderDeterministicLoweringError::MissingTemporalFieldInputGeneration { .. }
@@ -966,7 +966,7 @@ fn requested_coverage_uses_current_scene_state_even_with_unchanged_surface_gener
         admit(&fixture, &context),
         &context,
         &mut cache,
-                Some((0, (4, 4))),
+        Some((0, (4, 4))),
     )
     .unwrap();
     let first_generation = prepared
@@ -1017,7 +1017,7 @@ fn requested_coverage_uses_current_scene_state_even_with_unchanged_surface_gener
         admit(&fixture, &context),
         &context,
         &mut cache,
-                Some((0, (4, 4))),
+        Some((0, (4, 4))),
     )
     .unwrap();
     let evidence = prepared

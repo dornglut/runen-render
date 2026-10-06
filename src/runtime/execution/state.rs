@@ -24,7 +24,7 @@ static NEXT_GRAPH_WIRING_NAMESPACE: AtomicU64 = AtomicU64::new(1);
 
 fn allocate_graph_wiring_namespace() -> Result<NonZeroU64, RenderDeterministicLoweringError> {
     let raw = NEXT_GRAPH_WIRING_NAMESPACE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             (current != 0).then_some(if current == u64::MAX { 0 } else { current + 1 })
         })
         .map_err(|_| RenderDeterministicLoweringError::GraphWiringIdentityExhausted)?;
@@ -194,7 +194,7 @@ impl DeterministicResourceCache {
         self.next_temporal_generation = next_temporal_generation;
     }
 
-    pub(super) fn reconcile_temporal_outputs(&mut self, completed: bool) {
+    pub(crate) fn reconcile_temporal_outputs(&mut self, completed: bool) {
         let outputs = std::mem::take(&mut self.prepared_temporal_outputs);
         if completed {
             for output_index in outputs {
