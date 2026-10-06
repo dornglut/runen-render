@@ -67,8 +67,7 @@ pub(super) fn prepare_primary_pass(
     .map_err(|error| gpu_transfer_preparation("semantic-input preparation", error))?;
 
     let input = resources.buffer(
-        resolved.scope,
-        output_index,
+                output_index,
         DeterministicBufferKind::Input,
         GpuBufferDescriptor::ordinary_owned(
             format!("RunenRender output {output_index} packed input"),
@@ -81,8 +80,7 @@ pub(super) fn prepare_primary_pass(
         .map_err(|error| gpu_resource_descriptor("input-buffer descriptor", error))?,
     )?;
     let canonical_output = resources.buffer(
-        resolved.scope,
-        output_index,
+                output_index,
         DeterministicBufferKind::CanonicalOutput,
         GpuBufferDescriptor::ordinary_owned(
             format!("RunenRender output {output_index} canonical words"),
@@ -99,8 +97,7 @@ pub(super) fn prepare_primary_pass(
         .map_err(|error| gpu_resource_descriptor("canonical-output descriptor", error))?,
     )?;
     let definedness = resources.buffer(
-        resolved.scope,
-        output_index,
+                output_index,
         DeterministicBufferKind::Definedness,
         GpuBufferDescriptor::ordinary_owned(
             format!("RunenRender output {output_index} definedness"),
@@ -117,8 +114,7 @@ pub(super) fn prepare_primary_pass(
         .map_err(|error| gpu_resource_descriptor("definedness descriptor", error))?,
     )?;
     let status = resources.buffer(
-        resolved.scope,
-        output_index,
+                output_index,
         DeterministicBufferKind::Status,
         GpuBufferDescriptor::ordinary_owned(
             format!("RunenRender output {output_index} evaluator status"),
@@ -135,8 +131,7 @@ pub(super) fn prepare_primary_pass(
         .map_err(|error| gpu_resource_descriptor("status descriptor", error))?,
     )?;
     let current_depth = resources.buffer(
-        resolved.scope,
-        output_index,
+                output_index,
         DeterministicBufferKind::CurrentDepth,
         GpuBufferDescriptor::ordinary_owned(
             format!("RunenRender output {output_index} current hit depth"),
@@ -149,8 +144,7 @@ pub(super) fn prepare_primary_pass(
         .map_err(|error| gpu_resource_descriptor("current-depth descriptor", error))?,
     )?;
     let current_hit = resources.buffer(
-        resolved.scope,
-        output_index,
+                output_index,
         DeterministicBufferKind::CurrentHit,
         GpuBufferDescriptor::ordinary_owned(
             format!("RunenRender output {output_index} current coherent hit point"),
@@ -317,8 +311,7 @@ pub(super) fn prepare_temporal_pass(
                 gpu_transfer_preparation("camera-reprojection parameter preparation", error)
             })?;
             let parameters = resources.buffer(
-                resolved.scope,
-                resolved.output_index,
+                        resolved.output_index,
                 DeterministicBufferKind::CameraParameters,
                 GpuBufferDescriptor::ordinary_owned(
                     format!(
@@ -535,7 +528,6 @@ pub(super) fn prepare_requested_coverage(
     packed: PackedOutput,
     max_compute_workgroups_per_dimension: u32,
     resources: &mut DeterministicResourceCache,
-    scope: u64,
     output_index: usize,
 ) -> Result<PreparedRequestedCoverage, RenderDeterministicLoweringError> {
     let payload = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
@@ -566,7 +558,6 @@ pub(super) fn prepare_requested_coverage(
         .into_iter()
         .map(|(kind, bytes)| {
             resources.buffer(
-                scope,
                 output_index,
                 kind,
                 GpuBufferDescriptor::ordinary_owned(

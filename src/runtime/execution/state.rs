@@ -12,8 +12,7 @@ use crate::space_time::RenderTimeInterval;
 use crate::surface_input::RenderSurfaceSemanticInputBinding;
 use runen_gpu::{
     GpuBufferDescriptor, GpuBufferHandle, GpuBufferInitialization, GpuBufferUsage,
-    GpuReconstruction, GpuResourceLifetime, GpuSubmission, GpuSubmissionStatus,
-    GpuWorkResourceIdAllocator,
+    GpuReconstruction, GpuResourceLifetime, GpuWorkResourceIdAllocator,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -115,14 +114,12 @@ pub(super) struct DeterministicTemporalHistoryUse {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DeterministicRenderExecutionSelection {
-    pub(super) scope: u64,
     pub(super) finite_evaluation: Option<(usize, (u32, u32))>,
     pub(super) produce_requested_coverage: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DeterministicOutputExecutionSelection {
-    pub(super) scope: u64,
     pub(super) finite_evaluation_extent: Option<(u32, u32)>,
     pub(super) produce_requested_coverage: bool,
 }
@@ -133,78 +130,45 @@ pub(super) struct DeterministicTemporalHistorySelection {
     pub(super) camera_capable: bool,
 }
 
-/// Renderer-owned logical buffer identities reused by ordinary composed frames.
+/// Renderer-owned logical buffer identities reused by one retained execution continuity.
 ///
 /// RunenGPU's bind-group realization retains the resource dependencies of each realized binding.
 /// Rebuilding these identities for every interactive frame would therefore grow the authoritative
-/// realization registry without bound. The cache is scoped to one renderer/context generation and
-/// one deterministic producer; a descriptor change, such as a resize, deliberately allocates a
-/// replacement identity.
+/// realization registry without bound. One retained ordinary session owns one cache. Descriptor
+/// changes, such as resize, deliberately allocate replacement identities.
 #[derive(Debug, Default)]
 pub(crate) struct DeterministicResourceCache {
     pub(super) identities: GpuWorkResourceIdAllocator,
-    pub(super) buffers: BTreeMap<(u64, usize, DeterministicBufferKind), GpuBufferHandle>,
-    pub(super) temporal_histories: BTreeMap<(u64, usize), DeterministicTemporalHistory>,
+    pub(super) buffers: BTreeMap<(usize, DeterministicBufferKind), GpuBufferHandle>,
+    pub(super) temporal_histories: BTreeMap<usize, DeterministicTemporalHistory>,
     pub(super) next_temporal_generation: u64,
-    pub(super) prepared_temporal_outputs: BTreeMap<u64, BTreeSet<usize>>,
-    // Keep the latest accepted graph correlated with every producer namespace whose mutable
-    // intermediates it used. A peer surface's submission must not stall this producer's cache.
-    pub(super) producer_submissions: BTreeMap<u64, GpuSubmission>,
+    pub(super) prepared_temporal_outputs: BTreeSet<usize>,
 }
 
 impl DeterministicResourceCache {
-    pub(crate) fn any_producer_submission_in_flight(
-        &self,
-        producer_scopes: impl IntoIterator<Item = u64>,
-    ) -> bool {
-        any_producer_scope_in_flight(producer_scopes, |producer_scope| {
-            self.producer_submissions
-                .get(&producer_scope)
-                .is_some_and(|submission| {
-                    matches!(submission.status(), GpuSubmissionStatus::Accepted)
-                })
-        })
-    }
-
-    pub(crate) fn record_producer_submission(
-        &mut self,
-        producer_scope: u64,
-        _frame_index: u64,
-        submission: &GpuSubmission,
-    ) {
-        self.producer_submissions
-            .insert(producer_scope, submission.clone());
-    }
-
-    pub(crate) fn retain_in_flight_submissions(&mut self) {
-        let terminal = self
-            .producer_submissions
-            .iter()
-            .filter_map(|(scope, submission)| match submission.status() {
-                GpuSubmissionStatus::Accepted => None,
-                GpuSubmissionStatus::Completed => Some((*scope, true)),
-                GpuSubmissionStatus::Failed(_) => Some((*scope, false)),
-            })
-            .collect::<Vec<_>>();
-
-        for (scope, completed) in terminal {
-            self.reconcile_temporal_outputs(scope, completed);
+    pub(crate) fn discard_prepared_temporal_outputs(&mut self) {
+        let outputs = std::mem::take(&mut self.prepared_temporal_outputs);
+        for output_index in outputs {
+            if let Some(history) = self.temporal_histories.get_mut(&output_index)
+                && let DeterministicTemporalStorage::Camera(camera) = &mut history.storage
+            {
+                camera.pending_slot = None;
+                camera.pending_observation = None;
+            }
         }
-
-        // Completed and failed submissions are terminal; only an Accepted handle can still be
-        // using a producer's reusable intermediates.
-        self.producer_submissions
-            .retain(|_, submission| matches!(submission.status(), GpuSubmissionStatus::Accepted));
     }
 
-    pub(super) fn reconcile_temporal_outputs(&mut self, scope: u64, completed: bool) {
-        let outputs = self
-            .prepared_temporal_outputs
-            .remove(&scope)
-            .unwrap_or_default();
+    pub(crate) fn reset_for_context_change(&mut self) {
+        let next_temporal_generation = self.next_temporal_generation;
+        *self = Self::default();
+        self.next_temporal_generation = next_temporal_generation;
+    }
+
+    pub(super) fn reconcile_temporal_outputs(&mut self, completed: bool) {
+        let outputs = std::mem::take(&mut self.prepared_temporal_outputs);
         if completed {
             for output_index in outputs {
-                if let Some(history) = self.temporal_histories.get_mut(&(scope, output_index)) {
+                if let Some(history) = self.temporal_histories.get_mut(&output_index) {
                     if let DeterministicTemporalStorage::Camera(camera) = &mut history.storage {
                         if let Some(slot) = camera.pending_slot.take() {
                             camera.completed_slot = slot;
@@ -231,14 +195,13 @@ impl DeterministicResourceCache {
                 }
             }
         } else {
-            self.temporal_histories
-                .retain(|(history_scope, _), _| *history_scope != scope);
+            for output_index in outputs {
+                self.temporal_histories.remove(&output_index);
+            }
         }
     }
-
     pub(super) fn temporal_history(
         &mut self,
-        scope: u64,
         output_index: usize,
         signature: DeterministicTemporalSignature,
         requested_extent: (u32, u32),
@@ -290,7 +253,7 @@ impl DeterministicResourceCache {
                 field: "camera history byte length",
             })?;
 
-        let key = (scope, output_index);
+        let key = output_index;
         let recreate = self.temporal_histories.get(&key).is_none_or(|history| {
             if history.signature != signature {
                 return true;
@@ -395,10 +358,7 @@ impl DeterministicResourceCache {
                 },
             );
         }
-        self.prepared_temporal_outputs
-            .entry(scope)
-            .or_default()
-            .insert(output_index);
+        self.prepared_temporal_outputs.insert(output_index);
         let history = self
             .temporal_histories
             .get_mut(&key)
@@ -444,12 +404,11 @@ impl DeterministicResourceCache {
 
     pub(super) fn buffer(
         &mut self,
-        scope: u64,
         output_index: usize,
         kind: DeterministicBufferKind,
         descriptor: GpuBufferDescriptor,
     ) -> Result<GpuBufferHandle, RenderDeterministicLoweringError> {
-        let key = (scope, output_index, kind);
+        let key = (output_index, kind);
         if let Some(existing) = self.buffers.get(&key)
             && existing.descriptor() == &descriptor
         {
@@ -494,9 +453,3 @@ pub(super) fn temporal_observation_compatibility(
     }
 }
 
-pub(super) fn any_producer_scope_in_flight(
-    producer_scopes: impl IntoIterator<Item = u64>,
-    mut producer_is_in_flight: impl FnMut(u64) -> bool,
-) -> bool {
-    producer_scopes.into_iter().any(&mut producer_is_in_flight)
-}

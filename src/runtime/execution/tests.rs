@@ -420,8 +420,7 @@ fn assert_camera_signature_recreates(
     let mut cache = DeterministicResourceCache::default();
     let baseline = cache
         .temporal_history(
-            41,
-            0,
+                        0,
             baseline_signature,
             (4, 4),
             4,
@@ -433,8 +432,7 @@ fn assert_camera_signature_recreates(
         .expect("baseline camera history");
     let changed = cache
         .temporal_history(
-            41,
-            0,
+                        0,
             changed_signature,
             (4, 4),
             4,
@@ -453,8 +451,7 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
     let mut cache = DeterministicResourceCache::default();
     let first = cache
         .temporal_history(
-            11,
-            0,
+                        0,
             temporal_signature(7),
             (4, 4),
             4,
@@ -470,8 +467,7 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
 
     let retry_before_completion = cache
         .temporal_history(
-            11,
-            0,
+                        0,
             temporal_signature(7),
             (4, 4),
             4,
@@ -488,15 +484,14 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
 
     let state = cache
         .temporal_histories
-        .get_mut(&(11, 0))
+        .get_mut(&0)
         .expect("initial temporal history should be retained");
     state.phase = 1;
     state.age = 1;
 
     let reused = cache
         .temporal_history(
-            11,
-            0,
+                        0,
             temporal_signature(7),
             (4, 4),
             4,
@@ -513,8 +508,7 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
 
     let reset = cache
         .temporal_history(
-            11,
-            0,
+                        0,
             temporal_signature(8),
             (4, 4),
             4,
@@ -537,8 +531,7 @@ fn temporal_history_resets_when_field_source_generation_changes() {
 
     let first = cache
         .temporal_history(
-            17,
-            0,
+                        0,
             temporal_signature_with_field_generation(7, 11),
             (4, 4),
             4,
@@ -552,15 +545,14 @@ fn temporal_history_resets_when_field_source_generation_changes() {
 
     let state = cache
         .temporal_histories
-        .get_mut(&(17, 0))
+        .get_mut(&0)
         .expect("mixed-input temporal history should be retained");
     state.phase = 1;
     state.age = 1;
 
     let reused = cache
         .temporal_history(
-            17,
-            0,
+                        0,
             temporal_signature_with_field_generation(7, 11),
             (4, 4),
             4,
@@ -575,8 +567,7 @@ fn temporal_history_resets_when_field_source_generation_changes() {
 
     let reset = cache
         .temporal_history(
-            17,
-            0,
+                        0,
             temporal_signature_with_field_generation(7, 12),
             (4, 4),
             4,
@@ -738,8 +729,7 @@ fn sub_native_camera_pose_change_recreates_temporal_history() {
     );
     let first = cache
         .temporal_history(
-            12,
-            0,
+                        0,
             first_signature,
             (4, 4),
             4,
@@ -757,8 +747,7 @@ fn sub_native_camera_pose_change_recreates_temporal_history() {
     );
     let moved = cache
         .temporal_history(
-            12,
-            0,
+                        0,
             moved_signature,
             (4, 4),
             4,
@@ -791,8 +780,7 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
 
     let first = cache
         .temporal_history(
-            11,
-            0,
+                        0,
             signature.clone(),
             (4, 4),
             4,
@@ -825,8 +813,7 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
 
     let retry = cache
         .temporal_history(
-            11,
-            0,
+                        0,
             signature.clone(),
             (4, 4),
             4,
@@ -847,10 +834,10 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
         }
     ));
 
-    cache.reconcile_temporal_outputs(11, true);
+    cache.reconcile_temporal_outputs(true);
     let retained = cache
         .temporal_histories
-        .get(&(11, 0))
+        .get(&0)
         .expect("completed camera history retained");
     assert_eq!(retained.age, 1);
     assert_eq!(retained.phase, 1);
@@ -870,8 +857,7 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
     );
     let reused = cache
         .temporal_history(
-            11,
-            0,
+                        0,
             signature,
             (4, 4),
             4,
@@ -892,9 +878,9 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
         } if previous == observation
     ));
 
-    cache.reconcile_temporal_outputs(11, false);
+    cache.reconcile_temporal_outputs(false);
     assert!(
-        !cache.temporal_histories.contains_key(&(11, 0)),
+        !cache.temporal_histories.contains_key(&0),
         "failed accepted execution must discard affected camera history"
     );
 }
@@ -907,8 +893,7 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
 
     let bootstrap = cache
         .temporal_history(
-            23,
-            0,
+                        0,
             signature.clone(),
             (4, 4),
             4,
@@ -928,8 +913,7 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
 
     let retry = cache
         .temporal_history(
-            23,
-            0,
+                        0,
             signature.clone(),
             (4, 4),
             4,
@@ -947,12 +931,11 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
         }
     ));
 
-    cache.reconcile_temporal_outputs(23, true);
+    cache.reconcile_temporal_outputs(true);
     for expected_completed in 1..=temporal::PHASE_COUNT {
         let use_state = cache
             .temporal_history(
-                23,
-                0,
+                                0,
                 signature.clone(),
                 (4, 4),
                 4,
@@ -970,7 +953,7 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
                 ..
             } if same_pose_completed_frames == expected_completed
         ));
-        cache.reconcile_temporal_outputs(23, true);
+        cache.reconcile_temporal_outputs(true);
     }
 
     let moved = temporal_test_observation(
@@ -981,8 +964,7 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
     );
     let moving = cache
         .temporal_history(
-            23,
-            0,
+                        0,
             signature,
             (4, 4),
             4,
@@ -1001,10 +983,10 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
         }
     ));
 
-    cache.reconcile_temporal_outputs(23, true);
+    cache.reconcile_temporal_outputs(true);
     let after_motion = cache
         .temporal_histories
-        .get(&(23, 0))
+        .get(&0)
         .expect("completed moving history retained");
     let DeterministicTemporalStorage::Camera(camera) = &after_motion.storage else {
         panic!("P100 history must remain camera storage");
@@ -1014,8 +996,7 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
 
     let stopped = cache
         .temporal_history(
-            23,
-            0,
+                        0,
             camera_temporal_signature(7, moved, (4, 4)),
             (4, 4),
             4,

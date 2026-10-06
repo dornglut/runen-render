@@ -145,14 +145,12 @@ fn prepare_with_requested_coverage(
     admitted: AdmittedDeterministicRender,
     context: &GpuContext,
     resources: &mut DeterministicResourceCache,
-    scope: u64,
     finite_evaluation: Option<(usize, (u32, u32))>,
 ) -> Result<PreparedDeterministicRender, RenderDeterministicExecutionError> {
-    super::prepare_deterministic_render_with_cache_in_scope_and_evaluation(
+    super::prepare_deterministic_render_with_cache_and_evaluation(
         admitted,
         context,
         resources,
-        scope,
         finite_evaluation,
         true,
     )
@@ -374,11 +372,10 @@ fn ordinary_sub_native_preparation_omits_unconsumed_requested_coverage() {
     let Some(context) = context() else { return };
     let fixture = fixture((8, 8), 0.0, 0.0, 1);
     let mut cache = DeterministicResourceCache::default();
-    let prepared = super::prepare_deterministic_render_with_cache_in_scope_and_evaluation(
+    let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
         admit(&fixture, &context),
         &context,
         &mut cache,
-        6,
         Some((0, (4, 4))),
         false,
     )
@@ -423,8 +420,7 @@ fn requested_coverage_executes_all_profiles_phases_and_odd_extents_without_alias
                     admit(&fixture, &context),
                     &context,
                     &mut cache,
-                    41,
-                    Some((0, evaluation)),
+                                        Some((0, evaluation)),
                 )
                 .unwrap();
                 assert!(
@@ -457,7 +453,7 @@ fn requested_coverage_executes_all_profiles_phases_and_odd_extents_without_alias
                     evidence.current_coverage.as_ref().unwrap().extent,
                     requested
                 );
-                let carrier = |kind| cache.buffers.get(&(41, 0, kind)).unwrap().clone();
+                let carrier = |kind| cache.buffers.get(&(0, kind)).unwrap().clone();
                 let handles = [
                     carrier(DeterministicBufferKind::CoverageDepth),
                     carrier(DeterministicBufferKind::CoverageState),
@@ -465,7 +461,7 @@ fn requested_coverage_executes_all_profiles_phases_and_odd_extents_without_alias
                 let all = cache
                     .buffers
                     .iter()
-                    .filter(|((scope, output, _), _)| *scope == 41 && *output == 0)
+                    .filter(|((output, _), _)| *output == 0)
                     .map(|(_, h)| h.diagnostic_identity())
                     .collect::<Vec<_>>();
                 assert_eq!(
@@ -475,7 +471,7 @@ fn requested_coverage_executes_all_profiles_phases_and_odd_extents_without_alias
                 );
                 let observed =
                     observe(&context, prepared.work_set().fragments().to_vec(), &handles);
-                cache.reconcile_temporal_outputs(41, true);
+                cache.reconcile_temporal_outputs(true);
                 let primary = packed(
                     &fixture,
                     &context,
@@ -538,8 +534,7 @@ fn requested_coverage_overwrites_camera_and_source_changes_and_keeps_subnative_r
             admit(&fixture, &context),
             &context,
             &mut cache,
-            12,
-            Some((0, (4, 4))),
+                        Some((0, (4, 4))),
         )
         .unwrap();
         let evidence = prepared
@@ -553,11 +548,11 @@ fn requested_coverage_overwrites_camera_and_source_changes_and_keeps_subnative_r
         }
         previous_generation = Some(evidence.history_generation);
         let handles = [
-            cache.buffers[&(12, 0, DeterministicBufferKind::CoverageDepth)].clone(),
-            cache.buffers[&(12, 0, DeterministicBufferKind::CoverageState)].clone(),
+            cache.buffers[&(0, DeterministicBufferKind::CoverageDepth)].clone(),
+            cache.buffers[&(0, DeterministicBufferKind::CoverageState)].clone(),
         ];
         let observed = observe(&context, prepared.work_set().fragments().to_vec(), &handles);
-        cache.reconcile_temporal_outputs(12, true);
+        cache.reconcile_temporal_outputs(true);
         if sphere_x == 40.0 {
             assert!(observed[1].iter().all(|word| *word == 1));
             assert!(
@@ -588,8 +583,7 @@ fn requested_coverage_overwrites_camera_and_source_changes_and_keeps_subnative_r
             admit(&fixture, &context),
             &context,
             &mut cache,
-            12,
-            Some((0, (4, 4)))
+                        Some((0, (4, 4)))
         ),
         Err(RenderDeterministicExecutionError::Lowering(
             RenderDeterministicLoweringError::MissingTemporalSurfaceInputGeneration { .. }
@@ -823,7 +817,7 @@ fn requested_coverage_preserves_field_payload_generations_and_invalid_vs_backgro
             ),
         );
         let prepared =
-            prepare_with_requested_coverage(admitted, &context, &mut cache, 81, Some((0, (4, 4))))
+            prepare_with_requested_coverage(admitted, &context, &mut cache, Some((0, (4, 4))))
                 .unwrap();
         let evidence = prepared
             .radiance_output(0)
@@ -840,12 +834,12 @@ fn requested_coverage_preserves_field_payload_generations_and_invalid_vs_backgro
         }
         prior_generation = Some(evidence.history_generation);
         let handles = [
-            cache.buffers[&(81, 0, DeterministicBufferKind::CoverageDepth)].clone(),
-            cache.buffers[&(81, 0, DeterministicBufferKind::CoverageState)].clone(),
+            cache.buffers[&(0, DeterministicBufferKind::CoverageDepth)].clone(),
+            cache.buffers[&(0, DeterministicBufferKind::CoverageState)].clone(),
         ];
         let stride = handles[0].descriptor().size_bytes() as usize / 4 / 8;
         let observed = observe(&context, prepared.work_set().fragments().to_vec(), &handles);
-        cache.reconcile_temporal_outputs(81, true);
+        cache.reconcile_temporal_outputs(true);
         for (cell, state) in observed[1].iter().enumerate() {
             let physical = cell / 8 * stride + cell % 8;
             let hit = oracle[1][cell] != 0;
@@ -880,8 +874,7 @@ fn requested_coverage_preserves_field_payload_generations_and_invalid_vs_backgro
             admit_inputs(&fixture, &fields, &context),
             &context,
             &mut cache,
-            81,
-            Some((0, (4, 4)))
+                        Some((0, (4, 4)))
         ),
         Err(RenderDeterministicExecutionError::Lowering(
             RenderDeterministicLoweringError::MissingTemporalFieldInputGeneration { .. }
@@ -890,37 +883,35 @@ fn requested_coverage_preserves_field_payload_generations_and_invalid_vs_backgro
 }
 
 #[test]
-fn requested_coverage_resource_scopes_and_resize_are_independent() {
+fn requested_coverage_reuses_compatible_resources_and_replaces_on_resize() {
     let Some(context) = context() else { return };
     let mut cache = DeterministicResourceCache::default();
     let mut identities = Vec::new();
-    for (scope, extent) in [(21, (8, 8)), (22, (8, 8)), (21, (7, 5))] {
+    for extent in [(8, 8), (8, 8), (7, 5)] {
         let fixture = fixture(extent, 0.0, 0.0, 1);
         let prepared = prepare_with_requested_coverage(
             admit(&fixture, &context),
             &context,
             &mut cache,
-            scope,
             Some((0, (extent.0.div_ceil(2), extent.1.div_ceil(2)))),
         )
         .unwrap();
         let handles = [
-            cache.buffers[&(scope, 0, DeterministicBufferKind::CoverageDepth)].clone(),
-            cache.buffers[&(scope, 0, DeterministicBufferKind::CoverageState)].clone(),
+            cache.buffers[&(0, DeterministicBufferKind::CoverageDepth)].clone(),
+            cache.buffers[&(0, DeterministicBufferKind::CoverageState)].clone(),
         ];
         identities.push(handles[1].diagnostic_identity());
         let observed = observe(&context, prepared.work_set().fragments().to_vec(), &handles);
         assert_eq!(observed[1].len(), (extent.0 * extent.1) as usize);
         assert!(observed[1].contains(&2));
-        cache.reconcile_temporal_outputs(scope, true);
+        cache.reconcile_temporal_outputs(true);
     }
-    assert_eq!(
-        identities.iter().collect::<BTreeSet<_>>().len(),
-        3,
-        "other producers and resize must have independent coverage identities"
+    assert_eq!(identities[0], identities[1]);
+    assert_ne!(
+        identities[1], identities[2],
+        "descriptor-changing resize must replace the coverage resource identity"
     );
 }
-
 #[test]
 fn requested_coverage_plane_depth_matches_the_same_phase_primary_query() {
     let Some(context) = context() else { return };
@@ -975,8 +966,7 @@ fn requested_coverage_uses_current_scene_state_even_with_unchanged_surface_gener
         admit(&fixture, &context),
         &context,
         &mut cache,
-        91,
-        Some((0, (4, 4))),
+                Some((0, (4, 4))),
     )
     .unwrap();
     let first_generation = prepared
@@ -986,11 +976,11 @@ fn requested_coverage_uses_current_scene_state_even_with_unchanged_surface_gener
         .unwrap()
         .history_generation;
     let handles = [
-        cache.buffers[&(91, 0, DeterministicBufferKind::CoverageDepth)].clone(),
-        cache.buffers[&(91, 0, DeterministicBufferKind::CoverageState)].clone(),
+        cache.buffers[&(0, DeterministicBufferKind::CoverageDepth)].clone(),
+        cache.buffers[&(0, DeterministicBufferKind::CoverageState)].clone(),
     ];
     let first = observe(&context, prepared.work_set().fragments().to_vec(), &handles);
-    cache.reconcile_temporal_outputs(91, true);
+    cache.reconcile_temporal_outputs(true);
     let object = fixture.scene.object_ids()[0];
     let state = fixture.scene.object_state(object).unwrap().clone();
     let participation = fixture.scene.object_participation(object).unwrap().clone();
@@ -1027,8 +1017,7 @@ fn requested_coverage_uses_current_scene_state_even_with_unchanged_surface_gener
         admit(&fixture, &context),
         &context,
         &mut cache,
-        91,
-        Some((0, (4, 4))),
+                Some((0, (4, 4))),
     )
     .unwrap();
     let evidence = prepared
