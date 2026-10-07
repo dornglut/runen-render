@@ -393,11 +393,21 @@ fn render_frame(
 
     let capture = associated.request_radiance_capture(RADIANCE)?;
     let decoder = associated.object_identity_decoder(OBJECT_ID)?;
+    let identity_target = associated
+        .admitted_plan()
+        .outputs()
+        .iter()
+        .find(|output| output.output_index() == OBJECT_ID)
+        .and_then(|output| match output.binding().destination() {
+            RenderOutputDestination::SampleLatticeTexture(texture) => Some(texture.clone()),
+            RenderOutputDestination::ScalarBuffer(_) => None,
+        })
+        .ok_or_else(|| io::Error::other("associated identity destination is not a texture"))?;
     let identity_readback = GpuReadbackId::allocate()?;
     let capture_operation =
         GpuReadbackOperation::new(capture.source().clone(), capture.readback_id())?;
     let identity_operation = GpuReadbackOperation::new(
-        GpuTextureCopyRegion::whole_base_mip(&targets.identity)?.into(),
+        GpuTextureCopyRegion::whole_base_mip(&identity_target)?.into(),
         identity_readback,
     )?;
     let fragment = GpuWorkFragment::build(format!("{frame_label} diagnostic readback"), |work| {
