@@ -856,11 +856,11 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
     let associated = session
         .associate_submission(occurrence, &renderer_submission)
         .expect("exact retained occurrence association");
+    let Err(pending_capture_error) = associated.request_radiance_capture(0) else {
+        panic!("pending renderer submission cannot mint capture")
+    };
     assert_eq!(
-        associated
-            .request_radiance_capture(0)
-            .expect_err("pending renderer submission cannot mint capture")
-            .kind(),
+        pending_capture_error.kind(),
         RenderRadianceCaptureRequestErrorKind::RendererSubmissionPending
     );
     assert_eq!(
@@ -983,9 +983,9 @@ fn associated_occurrence_failure_is_machine_actionable() {
         GpuSubmissionStatus::Failed(failure)
             if failure.kind() == GpuSubmissionFailureKind::ContextDropped
     ));
-    let capture_error = associated
-        .request_radiance_capture(0)
-        .expect_err("failed renderer submission cannot mint capture");
+    let Err(capture_error) = associated.request_radiance_capture(0) else {
+        panic!("failed renderer submission cannot mint capture")
+    };
     assert_eq!(
         capture_error.kind(),
         RenderRadianceCaptureRequestErrorKind::RendererSubmissionFailed
