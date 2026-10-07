@@ -1266,10 +1266,9 @@ fn associated_temporal_r32float_radiance_is_capturable_through_exact_occurrence(
         Ok(())
     })
     .expect("R32Float retained capture fragment");
-    let product_submission = pollster::block_on(
-        context.submit_work("R32Float retained capture submission", [fragment]),
-    )
-    .expect("R32Float retained capture submission");
+    let product_submission =
+        pollster::block_on(context.submit_work("R32Float retained capture submission", [fragment]))
+            .expect("R32Float retained capture submission");
     wait_for_readback(&context, &product_submission, readback_id);
 
     let captured = associated

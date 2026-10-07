@@ -18,7 +18,10 @@ use std::error::Error;
 use std::fmt;
 
 fn maintained_carrier_format_supported(format: GpuTextureFormat) -> bool {
-    matches!(format, GpuTextureFormat::R32Uint | GpuTextureFormat::R32Float)
+    matches!(
+        format,
+        GpuTextureFormat::R32Uint | GpuTextureFormat::R32Float
+    )
 }
 
 /// One exact correlation witness for a product-owned readback of an eligible radiance output.
