@@ -135,6 +135,12 @@ impl RenderSceneObjectMutation {
     }
 }
 
+/// One atomic renderer-scene transaction.
+///
+/// Replacements of independent facets on the same existing object may be combined in one update;
+/// in particular, state and participation are validated against their proposed final combination.
+/// Structural insertion/removal remains exclusive with any other same-object operation, and
+/// duplicate replacement of the same facet is conflicting.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RenderSceneUpdate {
     operations: Vec<RenderSceneOperation>,
