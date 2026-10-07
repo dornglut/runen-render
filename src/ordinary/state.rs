@@ -181,7 +181,7 @@ impl RenderExecutionSession {
         &mut self,
         occurrence: PreparedRenderOccurrence,
         submission: &GpuSubmission,
-    ) -> Result<(), RenderExecutionSessionError> {
+    ) -> Result<AssociatedRenderOccurrence, RenderExecutionSessionError> {
         self.reconcile();
 
         if self.is_in_flight() {
@@ -221,10 +221,14 @@ impl RenderExecutionSession {
             return Err(RenderExecutionSessionError::SubmissionMissingRendererWork);
         }
 
+        let associated = AssociatedRenderOccurrence {
+            inner: occurrence.inner,
+            submission: submission.clone(),
+        };
         self.prepared_occurrence = None;
         self.submission = Some(submission.clone());
         self.reconcile_terminal_submission();
-        Ok(())
+        Ok(associated)
     }
 
     fn abandon_current_occurrence(&mut self) {
