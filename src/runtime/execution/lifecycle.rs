@@ -51,10 +51,6 @@ impl PreparedDeterministicRender {
             .find(|output| output.output_index() == output_index)
     }
 
-    pub(crate) const fn object_identity_decoder(&self) -> &RenderObjectIdentityDecoder {
-        &self.object_identity_decoder
-    }
-
     pub(crate) fn into_associated(self) -> AssociatedDeterministicRender {
         AssociatedDeterministicRender {
             admitted: self.admitted,
