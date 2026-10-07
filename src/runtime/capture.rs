@@ -388,13 +388,21 @@ pub(crate) fn capture_retained(
             return Err(RenderDeterministicRadianceCaptureError::RendererSubmissionPending);
         }
         GpuSubmissionStatus::Failed(failure) => {
-            return Err(RenderDeterministicRadianceCaptureError::RendererSubmissionFailed {
-                kind: failure.kind(),
-            });
+            return Err(
+                RenderDeterministicRadianceCaptureError::RendererSubmissionFailed {
+                    kind: failure.kind(),
+                },
+            );
         }
         GpuSubmissionStatus::Completed => {}
     }
-    capture_execution(prepared.admitted(), submission, request, context, product_submission)
+    capture_execution(
+        prepared.admitted(),
+        submission,
+        request,
+        context,
+        product_submission,
+    )
 }
 
 fn capture_execution(
