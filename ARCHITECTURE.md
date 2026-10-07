@@ -388,6 +388,27 @@ occurrence may become pending retained history, and only successful terminal
 execution may advance successful temporal history. Abandoned or failed
 occurrences MUST NOT later become successful history by scope convention.
 
+Successful exact association MAY return a durable output-correlation witness distinct
+from the retained session. Such a witness MUST NOT own or advance temporal
+history. It may survive session reconciliation or destruction because its
+authority is limited to the exact associated occurrence's admitted outputs and
+RunenGPU submission.
+
+Retained output interpretation MUST remain exactly correlated to that occurrence.
+Radiance capture is eligible only after the associated renderer submission
+completes successfully and while the exact retained destination still names that
+submission as its current completed writer. Caller-owned readback transport
+remains RunenGPU authority; RunenRender owns carrier interpretation and MUST
+reject foreign correlation, lost affinity/continuity, stale writer state,
+incompatible layout, or failed/pending execution. Captured maintained samples
+are physical output interpretation, not a newly certified `RenderResult`.
+
+An execution-local object-identity decoder MAY be retained with the exact
+associated occurrence, but it maps physical carrier words only to optional
+renderer object IDs. It MUST NOT be treated as per-pixel definedness,
+miss/background evidence, persistent identity, or authority for words produced
+by another occurrence.
+
 One continuity may serialize its own pending lifecycle when correctness requires
 it. Independent continuities MUST NOT be serialized merely because an
 implementation stores them in one global mutable map. A future renderer-wide
