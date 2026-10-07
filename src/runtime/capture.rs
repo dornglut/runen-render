@@ -103,10 +103,6 @@ impl fmt::Display for RenderDeterministicRadianceCaptureRequestError {
                 "the associated renderer submission has not completed"
             }
             Self::RendererSubmissionFailed { .. } => "the associated renderer submission failed",
-            Self::RendererSubmissionPending => {
-                "the associated renderer submission has not completed"
-            }
-            Self::RendererSubmissionFailed { .. } => "the associated renderer submission failed",
             Self::OutputIndexOutOfRange => "requested output index is not admitted",
             Self::OutputNotRadiance => "requested output is not spectral radiance",
             Self::OutputTopologyUnsupported => {
@@ -161,6 +157,10 @@ impl fmt::Display for RenderDeterministicRadianceCaptureError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let detail = match self {
             Self::VerificationNotFormed => "verified result formation has not succeeded",
+            Self::RendererSubmissionPending => {
+                "the associated renderer submission has not completed"
+            }
+            Self::RendererSubmissionFailed { .. } => "the associated renderer submission failed",
             Self::RequestCorrelationMismatch => {
                 "capture request does not belong to this submitted render/output"
             }
