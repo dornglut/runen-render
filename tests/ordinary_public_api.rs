@@ -336,10 +336,13 @@ fn wait_for_submission(context: &GpuContext, submission: &GpuSubmission) {
 }
 
 fn retained_context(format: GpuTextureFormat) -> Option<(GpuContext, GpuContextDescriptor)> {
-    let descriptor =
+    let mut descriptor =
         GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
             .require_format_role(format, GpuFormatRole::CopyDestination)
             .with_label("RunenRender retained-session public consumer");
+    if format == GpuTextureFormat::R32Float {
+        descriptor = descriptor.require_format_role(format, GpuFormatRole::CopySource);
+    }
     match pollster::block_on(GpuContext::request(descriptor.clone())) {
         Ok(context) => Some((context, descriptor)),
         Err(error) if error.category() == GpuContextRequestErrorCategory::NoAdapterAvailable => {
