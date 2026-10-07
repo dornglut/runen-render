@@ -1,7 +1,7 @@
 use super::participation::RenderObjectParticipation;
 use super::representation::{RenderRepresentationId, classify_field_distance_transform};
 use super::space_time::{RenderObjectSpatialState, RenderObjectTemporalState};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU64;
@@ -745,14 +745,17 @@ impl RenderSceneStore {
         update: &RenderSceneUpdate,
     ) -> Result<ValidatedRenderSceneUpdate, RenderSceneCommitError> {
         let mut normalized = BTreeMap::<RenderObjectId, RenderSceneObjectMutation>::new();
+        let mut conflicts = BTreeSet::<RenderObjectId>::new();
 
         for operation in &update.operations {
             let mutation = normalized.entry(operation.object_id).or_default();
             if !mutation.absorb(&operation.kind) {
-                return Err(RenderSceneCommitError::ConflictingOperations {
-                    object_id: operation.object_id,
-                });
+                conflicts.insert(operation.object_id);
             }
+        }
+
+        if let Some(object_id) = conflicts.first().copied() {
+            return Err(RenderSceneCommitError::ConflictingOperations { object_id });
         }
 
         let mut inserted = Vec::new();
