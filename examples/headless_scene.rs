@@ -164,9 +164,7 @@ fn build_request() -> ExampleResult<RenderRequest> {
     Ok(request)
 }
 
-fn build_surface_inputs(
-    ids: SceneIds,
-) -> ExampleResult<[RenderSurfaceSemanticInputBinding; 2]> {
+fn build_surface_inputs(ids: SceneIds) -> ExampleResult<[RenderSurfaceSemanticInputBinding; 2]> {
     Ok([
         RenderSurfaceSemanticInputBinding::new(
             ids.sphere_rep,
@@ -364,7 +362,10 @@ fn render_frame(
     wait_for_submission(context, &renderer_submission)?;
     session.reconcile();
     if session.is_in_flight()
-        || !matches!(associated.submission_status(), GpuSubmissionStatus::Completed)
+        || !matches!(
+            associated.submission_status(),
+            GpuSubmissionStatus::Completed
+        )
     {
         return Err(io::Error::other("retained session did not reconcile completed work").into());
     }
@@ -383,10 +384,9 @@ fn render_frame(
         work.operation("capture retained object IDs", identity_operation)?;
         Ok(())
     })?;
-    let readback_submission = pollster::block_on(context.submit_work(
-        format!("{frame_label} diagnostic readbacks"),
-        [fragment],
-    ))?;
+    let readback_submission = pollster::block_on(
+        context.submit_work(format!("{frame_label} diagnostic readbacks"), [fragment]),
+    )?;
     wait_for_readbacks(
         context,
         &readback_submission,
@@ -953,12 +953,7 @@ fn main() -> ExampleResult<()> {
 mod tests {
     use super::*;
 
-    fn assert_png(
-        path: &Path,
-        width: u32,
-        height: u32,
-        color_type: u8,
-    ) -> ExampleResult<()> {
+    fn assert_png(path: &Path, width: u32, height: u32, color_type: u8) -> ExampleResult<()> {
         let png = fs::read(path)?;
         assert_eq!(&png[..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
         assert_eq!(&png[12..16], b"IHDR");
@@ -1000,10 +995,7 @@ mod tests {
             observed.frame_002.scene_revision
         );
         assert_eq!(observed.frame_001.sphere_translation_x, 0.0);
-        assert_eq!(
-            observed.frame_002.sphere_translation_x,
-            SPHERE_FRAME_002_X
-        );
+        assert_eq!(observed.frame_002.sphere_translation_x, SPHERE_FRAME_002_X);
         assert!(
             observed.frame_002.temporal.history_generation
                 > observed.frame_001.temporal.history_generation
