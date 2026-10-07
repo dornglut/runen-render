@@ -944,7 +944,7 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
         .expect("identity readback correlation")
         .status()
     {
-        GpuReadbackStatus::Ready(bytes) => bytes.as_bytes(),
+        GpuReadbackStatus::Ready(bytes) => bytes.as_bytes().to_vec(),
         status => panic!("identity readback not ready after wait: {status:?}"),
     };
     assert!(
