@@ -13,6 +13,7 @@ use super::state::{
 use crate::admission::AdmittedRenderPlan;
 use crate::request::{RenderObservationSpec, RenderOutputValue};
 use runen_gpu::GpuContext;
+use std::num::NonZeroU64;
 
 #[derive(Clone, Copy)]
 pub(super) struct ResolvedOutputContext<'a> {
@@ -20,7 +21,7 @@ pub(super) struct ResolvedOutputContext<'a> {
     pub(super) admitted_output: &'a crate::admission::RenderAdmittedOutput,
     pub(super) requested: crate::request::RenderRequestedOutput,
     pub(super) observation: RenderObservationSpec,
-    pub(super) scope: u64,
+    pub(super) graph_wiring_namespace: NonZeroU64,
     pub(super) finite_evaluation_extent: Option<(u32, u32)>,
     pub(super) produce_requested_coverage: bool,
     pub(super) bytes_per_row_alignment: Option<u64>,
@@ -55,7 +56,7 @@ pub(super) fn resolve_output_context<'a>(
     execution: DeterministicOutputExecutionSelection,
 ) -> Result<ResolvedOutputContext<'a>, RenderDeterministicLoweringError> {
     let DeterministicOutputExecutionSelection {
-        scope,
+        graph_wiring_namespace,
         finite_evaluation_extent,
         produce_requested_coverage,
     } = execution;
@@ -87,7 +88,7 @@ pub(super) fn resolve_output_context<'a>(
         admitted_output,
         requested,
         observation,
-        scope,
+        graph_wiring_namespace,
         finite_evaluation_extent,
         produce_requested_coverage,
         bytes_per_row_alignment: context
@@ -180,7 +181,6 @@ pub(super) fn prepare_temporal_state(
         depth_policy_revision: camera_capable.then_some(camera::DEPTH_POLICY_REVISION),
     };
     let history = resources.temporal_history(
-        resolved.scope,
         resolved.output_index,
         signature,
         requested_extent,

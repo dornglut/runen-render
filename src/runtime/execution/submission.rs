@@ -10,7 +10,6 @@ pub(crate) async fn submit_deterministic_render_for_verification(
         DeterministicObservationIntent::Verify,
         &mut DeterministicResourceCache::default(),
         DeterministicRenderExecutionSelection {
-            scope: 0,
             finite_evaluation: None,
             produce_requested_coverage: false,
         },

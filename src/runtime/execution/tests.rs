@@ -127,39 +127,38 @@ fn conservative_field_error_packing_never_narrows_scene_space_bound() {
 fn deterministic_cache_reuses_matching_descriptors_and_replaces_resizes() {
     let mut cache = DeterministicResourceCache::default();
     let first = cache
-        .buffer(0, 0, DeterministicBufferKind::Input, cache_descriptor(16))
+        .buffer(0, DeterministicBufferKind::Input, cache_descriptor(16))
         .expect("first deterministic buffer should allocate");
     let same = cache
-        .buffer(0, 0, DeterministicBufferKind::Input, cache_descriptor(16))
+        .buffer(0, DeterministicBufferKind::Input, cache_descriptor(16))
         .expect("matching deterministic buffer should reuse");
     assert_eq!(first.diagnostic_identity(), same.diagnostic_identity());
 
     let resized = cache
-        .buffer(0, 0, DeterministicBufferKind::Input, cache_descriptor(32))
+        .buffer(0, DeterministicBufferKind::Input, cache_descriptor(32))
         .expect("changed descriptor should allocate a replacement");
     assert_ne!(first.diagnostic_identity(), resized.diagnostic_identity());
 }
 
 #[test]
-fn deterministic_cache_scopes_equal_descriptors_by_producer() {
-    let mut cache = DeterministicResourceCache::default();
-    let first = cache
-        .buffer(11, 0, DeterministicBufferKind::Input, cache_descriptor(16))
-        .expect("first producer buffer should allocate");
-    let same_producer = cache
-        .buffer(11, 0, DeterministicBufferKind::Input, cache_descriptor(16))
-        .expect("same producer should reuse its buffer");
-    let other_producer = cache
-        .buffer(12, 0, DeterministicBufferKind::Input, cache_descriptor(16))
-        .expect("other producer should allocate an independent buffer");
+fn deterministic_caches_own_distinct_graph_wiring_namespaces() {
+    let mut first = DeterministicResourceCache::default();
+    let mut second = DeterministicResourceCache::default();
 
+    let first_namespace = first
+        .graph_wiring_namespace()
+        .expect("first graph-wiring namespace");
     assert_eq!(
-        first.diagnostic_identity(),
-        same_producer.diagnostic_identity()
+        first_namespace,
+        first
+            .graph_wiring_namespace()
+            .expect("stable first graph-wiring namespace")
     );
     assert_ne!(
-        first.diagnostic_identity(),
-        other_producer.diagnostic_identity()
+        first_namespace,
+        second
+            .graph_wiring_namespace()
+            .expect("second graph-wiring namespace")
     );
 }
 
@@ -171,7 +170,6 @@ fn deterministic_cache_stays_bounded_across_frames_and_resize() {
         let byte_len = if frame < 60 { 16 } else { 32 };
         let handle = cache
             .buffer(
-                11,
                 0,
                 DeterministicBufferKind::Input,
                 cache_descriptor(byte_len),
@@ -420,7 +418,6 @@ fn assert_camera_signature_recreates(
     let mut cache = DeterministicResourceCache::default();
     let baseline = cache
         .temporal_history(
-            41,
             0,
             baseline_signature,
             (4, 4),
@@ -433,7 +430,6 @@ fn assert_camera_signature_recreates(
         .expect("baseline camera history");
     let changed = cache
         .temporal_history(
-            41,
             0,
             changed_signature,
             (4, 4),
@@ -453,7 +449,6 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
     let mut cache = DeterministicResourceCache::default();
     let first = cache
         .temporal_history(
-            11,
             0,
             temporal_signature(7),
             (4, 4),
@@ -470,7 +465,6 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
 
     let retry_before_completion = cache
         .temporal_history(
-            11,
             0,
             temporal_signature(7),
             (4, 4),
@@ -488,14 +482,13 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
 
     let state = cache
         .temporal_histories
-        .get_mut(&(11, 0))
+        .get_mut(&0)
         .expect("initial temporal history should be retained");
     state.phase = 1;
     state.age = 1;
 
     let reused = cache
         .temporal_history(
-            11,
             0,
             temporal_signature(7),
             (4, 4),
@@ -513,7 +506,6 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
 
     let reset = cache
         .temporal_history(
-            11,
             0,
             temporal_signature(8),
             (4, 4),
@@ -537,7 +529,6 @@ fn temporal_history_resets_when_field_source_generation_changes() {
 
     let first = cache
         .temporal_history(
-            17,
             0,
             temporal_signature_with_field_generation(7, 11),
             (4, 4),
@@ -552,14 +543,13 @@ fn temporal_history_resets_when_field_source_generation_changes() {
 
     let state = cache
         .temporal_histories
-        .get_mut(&(17, 0))
+        .get_mut(&0)
         .expect("mixed-input temporal history should be retained");
     state.phase = 1;
     state.age = 1;
 
     let reused = cache
         .temporal_history(
-            17,
             0,
             temporal_signature_with_field_generation(7, 11),
             (4, 4),
@@ -575,7 +565,6 @@ fn temporal_history_resets_when_field_source_generation_changes() {
 
     let reset = cache
         .temporal_history(
-            17,
             0,
             temporal_signature_with_field_generation(7, 12),
             (4, 4),
@@ -738,7 +727,6 @@ fn sub_native_camera_pose_change_recreates_temporal_history() {
     );
     let first = cache
         .temporal_history(
-            12,
             0,
             first_signature,
             (4, 4),
@@ -757,7 +745,6 @@ fn sub_native_camera_pose_change_recreates_temporal_history() {
     );
     let moved = cache
         .temporal_history(
-            12,
             0,
             moved_signature,
             (4, 4),
@@ -791,7 +778,6 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
 
     let first = cache
         .temporal_history(
-            11,
             0,
             signature.clone(),
             (4, 4),
@@ -825,7 +811,6 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
 
     let retry = cache
         .temporal_history(
-            11,
             0,
             signature.clone(),
             (4, 4),
@@ -847,10 +832,10 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
         }
     ));
 
-    cache.reconcile_temporal_outputs(11, true);
+    cache.reconcile_temporal_outputs(true);
     let retained = cache
         .temporal_histories
-        .get(&(11, 0))
+        .get(&0)
         .expect("completed camera history retained");
     assert_eq!(retained.age, 1);
     assert_eq!(retained.phase, 1);
@@ -870,7 +855,6 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
     );
     let reused = cache
         .temporal_history(
-            11,
             0,
             signature,
             (4, 4),
@@ -892,9 +876,9 @@ fn camera_history_completion_retry_failure_and_ping_pong_are_fail_closed() {
         } if previous == observation
     ));
 
-    cache.reconcile_temporal_outputs(11, false);
+    cache.reconcile_temporal_outputs(false);
     assert!(
-        !cache.temporal_histories.contains_key(&(11, 0)),
+        !cache.temporal_histories.contains_key(&0),
         "failed accepted execution must discard affected camera history"
     );
 }
@@ -907,7 +891,6 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
 
     let bootstrap = cache
         .temporal_history(
-            23,
             0,
             signature.clone(),
             (4, 4),
@@ -928,7 +911,6 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
 
     let retry = cache
         .temporal_history(
-            23,
             0,
             signature.clone(),
             (4, 4),
@@ -947,11 +929,10 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
         }
     ));
 
-    cache.reconcile_temporal_outputs(23, true);
+    cache.reconcile_temporal_outputs(true);
     for expected_completed in 1..=temporal::PHASE_COUNT {
         let use_state = cache
             .temporal_history(
-                23,
                 0,
                 signature.clone(),
                 (4, 4),
@@ -970,7 +951,7 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
                 ..
             } if same_pose_completed_frames == expected_completed
         ));
-        cache.reconcile_temporal_outputs(23, true);
+        cache.reconcile_temporal_outputs(true);
     }
 
     let moved = temporal_test_observation(
@@ -981,7 +962,6 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
     );
     let moving = cache
         .temporal_history(
-            23,
             0,
             signature,
             (4, 4),
@@ -1001,10 +981,10 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
         }
     ));
 
-    cache.reconcile_temporal_outputs(23, true);
+    cache.reconcile_temporal_outputs(true);
     let after_motion = cache
         .temporal_histories
-        .get(&(23, 0))
+        .get(&0)
         .expect("completed moving history retained");
     let DeterministicTemporalStorage::Camera(camera) = &after_motion.storage else {
         panic!("P100 history must remain camera storage");
@@ -1014,7 +994,6 @@ fn camera_same_pose_convergence_advances_only_on_completed_frames_and_resets_aft
 
     let stopped = cache
         .temporal_history(
-            23,
             0,
             camera_temporal_signature(7, moved, (4, 4)),
             (4, 4),

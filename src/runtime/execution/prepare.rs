@@ -55,32 +55,21 @@ pub fn prepare_deterministic_render(
     prepare_deterministic_render_with_cache(admitted, context, &mut resources)
 }
 
-/// Prepare one ordinary maintained deterministic render using renderer-owned reusable resources.
+/// Prepare one ordinary maintained deterministic render using continuity-local reusable resources.
 pub(crate) fn prepare_deterministic_render_with_cache(
     admitted: AdmittedDeterministicRender,
     context: &GpuContext,
     resources: &mut DeterministicResourceCache,
 ) -> Result<PreparedDeterministicRender, RenderDeterministicExecutionError> {
-    prepare_deterministic_render_with_cache_in_scope(admitted, context, resources, 0)
-}
-
-/// Prepare one composition using a producer-scoped resource cache namespace.
-pub(crate) fn prepare_deterministic_render_with_cache_in_scope(
-    admitted: AdmittedDeterministicRender,
-    context: &GpuContext,
-    resources: &mut DeterministicResourceCache,
-    scope: u64,
-) -> Result<PreparedDeterministicRender, RenderDeterministicExecutionError> {
-    prepare_deterministic_render_with_cache_in_scope_and_evaluation(
-        admitted, context, resources, scope, None, false,
+    prepare_deterministic_render_with_cache_and_evaluation(
+        admitted, context, resources, None, false,
     )
 }
 
-pub(crate) fn prepare_deterministic_render_with_cache_in_scope_and_evaluation(
+pub(crate) fn prepare_deterministic_render_with_cache_and_evaluation(
     admitted: AdmittedDeterministicRender,
     context: &GpuContext,
     resources: &mut DeterministicResourceCache,
-    scope: u64,
     finite_evaluation: Option<(usize, (u32, u32))>,
     produce_requested_coverage: bool,
 ) -> Result<PreparedDeterministicRender, RenderDeterministicExecutionError> {
@@ -90,7 +79,6 @@ pub(crate) fn prepare_deterministic_render_with_cache_in_scope_and_evaluation(
         DeterministicObservationIntent::Ordinary,
         resources,
         DeterministicRenderExecutionSelection {
-            scope,
             finite_evaluation,
             produce_requested_coverage,
         },
@@ -140,7 +128,6 @@ pub(super) fn lower_deterministic_render(
     execution: DeterministicRenderExecutionSelection,
 ) -> Result<LoweredDeterministicRender, RenderDeterministicLoweringError> {
     let DeterministicRenderExecutionSelection {
-        scope,
         finite_evaluation,
         produce_requested_coverage,
     } = execution;
@@ -152,6 +139,7 @@ pub(super) fn lower_deterministic_render(
         });
     }
 
+    let graph_wiring_namespace = resources.graph_wiring_namespace()?;
     let object_identity_decoder = build_object_identity_decoder(admitted)?;
     let object_codes = object_identity_decoder
         .objects_by_code
@@ -168,7 +156,7 @@ pub(super) fn lower_deterministic_render(
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
 
-    resources.prepared_temporal_outputs.remove(&scope);
+    resources.discard_prepared_temporal_outputs();
 
     let mut fragments = Vec::new();
     fragments
@@ -194,7 +182,7 @@ pub(super) fn lower_deterministic_render(
             resources,
             intent,
             DeterministicOutputExecutionSelection {
-                scope,
+                graph_wiring_namespace,
                 finite_evaluation_extent: finite_evaluation.and_then(
                     |(selected_output, extent)| {
                         (selected_output == output.output_index()).then_some(extent)
@@ -293,7 +281,6 @@ pub(super) fn lower_output(
             coverage_packed,
             resolved.max_compute_workgroups_per_dimension,
             resources,
-            resolved.scope,
             resolved.output_index,
         )?)
     } else {

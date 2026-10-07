@@ -1,21 +1,5 @@
 use super::*;
-
-/// Stable renderer-owned namespace for retained execution state.
-///
-/// This scopes reusable renderer resources and temporal history. It is not a scene, object,
-/// RunenGPU resource, or submission identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RenderExecutionScope(u64);
-
-impl RenderExecutionScope {
-    pub const fn new(raw: u64) -> Self {
-        Self(raw)
-    }
-
-    pub const fn raw(self) -> u64 {
-        self.0
-    }
-}
+use std::sync::{Arc, Weak};
 
 /// Optional finite evaluation selection for one requested output.
 ///
@@ -92,57 +76,184 @@ impl RenderTemporalExecutionEvidence {
         }
     }
 }
-
-/// Stateful ordinary integration for hosts that compose renderer-authored work into a larger
-/// public RunenGPU submission.
+/// Retained execution owner for one independent renderer continuity.
 ///
-/// It retains only renderer-derived reusable resources and temporal history. Planning, admission,
-/// compatibility, and lowering are the same authority used by the one-shot ordinary path.
+/// One session owns renderer-derived reusable resources and temporal history for one logical
+/// continuity. Product producer, surface, view, ECS, window, and presentation identities remain
+/// outside RunenRender and may map to this owner only in downstream integration.
+///
+/// At most one prepared occurrence or accepted in-flight submission may exist at a time. Dropping
+/// an unaccepted occurrence abandons its provisional temporal transition; the next reconciliation
+/// or preparation discards that provisional state before continuing.
 #[derive(Debug, Default)]
-pub struct RenderExecutionState {
-    inner: DeterministicResourceCache,
+pub struct RenderExecutionSession {
+    identity: Arc<()>,
+    resources: DeterministicResourceCache,
+    affinity: Option<GpuContextAffinity>,
+    prepared_occurrence: Option<Weak<()>>,
+    submission: Option<GpuSubmission>,
 }
 
-impl RenderExecutionState {
+impl RenderExecutionSession {
+    /// Creates one independent retained renderer continuity owner.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn has_in_flight_scopes(
-        &self,
-        scopes: impl IntoIterator<Item = RenderExecutionScope>,
-    ) -> bool {
-        self.inner
-            .any_producer_submission_in_flight(scopes.into_iter().map(RenderExecutionScope::raw))
+    /// Returns whether this continuity currently has accepted GPU work still in flight.
+    #[must_use]
+    pub fn is_in_flight(&self) -> bool {
+        self.submission
+            .as_ref()
+            .is_some_and(|submission| matches!(submission.status(), GpuSubmissionStatus::Accepted))
     }
 
-    pub fn retain_in_flight_submissions(&mut self) {
-        self.inner.retain_in_flight_submissions();
+    /// Reconciles terminal accepted execution and abandoned preparation without driving RunenGPU.
+    ///
+    /// Callers remain responsible for progressing their public GpuContext.
+    pub fn reconcile(&mut self) {
+        self.reconcile_terminal_submission();
+        self.discard_abandoned_occurrence();
     }
 
-    pub fn record_submission(&mut self, scope: RenderExecutionScope, submission: &GpuSubmission) {
-        self.inner
-            .record_producer_submission(scope.raw(), 0, submission);
-    }
-
+    /// Prepares one exact retained occurrence for caller-owned RunenGPU composition.
     pub fn prepare(
         &mut self,
         admitted: AdmittedRender,
         context: &GpuContext,
-        scope: RenderExecutionScope,
         evaluation: Option<RenderEvaluationSelection>,
-    ) -> Result<PreparedRender, RenderExecutionError> {
+    ) -> Result<PreparedRenderOccurrence, RenderExecutionSessionError> {
+        self.reconcile();
+
+        if self.is_in_flight() {
+            return Err(RenderExecutionSessionError::SubmissionInFlight);
+        }
+        if self
+            .prepared_occurrence
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some()
+        {
+            return Err(RenderExecutionSessionError::PreparedOccurrenceOutstanding);
+        }
+
+        let affinity = context.affinity();
+        if self.affinity != Some(affinity) {
+            self.resources.reset_for_context_change();
+            self.affinity = Some(affinity);
+        }
+
         let finite_evaluation =
             evaluation.map(|selection| (selection.output_index(), selection.extent()));
-        prepare_deterministic_render_with_cache_in_scope_and_evaluation(
+        let inner = match prepare_deterministic_render_with_cache_and_evaluation(
             admitted.inner,
             context,
-            &mut self.inner,
-            scope.raw(),
+            &mut self.resources,
             finite_evaluation,
             false,
-        )
-        .map(|inner| PreparedRender { inner })
-        .map_err(|inner| RenderExecutionError { inner })
+        ) {
+            Ok(inner) => inner,
+            Err(inner) => {
+                self.resources.discard_prepared_temporal_outputs();
+                return Err(RenderExecutionSessionError::Execution(
+                    RenderExecutionError { inner },
+                ));
+            }
+        };
+
+        let occurrence_identity = Arc::new(());
+        self.prepared_occurrence = Some(Arc::downgrade(&occurrence_identity));
+        Ok(PreparedRenderOccurrence {
+            inner,
+            session_identity: Arc::clone(&self.identity),
+            occurrence_identity,
+            affinity,
+        })
+    }
+
+    /// Associates one exact prepared occurrence with a caller-owned RunenGPU submission.
+    ///
+    /// The occurrence is consumed, making successful association single-use. The submission may
+    /// contain arbitrary additional caller-owned work, but it must use the same RunenGPU affinity
+    /// and contain every renderer-authored work node from this occurrence.
+    pub fn associate_submission(
+        &mut self,
+        occurrence: PreparedRenderOccurrence,
+        submission: &GpuSubmission,
+    ) -> Result<(), RenderExecutionSessionError> {
+        self.reconcile();
+
+        if self.is_in_flight() {
+            return Err(RenderExecutionSessionError::SubmissionInFlight);
+        }
+
+        let Some(current_occurrence) = self.prepared_occurrence.as_ref().and_then(Weak::upgrade)
+        else {
+            return Err(RenderExecutionSessionError::OccurrenceNotCurrent);
+        };
+        if !Arc::ptr_eq(&self.identity, &occurrence.session_identity)
+            || !Arc::ptr_eq(&current_occurrence, &occurrence.occurrence_identity)
+        {
+            return Err(RenderExecutionSessionError::OccurrenceNotCurrent);
+        }
+
+        if submission.affinity() != occurrence.affinity {
+            self.abandon_current_occurrence();
+            return Err(RenderExecutionSessionError::SubmissionAffinityMismatch {
+                expected: occurrence.affinity,
+                actual: submission.affinity(),
+            });
+        }
+
+        let mut required_work = 0usize;
+        for fragment in occurrence.inner.work_set().fragments() {
+            for node in fragment.nodes() {
+                required_work = required_work.saturating_add(1);
+                if !submission.contains_work_node(node.id()) {
+                    self.abandon_current_occurrence();
+                    return Err(RenderExecutionSessionError::SubmissionMissingRendererWork);
+                }
+            }
+        }
+        if required_work == 0 {
+            self.abandon_current_occurrence();
+            return Err(RenderExecutionSessionError::SubmissionMissingRendererWork);
+        }
+
+        self.prepared_occurrence = None;
+        self.submission = Some(submission.clone());
+        self.reconcile_terminal_submission();
+        Ok(())
+    }
+
+    fn abandon_current_occurrence(&mut self) {
+        // Renderer work can already have been submitted without its exact occurrence being
+        // associated. Reusing its GPU-dependent state would trust unverified execution.
+        self.resources.invalidate_unverified_occurrence();
+        self.prepared_occurrence = None;
+    }
+
+    fn discard_abandoned_occurrence(&mut self) {
+        let abandoned = self
+            .prepared_occurrence
+            .as_ref()
+            .is_some_and(|identity| identity.upgrade().is_none());
+        if abandoned {
+            self.abandon_current_occurrence();
+        }
+    }
+
+    fn reconcile_terminal_submission(&mut self) {
+        let completed = match self.submission.as_ref().map(GpuSubmission::status) {
+            None | Some(GpuSubmissionStatus::Accepted) => return,
+            Some(GpuSubmissionStatus::Completed) => true,
+            Some(GpuSubmissionStatus::Failed(_)) => false,
+        };
+        self.resources.reconcile_temporal_outputs(completed);
+        self.submission = None;
     }
 }
+
+#[cfg(test)]
+mod tests;

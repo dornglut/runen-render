@@ -27,7 +27,7 @@ use super::runtime::execution::{
     RenderDeterministicExecutionError, RenderDeterministicResultFormationError,
     RenderTemporalExecutionEvidence as DeterministicTemporalExecutionEvidence,
     SubmittedDeterministicRender, prepare_deterministic_render,
-    prepare_deterministic_render_with_cache_in_scope_and_evaluation, submit_deterministic_render,
+    prepare_deterministic_render_with_cache_and_evaluation, submit_deterministic_render,
     submit_deterministic_render_for_verified_result,
 };
 use super::runtime::verification::{
@@ -39,8 +39,8 @@ use super::surface_input::{
     RenderSurfaceSemanticInputBinding, RenderSurfaceSemanticInputGeneration,
 };
 use runen_gpu::{
-    GpuContext, GpuExportRelationship, GpuReadbackId, GpuResourceProvenance, GpuResourceRef,
-    GpuSubmission, GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureHandle,
+    GpuContext, GpuContextAffinity, GpuExportRelationship, GpuReadbackId, GpuResourceProvenance,
+    GpuResourceRef, GpuSubmission, GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureHandle,
     GpuTransferRegion, GpuWorkImport, GpuWorkSubmissionError,
 };
 use std::error::Error;
