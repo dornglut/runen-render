@@ -878,11 +878,8 @@ fn retained_subnative_unassociated_work_cannot_reuse_in_place_history() {
         return;
     };
     let mut session = RenderExecutionSession::new();
-    let admitted = admitted_temporal_radiance_render_at_extent(
-        &context,
-        "sub-native in-place history",
-        4,
-    );
+    let admitted =
+        admitted_temporal_radiance_render_at_extent(&context, "sub-native in-place history", 4);
     let evaluation = RenderEvaluationSelection::new(0, 2, 2).expect("sub-native evaluation");
 
     let first = session
