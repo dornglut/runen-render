@@ -118,13 +118,9 @@ impl AssociatedRenderOccurrence {
         &self,
         output_index: usize,
     ) -> Result<RenderRadianceCaptureRequest, RenderRadianceCaptureRequestError> {
-        crate::runtime::capture::mint_retained_request(
-            &self.inner,
-            &self.submission,
-            output_index,
-        )
-        .map(|inner| RenderRadianceCaptureRequest { inner })
-        .map_err(|inner| RenderRadianceCaptureRequestError { inner })
+        crate::runtime::capture::mint_retained_request(&self.inner, &self.submission, output_index)
+            .map(|inner| RenderRadianceCaptureRequest { inner })
+            .map_err(|inner| RenderRadianceCaptureRequestError { inner })
     }
 
     /// Interpret one completed caller-owned RunenGPU readback through this exact occurrence.
