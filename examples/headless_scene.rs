@@ -98,7 +98,9 @@ fn wait_for_readbacks(
     loop {
         context.progress();
         if let GpuSubmissionStatus::Failed(failure) = submission.status() {
-            return Err(io::Error::other(format!("readback submission failed: {failure:?}")).into());
+            return Err(
+                io::Error::other(format!("readback submission failed: {failure:?}")).into(),
+            );
         }
         let mut ready = true;
         for &id in ids {
@@ -183,7 +185,9 @@ fn inspect(output_dir: Option<&Path>) -> ExampleResult<Option<Observed>> {
         sphere,
         RenderObjectParticipation::new(
             vec![sphere_record],
-            Some(RenderMaterialAssignment::new(RenderDiffuseMaterial::new(0.72)?)),
+            Some(RenderMaterialAssignment::new(RenderDiffuseMaterial::new(
+                0.72,
+            )?)),
             None,
         )?,
     );
@@ -191,7 +195,9 @@ fn inspect(output_dir: Option<&Path>) -> ExampleResult<Option<Observed>> {
         plane,
         RenderObjectParticipation::new(
             vec![plane_record],
-            Some(RenderMaterialAssignment::new(RenderDiffuseMaterial::new(0.48)?)),
+            Some(RenderMaterialAssignment::new(RenderDiffuseMaterial::new(
+                0.48,
+            )?)),
             Some(RenderDirectionalEmitter::new(
                 [0.45, 0.80, 0.35],
                 WAVELENGTH_METERS,
@@ -242,12 +248,13 @@ fn inspect(output_dir: Option<&Path>) -> ExampleResult<Option<Observed>> {
             ),
         ],
     )?;
-    if !matches!(request.outputs()[RADIANCE].spec().value(), RenderOutputValue::Radiance { .. })
-        || !matches!(
-            request.outputs()[OBJECT_ID].spec().value(),
-            RenderOutputValue::ObjectIdentity
-        )
-    {
+    if !matches!(
+        request.outputs()[RADIANCE].spec().value(),
+        RenderOutputValue::Radiance { .. }
+    ) || !matches!(
+        request.outputs()[OBJECT_ID].spec().value(),
+        RenderOutputValue::ObjectIdentity
+    ) {
         return Err(io::Error::other("request/output ordering changed").into());
     }
 
@@ -280,16 +287,21 @@ fn inspect(output_dir: Option<&Path>) -> ExampleResult<Option<Observed>> {
 
     let mut allocator = GpuWorkResourceIdAllocator::new();
     let mut target = |label| -> ExampleResult<_> {
-        Ok(allocator.allocate_texture_handle(GpuTextureDescriptor::ordinary_owned_2d(
-            label,
-            GpuResourceLifetime::Retained,
-            GpuReconstruction::SourceBacked,
-            WIDTH,
-            HEIGHT,
-            GpuTextureFormat::R32Uint,
-            [GpuTextureUsage::CopyDestination, GpuTextureUsage::CopySource],
-            GpuTextureInitialization::Uninitialized,
-        )?)?)
+        Ok(
+            allocator.allocate_texture_handle(GpuTextureDescriptor::ordinary_owned_2d(
+                label,
+                GpuResourceLifetime::Retained,
+                GpuReconstruction::SourceBacked,
+                WIDTH,
+                HEIGHT,
+                GpuTextureFormat::R32Uint,
+                [
+                    GpuTextureUsage::CopyDestination,
+                    GpuTextureUsage::CopySource,
+                ],
+                GpuTextureInitialization::Uninitialized,
+            )?)?,
+        )
     };
     let radiance_target = target("headless 550nm radiance")?;
     let object_target = target("headless object identity")?;
@@ -327,9 +339,8 @@ fn inspect(output_dir: Option<&Path>) -> ExampleResult<Option<Observed>> {
         work.operation("capture object IDs", identity_operation)?;
         Ok(())
     })?;
-    let readback_submission = pollster::block_on(
-        context.submit_work("headless scene diagnostic readbacks", [fragment]),
-    )?;
+    let readback_submission =
+        pollster::block_on(context.submit_work("headless scene diagnostic readbacks", [fragment]))?;
     wait_for_readbacks(
         &context,
         &readback_submission,
@@ -404,7 +415,13 @@ fn inspect(output_dir: Option<&Path>) -> ExampleResult<Option<Observed>> {
         let frame = dir.join("frame_001");
         fs::create_dir_all(&frame)?;
         write_png(&frame.join("radiance.png"), WIDTH, HEIGHT, 1, &grayscale)?;
-        write_png(&frame.join("object_ids.png"), WIDTH, HEIGHT, 3, &identity_rgb)?;
+        write_png(
+            &frame.join("object_ids.png"),
+            WIDTH,
+            HEIGHT,
+            3,
+            &identity_rgb,
+        )?;
         let evidence = format!(
             concat!(
                 "{{\n",
@@ -443,7 +460,13 @@ fn inspect(output_dir: Option<&Path>) -> ExampleResult<Option<Observed>> {
 // Small dependency-free PNG writer for this executable example only.
 // Uncompressed DEFLATE keeps the implementation transparent and avoids
 // extending RunenRender's production dependency graph or artifact authority.
-fn write_png(path: &Path, width: u32, height: u32, channels: usize, pixels: &[u8]) -> ExampleResult<()> {
+fn write_png(
+    path: &Path,
+    width: u32,
+    height: u32,
+    channels: usize,
+    pixels: &[u8],
+) -> ExampleResult<()> {
     if channels != 1 && channels != 3 {
         return Err(io::Error::other("PNG must be grayscale or RGB").into());
     }
@@ -533,8 +556,14 @@ mod tests {
         };
         assert!(observed.sphere_pixels > 0, "sphere must be visible");
         assert!(observed.plane_pixels > 0, "plane must be visible");
-        assert!(observed.undecoded_pixels > 0, "unmapped pixels must be visible");
-        assert!(observed.radiance_distinct >= 8, "radiance must not be nearly uniform");
+        assert!(
+            observed.undecoded_pixels > 0,
+            "unmapped pixels must be visible"
+        );
+        assert!(
+            observed.radiance_distinct >= 8,
+            "radiance must not be nearly uniform"
+        );
         assert!(observed.radiance_min < observed.radiance_max);
         Ok(())
     }
