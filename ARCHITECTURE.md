@@ -388,7 +388,7 @@ occurrence may become pending retained history, and only successful terminal
 execution may advance successful temporal history. Abandoned or failed
 occurrences MUST NOT later become successful history by scope convention.
 
-Successful exact association MAY return a durable output-correlation witness distinct
+Successful exact association returns a durable output-correlation witness distinct
 from the retained session. Such a witness MUST NOT own or advance temporal
 history. It may survive session reconciliation or destruction because its
 authority is limited to the exact associated occurrence's admitted outputs and
