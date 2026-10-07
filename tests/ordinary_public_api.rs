@@ -8,7 +8,8 @@ use runen_render::admission::{
     RenderOutputBinding, RenderOutputDestination, RenderRepresentationAvailabilityFact,
     RenderRepresentationAvailabilityState,
 };
-use runen_render::participation::RenderObjectParticipation;
+use runen_render::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
+use runen_render::participation::{RenderMaterialAssignment, RenderObjectParticipation};
 use runen_render::representation::{
     RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION, RENDER_SURFACE_QUERY_PROTOCOL_REVISION,
     RenderOrientedSurfaceProtocolEvidence, RenderRefinementEvidence, RenderRepresentationRecord,
@@ -526,8 +527,17 @@ fn admitted_temporal_radiance_render_at_extent(
         None,
     )
     .expect("temporal oriented representation");
-    let participation = RenderObjectParticipation::new(vec![representation], None, None)
-        .expect("temporal object participation");
+    let participation = RenderObjectParticipation::new(
+        vec![representation],
+        Some(RenderMaterialAssignment::new(
+            RenderDiffuseMaterial::new(0.8).expect("temporal diffuse material"),
+        )),
+        Some(
+            RenderDirectionalEmitter::new([0.0, 1.0, 0.0], 550e-9, 1.0)
+                .expect("temporal directional illumination"),
+        ),
+    )
+    .expect("temporal object participation");
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
     scene.commit(attach).expect("attach temporal participation");
