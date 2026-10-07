@@ -110,13 +110,8 @@ impl SceneObjects {
         debug_assert!(state.is_some() || participation.is_some());
         let state = state.map(Arc::new);
         let participation = participation.map(|participation| participation.map(Arc::new));
-        let (root, copied_nodes) = replace_facets_node(
-            &self.root,
-            object_id.raw(),
-            0,
-            &state,
-            &participation,
-        );
+        let (root, copied_nodes) =
+            replace_facets_node(&self.root, object_id.raw(), 0, &state, &participation);
         (Self { root }, copied_nodes)
     }
 

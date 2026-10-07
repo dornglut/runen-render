@@ -82,9 +82,7 @@ struct RenderSceneOperation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RenderSceneStructuralMutation {
-    Insert {
-        state: Option<RenderObjectState>,
-    },
+    Insert { state: Option<RenderObjectState> },
     Remove,
 }
 
@@ -99,9 +97,7 @@ impl RenderSceneObjectMutation {
     fn absorb(&mut self, kind: &RenderSceneOperationKind) -> bool {
         match kind {
             RenderSceneOperationKind::Insert { state } => {
-                if self.structural.is_some()
-                    || self.state.is_some()
-                    || self.participation.is_some()
+                if self.structural.is_some() || self.state.is_some() || self.participation.is_some()
                 {
                     return false;
                 }
@@ -110,9 +106,7 @@ impl RenderSceneObjectMutation {
                 });
             }
             RenderSceneOperationKind::Remove => {
-                if self.structural.is_some()
-                    || self.state.is_some()
-                    || self.participation.is_some()
+                if self.structural.is_some() || self.state.is_some() || self.participation.is_some()
                 {
                     return false;
                 }
@@ -807,11 +801,7 @@ impl RenderSceneStore {
             if let Some(Some(participation)) = mutation.participation.as_ref() {
                 self.validate_representation_ownership(object_id, participation)?;
             }
-            self.validate_field_participation(
-                object_id,
-                proposed_state,
-                proposed_participation,
-            )?;
+            self.validate_field_participation(object_id, proposed_state, proposed_participation)?;
 
             let mut state_replacement = None;
             if let Some(state) = mutation.state {
@@ -1699,19 +1689,18 @@ mod tests {
                 .expect("valid initial participation");
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(object_id, initial_participation.clone());
-        store.commit(attach).expect("initial participation should commit");
+        store
+            .commit(attach)
+            .expect("initial participation should commit");
 
         let retained = store.snapshot();
         let retained_revision = retained.revision();
         let second_representation = surface_representation(&mut store, object_id);
         let material =
             RenderMaterialAssignment::new(RenderDiffuseMaterial::new(0.5).expect("material"));
-        let next_participation = RenderObjectParticipation::new(
-            vec![second_representation],
-            Some(material),
-            None,
-        )
-        .expect("valid next participation");
+        let next_participation =
+            RenderObjectParticipation::new(vec![second_representation], Some(material), None)
+                .expect("valid next participation");
         let next_state = object_state(2.0, 2.0);
 
         let mut update = RenderSceneUpdate::new();
@@ -1725,10 +1714,18 @@ mod tests {
         assert_eq!(commit.previous_revision(), retained_revision);
         assert_eq!(
             commit.revision(),
-            retained_revision.checked_next().expect("revision should advance")
+            retained_revision
+                .checked_next()
+                .expect("revision should advance")
         );
-        assert_eq!(commit.change_set().spatial_changed(), Some(&[object_id][..]));
-        assert_eq!(commit.change_set().temporal_changed(), Some(&[object_id][..]));
+        assert_eq!(
+            commit.change_set().spatial_changed(),
+            Some(&[object_id][..])
+        );
+        assert_eq!(
+            commit.change_set().temporal_changed(),
+            Some(&[object_id][..])
+        );
         assert_eq!(
             commit.change_set().representation_changed(),
             Some(&[object_id][..])
@@ -1779,7 +1776,9 @@ mod tests {
             RenderObjectParticipation::new(vec![field], None, None).expect("field participation");
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(clear_id, field_participation);
-        clear.commit(attach).expect("field participation should commit");
+        clear
+            .commit(attach)
+            .expect("field participation should commit");
 
         let singular = RenderAffineTransform3::from_row_major_3x4([
             1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
@@ -1787,10 +1786,7 @@ mod tests {
         .expect("finite singular transform");
         let mut clear_and_replace = RenderSceneUpdate::new();
         clear_and_replace
-            .replace_state(
-                clear_id,
-                object_state_with_transform(singular, 0.0, 2.0),
-            )
+            .replace_state(clear_id, object_state_with_transform(singular, 0.0, 2.0))
             .clear_participation(clear_id);
         clear
             .commit(clear_and_replace)
@@ -1808,10 +1804,7 @@ mod tests {
         let revision = invalid.revision();
         let mut invalid_joint = RenderSceneUpdate::new();
         invalid_joint
-            .replace_state(
-                invalid_id,
-                object_state_with_transform(singular, 0.0, 2.0),
-            )
+            .replace_state(invalid_id, object_state_with_transform(singular, 0.0, 2.0))
             .replace_participation(invalid_id, participation);
         assert_eq!(
             invalid.commit(invalid_joint),
@@ -1857,7 +1850,9 @@ mod tests {
         assert_eq!(commit.previous_revision(), previous_revision);
         assert_eq!(
             commit.revision(),
-            previous_revision.checked_next().expect("revision should advance")
+            previous_revision
+                .checked_next()
+                .expect("revision should advance")
         );
         assert_eq!(commit.change_set().spatial_changed(), Some(&[][..]));
         assert_eq!(commit.change_set().temporal_changed(), Some(&[][..]));
