@@ -662,8 +662,10 @@ fn inspect(output_dir: Option<&Path>) -> ExampleResult<Option<Observed>> {
         .count();
     let identity_changed_pixels = frame_001
         .identity_rgb
-        .chunks_exact(3)
-        .zip(frame_002.identity_rgb.chunks_exact(3))
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(frame_002.identity_rgb.as_chunks::<3>().0.iter())
         .filter(|(first, second)| first != second)
         .count();
     if radiance_changed_pixels == 0 || identity_changed_pixels == 0 {
