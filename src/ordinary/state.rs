@@ -254,3 +254,6 @@ impl RenderExecutionSession {
         self.submission = None;
     }
 }
+
+#[cfg(test)]
+mod tests;

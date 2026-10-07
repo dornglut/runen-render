@@ -163,6 +163,11 @@ pub(crate) struct DeterministicResourceCache {
 }
 
 impl DeterministicResourceCache {
+    #[cfg(test)]
+    pub(crate) fn has_temporal_history(&self, output_index: usize) -> bool {
+        self.temporal_histories.contains_key(&output_index)
+    }
+
     pub(crate) fn graph_wiring_namespace(
         &mut self,
     ) -> Result<NonZeroU64, RenderDeterministicLoweringError> {
