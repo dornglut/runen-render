@@ -96,7 +96,7 @@ impl PreparedRenderOccurrence {
 /// observed destination.
 #[derive(Debug)]
 pub struct AssociatedRenderOccurrence {
-    pub(super) inner: PreparedDeterministicRender,
+    pub(super) inner: AssociatedDeterministicRender,
     pub(super) submission: GpuSubmission,
 }
 
