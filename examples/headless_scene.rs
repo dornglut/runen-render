@@ -718,7 +718,7 @@ fn write_frame_artifacts(dir: &Path, name: &str, frame: &FrameObserved) -> Examp
     )?;
     let evidence = format!(
         concat!(
-            "{\n",
+            "{{\n",
             "  \"schema_revision\": 2,\n",
             "  \"frame\": \"{}\",\n",
             "  \"scene_revision\": \"{}\",\n",
@@ -755,7 +755,7 @@ fn write_frame_artifacts(dir: &Path, name: &str, frame: &FrameObserved) -> Examp
             "  \"plane_pixels\": {},\n",
             "  \"undecoded_pixels\": {},\n",
             "  \"radiance_distinct_grayscale_values\": {}\n",
-            "}\n"
+            "}}\n"
         ),
         name,
         frame.scene_revision,
