@@ -377,8 +377,8 @@ fn inspect(output_dir: Option<&Path>) -> ExampleResult<Option<Observed>> {
     let mut sphere_pixels = 0;
     let mut plane_pixels = 0;
     let mut undecoded_pixels = 0;
-    for word in identity_bytes.chunks_exact(4) {
-        let code = u32::from_le_bytes(word.try_into()?);
+    for word in identity_bytes.as_chunks::<4>().0 {
+        let code = u32::from_le_bytes(*word);
         let rgb = match decoder.decode(code) {
             Some(id) if id == sphere => {
                 sphere_pixels += 1;
@@ -534,7 +534,15 @@ fn main() -> ExampleResult<()> {
     };
     match inspect(output.as_deref().map(Path::new))? {
         Some(observed) => {
-            println!("Headless RunenRender scene inspector: {observed:?}");
+            println!(
+                "Headless RunenRender scene inspector: radiance {}..{} ({} distinct), sphere {} pixels, plane {} pixels, undecoded {} pixels",
+                observed.radiance_min,
+                observed.radiance_max,
+                observed.radiance_distinct,
+                observed.sphere_pixels,
+                observed.plane_pixels,
+                observed.undecoded_pixels,
+            );
             if let Some(output) = output {
                 println!("Diagnostic PNG/JSON artifacts: {}/frame_001", output);
             }
