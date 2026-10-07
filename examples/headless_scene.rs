@@ -1002,12 +1002,7 @@ fn main() -> ExampleResult<()> {
 mod tests {
     use super::*;
 
-    fn assert_png(
-        path: &Path,
-        width: u32,
-        height: u32,
-        color_type: u8,
-    ) -> ExampleResult<()> {
+    fn assert_png(path: &Path, width: u32, height: u32, color_type: u8) -> ExampleResult<()> {
         let png = fs::read(path)?;
         assert_eq!(&png[..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
         assert_eq!(&png[12..16], b"IHDR");
