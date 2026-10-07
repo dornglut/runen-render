@@ -5,7 +5,7 @@
 //! and interprets the returned carrier through RunenRender's private maintained mapping.
 
 use super::carrier::{WORD_BYTES, decode_word, maintained_evaluation_value};
-use super::execution::{PreparedDeterministicRender, SubmittedDeterministicRender};
+use super::execution::{AssociatedDeterministicRender, SubmittedDeterministicRender};
 use crate::admission::RenderOutputDestination;
 use crate::request::{RenderOutputValue, RenderRadiometricRepresentation, RenderResultTopology};
 use runen_gpu::{
@@ -225,7 +225,7 @@ pub(crate) fn mint_request(
 }
 
 pub(crate) fn mint_retained_request(
-    prepared: &PreparedDeterministicRender,
+    associated: &AssociatedDeterministicRender,
     submission: &GpuSubmission,
     output_index: usize,
 ) -> Result<RenderDeterministicRadianceCaptureRequest, RenderDeterministicRadianceCaptureRequestError>
@@ -243,7 +243,7 @@ pub(crate) fn mint_retained_request(
         }
         GpuSubmissionStatus::Completed => {}
     }
-    mint_request_for_execution(prepared.admitted(), submission, output_index)
+    mint_request_for_execution(associated.admitted(), submission, output_index)
 }
 
 fn mint_request_for_execution(
@@ -377,7 +377,7 @@ pub(crate) fn capture(
 }
 
 pub(crate) fn capture_retained(
-    prepared: &PreparedDeterministicRender,
+    associated: &AssociatedDeterministicRender,
     submission: &GpuSubmission,
     request: RenderDeterministicRadianceCaptureRequest,
     context: &GpuContext,
