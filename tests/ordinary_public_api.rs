@@ -33,11 +33,11 @@ use runen_render::surface_input::{
 };
 use runen_render::{
     AdmittedRender, AssociatedRenderOccurrence, PreparedRadianceOutput, PreparedRender,
-    PreparedRenderOccurrence,
-    RenderAdmissionError, RenderCapturedRadiance, RenderEvaluationSelection, RenderExecutionError,
-    RenderExecutionErrorKind, RenderExecutionSession, RenderExecutionSessionError,
-    RenderObjectIdentityDecoderError, RenderObjectIdentityDecoderErrorKind,
-    RenderRadianceCaptureError, RenderRadianceCaptureErrorKind, RenderRadianceCaptureRequest,
+    PreparedRenderOccurrence, RenderAdmissionError, RenderCapturedRadiance,
+    RenderEvaluationSelection, RenderExecutionError, RenderExecutionErrorKind,
+    RenderExecutionSession, RenderExecutionSessionError, RenderObjectIdentityDecoderError,
+    RenderObjectIdentityDecoderErrorKind, RenderRadianceCaptureError,
+    RenderRadianceCaptureErrorKind, RenderRadianceCaptureRequest,
     RenderRadianceCaptureRequestError, RenderRadianceCaptureRequestErrorKind,
     RenderResultFormationError, RenderResultFormationErrorKind, RenderResultSubmissionError,
     RenderResultSubmissionErrorKind, RenderTemporalExecutionEvidence,
@@ -685,7 +685,9 @@ fn admitted_retained_capture_render(
     );
     let mut insert = RenderSceneUpdate::new();
     insert.insert_with_state(object_id, object_state);
-    scene.commit(insert).expect("insert retained capture object");
+    scene
+        .commit(insert)
+        .expect("insert retained capture object");
 
     let representation_id = scene
         .allocate_representation_id(object_id)
@@ -739,8 +741,7 @@ fn admitted_retained_capture_render(
         .expect("retained capture observation"),
     );
     let topology = || {
-        RenderResultTopology::sample_lattice_2d(EXTENT, EXTENT)
-            .expect("retained capture lattice")
+        RenderResultTopology::sample_lattice_2d(EXTENT, EXTENT).expect("retained capture lattice")
     };
     let request = RenderRequest::new(
         shutter,
@@ -755,8 +756,7 @@ fn admitted_retained_capture_render(
                                 .expect("retained capture spectral radiance"),
                     },
                     topology(),
-                    RenderSemanticTolerance::absolute(2.0e-4)
-                        .expect("retained capture tolerance"),
+                    RenderSemanticTolerance::absolute(2.0e-4).expect("retained capture tolerance"),
                 )
                 .expect("retained capture radiance output"),
             ),
@@ -876,7 +876,10 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
     assert!(!session.is_in_flight());
     drop(session);
 
-    assert_eq!(associated.submission_status(), GpuSubmissionStatus::Completed);
+    assert_eq!(
+        associated.submission_status(),
+        GpuSubmissionStatus::Completed
+    );
     assert_eq!(
         associated
             .object_identity_decoder(0)
@@ -892,9 +895,11 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
         .request_radiance_capture(0)
         .expect("completed retained radiance capture request");
     assert_eq!(capture_request.output_index(), 0);
-    let capture_operation =
-        GpuReadbackOperation::new(capture_request.source().clone(), capture_request.readback_id())
-            .expect("retained radiance readback operation");
+    let capture_operation = GpuReadbackOperation::new(
+        capture_request.source().clone(),
+        capture_request.readback_id(),
+    )
+    .expect("retained radiance readback operation");
     let capture_fragment = GpuWorkFragment::build("retained radiance readback", |work| {
         work.operation("read retained radiance", capture_operation)?;
         Ok(())
@@ -943,7 +948,8 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
         status => panic!("identity readback not ready after wait: {status:?}"),
     };
     assert!(
-        bytes.as_chunks::<4>()
+        bytes
+            .as_chunks::<4>()
             .0
             .iter()
             .map(|word| u32::from_ne_bytes(*word))
