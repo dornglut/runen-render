@@ -224,6 +224,7 @@ impl RenderExecutionSession {
         let associated = AssociatedRenderOccurrence {
             inner: occurrence.inner.into_associated(),
             submission: submission.clone(),
+            occurrence_identity: occurrence.occurrence_identity,
         };
         self.prepared_occurrence = None;
         self.submission = Some(submission.clone());
