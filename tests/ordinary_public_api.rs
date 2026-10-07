@@ -344,6 +344,27 @@ fn wait_for_submission(context: &GpuContext, submission: &GpuSubmission) {
     }
 }
 
+fn wait_for_readback(context: &GpuContext, submission: &GpuSubmission, id: GpuReadbackId) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        context.progress();
+        let readback = submission
+            .readback(id)
+            .expect("submitted readback correlation must remain observable");
+        match (submission.status(), readback.status()) {
+            (GpuSubmissionStatus::Completed, GpuReadbackStatus::Ready(_)) => return,
+            (GpuSubmissionStatus::Failed(failure), _) => {
+                panic!("retained-output readback submission failed: {failure:?}")
+            }
+            (_, GpuReadbackStatus::Failed(failure)) => {
+                panic!("retained-output readback failed: {failure:?}")
+            }
+            _ if Instant::now() < deadline => std::thread::yield_now(),
+            _ => panic!("retained-output readback did not complete before timeout"),
+        }
+    }
+}
+
 fn retained_context(format: GpuTextureFormat) -> Option<(GpuContext, GpuContextDescriptor)> {
     let mut descriptor =
         GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
@@ -639,6 +660,345 @@ fn admitted_temporal_radiance_render_at_extent(
         context,
     )
     .expect("temporal ordinary admission")
+}
+
+fn admitted_retained_capture_render(
+    context: &GpuContext,
+    label: &str,
+) -> (AdmittedRender, RenderObjectId, GpuTextureHandle) {
+    const EXTENT: u32 = 4;
+
+    let mut scene = RenderSceneStore::new();
+    let object_id = scene
+        .allocate_object_id()
+        .expect("retained capture object id");
+    let object_state = RenderObjectState::new(
+        RenderObjectSpatialState::new(
+            RenderSpaceSpec::new(1.0, RenderHandedness::Right).expect("metric object space"),
+            RenderAffineTransform3::from_row_major_3x4([
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, -3.0,
+            ])
+            .expect("finite retained capture transform"),
+            RenderSpatialCoverage::unbounded(),
+        ),
+        RenderObjectTemporalState::new(RenderTemporalSupport::unbounded()),
+    );
+    let mut insert = RenderSceneUpdate::new();
+    insert.insert_with_state(object_id, object_state);
+    scene.commit(insert).expect("insert retained capture object");
+
+    let representation_id = scene
+        .allocate_representation_id(object_id)
+        .expect("retained capture representation id");
+    let surface = RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
+        .expect("surface protocol")
+        .with_oriented_surface(
+            RenderOrientedSurfaceProtocolEvidence::exact(
+                RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
+            )
+            .expect("oriented surface protocol"),
+        )
+        .with_semantic_input_requirement(RenderSurfaceSemanticInputRequirement::current());
+    let representation = RenderRepresentationRecord::new(
+        representation_id,
+        RenderSpatialCoverage::unbounded(),
+        RenderTemporalSupport::unbounded(),
+        RenderRefinementEvidence::none(),
+        Some(surface),
+        None,
+    )
+    .expect("retained capture representation");
+    let participation = RenderObjectParticipation::new(
+        vec![representation],
+        Some(RenderMaterialAssignment::new(
+            RenderDiffuseMaterial::new(0.8).expect("retained capture material"),
+        )),
+        Some(
+            RenderDirectionalEmitter::new([0.0, 1.0, 0.0], 550e-9, 8.0)
+                .expect("retained capture illumination"),
+        ),
+    )
+    .expect("retained capture participation");
+    let mut attach = RenderSceneUpdate::new();
+    attach.replace_participation(object_id, participation);
+    scene
+        .commit(attach)
+        .expect("attach retained capture participation");
+
+    let shutter = RenderTimeInterval::instant(
+        RenderTimePoint::from_seconds(0.0).expect("finite retained capture time"),
+    );
+    let observation = RenderObservationSpec::Perspective(
+        RenderPerspectiveObservation::new(
+            RenderAffineTransform3::identity(),
+            std::f64::consts::FRAC_PI_3,
+            1.0,
+            shutter,
+            RenderSamplingSupport::ideal_ray(),
+        )
+        .expect("retained capture observation"),
+    );
+    let topology = || {
+        RenderResultTopology::sample_lattice_2d(EXTENT, EXTENT)
+            .expect("retained capture lattice")
+    };
+    let request = RenderRequest::new(
+        shutter,
+        vec![observation],
+        vec![
+            RenderRequestedOutput::new(
+                0,
+                RenderOutputSpec::new(
+                    RenderOutputValue::Radiance {
+                        representation:
+                            RenderRadiometricRepresentation::spectral_at_wavelength_meters(550e-9)
+                                .expect("retained capture spectral radiance"),
+                    },
+                    topology(),
+                    RenderSemanticTolerance::absolute(2.0e-4)
+                        .expect("retained capture tolerance"),
+                )
+                .expect("retained capture radiance output"),
+            ),
+            RenderRequestedOutput::new(
+                0,
+                RenderOutputSpec::new(
+                    RenderOutputValue::ObjectIdentity,
+                    topology(),
+                    RenderSemanticTolerance::exact(),
+                )
+                .expect("retained capture identity output"),
+            ),
+        ],
+    )
+    .expect("retained capture request");
+
+    let semantic_inputs = [RenderSurfaceSemanticInputBinding::new(
+        representation_id,
+        RenderSurfaceSemanticInput::sphere(
+            [0.0, 0.0, 0.0],
+            1.0,
+            RenderTemporalSupport::unbounded(),
+        )
+        .expect("retained capture sphere"),
+    )
+    .with_generation(RenderSurfaceSemanticInputGeneration::new(1))];
+    let availability = [RenderRepresentationAvailabilityFact::new(
+        representation_id,
+        RenderRepresentationAvailabilityState::Available,
+    )];
+
+    let mut allocator = GpuWorkResourceIdAllocator::new();
+    let mut target = |name: &str| {
+        allocator
+            .allocate_texture_handle(
+                GpuTextureDescriptor::ordinary_owned_2d(
+                    format!("{label} {name}"),
+                    GpuResourceLifetime::Retained,
+                    GpuReconstruction::SourceBacked,
+                    EXTENT,
+                    EXTENT,
+                    GpuTextureFormat::R32Uint,
+                    [
+                        GpuTextureUsage::CopyDestination,
+                        GpuTextureUsage::CopySource,
+                    ],
+                    GpuTextureInitialization::Uninitialized,
+                )
+                .expect("retained capture output descriptor"),
+            )
+            .expect("retained capture output handle")
+    };
+    let radiance_target = target("radiance");
+    let identity_target = target("identity");
+    let output_bindings = [
+        RenderOutputBinding::new(
+            0,
+            RenderOutputDestination::SampleLatticeTexture(radiance_target),
+        ),
+        RenderOutputBinding::new(
+            1,
+            RenderOutputDestination::SampleLatticeTexture(identity_target.clone()),
+        ),
+    ];
+
+    let admitted = admit_render(
+        &scene.snapshot(),
+        &request,
+        &semantic_inputs,
+        &[],
+        &availability,
+        &output_bindings,
+        context,
+    )
+    .expect("retained capture admission");
+    (admitted, object_id, identity_target)
+}
+
+#[test]
+fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
+    let Some((context, _)) = retained_context(GpuTextureFormat::R32Uint) else {
+        return;
+    };
+    let (admitted, object_id, identity_target) =
+        admitted_retained_capture_render(&context, "associated output proof");
+    let mut session = RenderExecutionSession::new();
+    let occurrence = session
+        .prepare(admitted, &context, None)
+        .expect("retained multi-output occurrence");
+    let renderer_submission = pollster::block_on(context.submit_work(
+        "associated multi-output renderer work",
+        occurrence.work_set().fragments().iter().cloned(),
+    ))
+    .expect("associated renderer submission");
+    assert_eq!(renderer_submission.status(), GpuSubmissionStatus::Accepted);
+
+    let associated = session
+        .associate_submission(occurrence, &renderer_submission)
+        .expect("exact retained occurrence association");
+    assert_eq!(
+        associated
+            .request_radiance_capture(0)
+            .expect_err("pending renderer submission cannot mint capture")
+            .kind(),
+        RenderRadianceCaptureRequestErrorKind::RendererSubmissionPending
+    );
+    assert_eq!(
+        associated
+            .object_identity_decoder(1)
+            .expect_err("pending renderer submission cannot expose decoder")
+            .kind(),
+        RenderObjectIdentityDecoderErrorKind::RendererSubmissionPending
+    );
+
+    wait_for_submission(&context, &renderer_submission);
+    session.reconcile();
+    assert!(!session.is_in_flight());
+    drop(session);
+
+    assert_eq!(associated.submission_status(), GpuSubmissionStatus::Completed);
+    assert_eq!(
+        associated
+            .object_identity_decoder(0)
+            .expect_err("radiance output is not object identity")
+            .kind(),
+        RenderObjectIdentityDecoderErrorKind::OutputNotObjectIdentity
+    );
+    let decoder = associated
+        .object_identity_decoder(1)
+        .expect("completed identity output decoder");
+
+    let capture_request = associated
+        .request_radiance_capture(0)
+        .expect("completed retained radiance capture request");
+    assert_eq!(capture_request.output_index(), 0);
+    let capture_operation =
+        GpuReadbackOperation::new(capture_request.source().clone(), capture_request.readback_id())
+            .expect("retained radiance readback operation");
+    let capture_fragment = GpuWorkFragment::build("retained radiance readback", |work| {
+        work.operation("read retained radiance", capture_operation)?;
+        Ok(())
+    })
+    .expect("retained radiance readback fragment");
+    let capture_submission = pollster::block_on(
+        context.submit_work("retained radiance readback submission", [capture_fragment]),
+    )
+    .expect("retained radiance readback submission");
+    wait_for_readback(&context, &capture_submission, capture_request.readback_id());
+    let captured = associated
+        .capture_radiance(capture_request, &context, &capture_submission)
+        .expect("interpret retained radiance");
+    assert_eq!(captured.output_index(), 0);
+    assert_eq!(
+        captured.topology().sample_lattice_dimensions(),
+        Some((4, 4))
+    );
+    assert_eq!(captured.samples().len(), 16);
+    assert!(captured.samples().iter().all(|sample| sample.is_finite()));
+
+    let identity_readback = GpuReadbackId::allocate().expect("identity readback id");
+    let identity_operation = GpuReadbackOperation::new(
+        GpuTextureCopyRegion::whole_base_mip(&identity_target)
+            .expect("identity whole-base-mip source")
+            .into(),
+        identity_readback,
+    )
+    .expect("retained identity readback operation");
+    let identity_fragment = GpuWorkFragment::build("retained identity readback", |work| {
+        work.operation("read retained identity", identity_operation)?;
+        Ok(())
+    })
+    .expect("retained identity readback fragment");
+    let identity_submission = pollster::block_on(
+        context.submit_work("retained identity readback submission", [identity_fragment]),
+    )
+    .expect("retained identity readback submission");
+    wait_for_readback(&context, &identity_submission, identity_readback);
+    let bytes = match identity_submission
+        .readback(identity_readback)
+        .expect("identity readback correlation")
+        .status()
+    {
+        GpuReadbackStatus::Ready(bytes) => bytes.as_bytes(),
+        status => panic!("identity readback not ready after wait: {status:?}"),
+    };
+    assert!(
+        bytes.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|word| u32::from_ne_bytes(*word))
+            .filter_map(|word| decoder.decode(word))
+            .any(|observed| observed == object_id),
+        "completed identity output must contain the fixture object in the execution-local codebook"
+    );
+}
+
+#[test]
+fn associated_occurrence_failure_is_machine_actionable() {
+    let Some((context, _)) = retained_context(GpuTextureFormat::R32Uint) else {
+        return;
+    };
+    let (admitted, _, _) = admitted_retained_capture_render(&context, "failed output proof");
+    let mut session = RenderExecutionSession::new();
+    let occurrence = session
+        .prepare(admitted, &context, None)
+        .expect("failed-output occurrence");
+    let submission = pollster::block_on(context.submit_work(
+        "failed associated renderer work",
+        occurrence.work_set().fragments().iter().cloned(),
+    ))
+    .expect("failed-output submission");
+    let associated = session
+        .associate_submission(occurrence, &submission)
+        .expect("associate before context failure");
+    drop(context);
+    assert!(matches!(
+        submission.status(),
+        GpuSubmissionStatus::Failed(failure)
+            if failure.kind() == GpuSubmissionFailureKind::ContextDropped
+    ));
+    let capture_error = associated
+        .request_radiance_capture(0)
+        .expect_err("failed renderer submission cannot mint capture");
+    assert_eq!(
+        capture_error.kind(),
+        RenderRadianceCaptureRequestErrorKind::RendererSubmissionFailed
+    );
+    assert_eq!(
+        capture_error.gpu_failure_kind(),
+        Some(GpuSubmissionFailureKind::ContextDropped)
+    );
+    let identity_error = associated
+        .object_identity_decoder(1)
+        .expect_err("failed renderer submission cannot expose decoder");
+    assert_eq!(
+        identity_error.kind(),
+        RenderObjectIdentityDecoderErrorKind::RendererSubmissionFailed
+    );
+    assert_eq!(
+        identity_error.gpu_failure_kind(),
+        Some(GpuSubmissionFailureKind::ContextDropped)
+    );
 }
 
 #[test]
