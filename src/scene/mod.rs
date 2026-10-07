@@ -1498,7 +1498,10 @@ mod tests {
             store.commit(update).expect("insert should commit");
         }
         let existing = store.snapshot().object_ids()[2048];
-        let (_, copies) = store.objects.replaced(existing, object_state(9999.0, 2.0));
+        let (_, copies) =
+            store
+                .objects
+                .replaced_facets(existing, Some(object_state(9999.0, 2.0)), None);
         assert_eq!(copies, RADIX_DEPTH + 1);
     }
 
