@@ -466,7 +466,7 @@ fn render_frame(
             .object_state(ids.sphere)
             .ok_or_else(|| io::Error::other("sphere state disappeared"))?
             .spatial()
-            .object_to_scene()
+            .local_to_scene()
             .row_major_3x4()[3],
         radiance_min,
         radiance_max,
@@ -590,7 +590,7 @@ fn inspect(output_dir: Option<&Path>) -> ExampleResult<Option<Observed>> {
     if !move_commit
         .change_set()
         .spatial_changed()
-        .is_some_and(|changed| changed == [sphere])
+        .is_some_and(|changed| changed.len() == 1 && changed[0] == sphere)
     {
         return Err(io::Error::other("sphere move did not publish precise spatial change").into());
     }
