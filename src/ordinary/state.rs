@@ -222,7 +222,7 @@ impl RenderExecutionSession {
         }
 
         let associated = AssociatedRenderOccurrence {
-            inner: occurrence.inner,
+            inner: occurrence.inner.into_associated(),
             submission: submission.clone(),
         };
         self.prepared_occurrence = None;
