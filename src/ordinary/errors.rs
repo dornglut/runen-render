@@ -638,7 +638,7 @@ pub enum RenderRadianceCaptureRequestErrorKind {
     ReadbackIdAllocationExhausted,
 }
 
-/// Failure to mint a product-owned readback correlation for one formed radiance output.
+/// Failure to mint a product-owned readback correlation for one eligible radiance output.
 #[derive(Debug)]
 pub struct RenderRadianceCaptureRequestError {
     pub(super) inner: RenderDeterministicRadianceCaptureRequestError,
