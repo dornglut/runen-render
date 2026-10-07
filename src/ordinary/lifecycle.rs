@@ -225,7 +225,7 @@ impl PreparedRadianceOutput<'_> {
     }
 }
 
-/// One-shot correlation for a product-owned public RunenGPU radiance readback.
+/// Exact correlation for one product-owned public RunenGPU radiance readback.
 pub struct RenderRadianceCaptureRequest {
     pub(super) inner: RenderDeterministicRadianceCaptureRequest,
 }
