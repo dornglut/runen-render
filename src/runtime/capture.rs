@@ -397,7 +397,7 @@ pub(crate) fn capture_retained(
         GpuSubmissionStatus::Completed => {}
     }
     capture_execution(
-        prepared.admitted(),
+        associated.admitted(),
         submission,
         request,
         context,
