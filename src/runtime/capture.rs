@@ -17,7 +17,12 @@ use runen_gpu::{
 use std::error::Error;
 use std::fmt;
 
-const CARRIER_FORMAT: GpuTextureFormat = GpuTextureFormat::R32Uint;
+fn maintained_carrier_format_supported(format: GpuTextureFormat) -> bool {
+    matches!(
+        format,
+        GpuTextureFormat::R32Uint | GpuTextureFormat::R32Float
+    )
+}
 
 /// One exact correlation witness for a product-owned readback of an eligible radiance output.
 ///
@@ -27,6 +32,7 @@ pub struct RenderDeterministicRadianceCaptureRequest {
     output_index: usize,
     source: GpuTransferRegion,
     readback_id: GpuReadbackId,
+    carrier_format: GpuTextureFormat,
     submission_affinity: GpuContextAffinity,
     submission_id: GpuSubmissionId,
 }
@@ -111,7 +117,7 @@ impl fmt::Display for RenderDeterministicRadianceCaptureRequestError {
             Self::DestinationNotRetained => "radiance capture requires a retained destination",
             Self::DestinationNotCopySource => "radiance capture destination lacks CopySource usage",
             Self::CarrierFormatUnsupported => {
-                "admitted destination is not the maintained R32Uint carrier"
+                "admitted destination format is not a maintained radiance carrier"
             }
             Self::SourceUnavailable => {
                 "the exact whole-base-mip readback source could not be formed"
@@ -195,7 +201,7 @@ impl fmt::Display for RenderDeterministicRadianceCaptureError {
             Self::ReadbackPending => "capture readback is still pending",
             Self::ReadbackFailed { .. } => "capture readback failed",
             Self::ReadbackFormatMismatch => {
-                "capture readback format is not the maintained R32Uint carrier"
+                "capture readback format does not match the admitted maintained radiance carrier"
             }
             Self::ReadbackLayoutMismatch => {
                 "capture readback layout does not match the retained lattice"
@@ -281,7 +287,8 @@ fn mint_request_for_execution(
         return Err(RenderDeterministicRadianceCaptureRequestError::OutputDestinationUnsupported);
     };
     let descriptor = destination.descriptor();
-    if descriptor.format() != CARRIER_FORMAT {
+    let carrier_format = descriptor.format();
+    if !maintained_carrier_format_supported(carrier_format) {
         return Err(RenderDeterministicRadianceCaptureRequestError::CarrierFormatUnsupported);
     }
     if descriptor.common().lifetime() != GpuResourceLifetime::Retained {
@@ -300,6 +307,7 @@ fn mint_request_for_execution(
         output_index,
         source,
         readback_id,
+        carrier_format,
         submission_affinity: submission.affinity(),
         submission_id: submission.id(),
     })
@@ -314,11 +322,12 @@ fn mint_request_for_execution(
 fn decode_radiance_samples(
     width: u32,
     height: u32,
+    expected_format: GpuTextureFormat,
     format: Option<GpuTextureFormat>,
     layout: GpuDataLayout,
     bytes: &[u8],
 ) -> Result<Vec<f32>, RenderDeterministicRadianceCaptureError> {
-    if format != Some(CARRIER_FORMAT) {
+    if !maintained_carrier_format_supported(expected_format) || format != Some(expected_format) {
         return Err(RenderDeterministicRadianceCaptureError::ReadbackFormatMismatch);
     }
     let expected_byte_len = u64::from(width)
@@ -447,7 +456,11 @@ fn capture_execution(
     let expected_source = runen_gpu::GpuTextureCopyRegion::whole_base_mip(destination)
         .map_err(|_| RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch)?
         .into();
-    if request.source != expected_source || destination.descriptor().format() != CARRIER_FORMAT {
+    let destination_format = destination.descriptor().format();
+    if request.source != expected_source
+        || request.carrier_format != destination_format
+        || !maintained_carrier_format_supported(destination_format)
+    {
         return Err(RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch);
     }
 
@@ -509,6 +522,7 @@ fn capture_execution(
     let samples = decode_radiance_samples(
         width,
         height,
+        request.carrier_format,
         bytes.texture_format(),
         bytes.layout(),
         bytes.as_bytes(),
@@ -546,33 +560,77 @@ mod tests {
             3.75_f32.to_bits().to_ne_bytes(),
         ]
         .concat();
+
+        for carrier_format in [GpuTextureFormat::R32Uint, GpuTextureFormat::R32Float] {
+            assert_eq!(
+                decode_radiance_samples(
+                    2,
+                    2,
+                    carrier_format,
+                    Some(carrier_format),
+                    valid_layout,
+                    &valid_bytes,
+                )
+                .expect("supported row-major carrier must decode"),
+                vec![0.0, 1.25, 2.5, 3.75]
+            );
+        }
+
         assert_eq!(
             decode_radiance_samples(
                 2,
                 2,
+                GpuTextureFormat::Rgba8Unorm,
                 Some(GpuTextureFormat::Rgba8Unorm),
                 valid_layout,
-                &valid_bytes
+                &valid_bytes,
             ),
             Err(RenderDeterministicRadianceCaptureError::ReadbackFormatMismatch)
         );
         assert_eq!(
-            decode_radiance_samples(2, 2, Some(CARRIER_FORMAT), layout(16, 16, 1), &valid_bytes),
+            decode_radiance_samples(
+                2,
+                2,
+                GpuTextureFormat::R32Float,
+                Some(GpuTextureFormat::R32Uint),
+                valid_layout,
+                &valid_bytes,
+            ),
+            Err(RenderDeterministicRadianceCaptureError::ReadbackFormatMismatch)
+        );
+        assert_eq!(
+            decode_radiance_samples(
+                2,
+                2,
+                GpuTextureFormat::R32Float,
+                Some(GpuTextureFormat::R32Float),
+                layout(16, 16, 1),
+                &valid_bytes,
+            ),
             Err(RenderDeterministicRadianceCaptureError::ReadbackLayoutMismatch)
         );
         assert_eq!(
-            decode_radiance_samples(2, 2, Some(CARRIER_FORMAT), valid_layout, &valid_bytes[..12]),
+            decode_radiance_samples(
+                2,
+                2,
+                GpuTextureFormat::R32Float,
+                Some(GpuTextureFormat::R32Float),
+                valid_layout,
+                &valid_bytes[..12],
+            ),
             Err(RenderDeterministicRadianceCaptureError::ReadbackByteLengthMismatch)
         );
         let non_finite = [f32::NAN.to_bits().to_ne_bytes()].concat();
         assert_eq!(
-            decode_radiance_samples(1, 1, Some(CARRIER_FORMAT), layout(4, 4, 1), &non_finite),
+            decode_radiance_samples(
+                1,
+                1,
+                GpuTextureFormat::R32Float,
+                Some(GpuTextureFormat::R32Float),
+                layout(4, 4, 1),
+                &non_finite,
+            ),
             Err(RenderDeterministicRadianceCaptureError::NonFiniteSample)
-        );
-        assert_eq!(
-            decode_radiance_samples(2, 2, Some(CARRIER_FORMAT), valid_layout, &valid_bytes,)
-                .expect("valid row-major carrier must decode"),
-            vec![0.0, 1.25, 2.5, 3.75]
         );
     }
 }
