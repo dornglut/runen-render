@@ -156,7 +156,9 @@ impl RenderExecutionSession {
             Ok(inner) => inner,
             Err(inner) => {
                 self.resources.discard_prepared_temporal_outputs();
-                return Err(RenderExecutionSessionError::Execution(RenderExecutionError { inner }));
+                return Err(RenderExecutionSessionError::Execution(
+                    RenderExecutionError { inner },
+                ));
             }
         };
 
@@ -186,10 +188,7 @@ impl RenderExecutionSession {
             return Err(RenderExecutionSessionError::SubmissionInFlight);
         }
 
-        let Some(current_occurrence) = self
-            .prepared_occurrence
-            .as_ref()
-            .and_then(Weak::upgrade)
+        let Some(current_occurrence) = self.prepared_occurrence.as_ref().and_then(Weak::upgrade)
         else {
             return Err(RenderExecutionSessionError::OccurrenceNotCurrent);
         };

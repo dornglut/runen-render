@@ -40,8 +40,7 @@ use super::surface_input::{
 };
 use runen_gpu::{
     GpuContext, GpuContextAffinity, GpuExportRelationship, GpuReadbackId, GpuResourceProvenance,
-    GpuResourceRef,
-    GpuSubmission, GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureHandle,
+    GpuResourceRef, GpuSubmission, GpuSubmissionFailureKind, GpuSubmissionStatus, GpuTextureHandle,
     GpuTransferRegion, GpuWorkImport, GpuWorkSubmissionError,
 };
 use std::error::Error;

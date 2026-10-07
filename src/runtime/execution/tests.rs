@@ -418,7 +418,7 @@ fn assert_camera_signature_recreates(
     let mut cache = DeterministicResourceCache::default();
     let baseline = cache
         .temporal_history(
-                        0,
+            0,
             baseline_signature,
             (4, 4),
             4,
@@ -430,7 +430,7 @@ fn assert_camera_signature_recreates(
         .expect("baseline camera history");
     let changed = cache
         .temporal_history(
-                        0,
+            0,
             changed_signature,
             (4, 4),
             4,
@@ -449,7 +449,7 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
     let mut cache = DeterministicResourceCache::default();
     let first = cache
         .temporal_history(
-                        0,
+            0,
             temporal_signature(7),
             (4, 4),
             4,
@@ -465,7 +465,7 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
 
     let retry_before_completion = cache
         .temporal_history(
-                        0,
+            0,
             temporal_signature(7),
             (4, 4),
             4,
@@ -489,7 +489,7 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
 
     let reused = cache
         .temporal_history(
-                        0,
+            0,
             temporal_signature(7),
             (4, 4),
             4,
@@ -506,7 +506,7 @@ fn temporal_history_reuses_compatible_generation_and_resets_on_source_generation
 
     let reset = cache
         .temporal_history(
-                        0,
+            0,
             temporal_signature(8),
             (4, 4),
             4,
@@ -529,7 +529,7 @@ fn temporal_history_resets_when_field_source_generation_changes() {
 
     let first = cache
         .temporal_history(
-                        0,
+            0,
             temporal_signature_with_field_generation(7, 11),
             (4, 4),
             4,
@@ -550,7 +550,7 @@ fn temporal_history_resets_when_field_source_generation_changes() {
 
     let reused = cache
         .temporal_history(
-                        0,
+            0,
             temporal_signature_with_field_generation(7, 11),
             (4, 4),
             4,
@@ -565,7 +565,7 @@ fn temporal_history_resets_when_field_source_generation_changes() {
 
     let reset = cache
         .temporal_history(
-                        0,
+            0,
             temporal_signature_with_field_generation(7, 12),
             (4, 4),
             4,
@@ -727,7 +727,7 @@ fn sub_native_camera_pose_change_recreates_temporal_history() {
     );
     let first = cache
         .temporal_history(
-                        0,
+            0,
             first_signature,
             (4, 4),
             4,

@@ -254,9 +254,8 @@ impl fmt::Display for RenderDeterministicLoweringError {
             Self::HostAllocation { field } => {
                 write!(formatter, "host allocation failed for {field}")
             }
-            Self::GraphWiringIdentityExhausted => formatter.write_str(
-                "process-local renderer graph-wiring identity space is exhausted",
-            ),
+            Self::GraphWiringIdentityExhausted => formatter
+                .write_str("process-local renderer graph-wiring identity space is exhausted"),
             Self::NumericRealization { field } => write!(
                 formatter,
                 "{field} cannot be represented by the maintained finite f32 evaluator"
