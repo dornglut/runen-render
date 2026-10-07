@@ -98,6 +98,7 @@ impl PreparedRenderOccurrence {
 pub struct AssociatedRenderOccurrence {
     pub(super) inner: AssociatedDeterministicRender,
     pub(super) submission: GpuSubmission,
+    pub(super) occurrence_identity: std::sync::Arc<()>,
 }
 
 impl AssociatedRenderOccurrence {
@@ -119,7 +120,12 @@ impl AssociatedRenderOccurrence {
         output_index: usize,
     ) -> Result<RenderRadianceCaptureRequest, RenderRadianceCaptureRequestError> {
         crate::runtime::capture::mint_retained_request(&self.inner, &self.submission, output_index)
-            .map(|inner| RenderRadianceCaptureRequest { inner })
+            .map(|inner| RenderRadianceCaptureRequest {
+                inner,
+                retained_occurrence_identity: Some(std::sync::Arc::clone(
+                    &self.occurrence_identity,
+                )),
+            })
             .map_err(|inner| RenderRadianceCaptureRequestError { inner })
     }
 
@@ -130,6 +136,16 @@ impl AssociatedRenderOccurrence {
         context: &GpuContext,
         product_submission: &GpuSubmission,
     ) -> Result<RenderCapturedRadiance, RenderRadianceCaptureError> {
+        let Some(identity) = request.retained_occurrence_identity.as_ref() else {
+            return Err(RenderRadianceCaptureError {
+                inner: RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch,
+            });
+        };
+        if !std::sync::Arc::ptr_eq(identity, &self.occurrence_identity) {
+            return Err(RenderRadianceCaptureError {
+                inner: RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch,
+            });
+        }
         crate::runtime::capture::capture_retained(
             &self.inner,
             &self.submission,
@@ -228,6 +244,7 @@ impl PreparedRadianceOutput<'_> {
 /// Exact correlation for one product-owned public RunenGPU radiance readback.
 pub struct RenderRadianceCaptureRequest {
     pub(super) inner: RenderDeterministicRadianceCaptureRequest,
+    pub(super) retained_occurrence_identity: Option<std::sync::Arc<()>>,
 }
 
 impl RenderRadianceCaptureRequest {
@@ -340,7 +357,10 @@ impl SubmittedRenderForResult {
     ) -> Result<RenderRadianceCaptureRequest, RenderRadianceCaptureRequestError> {
         self.inner
             .request_deterministic_radiance_capture(output_index)
-            .map(|inner| RenderRadianceCaptureRequest { inner })
+            .map(|inner| RenderRadianceCaptureRequest {
+                inner,
+                retained_occurrence_identity: None,
+            })
             .map_err(|inner| RenderRadianceCaptureRequestError { inner })
     }
 
@@ -351,6 +371,11 @@ impl SubmittedRenderForResult {
         context: &GpuContext,
         product_submission: &GpuSubmission,
     ) -> Result<RenderCapturedRadiance, RenderRadianceCaptureError> {
+        if request.retained_occurrence_identity.is_some() {
+            return Err(RenderRadianceCaptureError {
+                inner: RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch,
+            });
+        }
         self.inner
             .capture_deterministic_radiance(request.inner, context, product_submission)
             .map(|inner| RenderCapturedRadiance { inner })
