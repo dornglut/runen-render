@@ -1,8 +1,9 @@
 use runen_gpu::{
     GpuCapabilityProfile, GpuContext, GpuContextDescriptor, GpuContextRequestErrorCategory,
-    GpuFormatRole, GpuReadbackOperation, GpuReconstruction, GpuResourceLifetime, GpuSubmission,
-    GpuSubmissionStatus, GpuTextureDescriptor, GpuTextureFormat, GpuTextureInitialization,
-    GpuTextureUsage, GpuWorkResourceIdAllocator,
+    GpuFormatRole, GpuReadbackId, GpuReadbackOperation, GpuReadbackStatus, GpuReconstruction,
+    GpuResourceLifetime, GpuSubmission, GpuSubmissionFailureKind, GpuSubmissionStatus,
+    GpuTextureCopyRegion, GpuTextureDescriptor, GpuTextureFormat, GpuTextureHandle,
+    GpuTextureInitialization, GpuTextureUsage, GpuWorkFragment, GpuWorkResourceIdAllocator,
 };
 use runen_render::admission::{
     RenderOutputBinding, RenderOutputDestination, RenderRepresentationAvailabilityFact,
@@ -31,9 +32,11 @@ use runen_render::surface_input::{
     RenderSurfaceSemanticInputGeneration, RenderSurfaceSemanticInputRequirement,
 };
 use runen_render::{
-    AdmittedRender, PreparedRadianceOutput, PreparedRender, PreparedRenderOccurrence,
+    AdmittedRender, AssociatedRenderOccurrence, PreparedRadianceOutput, PreparedRender,
+    PreparedRenderOccurrence,
     RenderAdmissionError, RenderCapturedRadiance, RenderEvaluationSelection, RenderExecutionError,
     RenderExecutionErrorKind, RenderExecutionSession, RenderExecutionSessionError,
+    RenderObjectIdentityDecoderError, RenderObjectIdentityDecoderErrorKind,
     RenderRadianceCaptureError, RenderRadianceCaptureErrorKind, RenderRadianceCaptureRequest,
     RenderRadianceCaptureRequestError, RenderRadianceCaptureRequestErrorKind,
     RenderResultFormationError, RenderResultFormationErrorKind, RenderResultSubmissionError,
@@ -95,6 +98,11 @@ fn ordinary_semantic_renderer_surface_is_public_to_downstream_consumers() {
     let _ = RenderExecutionSession::reconcile;
     let _ = RenderExecutionSession::prepare;
     let _ = RenderExecutionSession::associate_submission;
+    let _ = AssociatedRenderOccurrence::admitted_plan;
+    let _ = AssociatedRenderOccurrence::submission_status;
+    let _ = AssociatedRenderOccurrence::request_radiance_capture;
+    let _ = AssociatedRenderOccurrence::capture_radiance;
+    let _ = AssociatedRenderOccurrence::object_identity_decoder;
     let _ = PreparedRenderOccurrence::admitted_plan;
     let _ = PreparedRenderOccurrence::work_set;
     let _ = PreparedRenderOccurrence::radiance_outputs;
@@ -154,6 +162,7 @@ fn ordinary_semantic_renderer_surface_is_public_to_downstream_consumers() {
     assert_public_error::<RenderAdmissionError>();
     assert_public_error::<RenderExecutionError>();
     assert_public_error::<RenderExecutionSessionError>();
+    assert_public_error::<RenderObjectIdentityDecoderError>();
     assert_public_error::<RenderResultSubmissionError>();
     assert_public_error::<RenderResultFormationError>();
     assert_public_error::<RenderRadianceCaptureRequestError>();
