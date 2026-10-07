@@ -53,6 +53,48 @@ selected Rust 1.93.0, but executable transfer validation proved that the
 accepted RunenShader dependency graph requires Rust 1.97.1 through its exact
 WESL 0.5.0 graph.
 
+## Runnable headless scene-inspector example
+
+The public-only [headless scene inspector](examples/headless_scene.rs) constructs a
+renderer-owned sphere and plane, one perspective observation, and two correlated
+outputs: **spectral radiance at 550 nm** and **object identity**. It does not
+need Runenwerk, an ECS, native windows, or Present.
+
+Run without writing files, or opt into locally inspectable diagnostic artifacts:
+
+```sh
+cargo run --example headless_scene
+cargo run --example headless_scene -- --output ./runen-render-inspection
+```
+
+The second command writes:
+
+```text
+runen-render-inspection/frame_001/
+├── radiance.png
+├── object_ids.png
+└── evidence.json
+```
+
+The radiance PNG applies a fixed 0.25 exposure to a *single* 550 nm
+spectral-radiance sample lattice and displays the result in grayscale; **it
+is not RGB rendering**. The object-ID PNG assigns fixed diagnostic colors
+to this fixture's decoded sphere and plane identities. Black denotes a
+sample without a decoded identity, not a semantic "background entity".
+Neither PNG is itself a canonical renderer-semantic output.
+
+`evidence.json` records semantic output indices, scene revision, topology,
+the visualization conventions, and verified execution/readback outcomes.
+Image and JSON encoding belong to the executable example, **not** to
+RunenRender's production rendering API. Object and representation IDs,
+output indices, two-phase scene assembly, and the separate verified readback
+remain explicit: this example documents the accepted existing API rather
+than fabricating future convenience builders.
+
+The GPU-required Vulkan CI lane also executes the example's public-API
+conformance test. Without a suitable GPU, the executable reports the
+missing adapter rather than pretending a render succeeded.
+
 ## Validation
 
 `cargo validate` is the canonical repository-owned baseline. It proves
