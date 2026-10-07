@@ -1008,6 +1008,129 @@ fn associated_occurrence_failure_is_machine_actionable() {
 }
 
 #[test]
+fn associated_capture_requests_do_not_cross_correlate_between_occurrences() {
+    let Some((context, _)) = retained_context(GpuTextureFormat::R32Uint) else {
+        return;
+    };
+    let (first_admitted, _, _) =
+        admitted_retained_capture_render(&context, "first exact capture");
+    let (second_admitted, _, _) =
+        admitted_retained_capture_render(&context, "second exact capture");
+    let mut first_session = RenderExecutionSession::new();
+    let mut second_session = RenderExecutionSession::new();
+    let first = first_session
+        .prepare(first_admitted, &context, None)
+        .expect("first exact occurrence");
+    let second = second_session
+        .prepare(second_admitted, &context, None)
+        .expect("second exact occurrence");
+    let fragments = first
+        .work_set()
+        .fragments()
+        .iter()
+        .cloned()
+        .chain(second.work_set().fragments().iter().cloned())
+        .collect::<Vec<_>>();
+    let renderer_submission =
+        pollster::block_on(context.submit_work("shared exact renderer submission", fragments))
+            .expect("shared exact renderer submission");
+    let first_associated = first_session
+        .associate_submission(first, &renderer_submission)
+        .expect("first exact association");
+    let second_associated = second_session
+        .associate_submission(second, &renderer_submission)
+        .expect("second exact association");
+    wait_for_submission(&context, &renderer_submission);
+    first_session.reconcile();
+    second_session.reconcile();
+
+    let request = first_associated
+        .request_radiance_capture(0)
+        .expect("first exact capture request");
+    let operation = GpuReadbackOperation::new(request.source().clone(), request.readback_id())
+        .expect("first exact capture readback");
+    let fragment = GpuWorkFragment::build("first exact capture readback", |work| {
+        work.operation("read first exact capture", operation)?;
+        Ok(())
+    })
+    .expect("first exact capture fragment");
+    let product_submission = pollster::block_on(
+        context.submit_work("first exact capture product submission", [fragment]),
+    )
+    .expect("first exact capture product submission");
+    wait_for_readback(&context, &product_submission, request.readback_id());
+
+    let error = second_associated
+        .capture_radiance(request, &context, &product_submission)
+        .expect_err("same submission and output index must not cross occurrence destinations");
+    assert_eq!(
+        error.kind(),
+        RenderRadianceCaptureErrorKind::RequestCorrelationMismatch
+    );
+}
+
+#[test]
+fn associated_capture_rejects_a_superseded_retained_writer() {
+    let Some((context, _)) = retained_context(GpuTextureFormat::R32Uint) else {
+        return;
+    };
+    let (admitted, _, _) =
+        admitted_retained_capture_render(&context, "stale retained capture");
+    let mut session = RenderExecutionSession::new();
+
+    let first = session
+        .prepare(admitted.clone(), &context, None)
+        .expect("first retained writer");
+    let first_submission = pollster::block_on(context.submit_work(
+        "first retained writer submission",
+        first.work_set().fragments().iter().cloned(),
+    ))
+    .expect("first retained writer submission");
+    let first_associated = session
+        .associate_submission(first, &first_submission)
+        .expect("first retained writer association");
+    wait_for_submission(&context, &first_submission);
+    session.reconcile();
+
+    let second = session
+        .prepare(admitted, &context, None)
+        .expect("second retained writer");
+    let second_submission = pollster::block_on(context.submit_work(
+        "second retained writer submission",
+        second.work_set().fragments().iter().cloned(),
+    ))
+    .expect("second retained writer submission");
+    let _second_associated = session
+        .associate_submission(second, &second_submission)
+        .expect("second retained writer association");
+    wait_for_submission(&context, &second_submission);
+    session.reconcile();
+
+    let request = first_associated
+        .request_radiance_capture(0)
+        .expect("old occurrence can still form an exact readback request");
+    let operation = GpuReadbackOperation::new(request.source().clone(), request.readback_id())
+        .expect("stale capture readback operation");
+    let fragment = GpuWorkFragment::build("stale retained capture readback", |work| {
+        work.operation("read stale retained destination", operation)?;
+        Ok(())
+    })
+    .expect("stale retained capture readback fragment");
+    let product_submission =
+        pollster::block_on(context.submit_work("stale retained capture submission", [fragment]))
+            .expect("stale retained capture submission");
+    wait_for_readback(&context, &product_submission, request.readback_id());
+
+    let error = first_associated
+        .capture_radiance(request, &context, &product_submission)
+        .expect_err("newer renderer write must invalidate old capture interpretation");
+    assert_eq!(
+        error.kind(),
+        RenderRadianceCaptureErrorKind::RendererWriteNoLongerCurrent
+    );
+}
+
+#[test]
 fn retained_sessions_require_exact_occurrence_membership_and_compose_independently() {
     let Some((context, _)) = retained_context(GpuTextureFormat::R32Uint) else {
         return;
