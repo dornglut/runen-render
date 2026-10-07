@@ -1223,6 +1223,68 @@ fn retained_sessions_require_exact_occurrence_membership_and_compose_independent
 }
 
 #[test]
+fn associated_temporal_r32float_radiance_is_capturable_through_exact_occurrence() {
+    let Some((context, _)) = retained_context(GpuTextureFormat::R32Float) else {
+        return;
+    };
+    let mut session = RenderExecutionSession::new();
+    let admitted = admitted_temporal_radiance_render(&context, "capturable temporal radiance");
+    let evaluation = RenderEvaluationSelection::new(0, 2, 2).expect("full temporal evaluation");
+
+    let occurrence = session
+        .prepare(admitted, &context, Some(evaluation))
+        .expect("temporal retained occurrence");
+    let temporal = occurrence
+        .radiance_output(0)
+        .and_then(|output| output.temporal_execution_evidence())
+        .expect("ordinary R32Float radiance must expose temporal evidence");
+    assert_eq!(temporal.requested_extent, (2, 2));
+    assert_eq!(temporal.evaluation_extent, (2, 2));
+    assert!(temporal.history_reset);
+    assert_eq!(temporal.history_age, 0);
+
+    let renderer_submission = pollster::block_on(context.submit_work(
+        "capturable temporal renderer work",
+        occurrence.work_set().fragments().iter().cloned(),
+    ))
+    .expect("temporal renderer submission");
+    let associated = session
+        .associate_submission(occurrence, &renderer_submission)
+        .expect("exact temporal occurrence association");
+    wait_for_submission(&context, &renderer_submission);
+    session.reconcile();
+    assert!(!session.is_in_flight());
+
+    let request = associated
+        .request_radiance_capture(0)
+        .expect("completed R32Float retained capture request");
+    let readback_id = request.readback_id();
+    let operation = GpuReadbackOperation::new(request.source().clone(), readback_id)
+        .expect("R32Float retained capture readback");
+    let fragment = GpuWorkFragment::build("R32Float retained capture readback", |work| {
+        work.operation("read R32Float retained radiance", operation)?;
+        Ok(())
+    })
+    .expect("R32Float retained capture fragment");
+    let product_submission = pollster::block_on(
+        context.submit_work("R32Float retained capture submission", [fragment]),
+    )
+    .expect("R32Float retained capture submission");
+    wait_for_readback(&context, &product_submission, readback_id);
+
+    let captured = associated
+        .capture_radiance(request, &context, &product_submission)
+        .expect("interpret ordinary R32Float retained radiance");
+    assert_eq!(captured.output_index(), 0);
+    assert_eq!(
+        captured.topology().sample_lattice_dimensions(),
+        Some((2, 2))
+    );
+    assert_eq!(captured.samples().len(), 4);
+    assert!(captured.samples().iter().all(|sample| sample.is_finite()));
+}
+
+#[test]
 fn retained_radiance_sessions_use_independent_composable_graph_wiring() {
     let Some((context, _)) = retained_context(GpuTextureFormat::R32Float) else {
         return;
