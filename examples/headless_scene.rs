@@ -353,6 +353,25 @@ fn render_frame(
         .radiance_output(RADIANCE)
         .and_then(|output| output.temporal_execution_evidence())
         .ok_or_else(|| io::Error::other("retained radiance temporal evidence is missing"))?;
+    let expected_generation = RenderSurfaceSemanticInputGeneration::new(1);
+    if temporal.requested_extent != (WIDTH, HEIGHT)
+        || temporal.evaluation_extent != (WIDTH, HEIGHT)
+        || temporal.semantic_input_generations.len() != 2
+        || ![ids.sphere_rep, ids.plane_rep].iter().all(|representation_id| {
+            temporal
+                .semantic_input_generations
+                .iter()
+                .any(|(actual_id, generation)| {
+                    actual_id == representation_id && *generation == expected_generation
+                })
+        })
+        || !temporal.field_semantic_input_generations.is_empty()
+    {
+        return Err(io::Error::other(
+            "retained temporal source-generation/evaluation evidence changed",
+        )
+        .into());
+    }
 
     let renderer_submission = pollster::block_on(context.submit_work(
         format!("{frame_label} retained renderer work"),
@@ -698,6 +717,9 @@ fn write_frame_artifacts(dir: &Path, name: &str, frame: &FrameObserved) -> Examp
             "  \"semantic_result_formed\": false,\n",
             "  \"retained_capture_interpretation\": \"maintained physical radiance observation; not RenderResult certification\",\n",
             "  \"readback_submission\": \"completed\",\n",
+            "  \"surface_semantic_input_generations_validated\": true,\n",
+            "  \"field_semantic_input_generations\": 0,\n",
+            "  \"temporal_evaluation_extent\": [{}, {}],\n",
             "  \"history_generation\": {},\n",
             "  \"history_age\": {},\n",
             "  \"history_reset\": {},\n",
@@ -717,6 +739,8 @@ fn write_frame_artifacts(dir: &Path, name: &str, frame: &FrameObserved) -> Examp
         HEIGHT,
         frame.adapter_backend,
         WAVELENGTH_METERS,
+        frame.temporal.evaluation_extent.0,
+        frame.temporal.evaluation_extent.1,
         frame.temporal.history_generation,
         frame.temporal.history_age,
         frame.temporal.history_reset,
@@ -1023,6 +1047,8 @@ mod tests {
                 "\"same_logical_render_execution_session\": true",
                 "\"renderer_execution\": \"associated_submission_completed\"",
                 "\"semantic_result_formed\": false",
+                "\"surface_semantic_input_generations_validated\": true",
+                "\"field_semantic_input_generations\": 0",
                 "\"history_reset\": true",
                 "exact occurrence witness is correlation authority",
                 "not RenderResult certification",
