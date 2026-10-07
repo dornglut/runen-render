@@ -21,7 +21,7 @@ use runen_render::request::{
     RenderRadiometricRepresentation, RenderRequest, RenderRequestedOutput, RenderResultTopology,
     RenderSamplingSupport, RenderSemanticTolerance,
 };
-use runen_render::scene::{RenderObjectState, RenderSceneStore, RenderSceneUpdate};
+use runen_render::scene::{RenderObjectId, RenderObjectState, RenderSceneStore, RenderSceneUpdate};
 use runen_render::space_time::{
     RenderAffineTransform3, RenderHandedness, RenderObjectSpatialState, RenderObjectTemporalState,
     RenderSpaceSpec, RenderSpatialCoverage, RenderTemporalSupport, RenderTimeInterval,
@@ -349,7 +349,10 @@ fn retained_context(format: GpuTextureFormat) -> Option<(GpuContext, GpuContextD
         GpuContextDescriptor::new(GpuCapabilityProfile::ComputeBaseline.requirements())
             .require_format_role(format, GpuFormatRole::CopyDestination)
             .with_label("RunenRender retained-session public consumer");
-    if format == GpuTextureFormat::R32Float {
+    if matches!(
+        format,
+        GpuTextureFormat::R32Float | GpuTextureFormat::R32Uint
+    ) {
         descriptor = descriptor.require_format_role(format, GpuFormatRole::CopySource);
     }
     match pollster::block_on(GpuContext::request(descriptor.clone())) {
