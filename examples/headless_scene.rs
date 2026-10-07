@@ -389,13 +389,12 @@ fn inspect(output_dir: Option<&Path>) -> ExampleResult<Option<Observed>> {
                 [95, 145, 215]
             }
             Some(_) => return Err(io::Error::other("unexpected object identity").into()),
-            None if code == 0 => {
-                // No decoded identity. Do not reinterpret an undefined payload
-                // as a renderer-semantic 'background' object.
+            None => {
+                // No decoded identity; the physical payload of an undefined
+                // renderer sample carries no semantic object or miss meaning.
                 undecoded_pixels += 1;
                 [0, 0, 0]
             }
-            None => return Err(io::Error::other("unknown nonzero identity code").into()),
         };
         identity_rgb.extend_from_slice(&rgb);
     }
