@@ -1,7 +1,7 @@
 //! Public RunenRender correlation and interpretation for maintained radiance captures.
 //!
 //! RunenGPU owns readback transport, bytes, and retained-resource continuity.  This module only
-//! binds one fresh post-result readback correlation to one exact maintained radiance destination
+//! binds one fresh eligible readback correlation to one exact maintained radiance destination
 //! and interprets the returned carrier through RunenRender's private maintained mapping.
 
 use super::carrier::{WORD_BYTES, decode_word, maintained_evaluation_value};
@@ -19,8 +19,7 @@ use std::fmt;
 
 const CARRIER_FORMAT: GpuTextureFormat = GpuTextureFormat::R32Uint;
 
-/// One exact, one-shot correlation witness for a product-owned readback of a formed radiance
-/// output.
+/// One exact correlation witness for a product-owned readback of an eligible radiance output.
 ///
 /// The source and fresh ID are the only physical evidence exposed to the product.  The exact
 /// submitted-render binding remains private and is checked when the request is consumed.
@@ -42,7 +41,7 @@ impl RenderDeterministicRadianceCaptureRequest {
         &self.source
     }
 
-    /// Fresh process-local correlation ID allocated after verified result formation.
+    /// Fresh process-local correlation ID allocated after capture eligibility is established.
     pub const fn readback_id(&self) -> GpuReadbackId {
         self.readback_id
     }
@@ -180,7 +179,7 @@ impl fmt::Display for RenderDeterministicRadianceCaptureError {
                 "retained opaque content continuity is not established"
             }
             Self::RendererWriteNoLongerCurrent => {
-                "the verified renderer write is no longer the current retained writer"
+                "the associated renderer write is no longer the current retained writer"
             }
             Self::ProductSubmissionAffinityMismatch => {
                 "product readback submission has a different context affinity"
