@@ -50,6 +50,10 @@ impl PreparedDeterministicRender {
             .iter()
             .find(|output| output.output_index() == output_index)
     }
+
+    pub(crate) const fn object_identity_decoder(&self) -> &RenderObjectIdentityDecoder {
+        &self.object_identity_decoder
+    }
 }
 
 /// Prepared current coverage work, correlated with the enclosing temporal contribution's inputs.
