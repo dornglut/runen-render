@@ -357,14 +357,16 @@ fn render_frame(
     if temporal.requested_extent != (WIDTH, HEIGHT)
         || temporal.evaluation_extent != (WIDTH, HEIGHT)
         || temporal.semantic_input_generations.len() != 2
-        || ![ids.sphere_rep, ids.plane_rep].iter().all(|representation_id| {
-            temporal
-                .semantic_input_generations
-                .iter()
-                .any(|(actual_id, generation)| {
-                    actual_id == representation_id && *generation == expected_generation
-                })
-        })
+        || ![ids.sphere_rep, ids.plane_rep]
+            .iter()
+            .all(|representation_id| {
+                temporal
+                    .semantic_input_generations
+                    .iter()
+                    .any(|(actual_id, generation)| {
+                        actual_id == representation_id && *generation == expected_generation
+                    })
+            })
         || !temporal.field_semantic_input_generations.is_empty()
     {
         return Err(io::Error::other(
