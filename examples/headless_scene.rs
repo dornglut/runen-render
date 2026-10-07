@@ -557,7 +557,9 @@ mod tests {
 
     #[test]
     fn public_headless_multi_output_scene_conformance() -> ExampleResult<()> {
-        let Some(observed) = inspect(None)? else {
+        let directory_name = format!("runen-render-headless-public-{}", std::process::id());
+        let directory = std::env::temp_dir().join(directory_name);
+        let Some(observed) = inspect(Some(&directory))? else {
             eprintln!("No adapter available outside GPU-required CI; skipping");
             return Ok(());
         };
@@ -572,6 +574,29 @@ mod tests {
             "radiance must not be nearly uniform"
         );
         assert!(observed.radiance_min < observed.radiance_max);
+
+        let frame = directory.join("frame_001");
+        for (name, color_type) in [("radiance.png", 0), ("object_ids.png", 2)] {
+            let png = fs::read(frame.join(name))?;
+            assert_eq!(&png[..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
+            assert_eq!(&png[12..16], b"IHDR");
+            assert_eq!(&png[16..20], &WIDTH.to_be_bytes());
+            assert_eq!(&png[20..24], &HEIGHT.to_be_bytes());
+            assert_eq!(png[25], color_type);
+            assert!(png.windows(4).any(|value| value == b"IDAT"));
+            assert!(png.windows(4).any(|value| value == b"IEND"));
+        }
+        let evidence = fs::read_to_string(frame.join("evidence.json"))?;
+        for required in [
+            "\"radiance_output_index\": 0",
+            "\"object_identity_output_index\": 1",
+            "\"renderer_execution\": \"verified_result_formed\"",
+            "\"readback_submission\": \"completed\"",
+            "\"radiance_wavelength_meters\"",
+        ] {
+            assert!(evidence.contains(required), "missing evidence: {required}");
+        }
+        fs::remove_dir_all(directory)?;
         Ok(())
     }
 
