@@ -478,6 +478,14 @@ fn admitted_identity_render(
 }
 
 fn admitted_temporal_radiance_render(context: &GpuContext, label: &str) -> AdmittedRender {
+    admitted_temporal_radiance_render_at_extent(context, label, 2)
+}
+
+fn admitted_temporal_radiance_render_at_extent(
+    context: &GpuContext,
+    label: &str,
+    extent: u32,
+) -> AdmittedRender {
     let mut scene = RenderSceneStore::new();
     let object_id = scene
         .allocate_object_id()
@@ -549,7 +557,7 @@ fn admitted_temporal_radiance_render(context: &GpuContext, label: &str) -> Admit
                     )
                     .expect("visible spectral radiance"),
                 },
-                RenderResultTopology::sample_lattice_2d(2, 2).expect("temporal lattice"),
+                RenderResultTopology::sample_lattice_2d(extent, extent).expect("temporal lattice"),
                 RenderSemanticTolerance::exact(),
             )
             .expect("temporal radiance output"),
@@ -579,8 +587,8 @@ fn admitted_temporal_radiance_render(context: &GpuContext, label: &str) -> Admit
                 label,
                 GpuResourceLifetime::Retained,
                 GpuReconstruction::SourceBacked,
-                2,
-                2,
+                extent,
+                extent,
                 GpuTextureFormat::R32Float,
                 [
                     GpuTextureUsage::CopyDestination,
@@ -799,6 +807,18 @@ fn retained_session_abandonment_and_device_generation_reset_preserve_temporal_tr
         .expect("abandoned temporal evidence");
     assert!(!abandoned_evidence.history_reset);
     assert_eq!(abandoned_evidence.history_age, 1);
+    let abandoned_export = abandoned
+        .radiance_output(0)
+        .expect("abandoned radiance output")
+        .export_relationship()
+        .export_key()
+        .clone();
+    // The GPU may execute this work despite the caller never associating its occurrence.
+    let unassociated_submission = pollster::block_on(context.submit_work(
+        "unassociated retained occurrence",
+        abandoned.work_set().fragments().iter().cloned(),
+    ))
+    .expect("unassociated submission");
     drop(abandoned);
     session.reconcile();
 
@@ -809,8 +829,20 @@ fn retained_session_abandonment_and_device_generation_reset_preserve_temporal_tr
         .radiance_output(0)
         .and_then(|output| output.temporal_execution_evidence())
         .expect("post-abandonment temporal evidence");
-    assert!(!after_abandonment_evidence.history_reset);
-    assert_eq!(after_abandonment_evidence.history_age, 1);
+    assert!(after_abandonment_evidence.history_reset);
+    assert_eq!(after_abandonment_evidence.history_age, 0);
+    assert!(after_abandonment_evidence.history_generation > first_generation);
+    assert_ne!(
+        abandoned_export,
+        after_abandonment
+            .radiance_output(0)
+            .expect("fresh radiance output")
+            .export_relationship()
+            .export_key()
+            .clone(),
+        "an unassociated occurrence must not alias new graph wiring",
+    );
+    wait_for_submission(&context, &unassociated_submission);
     drop(after_abandonment);
     session.reconcile();
 
@@ -828,4 +860,66 @@ fn retained_session_abandonment_and_device_generation_reset_preserve_temporal_tr
     assert!(reset_evidence.history_reset);
     assert_eq!(reset_evidence.history_age, 0);
     assert!(reset_evidence.history_generation > first_generation);
+}
+
+#[test]
+fn retained_subnative_unassociated_work_cannot_reuse_in_place_history() {
+    let Some((context, _)) = retained_context(GpuTextureFormat::R32Float) else {
+        return;
+    };
+    let mut session = RenderExecutionSession::new();
+    let admitted = admitted_temporal_radiance_render_at_extent(
+        &context,
+        "sub-native in-place history",
+        4,
+    );
+    let evaluation = RenderEvaluationSelection::new(0, 2, 2).expect("sub-native evaluation");
+
+    let first = session
+        .prepare(admitted.clone(), &context, Some(evaluation))
+        .expect("bootstrap sub-native history");
+    let bootstrap = first
+        .radiance_output(0)
+        .and_then(|output| output.temporal_execution_evidence())
+        .expect("bootstrap temporal evidence");
+    assert!(bootstrap.history_reset);
+    let first_submission = pollster::block_on(context.submit_work(
+        "bootstrap sub-native retained occurrence",
+        first.work_set().fragments().iter().cloned(),
+    ))
+    .expect("bootstrap submission");
+    session
+        .associate_submission(first, &first_submission)
+        .expect("associate bootstrap occurrence");
+    wait_for_submission(&context, &first_submission);
+    session.reconcile();
+
+    let abandoned = session
+        .prepare(admitted.clone(), &context, Some(evaluation))
+        .expect("prepare sub-native in-place update");
+    let previous = abandoned
+        .radiance_output(0)
+        .and_then(|output| output.temporal_execution_evidence())
+        .expect("previous temporal evidence");
+    assert!(!previous.history_reset);
+    assert_eq!(previous.history_age, 1);
+    let unassociated_submission = pollster::block_on(context.submit_work(
+        "submitted but unassociated sub-native update",
+        abandoned.work_set().fragments().iter().cloned(),
+    ))
+    .expect("unassociated in-place submission");
+    drop(abandoned);
+    session.reconcile();
+
+    let renewed = session
+        .prepare(admitted, &context, Some(evaluation))
+        .expect("fresh history after unassociated GPU write");
+    let next = renewed
+        .radiance_output(0)
+        .and_then(|output| output.temporal_execution_evidence())
+        .expect("renewed temporal evidence");
+    assert!(next.history_reset);
+    assert_eq!(next.history_age, 0);
+    assert!(next.history_generation > bootstrap.history_generation);
+    wait_for_submission(&context, &unassociated_submission);
 }

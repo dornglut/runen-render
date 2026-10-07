@@ -194,6 +194,16 @@ impl DeterministicResourceCache {
         self.next_temporal_generation = next_temporal_generation;
     }
 
+    /// Discard renderer-derived GPU resources and history when prepared work could have
+    /// escaped without exact accepted-submission correlation. The caller may still own or
+    /// submit old fragments, so graph export wiring also requires a fresh namespace.
+    /// Keep temporal generations monotonic so subsequent evidence shows the reset.
+    pub(crate) fn invalidate_unverified_occurrence(&mut self) {
+        let next_temporal_generation = self.next_temporal_generation;
+        *self = Self::default();
+        self.next_temporal_generation = next_temporal_generation;
+    }
+
     pub(crate) fn reconcile_temporal_outputs(&mut self, completed: bool) {
         let outputs = std::mem::take(&mut self.prepared_temporal_outputs);
         if completed {

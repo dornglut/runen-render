@@ -228,7 +228,9 @@ impl RenderExecutionSession {
     }
 
     fn abandon_current_occurrence(&mut self) {
-        self.resources.discard_prepared_temporal_outputs();
+        // Renderer work can already have been submitted without its exact occurrence being
+        // associated. Reusing its GPU-dependent state would trust unverified execution.
+        self.resources.invalidate_unverified_occurrence();
         self.prepared_occurrence = None;
     }
 
