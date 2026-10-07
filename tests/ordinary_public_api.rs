@@ -1012,8 +1012,7 @@ fn associated_capture_requests_do_not_cross_correlate_between_occurrences() {
     let Some((context, _)) = retained_context(GpuTextureFormat::R32Uint) else {
         return;
     };
-    let (first_admitted, _, _) =
-        admitted_retained_capture_render(&context, "first exact capture");
+    let (first_admitted, _, _) = admitted_retained_capture_render(&context, "first exact capture");
     let (second_admitted, _, _) =
         admitted_retained_capture_render(&context, "second exact capture");
     let mut first_session = RenderExecutionSession::new();
@@ -1074,8 +1073,7 @@ fn associated_capture_rejects_a_superseded_retained_writer() {
     let Some((context, _)) = retained_context(GpuTextureFormat::R32Uint) else {
         return;
     };
-    let (admitted, _, _) =
-        admitted_retained_capture_render(&context, "stale retained capture");
+    let (admitted, _, _) = admitted_retained_capture_render(&context, "stale retained capture");
     let mut session = RenderExecutionSession::new();
 
     let first = session
