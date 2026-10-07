@@ -86,6 +86,121 @@ impl PreparedRenderOccurrence {
     }
 }
 
+/// Exact output-correlation witness for one retained occurrence associated with RunenGPU.
+///
+/// The retained session remains the sole owner of temporal-history reconciliation. This witness
+/// owns only the exact prepared output interpretation metadata and a clone of the caller's exact
+/// associated submission. It survives session reconciliation or session destruction, but output
+/// interpretation still fails closed when the submission did not complete successfully, affinity
+/// or retained-resource continuity is lost, or a newer completed renderer write supersedes the
+/// observed destination.
+#[derive(Debug)]
+pub struct AssociatedRenderOccurrence {
+    pub(super) inner: AssociatedDeterministicRender,
+    pub(super) submission: GpuSubmission,
+    pub(super) occurrence_identity: std::sync::Arc<()>,
+}
+
+impl AssociatedRenderOccurrence {
+    /// Exact admitted semantic plan for this associated occurrence.
+    pub const fn admitted_plan(&self) -> &AdmittedRenderPlan {
+        self.inner.admitted().admitted()
+    }
+
+    /// Current physical lifecycle status of the exact associated RunenGPU submission.
+    pub fn submission_status(&self) -> GpuSubmissionStatus {
+        self.submission.status()
+    }
+
+    /// Mint one fresh caller-owned readback correlation for a completed retained radiance output.
+    ///
+    /// This interprets maintained physical output only. It does not form or certify a RenderResult.
+    pub fn request_radiance_capture(
+        &self,
+        output_index: usize,
+    ) -> Result<RenderRadianceCaptureRequest, RenderRadianceCaptureRequestError> {
+        crate::runtime::capture::mint_retained_request(&self.inner, &self.submission, output_index)
+            .map(|inner| RenderRadianceCaptureRequest {
+                inner,
+                retained_occurrence_identity: Some(std::sync::Arc::clone(
+                    &self.occurrence_identity,
+                )),
+            })
+            .map_err(|inner| RenderRadianceCaptureRequestError { inner })
+    }
+
+    /// Interpret one completed caller-owned RunenGPU readback through this exact occurrence.
+    pub fn capture_radiance(
+        &self,
+        request: RenderRadianceCaptureRequest,
+        context: &GpuContext,
+        product_submission: &GpuSubmission,
+    ) -> Result<RenderCapturedRadiance, RenderRadianceCaptureError> {
+        let Some(identity) = request.retained_occurrence_identity.as_ref() else {
+            return Err(RenderRadianceCaptureError {
+                inner: RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch,
+            });
+        };
+        if !std::sync::Arc::ptr_eq(identity, &self.occurrence_identity) {
+            return Err(RenderRadianceCaptureError {
+                inner: RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch,
+            });
+        }
+        crate::runtime::capture::capture_retained(
+            &self.inner,
+            &self.submission,
+            request.inner,
+            context,
+            product_submission,
+        )
+        .map(|inner| RenderCapturedRadiance { inner })
+        .map_err(|inner| RenderRadianceCaptureError { inner })
+    }
+
+    /// Execution-local physical object-identity decoder for one completed identity output.
+    ///
+    /// The returned codebook maps physical words to optional renderer object IDs only. It is not
+    /// per-pixel definedness, miss/background evidence, or persistent identity.
+    pub fn object_identity_decoder(
+        &self,
+        output_index: usize,
+    ) -> Result<&RenderObjectIdentityDecoder, RenderObjectIdentityDecoderError> {
+        match self.submission.status() {
+            GpuSubmissionStatus::Accepted => {
+                return Err(RenderObjectIdentityDecoderError::submission_pending());
+            }
+            GpuSubmissionStatus::Failed(failure) => {
+                return Err(RenderObjectIdentityDecoderError::submission_failed(
+                    failure.kind(),
+                ));
+            }
+            GpuSubmissionStatus::Completed => {}
+        }
+
+        let admitted = self.inner.admitted().admitted();
+        if !admitted
+            .outputs()
+            .iter()
+            .any(|output| output.output_index() == output_index)
+        {
+            return Err(RenderObjectIdentityDecoderError::output_index_out_of_range());
+        }
+        let requested = admitted
+            .plan()
+            .request()
+            .outputs()
+            .get(output_index)
+            .ok_or_else(RenderObjectIdentityDecoderError::output_index_out_of_range)?;
+        if !matches!(
+            requested.spec().value(),
+            crate::request::RenderOutputValue::ObjectIdentity
+        ) {
+            return Err(RenderObjectIdentityDecoderError::output_not_object_identity());
+        }
+        Ok(self.inner.object_identity_decoder())
+    }
+}
+
 /// Borrowed correlation for one prepared radiance destination and its public RunenGPU export.
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedRadianceOutput<'a> {
@@ -126,9 +241,10 @@ impl PreparedRadianceOutput<'_> {
     }
 }
 
-/// One-shot correlation for a product-owned public RunenGPU radiance readback.
+/// Exact correlation for one product-owned public RunenGPU radiance readback.
 pub struct RenderRadianceCaptureRequest {
     pub(super) inner: RenderDeterministicRadianceCaptureRequest,
+    pub(super) retained_occurrence_identity: Option<std::sync::Arc<()>>,
 }
 
 impl RenderRadianceCaptureRequest {
@@ -241,7 +357,10 @@ impl SubmittedRenderForResult {
     ) -> Result<RenderRadianceCaptureRequest, RenderRadianceCaptureRequestError> {
         self.inner
             .request_deterministic_radiance_capture(output_index)
-            .map(|inner| RenderRadianceCaptureRequest { inner })
+            .map(|inner| RenderRadianceCaptureRequest {
+                inner,
+                retained_occurrence_identity: None,
+            })
             .map_err(|inner| RenderRadianceCaptureRequestError { inner })
     }
 
@@ -252,6 +371,11 @@ impl SubmittedRenderForResult {
         context: &GpuContext,
         product_submission: &GpuSubmission,
     ) -> Result<RenderCapturedRadiance, RenderRadianceCaptureError> {
+        if request.retained_occurrence_identity.is_some() {
+            return Err(RenderRadianceCaptureError {
+                inner: RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch,
+            });
+        }
         self.inner
             .capture_deterministic_radiance(request.inner, context, product_submission)
             .map(|inner| RenderCapturedRadiance { inner })

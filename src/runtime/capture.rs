@@ -1,11 +1,11 @@
 //! Public RunenRender correlation and interpretation for maintained radiance captures.
 //!
 //! RunenGPU owns readback transport, bytes, and retained-resource continuity.  This module only
-//! binds one fresh post-result readback correlation to one exact maintained radiance destination
+//! binds one fresh eligible readback correlation to one exact maintained radiance destination
 //! and interprets the returned carrier through RunenRender's private maintained mapping.
 
 use super::carrier::{WORD_BYTES, decode_word, maintained_evaluation_value};
-use super::execution::SubmittedDeterministicRender;
+use super::execution::{AssociatedDeterministicRender, SubmittedDeterministicRender};
 use crate::admission::RenderOutputDestination;
 use crate::request::{RenderOutputValue, RenderRadiometricRepresentation, RenderResultTopology};
 use runen_gpu::{
@@ -19,8 +19,7 @@ use std::fmt;
 
 const CARRIER_FORMAT: GpuTextureFormat = GpuTextureFormat::R32Uint;
 
-/// One exact, one-shot correlation witness for a product-owned readback of a formed radiance
-/// output.
+/// One exact correlation witness for a product-owned readback of an eligible radiance output.
 ///
 /// The source and fresh ID are the only physical evidence exposed to the product.  The exact
 /// submitted-render binding remains private and is checked when the request is consumed.
@@ -42,7 +41,7 @@ impl RenderDeterministicRadianceCaptureRequest {
         &self.source
     }
 
-    /// Fresh process-local correlation ID allocated after verified result formation.
+    /// Fresh process-local correlation ID allocated after capture eligibility is established.
     pub const fn readback_id(&self) -> GpuReadbackId {
         self.readback_id
     }
@@ -82,6 +81,8 @@ impl RenderCapturedDeterministicRadiance {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderDeterministicRadianceCaptureRequestError {
     VerificationNotFormed,
+    RendererSubmissionPending,
+    RendererSubmissionFailed { kind: GpuSubmissionFailureKind },
     OutputIndexOutOfRange,
     OutputNotRadiance,
     OutputTopologyUnsupported,
@@ -97,6 +98,10 @@ impl fmt::Display for RenderDeterministicRadianceCaptureRequestError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let detail = match self {
             Self::VerificationNotFormed => "verified result formation has not succeeded",
+            Self::RendererSubmissionPending => {
+                "the associated renderer submission has not completed"
+            }
+            Self::RendererSubmissionFailed { .. } => "the associated renderer submission failed",
             Self::OutputIndexOutOfRange => "requested output index is not admitted",
             Self::OutputNotRadiance => "requested output is not spectral radiance",
             Self::OutputTopologyUnsupported => {
@@ -124,6 +129,8 @@ impl Error for RenderDeterministicRadianceCaptureRequestError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderDeterministicRadianceCaptureError {
     VerificationNotFormed,
+    RendererSubmissionPending,
+    RendererSubmissionFailed { kind: GpuSubmissionFailureKind },
     RequestCorrelationMismatch,
     ContextAffinityMismatch,
     RetainedContinuityUnavailable,
@@ -149,6 +156,10 @@ impl fmt::Display for RenderDeterministicRadianceCaptureError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let detail = match self {
             Self::VerificationNotFormed => "verified result formation has not succeeded",
+            Self::RendererSubmissionPending => {
+                "the associated renderer submission has not completed"
+            }
+            Self::RendererSubmissionFailed { .. } => "the associated renderer submission failed",
             Self::RequestCorrelationMismatch => {
                 "capture request does not belong to this submitted render/output"
             }
@@ -168,7 +179,7 @@ impl fmt::Display for RenderDeterministicRadianceCaptureError {
                 "retained opaque content continuity is not established"
             }
             Self::RendererWriteNoLongerCurrent => {
-                "the verified renderer write is no longer the current retained writer"
+                "the associated renderer write is no longer the current retained writer"
             }
             Self::ProductSubmissionAffinityMismatch => {
                 "product readback submission has a different context affinity"
@@ -209,8 +220,38 @@ pub(crate) fn mint_request(
     if !submitted.result_is_formed() {
         return Err(RenderDeterministicRadianceCaptureRequestError::VerificationNotFormed);
     }
+    mint_request_for_execution(submitted.admitted(), submitted.submission(), output_index)
+}
 
-    let admitted = submitted.admitted().admitted();
+pub(crate) fn mint_retained_request(
+    associated: &AssociatedDeterministicRender,
+    submission: &GpuSubmission,
+    output_index: usize,
+) -> Result<RenderDeterministicRadianceCaptureRequest, RenderDeterministicRadianceCaptureRequestError>
+{
+    match submission.status() {
+        GpuSubmissionStatus::Accepted => {
+            return Err(RenderDeterministicRadianceCaptureRequestError::RendererSubmissionPending);
+        }
+        GpuSubmissionStatus::Failed(failure) => {
+            return Err(
+                RenderDeterministicRadianceCaptureRequestError::RendererSubmissionFailed {
+                    kind: failure.kind(),
+                },
+            );
+        }
+        GpuSubmissionStatus::Completed => {}
+    }
+    mint_request_for_execution(associated.admitted(), submission, output_index)
+}
+
+fn mint_request_for_execution(
+    maintained: &super::admission::AdmittedDeterministicRender,
+    submission: &GpuSubmission,
+    output_index: usize,
+) -> Result<RenderDeterministicRadianceCaptureRequest, RenderDeterministicRadianceCaptureRequestError>
+{
+    let admitted = maintained.admitted();
     let output = admitted
         .outputs()
         .iter()
@@ -259,8 +300,8 @@ pub(crate) fn mint_request(
         output_index,
         source,
         readback_id,
-        submission_affinity: submitted.submission().affinity(),
-        submission_id: submitted.submission().id(),
+        submission_affinity: submission.affinity(),
+        submission_id: submission.id(),
     })
 }
 
@@ -325,16 +366,61 @@ pub(crate) fn capture(
     if !submitted.result_is_formed() {
         return Err(RenderDeterministicRadianceCaptureError::VerificationNotFormed);
     }
-    if request.submission_affinity != submitted.submission().affinity()
-        || request.submission_id != submitted.submission().id()
+    capture_execution(
+        submitted.admitted(),
+        submitted.submission(),
+        request,
+        context,
+        product_submission,
+    )
+}
+
+pub(crate) fn capture_retained(
+    associated: &AssociatedDeterministicRender,
+    submission: &GpuSubmission,
+    request: RenderDeterministicRadianceCaptureRequest,
+    context: &GpuContext,
+    product_submission: &GpuSubmission,
+) -> Result<RenderCapturedDeterministicRadiance, RenderDeterministicRadianceCaptureError> {
+    match submission.status() {
+        GpuSubmissionStatus::Accepted => {
+            return Err(RenderDeterministicRadianceCaptureError::RendererSubmissionPending);
+        }
+        GpuSubmissionStatus::Failed(failure) => {
+            return Err(
+                RenderDeterministicRadianceCaptureError::RendererSubmissionFailed {
+                    kind: failure.kind(),
+                },
+            );
+        }
+        GpuSubmissionStatus::Completed => {}
+    }
+    capture_execution(
+        associated.admitted(),
+        submission,
+        request,
+        context,
+        product_submission,
+    )
+}
+
+fn capture_execution(
+    maintained: &super::admission::AdmittedDeterministicRender,
+    renderer_submission: &GpuSubmission,
+    request: RenderDeterministicRadianceCaptureRequest,
+    context: &GpuContext,
+    product_submission: &GpuSubmission,
+) -> Result<RenderCapturedDeterministicRadiance, RenderDeterministicRadianceCaptureError> {
+    if request.submission_affinity != renderer_submission.affinity()
+        || request.submission_id != renderer_submission.id()
     {
         return Err(RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch);
     }
-    if context.affinity() != submitted.submission().affinity() {
+    if context.affinity() != renderer_submission.affinity() {
         return Err(RenderDeterministicRadianceCaptureError::ContextAffinityMismatch);
     }
 
-    let admitted = submitted.admitted().admitted();
+    let admitted = maintained.admitted();
     let output = admitted
         .outputs()
         .iter()
@@ -368,7 +454,7 @@ pub(crate) fn capture(
     let continuity = context
         .retained_resource_continuity(destination.diagnostic_identity())
         .ok_or(RenderDeterministicRadianceCaptureError::RetainedContinuityUnavailable)?;
-    if continuity.affinity() != submitted.submission().affinity() {
+    if continuity.affinity() != renderer_submission.affinity() {
         return Err(RenderDeterministicRadianceCaptureError::RetainedContinuityAffinityMismatch);
     }
     if continuity.resource() != &GpuResourceRef::from(destination.clone()) {
@@ -377,7 +463,7 @@ pub(crate) fn capture(
     match continuity.opaque_content() {
         GpuOpaqueContentContinuity::Established {
             last_completed_write,
-        } if last_completed_write == submitted.submission().id() => {}
+        } if last_completed_write == renderer_submission.id() => {}
         GpuOpaqueContentContinuity::Established { .. } => {
             return Err(RenderDeterministicRadianceCaptureError::RendererWriteNoLongerCurrent);
         }
@@ -386,7 +472,7 @@ pub(crate) fn capture(
         }
     }
 
-    if product_submission.affinity() != submitted.submission().affinity() {
+    if product_submission.affinity() != renderer_submission.affinity() {
         return Err(RenderDeterministicRadianceCaptureError::ProductSubmissionAffinityMismatch);
     }
     match product_submission.status() {

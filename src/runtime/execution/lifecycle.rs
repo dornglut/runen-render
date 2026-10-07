@@ -50,6 +50,34 @@ impl PreparedDeterministicRender {
             .iter()
             .find(|output| output.output_index() == output_index)
     }
+
+    pub(crate) fn into_associated(self) -> AssociatedDeterministicRender {
+        AssociatedDeterministicRender {
+            admitted: self.admitted,
+            object_identity_decoder: self.object_identity_decoder,
+        }
+    }
+}
+
+/// Renderer-private post-association metadata needed to interpret one exact execution's outputs.
+///
+/// Prepared work and export relationships are deliberately dropped at association. The caller
+/// already owns the RunenGPU submission; retained observation needs only the admitted semantic
+/// contract and the execution-local physical identity codebook.
+#[derive(Debug)]
+pub(crate) struct AssociatedDeterministicRender {
+    admitted: AdmittedDeterministicRender,
+    object_identity_decoder: RenderObjectIdentityDecoder,
+}
+
+impl AssociatedDeterministicRender {
+    pub(crate) const fn admitted(&self) -> &AdmittedDeterministicRender {
+        &self.admitted
+    }
+
+    pub(crate) const fn object_identity_decoder(&self) -> &RenderObjectIdentityDecoder {
+        &self.object_identity_decoder
+    }
 }
 
 /// Prepared current coverage work, correlated with the enclosing temporal contribution's inputs.

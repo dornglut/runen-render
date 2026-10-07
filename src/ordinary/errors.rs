@@ -625,6 +625,8 @@ impl Error for RenderResultFormationError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderRadianceCaptureRequestErrorKind {
     VerificationNotFormed,
+    RendererSubmissionPending,
+    RendererSubmissionFailed,
     OutputIndexOutOfRange,
     OutputNotRadiance,
     OutputTopologyUnsupported,
@@ -636,7 +638,7 @@ pub enum RenderRadianceCaptureRequestErrorKind {
     ReadbackIdAllocationExhausted,
 }
 
-/// Failure to mint a product-owned readback correlation for one formed radiance output.
+/// Failure to mint a product-owned readback correlation for one eligible radiance output.
 #[derive(Debug)]
 pub struct RenderRadianceCaptureRequestError {
     pub(super) inner: RenderDeterministicRadianceCaptureRequestError,
@@ -647,6 +649,12 @@ impl RenderRadianceCaptureRequestError {
         match &self.inner {
             RenderDeterministicRadianceCaptureRequestError::VerificationNotFormed => {
                 RenderRadianceCaptureRequestErrorKind::VerificationNotFormed
+            }
+            RenderDeterministicRadianceCaptureRequestError::RendererSubmissionPending => {
+                RenderRadianceCaptureRequestErrorKind::RendererSubmissionPending
+            }
+            RenderDeterministicRadianceCaptureRequestError::RendererSubmissionFailed { .. } => {
+                RenderRadianceCaptureRequestErrorKind::RendererSubmissionFailed
             }
             RenderDeterministicRadianceCaptureRequestError::OutputIndexOutOfRange => {
                 RenderRadianceCaptureRequestErrorKind::OutputIndexOutOfRange
@@ -677,6 +685,16 @@ impl RenderRadianceCaptureRequestError {
             }
         }
     }
+
+    /// RunenGPU lifecycle failure when the associated renderer submission failed.
+    pub const fn gpu_failure_kind(&self) -> Option<GpuSubmissionFailureKind> {
+        match &self.inner {
+            RenderDeterministicRadianceCaptureRequestError::RendererSubmissionFailed { kind } => {
+                Some(*kind)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for RenderRadianceCaptureRequestError {
@@ -687,10 +705,88 @@ impl fmt::Display for RenderRadianceCaptureRequestError {
 
 impl Error for RenderRadianceCaptureRequestError {}
 
+/// Stable owner-oriented category for retained object-identity decoder lookup failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderObjectIdentityDecoderErrorKind {
+    RendererSubmissionPending,
+    RendererSubmissionFailed,
+    OutputIndexOutOfRange,
+    OutputNotObjectIdentity,
+}
+
+/// Failure to obtain an execution-local object-identity decoder from one associated occurrence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderObjectIdentityDecoderError {
+    kind: RenderObjectIdentityDecoderErrorKind,
+    gpu_failure_kind: Option<GpuSubmissionFailureKind>,
+}
+
+impl RenderObjectIdentityDecoderError {
+    pub(super) const fn submission_pending() -> Self {
+        Self {
+            kind: RenderObjectIdentityDecoderErrorKind::RendererSubmissionPending,
+            gpu_failure_kind: None,
+        }
+    }
+
+    pub(super) const fn submission_failed(kind: GpuSubmissionFailureKind) -> Self {
+        Self {
+            kind: RenderObjectIdentityDecoderErrorKind::RendererSubmissionFailed,
+            gpu_failure_kind: Some(kind),
+        }
+    }
+
+    pub(super) const fn output_index_out_of_range() -> Self {
+        Self {
+            kind: RenderObjectIdentityDecoderErrorKind::OutputIndexOutOfRange,
+            gpu_failure_kind: None,
+        }
+    }
+
+    pub(super) const fn output_not_object_identity() -> Self {
+        Self {
+            kind: RenderObjectIdentityDecoderErrorKind::OutputNotObjectIdentity,
+            gpu_failure_kind: None,
+        }
+    }
+
+    pub const fn kind(&self) -> RenderObjectIdentityDecoderErrorKind {
+        self.kind
+    }
+
+    pub const fn gpu_failure_kind(&self) -> Option<GpuSubmissionFailureKind> {
+        self.gpu_failure_kind
+    }
+}
+
+impl fmt::Display for RenderObjectIdentityDecoderError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let detail = match self.kind {
+            RenderObjectIdentityDecoderErrorKind::RendererSubmissionPending => {
+                "the associated renderer submission has not completed"
+            }
+            RenderObjectIdentityDecoderErrorKind::RendererSubmissionFailed => {
+                "the associated renderer submission failed"
+            }
+            RenderObjectIdentityDecoderErrorKind::OutputIndexOutOfRange => {
+                "requested object-identity output index is not admitted"
+            }
+            RenderObjectIdentityDecoderErrorKind::OutputNotObjectIdentity => {
+                "requested output is not object identity"
+            }
+        };
+        formatter.write_str(detail)
+    }
+}
+
+impl Error for RenderObjectIdentityDecoderError {}
+
 /// Stable owner-oriented category for radiance readback correlation/interpretation failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderRadianceCaptureErrorKind {
     VerificationNotFormed,
+    RendererSubmissionPending,
+    RendererSubmissionFailed,
     RequestCorrelationMismatch,
     ContextAffinityMismatch,
     RetainedContinuityUnavailable,
@@ -723,6 +819,12 @@ impl RenderRadianceCaptureError {
         match &self.inner {
             RenderDeterministicRadianceCaptureError::VerificationNotFormed => {
                 RenderRadianceCaptureErrorKind::VerificationNotFormed
+            }
+            RenderDeterministicRadianceCaptureError::RendererSubmissionPending => {
+                RenderRadianceCaptureErrorKind::RendererSubmissionPending
+            }
+            RenderDeterministicRadianceCaptureError::RendererSubmissionFailed { .. } => {
+                RenderRadianceCaptureErrorKind::RendererSubmissionFailed
             }
             RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch => {
                 RenderRadianceCaptureErrorKind::RequestCorrelationMismatch
@@ -787,7 +889,8 @@ impl RenderRadianceCaptureError {
     /// RunenGPU lifecycle failure when the product submission or readback itself failed.
     pub const fn gpu_failure_kind(&self) -> Option<GpuSubmissionFailureKind> {
         match &self.inner {
-            RenderDeterministicRadianceCaptureError::ProductSubmissionFailed { kind }
+            RenderDeterministicRadianceCaptureError::RendererSubmissionFailed { kind }
+            | RenderDeterministicRadianceCaptureError::ProductSubmissionFailed { kind }
             | RenderDeterministicRadianceCaptureError::ReadbackFailed { kind } => Some(*kind),
             _ => None,
         }

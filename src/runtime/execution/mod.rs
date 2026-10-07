@@ -100,7 +100,7 @@ pub(crate) use errors::{
 };
 #[cfg(test)]
 use errors::{RenderRunenGpuPreparationError, gpu_program_source};
-pub(crate) use lifecycle::DeterministicVerificationSubmission;
+pub(crate) use lifecycle::{AssociatedDeterministicRender, DeterministicVerificationSubmission};
 pub(crate) use prepare::prepare_deterministic_render_with_cache_and_evaluation;
 pub(crate) use state::DeterministicResourceCache;
 pub(crate) use submission::submit_deterministic_render_for_verification;
