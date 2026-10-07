@@ -100,26 +100,23 @@ impl SceneObjects {
         (Self { root }, copied_nodes)
     }
 
-    pub(super) fn replaced(
+    pub(super) fn replaced_facets(
         &self,
         object_id: RenderObjectId,
-        state: RenderObjectState,
+        state: Option<RenderObjectState>,
+        participation: Option<Option<RenderObjectParticipation>>,
     ) -> (Self, usize) {
         debug_assert!(self.contains(object_id));
-        let state = Arc::new(state);
-        let (root, copied_nodes) = replace_state_node(&self.root, object_id.raw(), 0, &state);
-        (Self { root }, copied_nodes)
-    }
-
-    pub(super) fn replaced_participation(
-        &self,
-        object_id: RenderObjectId,
-        participation: Option<RenderObjectParticipation>,
-    ) -> (Self, usize) {
-        debug_assert!(self.contains(object_id));
-        let participation = participation.map(Arc::new);
-        let (root, copied_nodes) =
-            replace_participation_node(&self.root, object_id.raw(), 0, &participation);
+        debug_assert!(state.is_some() || participation.is_some());
+        let state = state.map(Arc::new);
+        let participation = participation.map(|participation| participation.map(Arc::new));
+        let (root, copied_nodes) = replace_facets_node(
+            &self.root,
+            object_id.raw(),
+            0,
+            &state,
+            &participation,
+        );
         (Self { root }, copied_nodes)
     }
 
@@ -190,17 +187,23 @@ fn remove_node(node: &Arc<SceneNode>, raw: u64, depth: usize) -> (Arc<SceneNode>
     (Arc::new(updated), copied_nodes + 1)
 }
 
-fn replace_state_node(
+fn replace_facets_node(
     node: &Arc<SceneNode>,
     raw: u64,
     depth: usize,
-    state: &Arc<RenderObjectState>,
+    state: &Option<Arc<RenderObjectState>>,
+    participation: &Option<Option<Arc<RenderObjectParticipation>>>,
 ) -> (Arc<SceneNode>, usize) {
     let mut updated = node.as_ref().clone();
 
     if depth == RADIX_DEPTH {
         debug_assert!(updated.terminal);
-        updated.state = Some(state.clone());
+        if let Some(state) = state {
+            updated.state = Some(state.clone());
+        }
+        if let Some(participation) = participation {
+            updated.participation = participation.clone();
+        }
         return (Arc::new(updated), 1);
     }
 
@@ -209,32 +212,8 @@ fn replace_state_node(
         .children
         .get(&key)
         .expect("validated scene object replacement path must exist");
-    let (updated_child, copied_nodes) = replace_state_node(child, raw, depth + 1, state);
-    updated.children.insert(key, updated_child);
-    (Arc::new(updated), copied_nodes + 1)
-}
-
-fn replace_participation_node(
-    node: &Arc<SceneNode>,
-    raw: u64,
-    depth: usize,
-    participation: &Option<Arc<RenderObjectParticipation>>,
-) -> (Arc<SceneNode>, usize) {
-    let mut updated = node.as_ref().clone();
-
-    if depth == RADIX_DEPTH {
-        debug_assert!(updated.terminal);
-        updated.participation = participation.clone();
-        return (Arc::new(updated), 1);
-    }
-
-    let key = radix_digit(raw, depth);
-    let child = node
-        .children
-        .get(&key)
-        .expect("validated scene participation replacement path must exist");
     let (updated_child, copied_nodes) =
-        replace_participation_node(child, raw, depth + 1, participation);
+        replace_facets_node(child, raw, depth + 1, state, participation);
     updated.children.insert(key, updated_child);
     (Arc::new(updated), copied_nodes + 1)
 }

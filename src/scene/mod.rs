@@ -1,8 +1,7 @@
 use super::participation::RenderObjectParticipation;
 use super::representation::{RenderRepresentationId, classify_field_distance_transform};
 use super::space_time::{RenderObjectSpatialState, RenderObjectTemporalState};
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU64;
@@ -79,6 +78,61 @@ enum RenderSceneOperationKind {
 struct RenderSceneOperation {
     object_id: RenderObjectId,
     kind: RenderSceneOperationKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RenderSceneStructuralMutation {
+    Insert {
+        state: Option<RenderObjectState>,
+    },
+    Remove,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RenderSceneObjectMutation {
+    structural: Option<RenderSceneStructuralMutation>,
+    state: Option<RenderObjectState>,
+    participation: Option<Option<RenderObjectParticipation>>,
+}
+
+impl RenderSceneObjectMutation {
+    fn absorb(&mut self, kind: &RenderSceneOperationKind) -> bool {
+        match kind {
+            RenderSceneOperationKind::Insert { state } => {
+                if self.structural.is_some()
+                    || self.state.is_some()
+                    || self.participation.is_some()
+                {
+                    return false;
+                }
+                self.structural = Some(RenderSceneStructuralMutation::Insert {
+                    state: state.clone(),
+                });
+            }
+            RenderSceneOperationKind::Remove => {
+                if self.structural.is_some()
+                    || self.state.is_some()
+                    || self.participation.is_some()
+                {
+                    return false;
+                }
+                self.structural = Some(RenderSceneStructuralMutation::Remove);
+            }
+            RenderSceneOperationKind::ReplaceState { state } => {
+                if self.structural.is_some() || self.state.is_some() {
+                    return false;
+                }
+                self.state = Some(state.clone());
+            }
+            RenderSceneOperationKind::ReplaceParticipation { participation } => {
+                if self.structural.is_some() || self.participation.is_some() {
+                    return false;
+                }
+                self.participation = Some(participation.clone());
+            }
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -635,7 +689,6 @@ impl RenderSceneStore {
             inserted,
             removed,
             replaced,
-            participation_replaced,
             spatial_changed,
             temporal_changed,
             representation_changed,
@@ -648,12 +701,13 @@ impl RenderSceneStore {
         for (object_id, state) in inserted {
             next_objects = next_objects.inserted(object_id, state).0;
         }
-        for (object_id, state) in replaced {
-            next_objects = next_objects.replaced(object_id, state).0;
-        }
-        for (object_id, participation) in participation_replaced {
+        for replacement in replaced {
             next_objects = next_objects
-                .replaced_participation(object_id, participation)
+                .replaced_facets(
+                    replacement.object_id,
+                    replacement.state,
+                    replacement.participation,
+                )
                 .0;
         }
         for object_id in &removed {
@@ -690,113 +744,120 @@ impl RenderSceneStore {
         &self,
         update: &RenderSceneUpdate,
     ) -> Result<ValidatedRenderSceneUpdate, RenderSceneCommitError> {
-        let mut normalized = BTreeMap::<RenderObjectId, RenderSceneOperationKind>::new();
-        let mut conflicts = BTreeSet::<RenderObjectId>::new();
+        let mut normalized = BTreeMap::<RenderObjectId, RenderSceneObjectMutation>::new();
 
         for operation in &update.operations {
-            match normalized.entry(operation.object_id) {
-                Entry::Vacant(entry) => {
-                    entry.insert(operation.kind.clone());
-                }
-                Entry::Occupied(_) => {
-                    conflicts.insert(operation.object_id);
-                }
+            let mutation = normalized.entry(operation.object_id).or_default();
+            if !mutation.absorb(&operation.kind) {
+                return Err(RenderSceneCommitError::ConflictingOperations {
+                    object_id: operation.object_id,
+                });
             }
-        }
-
-        if let Some(object_id) = conflicts.first().copied() {
-            return Err(RenderSceneCommitError::ConflictingOperations { object_id });
         }
 
         let mut inserted = Vec::new();
         let mut removed = Vec::new();
         let mut replaced = Vec::new();
-        let mut participation_replaced = Vec::new();
         let mut spatial_changed = Vec::new();
         let mut temporal_changed = Vec::new();
         let mut representation_changed = Vec::new();
         let mut material_assignment_changed = Vec::new();
         let mut emitter_changed = Vec::new();
 
-        for (object_id, kind) in normalized {
-            match kind {
-                RenderSceneOperationKind::Insert { state } => {
-                    if self.objects.contains(object_id) {
-                        return Err(RenderSceneCommitError::ObjectAlreadyPresent { object_id });
-                    }
-                    inserted.push((object_id, state));
-                }
-                RenderSceneOperationKind::Remove => {
-                    if !self.objects.contains(object_id) {
-                        return Err(RenderSceneCommitError::ObjectMissing { object_id });
-                    }
-                    removed.push(object_id);
-                }
-                RenderSceneOperationKind::ReplaceState { state } => {
-                    if !self.objects.contains(object_id) {
-                        return Err(RenderSceneCommitError::ObjectMissing { object_id });
-                    }
-                    self.validate_field_participation(
-                        object_id,
-                        Some(&state),
-                        self.objects.object_participation(object_id),
-                    )?;
-                    let current = self.objects.object_state(object_id);
-                    let spatial_differs =
-                        current.is_none_or(|current| current.spatial() != state.spatial());
-                    let temporal_differs =
-                        current.is_none_or(|current| current.temporal() != state.temporal());
-                    if spatial_differs || temporal_differs {
-                        if spatial_differs {
-                            spatial_changed.push(object_id);
+        for (object_id, mutation) in normalized {
+            if let Some(structural) = mutation.structural {
+                match structural {
+                    RenderSceneStructuralMutation::Insert { state } => {
+                        if self.objects.contains(object_id) {
+                            return Err(RenderSceneCommitError::ObjectAlreadyPresent { object_id });
                         }
-                        if temporal_differs {
-                            temporal_changed.push(object_id);
+                        inserted.push((object_id, state));
+                    }
+                    RenderSceneStructuralMutation::Remove => {
+                        if !self.objects.contains(object_id) {
+                            return Err(RenderSceneCommitError::ObjectMissing { object_id });
                         }
-                        replaced.push((object_id, state));
+                        removed.push(object_id);
                     }
                 }
-                RenderSceneOperationKind::ReplaceParticipation { participation } => {
-                    if !self.objects.contains(object_id) {
-                        return Err(RenderSceneCommitError::ObjectMissing { object_id });
-                    }
-                    if let Some(participation) = participation.as_ref() {
-                        self.validate_representation_ownership(object_id, participation)?;
-                    }
-                    self.validate_field_participation(
-                        object_id,
-                        self.objects.object_state(object_id),
-                        participation.as_ref(),
-                    )?;
+                continue;
+            }
 
-                    let current = self.objects.object_participation(object_id);
-                    let next = participation.as_ref();
-                    let current_representations = current
-                        .map(RenderObjectParticipation::representations)
-                        .unwrap_or(&[]);
-                    let next_representations = next
-                        .map(RenderObjectParticipation::representations)
-                        .unwrap_or(&[]);
-                    let representations_differ = current_representations != next_representations;
-                    let material_differs = current
-                        .and_then(RenderObjectParticipation::material_assignment)
-                        != next.and_then(RenderObjectParticipation::material_assignment);
-                    let emitter_differs = current.and_then(RenderObjectParticipation::emitter)
-                        != next.and_then(RenderObjectParticipation::emitter);
+            if !self.objects.contains(object_id) {
+                return Err(RenderSceneCommitError::ObjectMissing { object_id });
+            }
 
-                    if representations_differ || material_differs || emitter_differs {
-                        if representations_differ {
-                            representation_changed.push(object_id);
-                        }
-                        if material_differs {
-                            material_assignment_changed.push(object_id);
-                        }
-                        if emitter_differs {
-                            emitter_changed.push(object_id);
-                        }
-                        participation_replaced.push((object_id, participation));
+            let current_state = self.objects.object_state(object_id);
+            let current_participation = self.objects.object_participation(object_id);
+            let proposed_state = mutation.state.as_ref().or(current_state);
+            let proposed_participation = match mutation.participation.as_ref() {
+                Some(participation) => participation.as_ref(),
+                None => current_participation,
+            };
+
+            if let Some(Some(participation)) = mutation.participation.as_ref() {
+                self.validate_representation_ownership(object_id, participation)?;
+            }
+            self.validate_field_participation(
+                object_id,
+                proposed_state,
+                proposed_participation,
+            )?;
+
+            let mut state_replacement = None;
+            if let Some(state) = mutation.state {
+                let spatial_differs =
+                    current_state.is_none_or(|current| current.spatial() != state.spatial());
+                let temporal_differs =
+                    current_state.is_none_or(|current| current.temporal() != state.temporal());
+                if spatial_differs || temporal_differs {
+                    if spatial_differs {
+                        spatial_changed.push(object_id);
                     }
+                    if temporal_differs {
+                        temporal_changed.push(object_id);
+                    }
+                    state_replacement = Some(state);
                 }
+            }
+
+            let mut participation_replacement = None;
+            if let Some(participation) = mutation.participation {
+                let next = participation.as_ref();
+                let current_representations = current_participation
+                    .map(RenderObjectParticipation::representations)
+                    .unwrap_or(&[]);
+                let next_representations = next
+                    .map(RenderObjectParticipation::representations)
+                    .unwrap_or(&[]);
+                let representations_differ = current_representations != next_representations;
+                let material_differs = current_participation
+                    .and_then(RenderObjectParticipation::material_assignment)
+                    != next.and_then(RenderObjectParticipation::material_assignment);
+                let emitter_differs = current_participation
+                    .and_then(RenderObjectParticipation::emitter)
+                    != next.and_then(RenderObjectParticipation::emitter);
+
+                if representations_differ || material_differs || emitter_differs {
+                    if representations_differ {
+                        representation_changed.push(object_id);
+                    }
+                    if material_differs {
+                        material_assignment_changed.push(object_id);
+                    }
+                    if emitter_differs {
+                        emitter_changed.push(object_id);
+                    }
+                    participation_replacement = Some(participation);
+                }
+            }
+
+            if state_replacement.is_some() || participation_replacement.is_some() {
+                replaced.push(ValidatedRenderSceneObjectReplacement {
+                    object_id,
+                    state: state_replacement,
+                    participation: participation_replacement,
+                });
             }
         }
 
@@ -804,7 +865,6 @@ impl RenderSceneStore {
             inserted,
             removed,
             replaced,
-            participation_replaced,
             spatial_changed,
             temporal_changed,
             representation_changed,
@@ -870,11 +930,17 @@ impl RenderSceneStore {
 }
 
 #[derive(Debug)]
+struct ValidatedRenderSceneObjectReplacement {
+    object_id: RenderObjectId,
+    state: Option<RenderObjectState>,
+    participation: Option<Option<RenderObjectParticipation>>,
+}
+
+#[derive(Debug)]
 struct ValidatedRenderSceneUpdate {
     inserted: Vec<(RenderObjectId, Option<RenderObjectState>)>,
     removed: Vec<RenderObjectId>,
-    replaced: Vec<(RenderObjectId, RenderObjectState)>,
-    participation_replaced: Vec<(RenderObjectId, Option<RenderObjectParticipation>)>,
+    replaced: Vec<ValidatedRenderSceneObjectReplacement>,
     spatial_changed: Vec<RenderObjectId>,
     temporal_changed: Vec<RenderObjectId>,
     representation_changed: Vec<RenderObjectId>,
@@ -884,10 +950,7 @@ struct ValidatedRenderSceneUpdate {
 
 impl ValidatedRenderSceneUpdate {
     fn is_noop(&self) -> bool {
-        self.inserted.is_empty()
-            && self.removed.is_empty()
-            && self.replaced.is_empty()
-            && self.participation_replaced.is_empty()
+        self.inserted.is_empty() && self.removed.is_empty() && self.replaced.is_empty()
     }
 }
 
@@ -1613,6 +1676,223 @@ mod tests {
     }
 
     #[test]
+    fn atomic_multi_facet_replacement_commits_once_with_precise_evidence() {
+        let mut store = RenderSceneStore::new();
+        let object_id = store.allocate_object_id().expect("object ID");
+        let initial_state = object_state(0.0, 1.0);
+        let mut insert = RenderSceneUpdate::new();
+        insert.insert_with_state(object_id, initial_state.clone());
+        store.commit(insert).expect("stateful insert should commit");
+
+        let first_representation = surface_representation(&mut store, object_id);
+        let initial_participation =
+            RenderObjectParticipation::new(vec![first_representation], None, None)
+                .expect("valid initial participation");
+        let mut attach = RenderSceneUpdate::new();
+        attach.replace_participation(object_id, initial_participation.clone());
+        store.commit(attach).expect("initial participation should commit");
+
+        let retained = store.snapshot();
+        let retained_revision = retained.revision();
+        let second_representation = surface_representation(&mut store, object_id);
+        let material =
+            RenderMaterialAssignment::new(RenderDiffuseMaterial::new(0.5).expect("material"));
+        let next_participation = RenderObjectParticipation::new(
+            vec![second_representation],
+            Some(material),
+            None,
+        )
+        .expect("valid next participation");
+        let next_state = object_state(2.0, 2.0);
+
+        let mut update = RenderSceneUpdate::new();
+        update
+            .replace_state(object_id, next_state.clone())
+            .replace_participation(object_id, next_participation.clone());
+        let commit = store
+            .commit(update)
+            .expect("joint state/participation replacement should commit");
+
+        assert_eq!(commit.previous_revision(), retained_revision);
+        assert_eq!(
+            commit.revision(),
+            retained_revision.checked_next().expect("revision should advance")
+        );
+        assert_eq!(commit.change_set().spatial_changed(), Some(&[object_id][..]));
+        assert_eq!(commit.change_set().temporal_changed(), Some(&[object_id][..]));
+        assert_eq!(
+            commit.change_set().representation_changed(),
+            Some(&[object_id][..])
+        );
+        assert_eq!(
+            commit.change_set().material_assignment_changed(),
+            Some(&[object_id][..])
+        );
+        assert_eq!(commit.change_set().emitter_changed(), Some(&[][..]));
+        assert_eq!(commit.snapshot().object_state(object_id), Some(&next_state));
+        assert_eq!(
+            commit.snapshot().object_participation(object_id),
+            Some(&next_participation)
+        );
+        assert_eq!(retained.object_state(object_id), Some(&initial_state));
+        assert_eq!(
+            retained.object_participation(object_id),
+            Some(&initial_participation)
+        );
+    }
+
+    #[test]
+    fn atomic_multi_facet_validation_uses_the_proposed_final_object() {
+        let mut add = RenderSceneStore::new();
+        let add_id = add.allocate_object_id().expect("object ID");
+        insert_one(&mut add, add_id);
+        let field = field_representation(&mut add, add_id);
+        let field_participation =
+            RenderObjectParticipation::new(vec![field], None, None).expect("field participation");
+        let mut add_both = RenderSceneUpdate::new();
+        add_both
+            .replace_state(add_id, object_state(0.0, 1.0))
+            .replace_participation(add_id, field_participation.clone());
+        add.commit(add_both)
+            .expect("joint compatible state/field participation should commit");
+        assert_eq!(
+            add.snapshot().object_participation(add_id),
+            Some(&field_participation)
+        );
+
+        let mut clear = RenderSceneStore::new();
+        let clear_id = clear.allocate_object_id().expect("object ID");
+        let mut insert = RenderSceneUpdate::new();
+        insert.insert_with_state(clear_id, object_state(0.0, 1.0));
+        clear.commit(insert).expect("stateful insert");
+        let field = field_representation(&mut clear, clear_id);
+        let field_participation =
+            RenderObjectParticipation::new(vec![field], None, None).expect("field participation");
+        let mut attach = RenderSceneUpdate::new();
+        attach.replace_participation(clear_id, field_participation);
+        clear.commit(attach).expect("field participation should commit");
+
+        let singular = RenderAffineTransform3::from_row_major_3x4([
+            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        ])
+        .expect("finite singular transform");
+        let mut clear_and_replace = RenderSceneUpdate::new();
+        clear_and_replace
+            .replace_state(
+                clear_id,
+                object_state_with_transform(singular, 0.0, 2.0),
+            )
+            .clear_participation(clear_id);
+        clear
+            .commit(clear_and_replace)
+            .expect("clearing field participation makes final singular state valid");
+        assert!(clear.snapshot().object_participation(clear_id).is_none());
+
+        let mut invalid = RenderSceneStore::new();
+        let invalid_id = invalid.allocate_object_id().expect("object ID");
+        insert_one(&mut invalid, invalid_id);
+        let field = field_representation(&mut invalid, invalid_id);
+        let representation_id = field.id();
+        let participation =
+            RenderObjectParticipation::new(vec![field], None, None).expect("field participation");
+        let before = invalid.snapshot();
+        let revision = invalid.revision();
+        let mut invalid_joint = RenderSceneUpdate::new();
+        invalid_joint
+            .replace_state(
+                invalid_id,
+                object_state_with_transform(singular, 0.0, 2.0),
+            )
+            .replace_participation(invalid_id, participation);
+        assert_eq!(
+            invalid.commit(invalid_joint),
+            Err(RenderSceneCommitError::InvalidFieldTransform {
+                object_id: invalid_id,
+                representation_id,
+            })
+        );
+        assert_eq!(invalid.revision(), revision);
+        assert_eq!(invalid.snapshot(), before);
+    }
+
+    #[test]
+    fn multi_facet_noop_preserves_precise_evidence_for_changed_peer_facet() {
+        let mut store = RenderSceneStore::new();
+        let object_id = store.allocate_object_id().expect("object ID");
+        let state = object_state(0.0, 1.0);
+        let mut insert = RenderSceneUpdate::new();
+        insert.insert_with_state(object_id, state.clone());
+        store.commit(insert).expect("stateful insert");
+
+        let first_representation = surface_representation(&mut store, object_id);
+        let first_participation =
+            RenderObjectParticipation::new(vec![first_representation], None, None)
+                .expect("initial participation");
+        let mut attach = RenderSceneUpdate::new();
+        attach.replace_participation(object_id, first_participation.clone());
+        store.commit(attach).expect("initial participation");
+
+        let next_representation = surface_representation(&mut store, object_id);
+        let next_participation =
+            RenderObjectParticipation::new(vec![next_representation], None, None)
+                .expect("next participation");
+        let previous_revision = store.revision();
+        let mut update = RenderSceneUpdate::new();
+        update
+            .replace_state(object_id, state)
+            .replace_participation(object_id, next_participation.clone());
+        let commit = store
+            .commit(update)
+            .expect("equal state plus changed participation should commit");
+
+        assert_eq!(commit.previous_revision(), previous_revision);
+        assert_eq!(
+            commit.revision(),
+            previous_revision.checked_next().expect("revision should advance")
+        );
+        assert_eq!(commit.change_set().spatial_changed(), Some(&[][..]));
+        assert_eq!(commit.change_set().temporal_changed(), Some(&[][..]));
+        assert_eq!(
+            commit.change_set().representation_changed(),
+            Some(&[object_id][..])
+        );
+        assert_eq!(
+            commit.snapshot().object_participation(object_id),
+            Some(&next_participation)
+        );
+    }
+
+    #[test]
+    fn duplicate_same_facet_and_structural_mixes_still_reject() {
+        let mut store = RenderSceneStore::new();
+        let object_id = store.allocate_object_id().expect("object ID");
+        let mut insert = RenderSceneUpdate::new();
+        insert.insert_with_state(object_id, object_state(0.0, 1.0));
+        store.commit(insert).expect("stateful insert");
+        let before = store.snapshot();
+
+        let mut duplicate_state = RenderSceneUpdate::new();
+        duplicate_state
+            .replace_state(object_id, object_state(1.0, 2.0))
+            .replace_state(object_id, object_state(2.0, 3.0));
+        assert_eq!(
+            store.commit(duplicate_state),
+            Err(RenderSceneCommitError::ConflictingOperations { object_id })
+        );
+        assert_eq!(store.snapshot(), before);
+
+        let mut remove_and_replace = RenderSceneUpdate::new();
+        remove_and_replace
+            .remove(object_id)
+            .replace_state(object_id, object_state(1.0, 2.0));
+        assert_eq!(
+            store.commit(remove_and_replace),
+            Err(RenderSceneCommitError::ConflictingOperations { object_id })
+        );
+        assert_eq!(store.snapshot(), before);
+    }
+
+    #[test]
     fn duplicate_same_object_r3_replacement_rejects_without_publication() {
         let mut store = RenderSceneStore::new();
         let object_id = store.allocate_object_id().expect("object ID");
@@ -1833,7 +2113,7 @@ mod tests {
     }
 
     #[test]
-    fn small_r3_replacement_path_copy_is_bounded_by_id_width() {
+    fn small_multi_facet_replacement_path_copy_is_bounded_by_id_width() {
         let mut store = RenderSceneStore::new();
         let mut target = None;
         for index in 0..4096 {
@@ -1847,9 +2127,11 @@ mod tests {
         let representation = surface_representation(&mut store, object_id);
         let participation = RenderObjectParticipation::new(vec![representation], None, None)
             .expect("valid participation");
-        let (_, copies) = store
-            .objects
-            .replaced_participation(object_id, Some(participation));
+        let (_, copies) = store.objects.replaced_facets(
+            object_id,
+            Some(object_state(1.0, 2.0)),
+            Some(Some(participation)),
+        );
         assert_eq!(copies, RADIX_DEPTH + 1);
     }
 }
