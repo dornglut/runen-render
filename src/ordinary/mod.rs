@@ -23,7 +23,8 @@ use super::runtime::capture::{
 };
 pub use super::runtime::execution::RenderObjectIdentityDecoder;
 use super::runtime::execution::{
-    DeterministicResourceCache, PreparedDeterministicRadianceOutput, PreparedDeterministicRender,
+    AssociatedDeterministicRender, DeterministicResourceCache, PreparedDeterministicRadianceOutput,
+    PreparedDeterministicRender,
     RenderDeterministicExecutionError, RenderDeterministicResultFormationError,
     RenderTemporalExecutionEvidence as DeterministicTemporalExecutionEvidence,
     SubmittedDeterministicRender, prepare_deterministic_render,
