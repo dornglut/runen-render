@@ -1,31 +1,181 @@
 use super::*;
 
-/// High-level category for failure before maintained execution is prepared.
+/// Owner-oriented classification of an ordinary admission failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderAdmissionErrorKind {
-    Planning,
-    Admission,
-    Compatibility,
+    InvalidInvocation,
+    UnsupportedSemantics,
+    NoExecutableCandidate,
+    OutputTargetMismatch,
+    MaintainedRealizationUnsupported,
+}
+
+/// Actionable reason for one rejected candidate. A rejection set can contain different reasons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderCandidateFailureKind {
+    UnsupportedSemantics,
+    RepresentationUnavailable,
+    CapabilityUnsupported,
+    CapabilityNotEnabled,
+    ExecutionLifecycle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderCandidateFailure {
+    pub candidate_index: usize,
+    pub kind: RenderCandidateFailureKind,
+    pub output: Option<crate::request::RenderOutputHandle>,
 }
 
 /// Failure while planning, semantically admitting, or checking maintained-method compatibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderAdmissionError {
     pub(super) inner: RenderDeterministicAdmissionFailure,
+    pub(super) request: RenderRequest,
 }
 
 impl RenderAdmissionError {
-    /// Owner-oriented failure category without implementation-specific error names.
+    pub const fn request(&self) -> &RenderRequest {
+        &self.request
+    }
+
     pub fn kind(&self) -> RenderAdmissionErrorKind {
+        use crate::admission::{
+            RenderAdmissionInputError as Input, RenderExecutionAdmissionFailure as Admission,
+        };
+        use crate::runtime::admission::{
+            RenderDeterministicAdmissionFailure as Failure,
+            RenderDeterministicCompatibilityError as Compatibility,
+        };
+        use crate::semantic_plan::RenderPlanningFailure as Planning;
         match &self.inner {
-            RenderDeterministicAdmissionFailure::Planning(_) => RenderAdmissionErrorKind::Planning,
-            RenderDeterministicAdmissionFailure::Admission(_) => {
-                RenderAdmissionErrorKind::Admission
+            Failure::Planning(Planning::NoSemanticSolution { .. }) => {
+                RenderAdmissionErrorKind::UnsupportedSemantics
             }
-            RenderDeterministicAdmissionFailure::Compatibility(_) => {
-                RenderAdmissionErrorKind::Compatibility
+            Failure::Planning(_) => RenderAdmissionErrorKind::InvalidInvocation,
+            Failure::Admission(Admission::NoExecutableCandidate { .. }) => {
+                RenderAdmissionErrorKind::NoExecutableCandidate
             }
+            Failure::Admission(Admission::InvalidInput(input)) => match input {
+                Input::OutputDestinationKind { .. }
+                | Input::ScalarBufferNotWritable { .. }
+                | Input::LatticeTextureSurfaceAcquired { .. }
+                | Input::LatticeTextureDimension { .. }
+                | Input::LatticeTextureExtent { .. }
+                | Input::LatticeTextureSampleCount { .. }
+                | Input::LatticeTextureNotWritable { .. } => {
+                    RenderAdmissionErrorKind::OutputTargetMismatch
+                }
+                _ => RenderAdmissionErrorKind::InvalidInvocation,
+            },
+            Failure::Compatibility(compatibility) => match compatibility {
+                Compatibility::LatticeFormatUnsupported { .. }
+                | Compatibility::LatticeCopyDestinationUnsupported { .. }
+                | Compatibility::ScalarDestinationSize { .. }
+                | Compatibility::ScalarDestinationNotCopyDestination { .. }
+                | Compatibility::LatticeDestinationFormat { .. }
+                | Compatibility::LatticeDestinationNotCopyDestination { .. } => {
+                    RenderAdmissionErrorKind::OutputTargetMismatch
+                }
+                Compatibility::ObservationShutterNotInstant { .. }
+                | Compatibility::ObservationSamplingSupportUnsupported { .. } => {
+                    RenderAdmissionErrorKind::UnsupportedSemantics
+                }
+                _ => RenderAdmissionErrorKind::MaintainedRealizationUnsupported,
+            },
         }
+    }
+
+    /// Exact request-owned output implicated by an ordinary admission error, when singular.
+    /// Candidate-set failures use `candidate_failures` instead.
+    pub fn output(&self) -> Option<crate::request::RenderOutputHandle> {
+        use crate::admission::{
+            RenderAdmissionInputError as Input, RenderExecutionAdmissionFailure as Admission,
+        };
+        use crate::runtime::admission::{
+            RenderDeterministicAdmissionFailure as Failure,
+            RenderDeterministicCompatibilityError as Compatibility,
+        };
+        let position = match &self.inner {
+            Failure::Admission(Admission::InvalidInput(input)) => match input {
+                Input::DuplicateOutputBinding { output_index }
+                | Input::OutputBindingOutOfRange { output_index, .. }
+                | Input::MissingOutputBinding { output_index }
+                | Input::OutputDestinationKind { output_index }
+                | Input::ScalarBufferNotWritable { output_index }
+                | Input::LatticeTextureSurfaceAcquired { output_index }
+                | Input::LatticeTextureDimension { output_index, .. }
+                | Input::LatticeTextureExtent { output_index, .. }
+                | Input::LatticeTextureSampleCount { output_index, .. }
+                | Input::LatticeTextureNotWritable { output_index } => Some(*output_index),
+                Input::ForeignOutputBinding { .. }
+                | Input::SemanticBinding(_)
+                | Input::DuplicateAvailabilityFact { .. } => None,
+            },
+            Failure::Compatibility(compatibility) => match compatibility {
+                Compatibility::SelectedRepresentationSurfaceInputUnsupported { output_index, .. }
+                | Compatibility::SelectedRepresentationFieldInputUnsupported { output_index, .. }
+                | Compatibility::SelectedObjectFieldTransformNotSimilarity { output_index, .. }
+                | Compatibility::SelectedObjectStateMissing { output_index, .. }
+                | Compatibility::SelectedObjectTransformNonInvertible { output_index, .. }
+                | Compatibility::LatticeFormatUnsupported { output_index, .. }
+                | Compatibility::LatticeCopyDestinationUnsupported { output_index, .. }
+                | Compatibility::ScalarDestinationSize { output_index, .. }
+                | Compatibility::ScalarDestinationNotCopyDestination { output_index }
+                | Compatibility::LatticeDestinationFormat { output_index, .. }
+                | Compatibility::LatticeDestinationNotCopyDestination { output_index } => {
+                    Some(*output_index)
+                }
+                Compatibility::ObservationShutterNotInstant { .. }
+                | Compatibility::ObservationSamplingSupportUnsupported { .. } => None,
+            },
+            _ => None,
+        };
+        position.and_then(|index| self.request.output_handle(index))
+    }
+
+    /// Exact request-owned observation implicated by a maintained compatibility failure.
+    pub fn observation(&self) -> Option<crate::request::RenderObservationHandle> {
+        use crate::runtime::admission::{
+            RenderDeterministicAdmissionFailure as Failure,
+            RenderDeterministicCompatibilityError as Compatibility,
+        };
+        let position = match &self.inner {
+            Failure::Compatibility(
+                Compatibility::ObservationShutterNotInstant { observation_index }
+                | Compatibility::ObservationSamplingSupportUnsupported { observation_index },
+            ) => Some(*observation_index),
+            _ => None,
+        };
+        position.and_then(|index| self.request.observation_handle(index))
+    }
+
+    /// Every rejected candidate remains inspectable; mixed reasons are never collapsed to a
+    /// fictitious single availability/capability/semantic cause.
+    pub fn candidate_failures(&self) -> Vec<RenderCandidateFailure> {
+        use crate::admission::{
+            RenderCandidateAdmissionRejectionReason as Reason,
+            RenderExecutionAdmissionFailure as Admission,
+        };
+        use crate::runtime::admission::RenderDeterministicAdmissionFailure as Failure;
+        let Failure::Admission(Admission::NoExecutableCandidate { rejections }) = &self.inner else {
+            return Vec::new();
+        };
+        rejections.iter().map(|rejection| {
+            let (kind, index) = match rejection.reason() {
+                Reason::ExecutionLifecycle { .. } => (RenderCandidateFailureKind::ExecutionLifecycle, None),
+                Reason::RequiredCapabilityUnsupported { .. } => (RenderCandidateFailureKind::CapabilityUnsupported, None),
+                Reason::RequiredCapabilityNotEnabled { .. } => (RenderCandidateFailureKind::CapabilityNotEnabled, None),
+                Reason::NoSemanticallyAdmissibleRepresentation { output_index, .. } => (RenderCandidateFailureKind::UnsupportedSemantics, Some(*output_index)),
+                Reason::AvailabilityUnknown { output_index, .. }
+                | Reason::NoAvailableRepresentation { output_index, .. } => (RenderCandidateFailureKind::RepresentationUnavailable, Some(*output_index)),
+            };
+            RenderCandidateFailure {
+                candidate_index: rejection.candidate_index(),
+                kind,
+                output: index.and_then(|position| self.request.output_handle(position)),
+            }
+        }).collect()
     }
 }
 
@@ -157,6 +307,10 @@ impl Error for RenderExecutionError {
 /// Retained ordinary execution lifecycle failure.
 #[derive(Debug)]
 pub enum RenderExecutionSessionError {
+    /// Finite evaluation selected an output belonging to another request lineage.
+    ForeignEvaluationOutput {
+        output: crate::request::RenderOutputHandle,
+    },
     /// A previously prepared occurrence is still alive and must be associated or dropped first.
     PreparedOccurrenceOutstanding,
     /// The exact associated submission for this continuity has not terminalized.
@@ -177,6 +331,11 @@ pub enum RenderExecutionSessionError {
 impl fmt::Display for RenderExecutionSessionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ForeignEvaluationOutput { output } => write!(
+                formatter,
+                "finite evaluation output {} belongs to another request",
+                output.position(),
+            ),
             Self::PreparedOccurrenceOutstanding => formatter.write_str(
                 "this retained render session still owns a live prepared occurrence",
             ),
@@ -202,7 +361,8 @@ impl Error for RenderExecutionSessionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Execution(error) => Some(error),
-            Self::PreparedOccurrenceOutstanding
+            Self::ForeignEvaluationOutput { .. }
+            | Self::PreparedOccurrenceOutstanding
             | Self::SubmissionInFlight
             | Self::OccurrenceNotCurrent
             | Self::SubmissionAffinityMismatch { .. }
@@ -243,6 +403,7 @@ pub enum RenderResultSubmissionErrorKind {
 #[derive(Debug)]
 pub struct RenderResultSubmissionError {
     pub(super) inner: RenderDeterministicVerifiedSubmissionError,
+    pub(super) request: RenderRequest,
 }
 
 impl RenderResultSubmissionError {
@@ -275,8 +436,8 @@ impl RenderResultSubmissionError {
     }
 
     /// Referenced observation index when eligibility failure is observation-scoped.
-    pub const fn observation_index(&self) -> Option<usize> {
-        match &self.inner {
+    pub fn observation(&self) -> Option<crate::request::RenderObservationHandle> {
+        let position = match &self.inner {
             RenderDeterministicVerifiedSubmissionError::Eligibility(
                 RenderDeterministicVerificationEligibilityError::SelectedObservationMissing {
                     observation_index,
@@ -292,7 +453,8 @@ impl RenderResultSubmissionError {
                 },
             ) => Some(*observation_index),
             _ => None,
-        }
+        };
+        position.and_then(|index| self.request.observation_handle(index))
     }
 
     /// Referenced renderer object when eligibility failure is object-scoped.
@@ -328,19 +490,23 @@ impl RenderResultSubmissionError {
     }
 
     /// Expected and actual output indices when readback/output correlation changed.
-    pub const fn output_correlation(&self) -> Option<(usize, usize)> {
+    pub fn output_correlation(
+        &self,
+    ) -> Option<(crate::request::RenderOutputHandle, Option<crate::request::RenderOutputHandle>)> {
         match &self.inner {
             RenderDeterministicVerifiedSubmissionError::OutputCorrelationChanged {
                 expected_output_index,
                 actual_output_index,
-            } => Some((*expected_output_index, *actual_output_index)),
+            } => self.request.output_handle(*expected_output_index).map(|expected| {
+                (expected, self.request.output_handle(*actual_output_index))
+            }),
             _ => None,
         }
     }
 
     /// Output index for channel-scoped exact-submission correlation failures.
-    pub const fn correlation_output_index(&self) -> Option<usize> {
-        match &self.inner {
+    pub fn correlation_output(&self) -> Option<crate::request::RenderOutputHandle> {
+        let position = match &self.inner {
             RenderDeterministicVerifiedSubmissionError::DuplicateReadbackCorrelation {
                 output_index,
                 ..
@@ -350,7 +516,8 @@ impl RenderResultSubmissionError {
                 ..
             } => Some(*output_index),
             _ => None,
-        }
+        };
+        position.and_then(|index| self.request.output_handle(index))
     }
 
     /// Verification channel for channel-scoped exact-submission correlation failures.
@@ -469,6 +636,7 @@ pub enum RenderResultFormationErrorKind {
 #[derive(Debug)]
 pub struct RenderResultFormationError {
     pub(super) inner: RenderDeterministicResultFormationError,
+    pub(super) request: RenderRequest,
 }
 
 impl RenderResultFormationError {
@@ -528,8 +696,8 @@ impl RenderResultFormationError {
     }
 
     /// Output index associated with readback or semantic-verification failure.
-    pub const fn output_index(&self) -> Option<usize> {
-        match &self.inner {
+    pub fn output(&self) -> Option<crate::request::RenderOutputHandle> {
+        let position = match &self.inner {
             RenderDeterministicResultFormationError::ReadbackCorrelationLost {
                 output_index,
                 ..
@@ -541,7 +709,8 @@ impl RenderResultFormationError {
             RenderDeterministicResultFormationError::VerificationNotRequested
             | RenderDeterministicResultFormationError::ResultAlreadyFormed
             | RenderDeterministicResultFormationError::SubmissionFailed { .. } => None,
-        }
+        };
+        position.and_then(|index| self.request.output_handle(index))
     }
 
     /// Sample index associated with semantic-verification failure when one exists.
@@ -642,9 +811,14 @@ pub enum RenderRadianceCaptureRequestErrorKind {
 #[derive(Debug)]
 pub struct RenderRadianceCaptureRequestError {
     pub(super) inner: RenderDeterministicRadianceCaptureRequestError,
+    pub(super) output: crate::request::RenderOutputHandle,
 }
 
 impl RenderRadianceCaptureRequestError {
+    pub const fn output(&self) -> &crate::request::RenderOutputHandle {
+        &self.output
+    }
+
     pub const fn kind(&self) -> RenderRadianceCaptureRequestErrorKind {
         match &self.inner {
             RenderDeterministicRadianceCaptureRequestError::VerificationNotFormed => {
@@ -719,39 +893,48 @@ pub enum RenderObjectIdentityDecoderErrorKind {
 pub struct RenderObjectIdentityDecoderError {
     kind: RenderObjectIdentityDecoderErrorKind,
     gpu_failure_kind: Option<GpuSubmissionFailureKind>,
+    output: crate::request::RenderOutputHandle,
 }
 
 impl RenderObjectIdentityDecoderError {
-    pub(super) const fn submission_pending() -> Self {
+    pub(super) fn submission_pending(output: &crate::request::RenderOutputHandle) -> Self {
         Self {
             kind: RenderObjectIdentityDecoderErrorKind::RendererSubmissionPending,
             gpu_failure_kind: None,
+            output: output.clone(),
         }
     }
 
-    pub(super) const fn submission_failed(kind: GpuSubmissionFailureKind) -> Self {
+    pub(super) fn submission_failed(kind: GpuSubmissionFailureKind, output: &crate::request::RenderOutputHandle) -> Self {
         Self {
             kind: RenderObjectIdentityDecoderErrorKind::RendererSubmissionFailed,
             gpu_failure_kind: Some(kind),
+            output: output.clone(),
         }
     }
 
-    pub(super) const fn output_index_out_of_range() -> Self {
+    pub(super) fn output_index_out_of_range(output: &crate::request::RenderOutputHandle) -> Self {
         Self {
             kind: RenderObjectIdentityDecoderErrorKind::OutputIndexOutOfRange,
             gpu_failure_kind: None,
+            output: output.clone(),
         }
     }
 
-    pub(super) const fn output_not_object_identity() -> Self {
+    pub(super) fn output_not_object_identity(output: &crate::request::RenderOutputHandle) -> Self {
         Self {
             kind: RenderObjectIdentityDecoderErrorKind::OutputNotObjectIdentity,
             gpu_failure_kind: None,
+            output: output.clone(),
         }
     }
 
     pub const fn kind(&self) -> RenderObjectIdentityDecoderErrorKind {
         self.kind
+    }
+
+    pub const fn output(&self) -> &crate::request::RenderOutputHandle {
+        &self.output
     }
 
     pub const fn gpu_failure_kind(&self) -> Option<GpuSubmissionFailureKind> {
@@ -812,9 +995,14 @@ pub enum RenderRadianceCaptureErrorKind {
 #[derive(Debug)]
 pub struct RenderRadianceCaptureError {
     pub(super) inner: RenderDeterministicRadianceCaptureError,
+    pub(super) output: crate::request::RenderOutputHandle,
 }
 
 impl RenderRadianceCaptureError {
+    pub const fn output(&self) -> &crate::request::RenderOutputHandle {
+        &self.output
+    }
+
     pub const fn kind(&self) -> RenderRadianceCaptureErrorKind {
         match &self.inner {
             RenderDeterministicRadianceCaptureError::VerificationNotFormed => {

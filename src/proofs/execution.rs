@@ -320,7 +320,7 @@ fn admit_with_writable_only_lattice(
         )
         .expect("R7 maintained writable-only lattice handle");
     let output_bindings = [RenderOutputBinding::new(
-        0,
+        fixture.request.output_handle(0).expect("output handle"),
         RenderOutputDestination::SampleLatticeTexture(destination),
     )];
     admit_deterministic_render_with_semantic_inputs(
@@ -361,7 +361,7 @@ fn admit_with_retained_destination(
         )
         .expect("R7 maintained retained radiance handle");
     let output_bindings = [RenderOutputBinding::new(
-        0,
+        request.output_handle(0).expect("output handle"),
         RenderOutputDestination::SampleLatticeTexture(destination),
     )];
     admit_deterministic_render_with_semantic_inputs(
@@ -388,7 +388,8 @@ pub(crate) fn admit_with_retained_radiance_destination(
     )
 }
 
-fn lattice_bindings(width: u32, height: u32, output_count: usize) -> Vec<RenderOutputBinding> {
+fn lattice_bindings(width: u32, height: u32, request: &RenderRequest) -> Vec<RenderOutputBinding> {
+    let output_count = request.outputs().len();
     let mut allocator = GpuWorkResourceIdAllocator::new();
     (0..output_count)
         .map(|output_index| {
@@ -408,7 +409,7 @@ fn lattice_bindings(width: u32, height: u32, output_count: usize) -> Vec<RenderO
                 )
                 .expect("R7 structural lattice handle");
             RenderOutputBinding::new(
-                output_index,
+                request.output_handle(output_index).expect("output handle"),
                 RenderOutputDestination::SampleLatticeTexture(destination),
             )
         })
@@ -928,7 +929,7 @@ fn admitted_dispatch_budget_tiles_large_lattice_through_verified_execution() {
         &fixture.semantic_inputs,
         &[],
         &fixture.availability,
-        &lattice_bindings(27, 19, fixture.request.outputs().len()),
+        &lattice_bindings(27, 19, &fixture.request),
         &context,
     )
     .expect("27x19 maintained lattice must be admitted under the capped context");
@@ -976,7 +977,7 @@ fn maintained_ordinary_execution_supports_reordered_8x6_subset_outside_verifier_
     };
     let fixture = maintained_fixture();
     let request = reordered_8x6_request();
-    let output_bindings = lattice_bindings(8, 6, request.outputs().len());
+    let output_bindings = lattice_bindings(8, 6, &request);
     let admitted = admit_deterministic_render_with_semantic_inputs(
         &fixture.scene,
         &request,

@@ -61,14 +61,16 @@ It constructs a renderer-owned sphere and plane, renders frame 001, commits a
 sphere translation, retains the first immutable scene snapshot, then renders
 frame 002 through the **same logical `RenderExecutionSession`**.
 
-Each frame builds a fresh request with the same two request-local outputs:
-**spectral radiance at 550 nm** and **object identity**. The example explicitly
-prepares renderer work, submits it through public RunenGPU, associates the exact
-prepared occurrence with that submission, waits for terminal completion,
-reconciles the retained session, and uses the resulting
-`AssociatedRenderOccurrence` for retained output interpretation. Repeated
-numeric output indices across the two requests are not treated as identity; the
-exact associated-occurrence witness is the correlation authority.
+Each frame constructs a fresh request with request-owned opaque observation/output
+handles for the same two semantic outputs: **spectral radiance at 550 nm** and
+**object identity**. It forms one validated `RenderInvocation` after the physical
+destinations are available, then explicitly prepares renderer work, submits it
+through public RunenGPU, associates the exact prepared occurrence with that
+submission, waits for terminal completion, reconciles the retained session,
+and uses the resulting `AssociatedRenderOccurrence` for retained output
+interpretation. Repeated numeric output positions across requests do not establish
+output identity: both the request-owned output handle and the exact associated
+occurrence/submission witness must match.
 
 Run without writing files, or opt into locally inspectable diagnostic artifacts:
 
@@ -106,8 +108,9 @@ those retained GPU destinations. Object identity is decoded through the exact
 execution-local decoder from each associated occurrence; the example does not
 reproduce private carrier rules.
 
-Each `evidence.json` records the source scene revision, request-local output
-indices, exact associated-submission completion, carrier formats, adapter
+Each `evidence.json` records the source scene revision, deterministic
+request-local output positions (diagnostic ordering, not correlation identity),
+exact associated-submission completion, carrier formats, adapter
 backend, source-generation validation, visualization conventions, sphere
 position, and renderer-owned temporal evidence. Persisting one
 `RenderExecutionSession` does **not** imply temporal reuse: this example changes

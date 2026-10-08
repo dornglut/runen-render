@@ -292,7 +292,8 @@ fn request_execution_context() -> Option<GpuContext> {
     }
 }
 
-fn scalar_bindings(output_count: usize) -> Vec<RenderOutputBinding> {
+fn scalar_bindings(request: &RenderRequest) -> Vec<RenderOutputBinding> {
+    let output_count = request.outputs().len();
     let mut allocator = GpuWorkResourceIdAllocator::new();
     (0..output_count)
         .map(|output_index| {
@@ -310,14 +311,15 @@ fn scalar_bindings(output_count: usize) -> Vec<RenderOutputBinding> {
                 )
                 .expect("R7 edge scalar handle");
             RenderOutputBinding::new(
-                output_index,
+                request.output_handle(output_index).expect("output handle"),
                 RenderOutputDestination::ScalarBuffer(destination),
             )
         })
         .collect()
 }
 
-fn lattice_bindings(output_count: usize) -> Vec<RenderOutputBinding> {
+fn lattice_bindings(request: &RenderRequest) -> Vec<RenderOutputBinding> {
+    let output_count = request.outputs().len();
     let mut allocator = GpuWorkResourceIdAllocator::new();
     (0..output_count)
         .map(|output_index| {
@@ -337,7 +339,7 @@ fn lattice_bindings(output_count: usize) -> Vec<RenderOutputBinding> {
                 )
                 .expect("R7 edge lattice handle");
             RenderOutputBinding::new(
-                output_index,
+                request.output_handle(output_index).expect("output handle"),
                 RenderOutputDestination::SampleLatticeTexture(destination),
             )
         })
@@ -436,7 +438,7 @@ fn assert_close(actual: f64, expected: f64) {
 
 fn verified_probe_radiance(context: &GpuContext, emitters: &[(f64, f64)]) -> f64 {
     let fixture = edge_fixture([0.0, 0.0, -3.0], probe_radiance_request(), emitters);
-    let bindings = scalar_bindings(1);
+    let bindings = scalar_bindings(&fixture.request);
     let verification = submit_verified(&fixture, &bindings, context);
     wait_for_verification(context, &verification);
     let correlation = verification.readbacks()[0];
@@ -498,7 +500,7 @@ fn maintained_miss_encodings_are_truthful_and_verifier_certified() {
         perspective_miss_request(),
         &[(TEST_WAVELENGTH_METERS, 1.0)],
     );
-    let bindings = lattice_bindings(3);
+    let bindings = lattice_bindings(&fixture.request);
     let verification = submit_verified(&fixture, &bindings, &context);
     wait_for_verification(&context, &verification);
     assert_eq!(verification.readbacks().len(), 3);

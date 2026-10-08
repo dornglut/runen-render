@@ -3,6 +3,8 @@ use super::space_time::{
 };
 use std::error::Error;
 use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderRequestValidationError {
@@ -17,6 +19,7 @@ pub enum RenderRequestValidationError {
     IdentityToleranceMustBeExact,
     EmptyObservations,
     EmptyOutputs,
+    ForeignObservationHandle,
     OutputObservationOutOfRange { observation_index: usize },
     ObservationOutsideRenderInterval { observation_index: usize },
     ProbeRequiresScalarTopology { observation_index: usize },
@@ -66,6 +69,9 @@ impl fmt::Display for RenderRequestValidationError {
             }
             Self::EmptyObservations => write!(f, "render request must contain an observation"),
             Self::EmptyOutputs => write!(f, "render request must contain an output"),
+            Self::ForeignObservationHandle => {
+                f.write_str("observation handle is foreign to this request")
+            }
             Self::OutputObservationOutOfRange { observation_index } => write!(
                 f,
                 "requested output references missing observation index {observation_index}"
@@ -540,14 +546,14 @@ pub struct RenderRequestedOutput {
 }
 
 impl RenderRequestedOutput {
-    pub const fn new(observation_index: usize, spec: RenderOutputSpec) -> Self {
+    pub(crate) const fn new(observation_index: usize, spec: RenderOutputSpec) -> Self {
         Self {
             observation_index,
             spec,
         }
     }
 
-    pub const fn observation_index(self) -> usize {
+    pub(crate) const fn observation_index(self) -> usize {
         self.observation_index
     }
 
@@ -556,23 +562,153 @@ impl RenderRequestedOutput {
     }
 }
 
-/// R2 renderer-semantic request envelope.
-///
-/// All render/shutter times in one request are values on the same renderer-semantic timeline used
-/// by the paired scene snapshot's temporal state. Source clocks, simulation ticks, wall clocks, and
-/// device generations are projected by integration code and are not carried as request identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RenderRequest {
+
+#[derive(Debug, Clone)]
+struct RenderRequestCorrelation(Arc<()>);
+
+impl RenderRequestCorrelation {
+    fn new() -> Self {
+        Self(Arc::new(()))
+    }
+}
+
+impl PartialEq for RenderRequestCorrelation {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for RenderRequestCorrelation {}
+
+impl Hash for RenderRequestCorrelation {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
+/// Opaque request-owned observation correlation; position is only for deterministic inspection.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RenderObservationHandle {
+    correlation: RenderRequestCorrelation,
+    position: usize,
+}
+
+impl RenderObservationHandle {
+    pub const fn position(&self) -> usize {
+        self.position
+    }
+}
+
+/// Opaque request-owned output correlation, independent of other requests with equal contents.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RenderOutputHandle {
+    correlation: RenderRequestCorrelation,
+    position: usize,
+}
+
+impl RenderOutputHandle {
+    pub const fn position(&self) -> usize {
+        self.position
+    }
+}
+
+/// Non-cloneable request builder: unfinished divergent requests cannot share correlation identity.
+#[derive(Debug)]
+pub struct RenderRequestBuilder {
+    correlation: RenderRequestCorrelation,
     render_interval: RenderTimeInterval,
     observations: Vec<RenderObservationSpec>,
     outputs: Vec<RenderRequestedOutput>,
 }
 
+impl RenderRequestBuilder {
+    pub fn new(render_interval: RenderTimeInterval) -> Self {
+        Self {
+            correlation: RenderRequestCorrelation::new(),
+            render_interval,
+            observations: Vec::new(),
+            outputs: Vec::new(),
+        }
+    }
+
+    pub fn add_observation(&mut self, observation: RenderObservationSpec) -> RenderObservationHandle {
+        let position = self.observations.len();
+        self.observations.push(observation);
+        RenderObservationHandle {
+            correlation: self.correlation.clone(),
+            position,
+        }
+    }
+
+    pub fn add_output(
+        &mut self,
+        observation: &RenderObservationHandle,
+        spec: RenderOutputSpec,
+    ) -> Result<RenderOutputHandle, RenderRequestValidationError> {
+        if observation.correlation != self.correlation {
+            return Err(RenderRequestValidationError::ForeignObservationHandle);
+        }
+        let position = self.outputs.len();
+        self.outputs
+            .push(RenderRequestedOutput::new(observation.position, spec));
+        Ok(RenderOutputHandle {
+            correlation: self.correlation.clone(),
+            position,
+        })
+    }
+
+    pub fn finish(self) -> Result<RenderRequest, RenderRequestValidationError> {
+        RenderRequest::new_with_correlation(
+            self.render_interval,
+            self.observations,
+            self.outputs,
+            self.correlation,
+        )
+    }
+}
+
+/// R2 renderer-semantic request envelope.
+///
+/// All render/shutter times in one request are values on the same renderer-semantic timeline used
+/// by the paired scene snapshot's temporal state. Source clocks, simulation ticks, wall clocks, and
+/// device generations are projected by integration code and are not carried as request identity.
+#[derive(Debug, Clone)]
+pub struct RenderRequest {
+    render_interval: RenderTimeInterval,
+    observations: Vec<RenderObservationSpec>,
+    outputs: Vec<RenderRequestedOutput>,
+    correlation: RenderRequestCorrelation,
+}
+
+impl PartialEq for RenderRequest {
+    fn eq(&self, other: &Self) -> bool {
+        self.render_interval == other.render_interval
+            && self.observations == other.observations
+            && self.outputs == other.outputs
+    }
+}
+
+impl Eq for RenderRequest {}
+
 impl RenderRequest {
-    pub fn new(
+    pub(crate) fn new(
         render_interval: RenderTimeInterval,
         observations: Vec<RenderObservationSpec>,
         outputs: Vec<RenderRequestedOutput>,
+    ) -> Result<Self, RenderRequestValidationError> {
+        Self::new_with_correlation(
+            render_interval,
+            observations,
+            outputs,
+            RenderRequestCorrelation::new(),
+        )
+    }
+
+    fn new_with_correlation(
+        render_interval: RenderTimeInterval,
+        observations: Vec<RenderObservationSpec>,
+        outputs: Vec<RenderRequestedOutput>,
+        correlation: RenderRequestCorrelation,
     ) -> Result<Self, RenderRequestValidationError> {
         if observations.is_empty() {
             return Err(RenderRequestValidationError::EmptyObservations);
@@ -626,6 +762,7 @@ impl RenderRequest {
             render_interval,
             observations,
             outputs,
+            correlation,
         })
     }
 
@@ -639,6 +776,39 @@ impl RenderRequest {
 
     pub fn outputs(&self) -> &[RenderRequestedOutput] {
         &self.outputs
+    }
+
+    pub fn observation_handle(&self, position: usize) -> Option<RenderObservationHandle> {
+        self.observations
+            .get(position)
+            .map(|_| RenderObservationHandle {
+                correlation: self.correlation.clone(),
+                position,
+            })
+    }
+
+    pub fn output_handle(&self, position: usize) -> Option<RenderOutputHandle> {
+        self.outputs.get(position).map(|_| RenderOutputHandle {
+            correlation: self.correlation.clone(),
+            position,
+        })
+    }
+
+    pub fn contains_output(&self, handle: &RenderOutputHandle) -> bool {
+        handle.correlation == self.correlation && handle.position < self.outputs.len()
+    }
+
+    pub fn requested_output(&self, handle: &RenderOutputHandle) -> Option<&RenderRequestedOutput> {
+        self.contains_output(handle)
+            .then(|| &self.outputs[handle.position])
+    }
+
+    pub fn observation_for_output(
+        &self,
+        output: &RenderOutputHandle,
+    ) -> Option<RenderObservationHandle> {
+        self.requested_output(output)
+            .and_then(|requested| self.observation_handle(requested.observation_index()))
     }
 }
 
@@ -980,4 +1150,53 @@ mod tests {
             Err(RenderRequestValidationError::IdentityToleranceMustBeExact)
         );
     }
+    #[test]
+    fn request_correlation_is_lineage_owned_but_request_equality_is_semantic() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let shutter = interval(0.0, 0.0);
+        let spec = RenderOutputSpec::new(
+            RenderOutputValue::ObjectIdentity,
+            RenderResultTopology::scalar(),
+            RenderSemanticTolerance::exact(),
+        )
+        .expect("valid identity output");
+
+        let mut first = RenderRequestBuilder::new(shutter);
+        let first_observation = first.add_observation(probe_observation(shutter));
+        let first_output = first
+            .add_output(&first_observation, spec)
+            .expect("own observation handle");
+        let first_request = first.finish().expect("valid request");
+
+        let mut second = RenderRequestBuilder::new(shutter);
+        assert_eq!(
+            second.add_output(&first_observation, spec),
+            Err(RenderRequestValidationError::ForeignObservationHandle)
+        );
+        let second_observation = second.add_observation(probe_observation(shutter));
+        let second_output = second
+            .add_output(&second_observation, spec)
+            .expect("own observation handle");
+        let second_request = second.finish().expect("equivalent request");
+
+        assert_eq!(first_request, second_request);
+        assert_ne!(first_output, second_output);
+        assert!(!second_request.contains_output(&first_output));
+        assert!(first_request.contains_output(&first_output));
+
+        let clone = first_request.clone();
+        assert_eq!(clone.output_handle(0), Some(first_output.clone()));
+        assert_eq!(clone.observation_handle(0), Some(first_observation));
+        assert!(clone.contains_output(&first_output));
+        assert_eq!(first_output.position(), second_output.position());
+
+        let mut first_hasher = DefaultHasher::new();
+        first_output.hash(&mut first_hasher);
+        let mut cloned_hasher = DefaultHasher::new();
+        clone.output_handle(0).expect("retained output").hash(&mut cloned_hasher);
+        assert_eq!(first_hasher.finish(), cloned_hasher.finish());
+    }
+
 }

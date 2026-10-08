@@ -12,7 +12,7 @@ use super::transform::{
 use crate::admission::{
     AdmittedRenderPlan, RenderExecutionAdmissionFailure, RenderOutputBinding,
     RenderOutputDestination, RenderRepresentationAvailabilityFact,
-    admit_render_plan_with_semantic_inputs,
+    admit_render_plan, RenderAdmissionInputs,
 };
 use crate::field_input::{RenderFieldSemanticInput, RenderFieldSemanticInputBinding};
 use crate::representation::{RenderRepresentationId, RenderRepresentationProtocol};
@@ -231,12 +231,14 @@ pub fn admit_deterministic_render_with_semantic_inputs(
     let method = maintained_deterministic_method();
     let plan = plan_render(scene, request, std::slice::from_ref(&method))
         .map_err(RenderDeterministicAdmissionFailure::Planning)?;
-    let admitted = admit_render_plan_with_semantic_inputs(
+    let admitted = admit_render_plan(
         &plan,
-        surface_inputs,
-        field_inputs,
-        availability,
-        output_bindings,
+        RenderAdmissionInputs::new(
+            surface_inputs,
+            field_inputs,
+            availability,
+            output_bindings,
+        ),
         context,
     )
     .map_err(RenderDeterministicAdmissionFailure::Admission)?;

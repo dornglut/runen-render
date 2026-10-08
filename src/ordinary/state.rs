@@ -4,25 +4,33 @@ use std::sync::{Arc, Weak};
 /// Optional finite evaluation selection for one requested output.
 ///
 /// This changes bounded physical work only; it does not change the semantic request topology.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderEvaluationSelection {
-    output_index: usize,
+    output: crate::request::RenderOutputHandle,
     extent: (u32, u32),
 }
 
 impl RenderEvaluationSelection {
-    pub fn new(output_index: usize, width: u32, height: u32) -> Option<Self> {
+    pub fn new(
+        output: crate::request::RenderOutputHandle,
+        width: u32,
+        height: u32,
+    ) -> Option<Self> {
         (width > 0 && height > 0).then_some(Self {
-            output_index,
+            output,
             extent: (width, height),
         })
     }
 
-    pub const fn output_index(self) -> usize {
-        self.output_index
+    pub const fn output(&self) -> &crate::request::RenderOutputHandle {
+        &self.output
     }
 
-    pub const fn extent(self) -> (u32, u32) {
+    pub(crate) const fn output_index(&self) -> usize {
+        self.output.position()
+    }
+
+    pub const fn extent(&self) -> (u32, u32) {
         self.extent
     }
 }
@@ -124,6 +132,18 @@ impl RenderExecutionSession {
         context: &GpuContext,
         evaluation: Option<RenderEvaluationSelection>,
     ) -> Result<PreparedRenderOccurrence, RenderExecutionSessionError> {
+        if let Some(selection) = evaluation.as_ref() {
+            if !admitted
+                .admitted_plan()
+                .plan()
+                .request()
+                .contains_output(selection.output())
+            {
+                return Err(RenderExecutionSessionError::ForeignEvaluationOutput {
+                    output: selection.output().clone(),
+                });
+            }
+        }
         self.reconcile();
 
         if self.is_in_flight() {

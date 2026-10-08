@@ -1,4 +1,34 @@
 use super::*;
+use crate::request::{RenderOutputHandle, RenderOutputValue};
+
+fn checked_identity_decoder<'a>(
+    admitted: &AdmittedRenderPlan,
+    output: &RenderOutputHandle,
+    status: GpuSubmissionStatus,
+    decoder: &'a RenderObjectIdentityDecoder,
+) -> Result<&'a RenderObjectIdentityDecoder, RenderObjectIdentityDecoderError> {
+    match status {
+        GpuSubmissionStatus::Accepted => return Err(RenderObjectIdentityDecoderError::submission_pending(output)),
+        GpuSubmissionStatus::Failed(failure) => {
+            return Err(RenderObjectIdentityDecoderError::submission_failed(failure.kind(), output));
+        }
+        GpuSubmissionStatus::Completed => {}
+    }
+    let request = admitted.plan().request();
+    if !request.contains_output(output)
+        || !admitted.outputs().iter().any(|candidate| candidate.output_index() == output.position())
+    {
+        return Err(RenderObjectIdentityDecoderError::output_index_out_of_range(output));
+    }
+    if !matches!(
+        request.outputs()[output.position()].spec().value(),
+        RenderOutputValue::ObjectIdentity
+    ) {
+        return Err(RenderObjectIdentityDecoderError::output_not_object_identity(output));
+    }
+    Ok(decoder)
+}
+
 
 /// Maintained invocation after semantic planning, binding, and execution admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,17 +64,24 @@ impl PreparedRender {
     pub fn radiance_outputs(
         &self,
     ) -> impl ExactSizeIterator<Item = PreparedRadianceOutput<'_>> + '_ {
+        let request = self.admitted_plan().plan().request();
         self.inner
             .radiance_outputs()
             .iter()
-            .map(|inner| PreparedRadianceOutput { inner })
+            .map(move |inner| PreparedRadianceOutput {
+                inner,
+                output: request.output_handle(inner.output_index()).expect("admitted output handle"),
+            })
     }
 
     /// Prepared radiance output for one requested output index, when applicable.
-    pub fn radiance_output(&self, output_index: usize) -> Option<PreparedRadianceOutput<'_>> {
+    pub fn radiance_output(&self, output: &RenderOutputHandle) -> Option<PreparedRadianceOutput<'_>> {
+        if !self.admitted_plan().plan().request().contains_output(output) {
+            return None;
+        }
         self.inner
-            .radiance_output(output_index)
-            .map(|inner| PreparedRadianceOutput { inner })
+            .radiance_output(output.position())
+            .map(|inner| PreparedRadianceOutput { inner, output: output.clone() })
     }
 }
 
@@ -73,16 +110,23 @@ impl PreparedRenderOccurrence {
     pub fn radiance_outputs(
         &self,
     ) -> impl ExactSizeIterator<Item = PreparedRadianceOutput<'_>> + '_ {
+        let request = self.admitted_plan().plan().request();
         self.inner
             .radiance_outputs()
             .iter()
-            .map(|inner| PreparedRadianceOutput { inner })
+            .map(move |inner| PreparedRadianceOutput {
+                inner,
+                output: request.output_handle(inner.output_index()).expect("admitted output handle"),
+            })
     }
 
-    pub fn radiance_output(&self, output_index: usize) -> Option<PreparedRadianceOutput<'_>> {
+    pub fn radiance_output(&self, output: &RenderOutputHandle) -> Option<PreparedRadianceOutput<'_>> {
+        if !self.admitted_plan().plan().request().contains_output(output) {
+            return None;
+        }
         self.inner
-            .radiance_output(output_index)
-            .map(|inner| PreparedRadianceOutput { inner })
+            .radiance_output(output.position())
+            .map(|inner| PreparedRadianceOutput { inner, output: output.clone() })
     }
 }
 
@@ -117,16 +161,27 @@ impl AssociatedRenderOccurrence {
     /// This interprets maintained physical output only. It does not form or certify a RenderResult.
     pub fn request_radiance_capture(
         &self,
-        output_index: usize,
+        output: &RenderOutputHandle,
     ) -> Result<RenderRadianceCaptureRequest, RenderRadianceCaptureRequestError> {
-        crate::runtime::capture::mint_retained_request(&self.inner, &self.submission, output_index)
-            .map(|inner| RenderRadianceCaptureRequest {
-                inner,
-                retained_occurrence_identity: Some(std::sync::Arc::clone(
-                    &self.occurrence_identity,
-                )),
-            })
-            .map_err(|inner| RenderRadianceCaptureRequestError { inner })
+        if !self.admitted_plan().plan().request().contains_output(output) {
+            return Err(RenderRadianceCaptureRequestError {
+                inner: RenderDeterministicRadianceCaptureRequestError::OutputIndexOutOfRange,
+                output: output.clone(),
+            });
+        }
+        crate::runtime::capture::mint_retained_request(
+            &self.inner,
+            &self.submission,
+            output.position(),
+        )
+        .map(|inner| RenderRadianceCaptureRequest {
+            inner,
+            output: output.clone(),
+            retained_occurrence_identity: Some(std::sync::Arc::clone(
+                &self.occurrence_identity,
+            )),
+        })
+        .map_err(|inner| RenderRadianceCaptureRequestError { inner, output: output.clone() })
     }
 
     /// Interpret one completed caller-owned RunenGPU readback through this exact occurrence.
@@ -139,13 +194,16 @@ impl AssociatedRenderOccurrence {
         let Some(identity) = request.retained_occurrence_identity.as_ref() else {
             return Err(RenderRadianceCaptureError {
                 inner: RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch,
+                output: request.output.clone(),
             });
         };
         if !std::sync::Arc::ptr_eq(identity, &self.occurrence_identity) {
             return Err(RenderRadianceCaptureError {
                 inner: RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch,
+                output: request.output.clone(),
             });
         }
+        let output = request.output.clone();
         crate::runtime::capture::capture_retained(
             &self.inner,
             &self.submission,
@@ -153,8 +211,8 @@ impl AssociatedRenderOccurrence {
             context,
             product_submission,
         )
-        .map(|inner| RenderCapturedRadiance { inner })
-        .map_err(|inner| RenderRadianceCaptureError { inner })
+        .map(|inner| RenderCapturedRadiance { inner, output: output.clone() })
+        .map_err(|inner| RenderRadianceCaptureError { inner, output })
     }
 
     /// Execution-local physical object-identity decoder for one completed identity output.
@@ -163,54 +221,28 @@ impl AssociatedRenderOccurrence {
     /// per-pixel definedness, miss/background evidence, or persistent identity.
     pub fn object_identity_decoder(
         &self,
-        output_index: usize,
+        output: &RenderOutputHandle,
     ) -> Result<&RenderObjectIdentityDecoder, RenderObjectIdentityDecoderError> {
-        match self.submission.status() {
-            GpuSubmissionStatus::Accepted => {
-                return Err(RenderObjectIdentityDecoderError::submission_pending());
-            }
-            GpuSubmissionStatus::Failed(failure) => {
-                return Err(RenderObjectIdentityDecoderError::submission_failed(
-                    failure.kind(),
-                ));
-            }
-            GpuSubmissionStatus::Completed => {}
-        }
-
-        let admitted = self.inner.admitted().admitted();
-        if !admitted
-            .outputs()
-            .iter()
-            .any(|output| output.output_index() == output_index)
-        {
-            return Err(RenderObjectIdentityDecoderError::output_index_out_of_range());
-        }
-        let requested = admitted
-            .plan()
-            .request()
-            .outputs()
-            .get(output_index)
-            .ok_or_else(RenderObjectIdentityDecoderError::output_index_out_of_range)?;
-        if !matches!(
-            requested.spec().value(),
-            crate::request::RenderOutputValue::ObjectIdentity
-        ) {
-            return Err(RenderObjectIdentityDecoderError::output_not_object_identity());
-        }
-        Ok(self.inner.object_identity_decoder())
+        checked_identity_decoder(
+            self.admitted_plan(),
+            output,
+            self.submission.status(),
+            self.inner.object_identity_decoder(),
+        )
     }
 }
 
 /// Borrowed correlation for one prepared radiance destination and its public RunenGPU export.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PreparedRadianceOutput<'a> {
     pub(super) inner: &'a PreparedDeterministicRadianceOutput,
+    pub(super) output: RenderOutputHandle,
 }
 
 impl PreparedRadianceOutput<'_> {
     /// Requested output index correlated to this prepared destination.
-    pub const fn output_index(&self) -> usize {
-        self.inner.output_index()
+    pub const fn output(&self) -> &RenderOutputHandle {
+        &self.output
     }
 
     /// Public RunenGPU resource receiving the renderer output.
@@ -244,13 +276,14 @@ impl PreparedRadianceOutput<'_> {
 /// Exact correlation for one product-owned public RunenGPU radiance readback.
 pub struct RenderRadianceCaptureRequest {
     pub(super) inner: RenderDeterministicRadianceCaptureRequest,
+    pub(super) output: RenderOutputHandle,
     pub(super) retained_occurrence_identity: Option<std::sync::Arc<()>>,
 }
 
 impl RenderRadianceCaptureRequest {
     /// Requested output index correlated to this capture.
-    pub const fn output_index(&self) -> usize {
-        self.inner.output_index()
+    pub const fn output(&self) -> &RenderOutputHandle {
+        &self.output
     }
 
     /// Exact public RunenGPU transfer source the product should read.
@@ -268,12 +301,13 @@ impl RenderRadianceCaptureRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderCapturedRadiance {
     pub(super) inner: RenderCapturedDeterministicRadiance,
+    pub(super) output: RenderOutputHandle,
 }
 
 impl RenderCapturedRadiance {
     /// Requested output index whose retained destination was observed.
-    pub const fn output_index(&self) -> usize {
-        self.inner.output_index()
+    pub const fn output(&self) -> &RenderOutputHandle {
+        &self.output
     }
 
     /// Semantic sample topology of the captured values.
@@ -313,8 +347,16 @@ impl SubmittedRender {
     }
 
     /// Decoder for execution-local object-identity carrier values, when requested.
-    pub const fn object_identity_decoder(&self) -> &RenderObjectIdentityDecoder {
-        self.inner.object_identity_decoder()
+    pub fn object_identity_decoder(
+        &self,
+        output: &RenderOutputHandle,
+    ) -> Result<&RenderObjectIdentityDecoder, RenderObjectIdentityDecoderError> {
+        checked_identity_decoder(
+            self.admitted_plan(),
+            output,
+            self.inner.submission_status(),
+            self.inner.object_identity_decoder(),
+        )
     }
 }
 
@@ -339,29 +381,45 @@ impl SubmittedRenderForResult {
     }
 
     /// Decoder for execution-local object-identity carrier values, when requested.
-    pub const fn object_identity_decoder(&self) -> &RenderObjectIdentityDecoder {
-        self.inner.object_identity_decoder()
+    pub fn object_identity_decoder(
+        &self,
+        output: &RenderOutputHandle,
+    ) -> Result<&RenderObjectIdentityDecoder, RenderObjectIdentityDecoderError> {
+        checked_identity_decoder(
+            self.admitted_plan(),
+            output,
+            self.inner.submission_status(),
+            self.inner.object_identity_decoder(),
+        )
     }
 
     /// Poll semantic result formation without blocking or driving RunenGPU progress.
     pub fn try_form_result(&mut self) -> Result<Option<RenderResult>, RenderResultFormationError> {
+        let request = self.admitted_plan().plan().request().clone();
         self.inner
             .try_form_verified_result()
-            .map_err(|inner| RenderResultFormationError { inner })
+            .map_err(|inner| RenderResultFormationError { inner, request })
     }
 
     /// Mint one fresh product-owned readback correlation for a formed radiance output.
     pub fn request_radiance_capture(
         &self,
-        output_index: usize,
+        output: &RenderOutputHandle,
     ) -> Result<RenderRadianceCaptureRequest, RenderRadianceCaptureRequestError> {
+        if !self.admitted_plan().plan().request().contains_output(output) {
+            return Err(RenderRadianceCaptureRequestError {
+                inner: RenderDeterministicRadianceCaptureRequestError::OutputIndexOutOfRange,
+                output: output.clone(),
+            });
+        }
         self.inner
-            .request_deterministic_radiance_capture(output_index)
+            .request_deterministic_radiance_capture(output.position())
             .map(|inner| RenderRadianceCaptureRequest {
                 inner,
+                output: output.clone(),
                 retained_occurrence_identity: None,
             })
-            .map_err(|inner| RenderRadianceCaptureRequestError { inner })
+            .map_err(|inner| RenderRadianceCaptureRequestError { inner, output: output.clone() })
     }
 
     /// Interpret one completed product-owned RunenGPU readback through the maintained carrier.
@@ -374,11 +432,13 @@ impl SubmittedRenderForResult {
         if request.retained_occurrence_identity.is_some() {
             return Err(RenderRadianceCaptureError {
                 inner: RenderDeterministicRadianceCaptureError::RequestCorrelationMismatch,
+                output: request.output.clone(),
             });
         }
+        let output = request.output.clone();
         self.inner
             .capture_deterministic_radiance(request.inner, context, product_submission)
-            .map(|inner| RenderCapturedRadiance { inner })
-            .map_err(|inner| RenderRadianceCaptureError { inner })
+            .map(|inner| RenderCapturedRadiance { inner, output: output.clone() })
+            .map_err(|inner| RenderRadianceCaptureError { inner, output })
     }
 }

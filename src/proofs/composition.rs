@@ -99,7 +99,7 @@ fn admit_r32float_radiance(
     let mut allocator = GpuWorkResourceIdAllocator::new();
     let destination = r32float_radiance_destination(&mut allocator);
     let output_bindings = [RenderOutputBinding::new(
-        0,
+        fixture.request.output_handle(0).expect("output handle"),
         RenderOutputDestination::SampleLatticeTexture(destination),
     )];
     admit_deterministic_render_with_semantic_inputs(

@@ -8,6 +8,7 @@ use super::representation::RenderRepresentationId;
 use super::space_time::{CanonicalF64, RenderSemanticValueError, RenderTemporalSupport};
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
 /// Narrow typed declaration that one field-distance protocol requires a current request-scoped
 /// sampled field value before that representation use is semantically admissible.
@@ -32,7 +33,7 @@ pub struct RenderFieldSemanticInput {
     origin_local_meters: [CanonicalF64; 3],
     sample_spacing_meters: [CanonicalF64; 3],
     dimensions: [u32; 3],
-    signed_distance_samples_meters: Vec<CanonicalF64>,
+    signed_distance_samples_meters: Arc<[CanonicalF64]>,
     max_absolute_query_error_local_meters: CanonicalF64,
     validity: RenderTemporalSupport,
 }
@@ -61,7 +62,8 @@ impl RenderFieldSemanticInput {
         let signed_distance_samples_meters = signed_distance_samples_meters
             .into_iter()
             .map(|value| CanonicalF64::new(value, "field_input_signed_distance_sample_meters"))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+            .into();
         let max_absolute_query_error_local_meters = CanonicalF64::new(
             max_absolute_query_error_local_meters,
             "field_input_max_absolute_query_error_local_meters",
@@ -341,4 +343,82 @@ mod tests {
         assert_eq!(input.signed_distance_sample_meters(7), Some(1.75));
         assert_eq!(input.max_absolute_query_error_local_meters(), 0.125);
     }
+    #[test]
+    fn dense_field_clones_share_samples_without_changing_value_semantics() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let values = vec![0.25; 32 * 32 * 32];
+        let field = RenderFieldSemanticInput::dense(
+            [0.0; 3],
+            [1.0; 3],
+            [32, 32, 32],
+            values.clone(),
+            0.125,
+            RenderTemporalSupport::unbounded(),
+        )
+        .expect("valid dense field");
+        let retained = field.clone();
+        let independent = RenderFieldSemanticInput::dense(
+            [0.0; 3],
+            [1.0; 3],
+            [32, 32, 32],
+            values,
+            0.125,
+            RenderTemporalSupport::unbounded(),
+        )
+        .expect("equivalent independently created field");
+
+        assert!(Arc::ptr_eq(
+            &field.signed_distance_samples_meters,
+            &retained.signed_distance_samples_meters
+        ));
+        assert!(!Arc::ptr_eq(
+            &field.signed_distance_samples_meters,
+            &independent.signed_distance_samples_meters
+        ));
+        assert_eq!(field, independent);
+        assert_eq!(retained, independent);
+
+        let mut retained_hash = DefaultHasher::new();
+        retained.hash(&mut retained_hash);
+        let mut independent_hash = DefaultHasher::new();
+        independent.hash(&mut independent_hash);
+        assert_eq!(retained_hash.finish(), independent_hash.finish());
+
+        drop(field);
+        assert_eq!(retained.sample_count(), 32 * 32 * 32);
+        assert_eq!(retained.signed_distance_sample_meters(0), Some(0.25));
+        assert_eq!(
+            retained.signed_distance_sample_meters(retained.sample_count() - 1),
+            Some(0.25)
+        );
+    }
+
+    #[test]
+    fn semantic_binding_clone_retains_exact_immutable_samples_and_source_generation() {
+        let input = RenderFieldSemanticInput::dense(
+            [0.0; 3],
+            [0.5; 3],
+            [4, 4, 4],
+            vec![1.0; 64],
+            0.125,
+            RenderTemporalSupport::unbounded(),
+        )
+        .expect("sampled field");
+        let representation_id = RenderRepresentationId::from_raw(1).expect("representation");
+        let generation = RenderFieldSemanticInputGeneration::new(42);
+        let binding = RenderFieldSemanticInputBinding::new(representation_id, input)
+            .with_generation(generation);
+        let retained = binding.clone();
+        assert_eq!(retained, binding);
+        assert_eq!(retained.generation(), Some(generation));
+        assert!(Arc::ptr_eq(
+            &binding.input().signed_distance_samples_meters,
+            &retained.input().signed_distance_samples_meters,
+        ));
+        drop(binding);
+        assert_eq!(retained.input().signed_distance_sample_meters(63), Some(1.0));
+    }
+
 }
