@@ -7,6 +7,18 @@ fn checked_identity_decoder<'a>(
     status: GpuSubmissionStatus,
     decoder: &'a RenderObjectIdentityDecoder,
 ) -> Result<&'a RenderObjectIdentityDecoder, RenderObjectIdentityDecoderError> {
+    // Request ownership is a structural prerequisite, independent of submission state.
+    let request = admitted.plan().request();
+    if !request.contains_output(output)
+        || !admitted
+            .outputs()
+            .iter()
+            .any(|candidate| candidate.output_index() == output.position())
+    {
+        return Err(RenderObjectIdentityDecoderError::output_not_admitted(
+            output,
+        ));
+    }
     match status {
         GpuSubmissionStatus::Accepted => {
             return Err(RenderObjectIdentityDecoderError::submission_pending(output));
@@ -18,17 +30,6 @@ fn checked_identity_decoder<'a>(
             ));
         }
         GpuSubmissionStatus::Completed => {}
-    }
-    let request = admitted.plan().request();
-    if !request.contains_output(output)
-        || !admitted
-            .outputs()
-            .iter()
-            .any(|candidate| candidate.output_index() == output.position())
-    {
-        return Err(RenderObjectIdentityDecoderError::output_not_admitted(
-            output,
-        ));
     }
     if !matches!(
         request.outputs()[output.position()].spec().value(),

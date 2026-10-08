@@ -455,7 +455,8 @@ impl RenderResultSubmissionError {
 
     /// Verifier-domain reason when submission was rejected before maintained execution.
     pub fn verification_eligibility_kind(&self) -> Option<RenderVerificationEligibilityErrorKind> {
-        let RenderDeterministicVerifiedSubmissionError::Eligibility(error) = self.inner.as_ref() else {
+        let RenderDeterministicVerifiedSubmissionError::Eligibility(error) = self.inner.as_ref()
+        else {
             return None;
         };
         Some(verification_eligibility_kind(error))
@@ -484,7 +485,7 @@ impl RenderResultSubmissionError {
     }
 
     /// Referenced renderer object when eligibility failure is object-scoped.
-    pub const fn object_id(&self) -> Option<RenderObjectId> {
+    pub fn object_id(&self) -> Option<RenderObjectId> {
         match self.inner.as_ref() {
             RenderDeterministicVerifiedSubmissionError::Eligibility(
                 RenderDeterministicVerificationEligibilityError::SelectedObjectStateMissing {
@@ -505,7 +506,7 @@ impl RenderResultSubmissionError {
     }
 
     /// Expected and actual readback counts when exact-submission cardinality changed.
-    pub const fn readback_cardinality(&self) -> Option<(usize, usize)> {
+    pub fn readback_cardinality(&self) -> Option<(usize, usize)> {
         match self.inner.as_ref() {
             RenderDeterministicVerifiedSubmissionError::ReadbackCardinality {
                 expected,
@@ -551,7 +552,7 @@ impl RenderResultSubmissionError {
     }
 
     /// Verification channel for channel-scoped exact-submission correlation failures.
-    pub const fn correlation_channel(&self) -> Option<&'static str> {
+    pub fn correlation_channel(&self) -> Option<&'static str> {
         match self.inner.as_ref() {
             RenderDeterministicVerifiedSubmissionError::DuplicateReadbackCorrelation {
                 channel,

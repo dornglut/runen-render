@@ -876,6 +876,22 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
     let associated = session
         .associate_submission(occurrence, &renderer_submission)
         .expect("exact retained occurrence association");
+    // Invalid request identity takes precedence even while this occurrence is pending.
+    let (pending_foreign, _, _) =
+        admitted_retained_capture_render(&context, "pending foreign output");
+    let pending_foreign_output = pending_foreign
+        .admitted_plan()
+        .plan()
+        .request()
+        .output_handle(1)
+        .expect("pending foreign identity output");
+    assert_eq!(
+        associated
+            .object_identity_decoder(&pending_foreign_output)
+            .expect_err("foreign output must not acquire pending occurrence identity")
+            .kind(),
+        RenderObjectIdentityDecoderErrorKind::OutputNotAdmitted
+    );
     let Err(pending_capture_error) = associated.request_radiance_capture(
         &associated
             .admitted_plan()

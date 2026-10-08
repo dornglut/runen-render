@@ -80,10 +80,12 @@ fn result_submission_preserves_structured_eligibility_and_correlation() {
 
     let correlation = RenderResultSubmissionError {
         request: Box::new(error_request()),
-        inner: Box::new(RenderDeterministicVerifiedSubmissionError::MissingSubmissionReadback {
-            output_index: 2,
-            channel: "canonical-output",
-        }),
+        inner: Box::new(
+            RenderDeterministicVerifiedSubmissionError::MissingSubmissionReadback {
+                output_index: 2,
+                channel: "canonical-output",
+            },
+        ),
     };
     assert_eq!(
         correlation.kind(),
