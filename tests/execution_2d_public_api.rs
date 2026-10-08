@@ -37,10 +37,10 @@ const BITMAP_FONT: &[u8] = include_bytes!("fixtures/f2_bitmap.ttf");
 const SPACE_GLYPH: u32 = 1;
 const BOX_GLYPH: u32 = 2;
 
-#[path = "execution_2d/vector.rs"]
-mod vector;
 #[path = "execution_2d/gradient.rs"]
 mod gradient;
+#[path = "execution_2d/vector.rs"]
+mod vector;
 
 #[test]
 fn f2_public_execution_surface_is_available_to_downstream_consumers() {

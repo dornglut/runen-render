@@ -3,7 +3,7 @@ use super::{
     AdmittedTarget, FIELD_FORMAT, VERTEX_STRIDE, create_vertex_buffer, f32_from_f64, f32_from_u32,
     gpu, linear_color, physical_x_to_ndc, physical_y_to_ndc, texture_binding, vertex_count,
 };
-use crate::composition_2d::{Render2dBrush, Render2dGradientStops};
+use crate::composition_2d::Render2dBrush;
 use crate::execution_2d::{Render2dExecutionError, Render2dVectorError};
 use runen_gpu::*;
 
@@ -238,7 +238,6 @@ pub(super) fn lower(
     Ok([coverage, compose])
 }
 
-
 // Four 16-byte header rows followed by stable authored stop pairs. Every stop is
 // (offset, unused, unused, unused) and premultiplied linear RGBA, with no sorting
 // or deduplication. This is private GPU representation, not an authoring format.
@@ -250,7 +249,8 @@ fn gradient_payload(
         Render2dBrush::Linear(linear) => (
             1.0_f32,
             [
-                linear.start().x(), linear.start().y(),
+                linear.start().x(),
+                linear.start().y(),
                 linear.end().x() - linear.start().x(),
                 linear.end().y() - linear.start().y(),
             ],
@@ -258,7 +258,12 @@ fn gradient_payload(
         ),
         Render2dBrush::Radial(radial) => (
             2.0_f32,
-            [radial.center().x(), radial.center().y(), radial.radius(), 0.0],
+            [
+                radial.center().x(),
+                radial.center().y(),
+                radial.radius(),
+                0.0,
+            ],
             radial.stops(),
         ),
     };
@@ -284,8 +289,7 @@ fn gradient_payload(
     let pack = |words: &mut Vec<f32>, value: f64| -> Result<(), Render2dExecutionError> {
         let narrowed = value as f32;
         if !narrowed.is_finite()
-            || (f64::from(narrowed) - value).abs()
-                > (1.0e-7_f64).max(value.abs() * 1.0e-7)
+            || (f64::from(narrowed) - value).abs() > (1.0e-7_f64).max(value.abs() * 1.0e-7)
         {
             return Err(fail(Render2dVectorError::PrecisionLimit));
         }
@@ -293,19 +297,28 @@ fn gradient_payload(
         Ok(())
     };
     for number in [
-        f64::from(kind), stops.as_slice().len() as f64,
-        f64::from(mesh.bounds[0]), f64::from(mesh.bounds[1]),
-        inv[0], inv[1], inv[2], mesh.opacity,
-        inv[3], inv[4], inv[5], 0.0,
-        geometry[0], geometry[1], geometry[2], geometry[3],
+        f64::from(kind),
+        stops.as_slice().len() as f64,
+        f64::from(mesh.bounds[0]),
+        f64::from(mesh.bounds[1]),
+        inv[0],
+        inv[1],
+        inv[2],
+        mesh.opacity,
+        inv[3],
+        inv[4],
+        inv[5],
+        0.0,
+        geometry[0],
+        geometry[1],
+        geometry[2],
+        geometry[3],
     ] {
         pack(&mut words, number)?;
     }
     if kind == 1.0 {
-        let len_sq = f64::from(words[14]).mul_add(
-            f64::from(words[14]),
-            f64::from(words[15]).powi(2),
-        );
+        let len_sq =
+            f64::from(words[14]).mul_add(f64::from(words[14]), f64::from(words[15]).powi(2));
         if !len_sq.is_finite() || len_sq < 1.0e-16 {
             return Err(fail(Render2dVectorError::PrecisionLimit));
         }
@@ -317,9 +330,9 @@ fn gradient_payload(
         let offset = stop.offset();
         let narrowed = offset as f32;
         // Distinct authored hard-stop coordinates MUST NOT collapse into one GPU coordinate.
-        if previous.is_some_and(|(prior, narrowed_prior)| {
-            prior < offset && narrowed_prior == narrowed
-        }) {
+        if previous
+            .is_some_and(|(prior, narrowed_prior)| prior < offset && narrowed_prior == narrowed)
+        {
             return Err(fail(Render2dVectorError::PrecisionLimit));
         }
         pack(&mut words, offset)?;
@@ -327,8 +340,9 @@ fn gradient_payload(
             pack(&mut words, 0.0)?;
         }
         let mut rgba = linear_color(stop.color());
+        let alpha = rgba[3];
         for channel in &mut rgba[..3] {
-            *channel *= rgba[3];
+            *channel *= alpha;
         }
         words.extend_from_slice(&rgba);
         previous = Some((offset, narrowed));
