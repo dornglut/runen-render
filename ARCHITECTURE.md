@@ -92,7 +92,9 @@ The 2D composition extension defines durable semantic and ownership authority.
 The immutable composition/resource model is implemented. Maintained execution
 realizes direct-root solid, linear-gradient and radial-gradient vector fills/strokes,
 immutable RGBA8-sRGB image patches and the retained F2 shaped-text subset.
-Groups, clips, effects and native presentation are not claimed as implemented.
+Nested groups, group clips, effects and native presentation are not claimed as implemented.
+Direct-root item conjunctive clips now use a private bounded packed 16-sample mask,
+sampled in RunenGPU on the same 4×4 coverage lattice as vectors and images.
 
 The reusable semantic root is one lifetime-neutral immutable 2D composition
 value. It represents resolved renderer meaning such as:
@@ -525,3 +527,17 @@ predecessor deletion are complete.
 Historical transfer details remain provenance in `BOOTSTRAP.md`; they are not
 current execution sequencing or a reason to preserve extraction-era internal
 layout.
+
+F3D's direct-root item clipping starts from accepted parent-space self-contained
+clip shapes. The existing private Lyon fill tessellator decomposes each clip into
+disposable geometry, and a cropped, bounded CPU raster step ORs covered 4×4
+subsamples per clip then ANDs the sixteen-bit sample sets across authored clips.
+The two mask bytes are packed into a contribution-local RGBA8-unorm RunenGPU
+texture per clipped root; fragment evaluation intersects these exact shared
+samples with vector/image coverage before source-over and once-only opacity.
+F2 MSDF text retains its separately admitted pixel-level coverage law, multiplied
+once by the average of accepted binary clip samples. The clip mask never becomes
+resource, group, source-layout, cache, or semantic identity. Empty intersections
+emit no synthetic work; preflight caps texture dimensions, 64 MiB per mask,
+128 MiB aggregate uploaded masks and tessellation/raster work. Group clips,
+atomic groups, group opacity and ordinary shadows are still outside this slice.

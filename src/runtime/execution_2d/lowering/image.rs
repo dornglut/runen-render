@@ -66,6 +66,7 @@ pub(super) fn lower(
     target: &AdmittedTarget,
     patch: &ImagePatchWork,
     image_view: &GpuTextureViewHandle,
+    clipped: Option<&super::clip::ClipGpu>,
     resources: &mut GpuResourceScope,
 ) -> Result<GpuRenderOperation, Render2dExecutionError> {
     let prepared = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
@@ -87,12 +88,16 @@ pub(super) fn lower(
             .map_err(|e| gpu("image parameter descriptor", e))?,
         )
         .map_err(|e| gpu("image parameter buffer", e))?;
-    let pipeline = vector::vector_pipeline(target.format, true, false, true)?;
+    let pipeline = vector::vector_pipeline(target.format, true, false, true, clipped.is_some())?;
+    let mut values = vec![
+        texture_binding(2, image_view)?,
+        GpuRuntimeBindingValue::whole_buffer(0, 3, &parameter_buffer),
+    ];
+    if let Some(clip) = clipped {
+        values.extend(super::clip::bindings(clip, 4, 5)?);
+    }
     let bindings = pipeline
-        .runtime_bindings([
-            texture_binding(2, image_view)?,
-            GpuRuntimeBindingValue::whole_buffer(0, 3, &parameter_buffer),
-        ])
+        .runtime_bindings(values)
         .map_err(|e| gpu("image runtime bindings", e))?;
     let [left, top, right, bottom] = patch.bounds;
     let vertex = |x: f64, y: f64| {

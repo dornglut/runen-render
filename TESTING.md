@@ -147,3 +147,10 @@ nearest-texel sampling, affine geometry, four-by-four physical edge coverage,
 linear-light premultiplication/source-over, patch and mixed painter ordering,
 no-work outcomes, typed format/precision/resource failures and reconstruction
 after cache discard. The image path must not depend on direct wgpu rendering.
+
+F3D GPU-required public proof cases exercise cropped packed 16-bit conjunctive
+item masks, parent-space clip transforms, even-odd paths/ellipses, image/text
+coverage and reconstruction, fractional intersections that differ from products
+of pixel-averaged clip alphas, typed unadmitted-format failure, empty intersection
+no-work and no leakage across unclipped siblings. CPU mask work is deliberately
+bounded; no native-GPU performance claim or persistent GPU mask cache follows.

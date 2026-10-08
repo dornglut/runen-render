@@ -12,6 +12,7 @@ pub(super) fn vector_pipeline(
     compose: bool,
     gradient: bool,
     image: bool,
+    clipped: bool,
 ) -> Result<GpuRenderPipelineDescriptor, Render2dExecutionError> {
     let source = crate::runtime::program::retained_vector_source().map_err(|error| {
         Render2dExecutionError::Program {
@@ -21,16 +22,16 @@ pub(super) fn vector_pipeline(
     })?;
     let vertex = GpuEntryPointName::new("vs_main").map_err(|e| gpu("vector entry", e))?;
     let fragment = GpuEntryPointName::new(if image {
-        "fs_image"
+        if clipped { "fs_image_clipped" } else { "fs_image" }
     } else if gradient {
-        "fs_gradient"
+        if clipped { "fs_gradient_clipped" } else { "fs_gradient" }
     } else if compose {
-        "fs_compose"
+        if clipped { "fs_compose_clipped" } else { "fs_compose" }
     } else {
         "fs_coverage"
     })
     .map_err(|e| gpu("vector entry", e))?;
-    let refinements = if image {
+    let mut refinements = if image {
         vec![
             GpuBindingLayoutRefinement::new(
                 GpuBindingKey::try_new(0, 2).map_err(|e| gpu("image binding key", e))?,
@@ -47,6 +48,13 @@ pub(super) fn vector_pipeline(
     } else {
         vec![]
     };
+    if clipped {
+        refinements.push(
+            GpuBindingLayoutRefinement::new(
+                GpuBindingKey::try_new(0, 4).map_err(|e|gpu("clip binding key",e))?,
+            ).with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable)
+        );
+    }
     let program =
         GpuProgramDescriptor::new(source, [vertex.clone(), fragment.clone()], refinements)
             .map_err(|e| gpu("vector program", e))?;
@@ -135,6 +143,7 @@ pub(super) fn lower(
     mesh: &crate::runtime::execution_2d::vector::VectorMesh,
     mask: &GpuTextureViewHandle,
     extent: [u32; 2],
+    clipped: Option<&super::clip::ClipGpu>,
     resources: &mut GpuResourceScope,
 ) -> Result<[GpuRenderOperation; 2], Render2dExecutionError> {
     let [left, top, width, height] = mesh.bounds;
@@ -155,7 +164,7 @@ pub(super) fn lower(
             1.0,
         ]);
     }
-    let pipeline = vector_pipeline(FIELD_FORMAT, false, false, false)?;
+    let pipeline = vector_pipeline(FIELD_FORMAT, false, false, false, false)?;
     let bindings = pipeline
         .runtime_bindings([])
         .map_err(|e| gpu("coverage bindings", e))?;
@@ -202,7 +211,7 @@ pub(super) fn lower(
     ]
     .concat();
     let gradient_data = gradient_payload(mesh)?;
-    let pipeline = vector_pipeline(target.format, true, gradient_data.is_some(), false)?;
+    let pipeline = vector_pipeline(target.format, true, gradient_data.is_some(), false, clipped.is_some())?;
     let mut binding_values = vec![texture_binding(0, mask)?];
     if let Some(words) = gradient_data {
         let prepared = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
@@ -225,6 +234,9 @@ pub(super) fn lower(
             )
             .map_err(|e| gpu("gradient buffer", e))?;
         binding_values.push(GpuRuntimeBindingValue::whole_buffer(0, 1, &buffer));
+    }
+    if let Some(clip) = clipped {
+        binding_values.extend(super::clip::bindings(clip, 4, 5)?);
     }
     let bindings = pipeline
         .runtime_bindings(binding_values)

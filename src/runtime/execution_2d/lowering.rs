@@ -1,5 +1,6 @@
 //! Ordered private RunenGPU lowering for admitted text and solid vectors.
 
+mod clip;
 mod image;
 mod vector;
 
@@ -35,6 +36,7 @@ pub(super) struct AdmittedTarget {
     max_buffer_bytes: u64,
     coverage_format: bool,
     image_format: bool,
+    clip_format: bool,
 }
 
 impl AdmittedTarget {
@@ -56,6 +58,7 @@ impl AdmittedTarget {
 
 #[derive(Clone, Debug)]
 pub(super) struct GlyphOccurrence {
+    pub(super) root_index: usize,
     pub(super) resource_id: Render2dResourceId,
     pub(super) field: Arc<GlyphField>,
     pub(super) logical_x: f64,
@@ -231,6 +234,9 @@ pub(super) fn admit_target(
         ]
         .into_iter()
         .all(|role| admitted_roles.contains(&(GpuTextureFormat::Rgba8UnormSrgb, role))),
+        clip_format: [GpuFormatRole::Sampled, GpuFormatRole::CopyDestination]
+            .into_iter()
+            .all(|role| admitted_roles.contains(&(FIELD_FORMAT, role))),
         max_buffer_bytes: context
             .device_facts()
             .device_limits()
@@ -249,6 +255,7 @@ pub(super) fn admit_target(
 pub(super) fn lower(
     target: &AdmittedTarget,
     occurrences: &[GlyphOccurrence],
+    clipped: Option<&clip::ClipGpu>,
 ) -> Result<Option<GpuRenderOperation>, Render2dExecutionError> {
     let mut vertex_values = Vec::<f32>::new();
     let mut specs = Vec::<DrawSpec>::new();
@@ -275,7 +282,7 @@ pub(super) fn lower(
         return Ok(None);
     }
 
-    let pipeline = shaped_text_pipeline(target.format)?;
+    let pipeline = shaped_text_pipeline(target.format, clipped.is_some())?;
     let mut resources = GpuResourceScope::new();
     let sampler = create_sampler(&mut resources)?;
     let vertex_buffer = create_vertex_buffer(&mut resources, &vertex_values)?;
@@ -314,8 +321,12 @@ pub(super) fn lower(
         let view = views
             .get(&spec.key)
             .expect("every retained draw spec must have one prepared field view");
+        let mut values = vec![texture_binding(0, view)?, sampler_binding(1, &sampler)?];
+        if let Some(clip) = clipped {
+            values.extend(clip::bindings(clip, 2, 3)?);
+        }
         let bindings = pipeline
-            .runtime_bindings([texture_binding(0, view)?, sampler_binding(1, &sampler)?])
+            .runtime_bindings(values)
             .map_err(|error| gpu("runtime binding validation", error))?;
         let draw = GpuRenderDraw::new(
             pipeline.clone(),
@@ -388,6 +399,7 @@ pub(crate) fn add_target_boundary(
 
 fn shaped_text_pipeline(
     format: GpuTextureFormat,
+    clipped: bool,
 ) -> Result<GpuRenderPipelineDescriptor, Render2dExecutionError> {
     let source =
         retained_shaped_text_source().map_err(|error| Render2dExecutionError::Program {
@@ -396,12 +408,9 @@ fn shaped_text_pipeline(
         })?;
     let vertex =
         GpuEntryPointName::new("vs_main").map_err(|error| gpu("vertex entry-point name", error))?;
-    let fragment = GpuEntryPointName::new("fs_main")
+    let fragment = GpuEntryPointName::new(if clipped { "fs_main_clipped" } else { "fs_main" })
         .map_err(|error| gpu("fragment entry-point name", error))?;
-    let program = GpuProgramDescriptor::new(
-        source,
-        [vertex.clone(), fragment.clone()],
-        [
+    let mut refinements = vec![
             GpuBindingLayoutRefinement::new(
                 GpuBindingKey::try_new(0, 0)
                     .map_err(|error| gpu("field texture layout key", error))?,
@@ -412,9 +421,15 @@ fn shaped_text_pipeline(
                     .map_err(|error| gpu("field sampler layout key", error))?,
             )
             .with_sampler_class(GpuSamplerClass::Filtering),
-        ],
-    )
-    .map_err(|error| gpu("shaped-text program descriptor", error))?;
+        ];
+    if clipped {
+        refinements.push(GpuBindingLayoutRefinement::new(
+            GpuBindingKey::try_new(0, 2)
+                .map_err(|error| gpu("clip texture layout key", error))?,
+        ).with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable));
+    }
+    let program = GpuProgramDescriptor::new(source, [vertex.clone(), fragment.clone()], refinements)
+        .map_err(|error| gpu("shaped-text program descriptor", error))?;
     let vertex_layout = GpuVertexBufferLayoutDescriptor::new(
         0,
         VERTEX_STRIDE,
@@ -739,6 +754,7 @@ pub(super) enum OrderedItem {
 pub(super) fn lower_ordered(
     target: &AdmittedTarget,
     ordered: Vec<OrderedItem>,
+    clipped: BTreeMap<usize, crate::runtime::execution_2d::clip::ClipMask>,
 ) -> Result<Vec<GpuRenderOperation>, Render2dExecutionError> {
     use crate::execution_2d::Render2dVectorError;
     let mut mask_width = 0;
@@ -796,27 +812,45 @@ pub(super) fn lower_ordered(
     } else {
         None
     };
+    let mut clip_views = BTreeMap::new();
+    for (root_index, mask) in &clipped {
+        clip_views.insert(*root_index, clip::upload(target, mask, &mut resources)?);
+    }
     let mut operations = Vec::new();
     let mut glyphs = Vec::new();
+    let mut glyph_root: Option<usize> = None;
     let mut image_views = BTreeMap::new();
     let mut image_bytes: u64 = 0;
     for item in ordered {
         match item {
-            OrderedItem::Glyph(glyph) => glyphs.push(glyph),
+            OrderedItem::Glyph(glyph) => {
+                if glyph_root != Some(glyph.root_index) && !glyphs.is_empty() {
+                    operations.extend(lower(target, &glyphs,
+                        glyph_root.and_then(|root| clip_views.get(&root)))?);
+                    glyphs.clear();
+                }
+                glyph_root = Some(glyph.root_index);
+                glyphs.push(glyph);
+            }
             OrderedItem::Vector(mesh) => {
-                operations.extend(lower(target, &glyphs)?);
+                operations.extend(lower(target, &glyphs,
+                    glyph_root.and_then(|root| clip_views.get(&root)))?);
                 glyphs.clear();
+                glyph_root = None;
                 operations.extend(vector::lower(
                     target,
                     &mesh,
                     mask.as_ref().expect("vector mask"),
                     [mask_width, mask_height],
+                    clip_views.get(&mesh.root_index),
                     &mut resources,
                 )?);
             }
             OrderedItem::Image(patch) => {
-                operations.extend(lower(target, &glyphs)?);
+                operations.extend(lower(target, &glyphs,
+                    glyph_root.and_then(|root| clip_views.get(&root)))?);
                 glyphs.clear();
+                glyph_root = None;
                 if !target.image_format {
                     return Err(super::image::failure(
                         patch.root_index,
@@ -845,11 +879,13 @@ pub(super) fn lower_ordered(
                     target,
                     &patch,
                     image_views.get(&patch.resource_id).expect("uploaded image"),
+                    clip_views.get(&patch.root_index),
                     &mut resources,
                 )?);
             }
         }
     }
-    operations.extend(lower(target, &glyphs)?);
+    operations.extend(lower(target, &glyphs,
+        glyph_root.and_then(|root| clip_views.get(&root)))?);
     Ok(operations)
 }

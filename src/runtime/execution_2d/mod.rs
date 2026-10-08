@@ -1,5 +1,6 @@
 //! Private 2D semantic admission, retained field cache, and transactional ordered lowering.
 
+mod clip;
 mod field;
 mod image;
 mod intrinsic;
@@ -166,6 +167,7 @@ impl Render2dExecutionState {
                     .entry(run.root_index)
                     .or_default()
                     .push(GlyphOccurrence {
+                        root_index: run.root_index,
                         resource_id: run.resource_id,
                         field: Arc::clone(field),
                         logical_x,
@@ -178,7 +180,10 @@ impl Render2dExecutionState {
         }
 
         let mut ordered = Vec::new();
+        let mut clips = BTreeMap::new();
+        let mut clip_bytes = 0u64;
         for (root_index, entry) in composition.root_entries().iter().enumerate() {
+            let root_start = ordered.len();
             let Render2dEntry::Item(item) = entry else {
                 unreachable!("admitted root item")
             };
@@ -217,8 +222,37 @@ impl Render2dExecutionState {
             )? {
                 ordered.push(lowering::OrderedItem::Vector(mesh));
             }
+            if !item.clips().is_empty() {
+                if let Some(mask) = clip::prepare(
+                    item,
+                    &ordered[root_start..],
+                    root_index,
+                    &admitted_target,
+                )? {
+                    clip_bytes = clip_bytes
+                        .checked_add(u64::try_from(mask.rgba.len()).map_err(|_| {
+                            clip::failure(root_index,
+                                crate::execution_2d::Render2dClipError::ResourceLimit)
+                        })?)
+                        .ok_or_else(|| clip::failure(
+                            root_index,
+                            crate::execution_2d::Render2dClipError::ResourceLimit,
+                        ))?;
+                    if clip_bytes > 128 * 1024 * 1024 {
+                        return Err(clip::failure(
+                            root_index,
+                            crate::execution_2d::Render2dClipError::ResourceLimit,
+                        ));
+                    }
+                    clips.insert(root_index, mask);
+                } else {
+                    // Intersection is empty; preserve semantic resource observation,
+                    // but author no synthetic GPU work for this item.
+                    ordered.truncate(root_start);
+                }
+            }
         }
-        let lowered = lowering::lower_ordered(&admitted_target, ordered)?;
+        let lowered = lowering::lower_ordered(&admitted_target, ordered, clips)?;
 
         for (resource_id, value) in observed_updates {
             let previous = self.observed.insert(resource_id, value);
@@ -255,9 +289,6 @@ fn admit_runs(
         let Render2dEntry::Item(item) = entry else {
             return Err(Render2dUnsupportedContent::Group { root_index }.into());
         };
-        if !item.clips().is_empty() {
-            return Err(Render2dUnsupportedContent::Clips { root_index }.into());
-        }
         match item.primitive() {
             Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => continue,
             Render2dPrimitive::Image(_) => continue,
