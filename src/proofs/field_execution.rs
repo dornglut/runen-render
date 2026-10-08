@@ -17,7 +17,7 @@ use crate::representation::{
     RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
     RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderFieldDistanceGuarantee,
     RenderFieldDistanceProtocolEvidence, RenderOrientedSurfaceProtocolEvidence,
-    RenderRefinementEvidence, RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
+    RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
 };
 use crate::request::{
     RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
@@ -299,7 +299,7 @@ fn add_field_object(
     let representation_id = store
         .allocate_representation_id(object_id)
         .expect("field representation id");
-    let representation = RenderRepresentationRecord::new(
+    let representation = RenderRepresentationRecord::builder(
         representation_id,
         RenderSpatialCoverage::axis_aligned_bounds(
             coverage_min_local_meters,
@@ -307,18 +307,18 @@ fn add_field_object(
         )
         .expect("finite field representation coverage"),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        None,
-        Some(field_evidence(guarantee_error_meters)),
     )
+    .field_distance(Some(field_evidence(guarantee_error_meters)))
+    .build()
     .expect("field representation");
     let material = reflectance.map(|value| {
         RenderMaterialAssignment::new(
             RenderDiffuseMaterial::new(value).expect("field diffuse material"),
         )
     });
-    let participation = RenderObjectParticipation::new(vec![representation], material, None)
-        .expect("field participation");
+    let participation = RenderObjectParticipation::from_representations(vec![representation])
+        .expect("field participation")
+        .with_material_assignment(material);
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
     store.commit(attach).expect("attach field participation");
@@ -340,16 +340,15 @@ fn add_surface_sphere(
     let representation_id = store
         .allocate_representation_id(object_id)
         .expect("surface representation id");
-    let representation = RenderRepresentationRecord::new(
+    let representation = RenderRepresentationRecord::builder(
         representation_id,
         RenderSpatialCoverage::unbounded(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        Some(surface_evidence()),
-        None,
     )
+    .surface_query(Some(surface_evidence()))
+    .build()
     .expect("surface representation");
-    let participation = RenderObjectParticipation::new(vec![representation], None, None)
+    let participation = RenderObjectParticipation::from_representations(vec![representation])
         .expect("surface participation");
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
@@ -364,8 +363,9 @@ fn add_emitter(store: &mut RenderSceneStore) {
     store.commit(insert).expect("insert emitter object");
     let emitter = RenderDirectionalEmitter::new([0.0, 0.0, 1.0], WAVELENGTH_METERS, 12.0)
         .expect("sampled-field directional emitter");
-    let participation = RenderObjectParticipation::new(Vec::new(), None, Some(emitter))
-        .expect("emitter participation");
+    let participation = RenderObjectParticipation::from_representations([])
+        .expect("emitter participation")
+        .with_emitter(Some(emitter));
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
     store.commit(attach).expect("attach emitter participation");

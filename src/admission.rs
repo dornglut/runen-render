@@ -867,8 +867,8 @@ mod tests {
     };
     use crate::participation::RenderObjectParticipation;
     use crate::representation::{
-        RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderRefinementEvidence,
-        RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
+        RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderRepresentationRecord,
+        RenderSurfaceProtocolEvidence,
     };
     use crate::request::{
         RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
@@ -1072,24 +1072,19 @@ mod tests {
             .allocate_representation_id(object_id)
             .expect("second representation id");
         let representation = |id, required| {
-            RenderRepresentationRecord::new(
+            RenderRepresentationRecord::builder(
                 id,
                 RenderSpatialCoverage::unbounded(),
                 RenderTemporalSupport::unbounded(),
-                RenderRefinementEvidence::none(),
-                Some(surface_evidence(required)),
-                None,
             )
+            .surface_query(Some(surface_evidence(required)))
+            .build()
             .expect("representation")
         };
-        let participation = RenderObjectParticipation::new(
-            vec![
-                representation(second_id, second_requires_input),
-                representation(first_id, first_requires_input),
-            ],
-            None,
-            None,
-        )
+        let participation = RenderObjectParticipation::from_representations(vec![
+            representation(second_id, second_requires_input),
+            representation(first_id, first_requires_input),
+        ])
         .expect("participation");
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(object_id, participation);
@@ -1125,16 +1120,15 @@ mod tests {
         let representation_id = store
             .allocate_representation_id(object_id)
             .expect("representation id");
-        let representation = RenderRepresentationRecord::new(
+        let representation = RenderRepresentationRecord::builder(
             representation_id,
             RenderSpatialCoverage::unbounded(),
             RenderTemporalSupport::unbounded(),
-            RenderRefinementEvidence::none(),
-            Some(surface_evidence(required)),
-            None,
         )
+        .surface_query(Some(surface_evidence(required)))
+        .build()
         .expect("representation");
-        let participation = RenderObjectParticipation::new(vec![representation], None, None)
+        let participation = RenderObjectParticipation::from_representations(vec![representation])
             .expect("participation");
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(object_id, participation);
@@ -1163,16 +1157,15 @@ mod tests {
         let representation_id = store
             .allocate_representation_id(object_id)
             .expect("representation id");
-        let representation = RenderRepresentationRecord::new(
+        let representation = RenderRepresentationRecord::builder(
             representation_id,
             RenderSpatialCoverage::unbounded(),
             RenderTemporalSupport::unbounded(),
-            RenderRefinementEvidence::none(),
-            Some(surface_evidence(false)),
-            None,
         )
+        .surface_query(Some(surface_evidence(false)))
+        .build()
         .expect("representation");
-        let participation = RenderObjectParticipation::new(vec![representation], None, None)
+        let participation = RenderObjectParticipation::from_representations(vec![representation])
             .expect("participation");
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(object_id, participation);

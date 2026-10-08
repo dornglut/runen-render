@@ -20,8 +20,7 @@ use runen_render::representation::{
     RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
     RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderFieldDistanceGuarantee,
     RenderFieldDistanceProtocolEvidence, RenderOrientedSurfaceProtocolEvidence,
-    RenderRefinementEvidence, RenderRepresentationId, RenderRepresentationRecord,
-    RenderSurfaceProtocolEvidence,
+    RenderRepresentationId, RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
 };
 use runen_render::request::{
     RenderObservationSpec, RenderOutputSpec, RenderOutputValue, RenderPerspectiveObservation,
@@ -573,49 +572,43 @@ fn inspect(output_dir: Option<&Path>) -> ExampleResult<Option<Observed>> {
             RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
         )?)
         .with_semantic_input_requirement(RenderSurfaceSemanticInputRequirement::current());
-    let sphere_record = RenderRepresentationRecord::new(
+    let sphere_record = RenderRepresentationRecord::builder(
         sphere_rep,
         RenderSpatialCoverage::unbounded(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        Some(oriented),
-        Some(RenderFieldDistanceProtocolEvidence::new(
-            RENDER_FIELD_DISTANCE_PROTOCOL_REVISION,
-            RenderFieldDistanceGuarantee::exact(),
-        )?),
-    )?;
-    let plane_record = RenderRepresentationRecord::new(
+    )
+    .surface_query(Some(oriented))
+    .field_distance(Some(RenderFieldDistanceProtocolEvidence::new(
+        RENDER_FIELD_DISTANCE_PROTOCOL_REVISION,
+        RenderFieldDistanceGuarantee::exact(),
+    )?))
+    .build()?;
+    let plane_record = RenderRepresentationRecord::builder(
         plane_rep,
         RenderSpatialCoverage::unbounded(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        Some(oriented),
-        None,
-    )?;
+    )
+    .surface_query(Some(oriented))
+    .build()?;
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(
         sphere,
-        RenderObjectParticipation::new(
-            vec![sphere_record],
-            Some(RenderMaterialAssignment::new(RenderDiffuseMaterial::new(
-                0.72,
-            )?)),
-            None,
-        )?,
+        RenderObjectParticipation::from_representations(vec![sphere_record])?
+            .with_material_assignment(Some(RenderMaterialAssignment::new(
+                RenderDiffuseMaterial::new(0.72)?,
+            ))),
     );
     attach.replace_participation(
         plane,
-        RenderObjectParticipation::new(
-            vec![plane_record],
-            Some(RenderMaterialAssignment::new(RenderDiffuseMaterial::new(
-                0.48,
-            )?)),
-            Some(RenderDirectionalEmitter::new(
+        RenderObjectParticipation::from_representations(vec![plane_record])?
+            .with_material_assignment(Some(RenderMaterialAssignment::new(
+                RenderDiffuseMaterial::new(0.48)?,
+            )))
+            .with_emitter(Some(RenderDirectionalEmitter::new(
                 [0.45, 0.80, 0.35],
                 WAVELENGTH_METERS,
                 12.0,
-            )?),
-        )?,
+            )?)),
     );
     scene.commit(attach)?;
 

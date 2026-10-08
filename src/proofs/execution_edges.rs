@@ -12,7 +12,7 @@ use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
 use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
 use crate::representation::{
     RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION, RENDER_SURFACE_QUERY_PROTOCOL_REVISION,
-    RenderOrientedSurfaceProtocolEvidence, RenderRefinementEvidence, RenderRepresentationRecord,
+    RenderOrientedSurfaceProtocolEvidence, RenderRepresentationRecord,
     RenderSurfaceProtocolEvidence,
 };
 use crate::request::{
@@ -111,20 +111,20 @@ fn insert_geometry(
     let representation_id = store
         .allocate_representation_id(object_id)
         .expect("R7 edge-proof representation id");
-    let representation = RenderRepresentationRecord::new(
+    let representation = RenderRepresentationRecord::builder(
         representation_id,
         RenderSpatialCoverage::unbounded(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        Some(oriented_surface_evidence()),
-        None,
     )
+    .surface_query(Some(oriented_surface_evidence()))
+    .build()
     .expect("R7 edge-proof representation");
     let material = RenderMaterialAssignment::new(
         RenderDiffuseMaterial::new(0.5).expect("R7 edge-proof diffuse material"),
     );
-    let participation = RenderObjectParticipation::new(vec![representation], Some(material), None)
-        .expect("R7 edge-proof geometry participation");
+    let participation = RenderObjectParticipation::from_representations(vec![representation])
+        .expect("R7 edge-proof geometry participation")
+        .with_material_assignment(Some(material));
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
     store
@@ -143,8 +143,9 @@ fn insert_emitter(store: &mut RenderSceneStore, wavelength_meters: f64, irradian
 
     let emitter = RenderDirectionalEmitter::new([0.0, 0.0, 1.0], wavelength_meters, irradiance)
         .expect("R7 edge-proof directional emitter");
-    let participation = RenderObjectParticipation::new(Vec::new(), None, Some(emitter))
-        .expect("R7 edge-proof emitter participation");
+    let participation = RenderObjectParticipation::from_representations([])
+        .expect("R7 edge-proof emitter participation")
+        .with_emitter(Some(emitter));
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
     store

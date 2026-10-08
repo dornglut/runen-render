@@ -144,8 +144,8 @@ mod tests {
     use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
     use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
     use crate::representation::{
-        RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderRefinementEvidence,
-        RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
+        RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderRepresentationRecord,
+        RenderSurfaceProtocolEvidence,
     };
     use crate::scene::{
         RenderObjectState, RenderSceneSnapshot, RenderSceneStore, RenderSceneUpdate,
@@ -198,17 +198,16 @@ mod tests {
         let representation_id = store
             .allocate_representation_id(object_id)
             .expect("proof representation id");
-        RenderRepresentationRecord::new(
+        RenderRepresentationRecord::builder(
             representation_id,
             RenderSpatialCoverage::unbounded(),
             RenderTemporalSupport::unbounded(),
-            RenderRefinementEvidence::none(),
-            Some(
-                RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
-                    .expect("surface protocol"),
-            ),
-            None,
         )
+        .surface_query(Some(
+            RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
+                .expect("surface protocol"),
+        ))
+        .build()
         .expect("proof representation")
     }
 
@@ -217,7 +216,7 @@ mod tests {
         reflectance: Option<f64>,
         irradiance: Option<f64>,
     ) -> RenderObjectParticipation {
-        let representations = representation.into_iter().collect();
+        let representations = representation;
         let material_assignment = reflectance.map(|value| {
             RenderMaterialAssignment::new(
                 RenderDiffuseMaterial::new(value).expect("proof diffuse material"),
@@ -226,8 +225,10 @@ mod tests {
         let emitter = irradiance.map(|value| {
             RenderDirectionalEmitter::new([0.0, 1.0, 0.0], 550e-9, value).expect("proof emitter")
         });
-        RenderObjectParticipation::new(representations, material_assignment, emitter)
+        RenderObjectParticipation::from_representations(representations)
             .expect("proof participation")
+            .with_material_assignment(material_assignment)
+            .with_emitter(emitter)
     }
 
     fn dependencies_for_all_facets(object_id: RenderObjectId) -> [RenderDerivedSceneDependency; 6] {

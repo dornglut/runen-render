@@ -17,8 +17,8 @@ use crate::representation::{
     RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
     RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderFieldDistanceGuarantee,
     RenderFieldDistanceProtocolEvidence, RenderOrientedSurfaceProtocolEvidence,
-    RenderRefinementEvidence, RenderRepresentationId, RenderRepresentationProtocol,
-    RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
+    RenderRepresentationId, RenderRepresentationProtocol, RenderRepresentationRecord,
+    RenderSurfaceProtocolEvidence,
 };
 use crate::request::{
     RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
@@ -134,16 +134,16 @@ fn plan_for(
     } else {
         RenderSpatialCoverage::unbounded()
     };
-    let representation = RenderRepresentationRecord::new(
+    let representation = RenderRepresentationRecord::builder(
         representation_id,
         spatial_coverage,
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        surface,
-        field,
     )
+    .surface_query(surface)
+    .field_distance(field)
+    .build()
     .expect("R7 proof representation");
-    let participation = RenderObjectParticipation::new(vec![representation], None, None)
+    let participation = RenderObjectParticipation::from_representations(vec![representation])
         .expect("R7 proof participation");
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);

@@ -18,6 +18,7 @@ const REQUIRED_FILES: &[&str] = &[
     "LICENSING.md",
     "README.md",
     "TESTING.md",
+    "examples/ordinary_render.rs",
     "rust-toolchain.toml",
     "src/lib.rs",
     "tests/composition_2d_public_api.rs",
@@ -28,6 +29,7 @@ const REQUIRED_FILES: &[&str] = &[
     "tests/fixtures/f2_outline.ttf",
     "tests/fixtures/f2_svg.ttf",
     "tests/fixtures/generate_f2_fonts.py",
+    "tests/named_construction.rs",
     "xtask/Cargo.toml",
     "xtask/src/main.rs",
 ];
@@ -332,6 +334,7 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
         "cargo +stable test -p runen-render",
         "--test ordinary_public_api",
         "--test execution_2d_public_api",
+        "cargo +stable run -p runen-render --example ordinary_render --locked",
     ] {
         require_contains(".github/workflows/validation.yml", &workflow, required)?;
     }

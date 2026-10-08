@@ -13,7 +13,7 @@ use runen_render::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
 use runen_render::participation::{RenderMaterialAssignment, RenderObjectParticipation};
 use runen_render::representation::{
     RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION, RENDER_SURFACE_QUERY_PROTOCOL_REVISION,
-    RenderOrientedSurfaceProtocolEvidence, RenderRefinementEvidence, RenderRepresentationRecord,
+    RenderOrientedSurfaceProtocolEvidence, RenderRepresentationRecord,
     RenderSurfaceProtocolEvidence,
 };
 use runen_render::request::{
@@ -215,16 +215,15 @@ fn ordinary_surface_executes_headless_through_public_runengpu_only() {
     let surface = RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
         .expect("surface protocol")
         .with_semantic_input_requirement(RenderSurfaceSemanticInputRequirement::current());
-    let representation = RenderRepresentationRecord::new(
+    let representation = RenderRepresentationRecord::builder(
         representation_id,
         RenderSpatialCoverage::unbounded(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        Some(surface),
-        None,
     )
+    .surface_query(Some(surface))
+    .build()
     .expect("public surface representation");
-    let participation = RenderObjectParticipation::new(vec![representation], None, None)
+    let participation = RenderObjectParticipation::from_representations(vec![representation])
         .expect("public object participation");
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
@@ -427,16 +426,15 @@ fn admitted_identity_render(
     let surface = RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
         .expect("surface protocol")
         .with_semantic_input_requirement(RenderSurfaceSemanticInputRequirement::current());
-    let representation = RenderRepresentationRecord::new(
+    let representation = RenderRepresentationRecord::builder(
         representation_id,
         RenderSpatialCoverage::unbounded(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        Some(surface),
-        None,
     )
+    .surface_query(Some(surface))
+    .build()
     .expect("retained surface representation");
-    let participation = RenderObjectParticipation::new(vec![representation], None, None)
+    let participation = RenderObjectParticipation::from_representations(vec![representation])
         .expect("retained object participation");
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
@@ -567,26 +565,23 @@ fn admitted_temporal_radiance_render_at_extent(
             .expect("oriented surface protocol"),
         )
         .with_semantic_input_requirement(RenderSurfaceSemanticInputRequirement::current());
-    let representation = RenderRepresentationRecord::new(
+    let representation = RenderRepresentationRecord::builder(
         representation_id,
         RenderSpatialCoverage::unbounded(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        Some(surface),
-        None,
     )
+    .surface_query(Some(surface))
+    .build()
     .expect("temporal oriented representation");
-    let participation = RenderObjectParticipation::new(
-        vec![representation],
-        Some(RenderMaterialAssignment::new(
+    let participation = RenderObjectParticipation::from_representations(vec![representation])
+        .expect("temporal object participation")
+        .with_material_assignment(Some(RenderMaterialAssignment::new(
             RenderDiffuseMaterial::new(0.8).expect("temporal diffuse material"),
-        )),
-        Some(
+        )))
+        .with_emitter(Some(
             RenderDirectionalEmitter::new([0.0, 1.0, 0.0], 550e-9, 1.0)
                 .expect("temporal directional illumination"),
-        ),
-    )
-    .expect("temporal object participation");
+        ));
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
     scene.commit(attach).expect("attach temporal participation");
@@ -717,26 +712,23 @@ fn admitted_retained_capture_render(
             .expect("oriented surface protocol"),
         )
         .with_semantic_input_requirement(RenderSurfaceSemanticInputRequirement::current());
-    let representation = RenderRepresentationRecord::new(
+    let representation = RenderRepresentationRecord::builder(
         representation_id,
         RenderSpatialCoverage::unbounded(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        Some(surface),
-        None,
     )
+    .surface_query(Some(surface))
+    .build()
     .expect("retained capture representation");
-    let participation = RenderObjectParticipation::new(
-        vec![representation],
-        Some(RenderMaterialAssignment::new(
+    let participation = RenderObjectParticipation::from_representations(vec![representation])
+        .expect("retained capture participation")
+        .with_material_assignment(Some(RenderMaterialAssignment::new(
             RenderDiffuseMaterial::new(0.8).expect("retained capture material"),
-        )),
-        Some(
+        )))
+        .with_emitter(Some(
             RenderDirectionalEmitter::new([0.0, 1.0, 0.0], 550e-9, 8.0)
                 .expect("retained capture illumination"),
-        ),
-    )
-    .expect("retained capture participation");
+        ));
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
     scene

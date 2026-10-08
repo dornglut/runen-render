@@ -6,7 +6,7 @@
 use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
 use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
 use crate::representation::{
-    RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderRefinementEvidence, RenderRepresentationRecord,
+    RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderRepresentationRecord,
     RenderSurfaceProtocolEvidence,
 };
 use crate::runtime::transform::RenderRetainedObjectTransform;
@@ -39,17 +39,16 @@ fn surface_representation(
     let representation_id = store
         .allocate_representation_id(object_id)
         .expect("proof representation id");
-    RenderRepresentationRecord::new(
+    RenderRepresentationRecord::builder(
         representation_id,
         RenderSpatialCoverage::unbounded(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        Some(
-            RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
-                .expect("proof surface protocol"),
-        ),
-        None,
     )
+    .surface_query(Some(
+        RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
+            .expect("proof surface protocol"),
+    ))
+    .build()
     .expect("proof representation")
 }
 
@@ -79,7 +78,7 @@ fn retained_spatial_transform_survives_same_object_non_spatial_changes() {
 
     let representation = surface_representation(&mut store, target);
     let representation_only =
-        RenderObjectParticipation::new(vec![representation.clone()], None, None)
+        RenderObjectParticipation::from_representations(vec![representation.clone()])
             .expect("representation-only participation");
     let mut representation_update = RenderSceneUpdate::new();
     representation_update.replace_participation(target, representation_only);
@@ -94,8 +93,9 @@ fn retained_spatial_transform_survives_same_object_non_spatial_changes() {
     let material =
         RenderMaterialAssignment::new(RenderDiffuseMaterial::new(0.5).expect("proof material"));
     let with_material =
-        RenderObjectParticipation::new(vec![representation.clone()], Some(material), None)
-            .expect("material participation");
+        RenderObjectParticipation::from_representations(vec![representation.clone()])
+            .expect("material participation")
+            .with_material_assignment(Some(material));
     let mut material_update = RenderSceneUpdate::new();
     material_update.replace_participation(target, with_material);
     let material_commit = store.commit(material_update).expect("material-only change");
@@ -106,9 +106,10 @@ fn retained_spatial_transform_survives_same_object_non_spatial_changes() {
 
     let emitter =
         RenderDirectionalEmitter::new([0.0, 1.0, 0.0], 550e-9, 2.0).expect("proof emitter");
-    let with_emitter =
-        RenderObjectParticipation::new(vec![representation], Some(material), Some(emitter))
-            .expect("emitter participation");
+    let with_emitter = RenderObjectParticipation::from_representations(vec![representation])
+        .expect("emitter participation")
+        .with_material_assignment(Some(material))
+        .with_emitter(Some(emitter));
     let mut emitter_update = RenderSceneUpdate::new();
     emitter_update.replace_participation(target, with_emitter);
     let emitter_commit = store.commit(emitter_update).expect("emitter-only change");

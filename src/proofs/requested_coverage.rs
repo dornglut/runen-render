@@ -639,7 +639,7 @@ fn field_fixture(
     use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
     use crate::representation::{
         RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RenderFieldDistanceGuarantee,
-        RenderFieldDistanceProtocolEvidence, RenderRefinementEvidence, RenderRepresentationRecord,
+        RenderFieldDistanceProtocolEvidence, RenderRepresentationRecord,
     };
     use crate::scene::{RenderSceneStore, RenderSceneUpdate};
     use crate::space_time::RenderSpatialCoverage;
@@ -655,7 +655,7 @@ fn field_fixture(
     update.insert_with_state(object, state.clone());
     store.commit(update).unwrap();
     let id = store.allocate_representation_id(object).unwrap();
-    let representation = RenderRepresentationRecord::new(
+    let representation = RenderRepresentationRecord::builder(
         id,
         RenderSpatialCoverage::axis_aligned_bounds(
             input.origin_local_meters(),
@@ -663,29 +663,25 @@ fn field_fixture(
         )
         .unwrap(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        None,
-        Some(
-            RenderFieldDistanceProtocolEvidence::new(
-                RENDER_FIELD_DISTANCE_PROTOCOL_REVISION,
-                RenderFieldDistanceGuarantee::conservative(0.2).unwrap(),
-            )
-            .unwrap()
-            .with_semantic_input_requirement(RenderFieldSemanticInputRequirement::current()),
-        ),
     )
+    .field_distance(Some(
+        RenderFieldDistanceProtocolEvidence::new(
+            RENDER_FIELD_DISTANCE_PROTOCOL_REVISION,
+            RenderFieldDistanceGuarantee::conservative(0.2).unwrap(),
+        )
+        .unwrap()
+        .with_semantic_input_requirement(RenderFieldSemanticInputRequirement::current()),
+    ))
+    .build()
     .unwrap();
     let mut update = RenderSceneUpdate::new();
     update.replace_participation(
         object,
-        RenderObjectParticipation::new(
-            vec![representation],
-            Some(RenderMaterialAssignment::new(
+        RenderObjectParticipation::from_representations(vec![representation])
+            .unwrap()
+            .with_material_assignment(Some(RenderMaterialAssignment::new(
                 RenderDiffuseMaterial::new(0.5).unwrap(),
-            )),
-            None,
-        )
-        .unwrap(),
+            ))),
     );
     store.commit(update).unwrap();
     let light = store.allocate_object_id().unwrap();
@@ -695,15 +691,12 @@ fn field_fixture(
     let mut update = RenderSceneUpdate::new();
     update.replace_participation(
         light,
-        RenderObjectParticipation::new(
-            vec![],
-            None,
-            Some(
+        RenderObjectParticipation::from_representations([])
+            .unwrap()
+            .with_emitter(Some(
                 RenderDirectionalEmitter::new([0.0, 0.0, 1.0], 550e-9, std::f64::consts::PI)
                     .unwrap(),
-            ),
-        )
-        .unwrap(),
+            )),
     );
     store.commit(update).unwrap();
     fixture.scene = store.snapshot();
