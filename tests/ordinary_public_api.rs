@@ -78,15 +78,15 @@ fn ordinary_semantic_renderer_surface_is_public_to_downstream_consumers() {
     let _ = RenderExecutionError::submission_error;
     let _ = RenderResultSubmissionError::kind;
     let _ = RenderResultSubmissionError::verification_eligibility_kind;
-    let _ = RenderResultSubmissionError::observation_index;
+    let _ = RenderResultSubmissionError::observation;
     let _ = RenderResultSubmissionError::object_id;
     let _ = RenderResultSubmissionError::readback_cardinality;
     let _ = RenderResultSubmissionError::output_correlation;
-    let _ = RenderResultSubmissionError::correlation_output_index;
+    let _ = RenderResultSubmissionError::correlation_output;
     let _ = RenderResultSubmissionError::correlation_channel;
     let _ = RenderResultFormationError::kind;
     let _ = RenderResultFormationError::verification_eligibility_kind;
-    let _ = RenderResultFormationError::output_index;
+    let _ = RenderResultFormationError::output;
     let _ = RenderResultFormationError::sample_index;
     let _ = RenderResultFormationError::channel;
     let _ = RenderResultFormationError::gpu_failure_kind;
@@ -933,7 +933,8 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
     );
     let capture_error = associated
         .request_radiance_capture(&foreign_radiance)
-        .expect_err("foreign request must not capture this occurrence");
+        .err()
+        .expect("foreign request must not capture this occurrence");
     assert_eq!(
         capture_error.kind(),
         RenderRadianceCaptureRequestErrorKind::OutputIndexOutOfRange

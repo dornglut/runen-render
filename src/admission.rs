@@ -145,8 +145,13 @@ impl RenderAdmittedOutput {
         self.output_index
     }
 
-    pub const fn observation_index(&self) -> usize {
+    pub(crate) const fn observation_index(&self) -> usize {
         self.observation_index
+    }
+
+    /// Exact observation associated with this admitted, request-owned output.
+    pub fn observation(&self) -> crate::request::RenderObservationHandle {
+        self.output().observation()
     }
 
     pub const fn approximation(&self) -> RenderOutputApproximation {

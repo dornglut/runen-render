@@ -603,11 +603,21 @@ impl RenderObservationHandle {
 pub struct RenderOutputHandle {
     correlation: RenderRequestCorrelation,
     position: usize,
+    observation_position: usize,
 }
 
 impl RenderOutputHandle {
+    /// Deterministic request-local output order; not a transferable correlation identity.
     pub const fn position(&self) -> usize {
         self.position
+    }
+
+    /// Exact request-owned observation associated with this output.
+    pub fn observation(&self) -> RenderObservationHandle {
+        RenderObservationHandle {
+            correlation: self.correlation.clone(),
+            position: self.observation_position,
+        }
     }
 }
 
@@ -656,6 +666,7 @@ impl RenderRequestBuilder {
         Ok(RenderOutputHandle {
             correlation: self.correlation.clone(),
             position,
+            observation_position: observation.position,
         })
     }
 
@@ -790,14 +801,19 @@ impl RenderRequest {
     }
 
     pub fn output_handle(&self, position: usize) -> Option<RenderOutputHandle> {
-        self.outputs.get(position).map(|_| RenderOutputHandle {
+        self.outputs.get(position).map(|output| RenderOutputHandle {
             correlation: self.correlation.clone(),
             position,
+            observation_position: output.observation_index(),
         })
     }
 
     pub fn contains_output(&self, handle: &RenderOutputHandle) -> bool {
-        handle.correlation == self.correlation && handle.position < self.outputs.len()
+        handle.correlation == self.correlation
+            && self
+                .outputs
+                .get(handle.position)
+                .is_some_and(|output| output.observation_index() == handle.observation_position)
     }
 
     pub fn requested_output(&self, handle: &RenderOutputHandle) -> Option<&RenderRequestedOutput> {
@@ -809,8 +825,7 @@ impl RenderRequest {
         &self,
         output: &RenderOutputHandle,
     ) -> Option<RenderObservationHandle> {
-        self.requested_output(output)
-            .and_then(|requested| self.observation_handle(requested.observation_index()))
+        self.requested_output(output).map(|_| output.observation())
     }
 }
 
@@ -1203,4 +1218,27 @@ mod tests {
             .hash(&mut cloned_hasher);
         assert_eq!(first_hasher.finish(), cloned_hasher.finish());
     }
+    #[test]
+    fn multiple_outputs_retain_distinct_request_owned_observation_relations() {
+        let mut builder = RenderRequestBuilder::new(interval(0.0, 1.0));
+        let first = builder.add_observation(probe_observation(interval(0.0, 0.0)));
+        let second = builder.add_observation(probe_observation(interval(1.0, 1.0)));
+        let first_output = builder
+            .add_output(&first, radiance(RenderResultTopology::scalar()))
+            .expect("first observation");
+        let second_output = builder
+            .add_output(&second, radiance(RenderResultTopology::scalar()))
+            .expect("second observation");
+        assert_eq!(first_output.observation(), first);
+        assert_eq!(second_output.observation(), second);
+        assert_ne!(first_output.observation(), second_output.observation());
+
+        let request = builder.finish().expect("two-observation request");
+        assert_eq!(request.output_handle(0), Some(first_output.clone()));
+        assert_eq!(request.output_handle(1), Some(second_output.clone()));
+        assert_eq!(request.observation_for_output(&first_output), Some(first));
+        assert_eq!(request.observation_for_output(&second_output), Some(second));
+        assert_eq!(request.clone().output_handle(1), Some(second_output));
+    }
+
 }

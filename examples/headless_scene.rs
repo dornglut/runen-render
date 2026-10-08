@@ -257,7 +257,13 @@ fn validate_output_correlation(
             .iter()
             .find(|output| output.output().position() == index)
             .ok_or_else(|| io::Error::other("admitted output correlation disappeared"))?;
-        if output.observation_index() != 0
+        if output.observation()
+            != admitted
+                .admitted_plan()
+                .plan()
+                .request()
+                .observation_handle(0)
+                .expect("request observation")
             || output.binding().output()
                 != &admitted
                     .admitted_plan()
