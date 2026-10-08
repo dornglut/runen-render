@@ -937,7 +937,7 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
         .expect("foreign request must not capture this occurrence");
     assert_eq!(
         capture_error.kind(),
-        RenderRadianceCaptureRequestErrorKind::OutputIndexOutOfRange
+        RenderRadianceCaptureRequestErrorKind::OutputNotAdmitted
     );
     assert_eq!(capture_error.output(), &foreign_radiance);
     let decoder_error = associated
@@ -945,7 +945,7 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
         .expect_err("foreign request must not select this occurrence decoder");
     assert_eq!(
         decoder_error.kind(),
-        RenderObjectIdentityDecoderErrorKind::OutputIndexOutOfRange
+        RenderObjectIdentityDecoderErrorKind::OutputNotAdmitted
     );
     assert_eq!(decoder_error.output(), &foreign_identity);
 

@@ -826,7 +826,7 @@ pub enum RenderRadianceCaptureRequestErrorKind {
     VerificationNotFormed,
     RendererSubmissionPending,
     RendererSubmissionFailed,
-    OutputIndexOutOfRange,
+    OutputNotAdmitted,
     OutputNotRadiance,
     OutputTopologyUnsupported,
     OutputDestinationUnsupported,
@@ -861,7 +861,7 @@ impl RenderRadianceCaptureRequestError {
                 RenderRadianceCaptureRequestErrorKind::RendererSubmissionFailed
             }
             RenderDeterministicRadianceCaptureRequestError::OutputIndexOutOfRange => {
-                RenderRadianceCaptureRequestErrorKind::OutputIndexOutOfRange
+                RenderRadianceCaptureRequestErrorKind::OutputNotAdmitted
             }
             RenderDeterministicRadianceCaptureRequestError::OutputNotRadiance => {
                 RenderRadianceCaptureRequestErrorKind::OutputNotRadiance
@@ -903,7 +903,14 @@ impl RenderRadianceCaptureRequestError {
 
 impl fmt::Display for RenderRadianceCaptureRequestError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.inner.fmt(formatter)
+        if matches!(
+            self.inner,
+            RenderDeterministicRadianceCaptureRequestError::OutputIndexOutOfRange
+        ) {
+            formatter.write_str("requested output is not admitted for this invocation")
+        } else {
+            self.inner.fmt(formatter)
+        }
     }
 }
 
@@ -914,7 +921,7 @@ impl Error for RenderRadianceCaptureRequestError {}
 pub enum RenderObjectIdentityDecoderErrorKind {
     RendererSubmissionPending,
     RendererSubmissionFailed,
-    OutputIndexOutOfRange,
+    OutputNotAdmitted,
     OutputNotObjectIdentity,
 }
 
@@ -946,9 +953,9 @@ impl RenderObjectIdentityDecoderError {
         }
     }
 
-    pub(super) fn output_index_out_of_range(output: &crate::request::RenderOutputHandle) -> Self {
+    pub(super) fn output_not_admitted(output: &crate::request::RenderOutputHandle) -> Self {
         Self {
-            kind: RenderObjectIdentityDecoderErrorKind::OutputIndexOutOfRange,
+            kind: RenderObjectIdentityDecoderErrorKind::OutputNotAdmitted,
             gpu_failure_kind: None,
             output: output.clone(),
         }
@@ -984,8 +991,8 @@ impl fmt::Display for RenderObjectIdentityDecoderError {
             RenderObjectIdentityDecoderErrorKind::RendererSubmissionFailed => {
                 "the associated renderer submission failed"
             }
-            RenderObjectIdentityDecoderErrorKind::OutputIndexOutOfRange => {
-                "requested object-identity output index is not admitted"
+            RenderObjectIdentityDecoderErrorKind::OutputNotAdmitted => {
+                "requested object-identity output is not admitted for this invocation"
             }
             RenderObjectIdentityDecoderErrorKind::OutputNotObjectIdentity => {
                 "requested output is not object identity"

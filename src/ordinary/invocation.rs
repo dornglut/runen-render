@@ -20,15 +20,9 @@ pub struct RenderInvocation {
 /// Structural output-binding failure prior to GPU-dependent semantic admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderInvocationError {
-    ForeignOutput {
-        output: RenderOutputHandle,
-    },
-    DuplicateOutput {
-        output: RenderOutputHandle,
-    },
-    MissingOutput {
-        output: RenderOutputHandle,
-    },
+    ForeignOutput { output: RenderOutputHandle },
+    DuplicateOutput { output: RenderOutputHandle },
+    MissingOutput { output: RenderOutputHandle },
 }
 
 impl fmt::Display for RenderInvocationError {

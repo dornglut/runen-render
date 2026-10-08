@@ -26,7 +26,7 @@ fn checked_identity_decoder<'a>(
             .iter()
             .any(|candidate| candidate.output_index() == output.position())
     {
-        return Err(RenderObjectIdentityDecoderError::output_index_out_of_range(
+        return Err(RenderObjectIdentityDecoderError::output_not_admitted(
             output,
         ));
     }
