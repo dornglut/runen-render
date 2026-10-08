@@ -14,6 +14,8 @@ fn gradient_context() -> Option<GpuContext> {
             .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource)
             .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment)
             .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled)
+            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Filterable)
+            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::CopyDestination)
             .with_fallback_policy(GpuSoftwareFallbackPolicy::Require)
             .with_allowed_backends([GpuBackendFamily::Vulkan])
             .with_label("F3B immutable gradients");
@@ -154,7 +156,10 @@ fn expected_pixel(
 
 fn check(observed: [u8; 4], expected: [u8; 4]) {
     assert!(
-        observed.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 3),
+        observed
+            .iter()
+            .zip(expected)
+            .all(|(a, b)| a.abs_diff(b) <= 3),
         "observed {observed:?}, expected {expected:?}"
     );
 }
@@ -171,10 +176,12 @@ fn linear_premultiplied_alpha_and_duplicate_hardstop_boundary() {
         (1.0, [255, 255, 255, 255]),
     ];
     let brush = Render2dBrush::Linear(
-        Render2dLinearGradient::new(point(0.125, 0.0), point(64.125, 0.0), stops(&raw))
-            .unwrap(),
+        Render2dLinearGradient::new(point(0.125, 0.0), point(64.125, 0.0), stops(&raw)).unwrap(),
     );
-    let actual = rendered(&context, vec![item(brush, Render2dAffineTransform::IDENTITY, 0.75)]);
+    let actual = rendered(
+        &context,
+        vec![item(brush, Render2dAffineTransform::IDENTITY, 0.75)],
+    );
     for (x, y) in [(8, 20), (31, 20), (32, 20), (40, 20), (60, 20)] {
         check(
             pixel(&actual, x, y),
@@ -218,8 +225,8 @@ fn concentric_radial_gradient_tracks_inverse_sheared_affine() {
 fn segment_distance(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     let dx = b[0] - a[0];
     let dy = b[1] - a[1];
-    let projection = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy))
-        .clamp(0.0, 1.0);
+    let projection =
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
     (p[0] - (a[0] + projection * dx)).hypot(p[1] - (a[1] + projection * dy))
 }
 
@@ -268,7 +275,11 @@ fn translucent_crossing_gradient_stroke_uses_one_coverage_union() {
                     y,
                     &raw,
                     |p| p[0] / 64.0,
-                    |p| corners.windows(2).any(|w| segment_distance(p, w[0], w[1]) < 4.0),
+                    |p| {
+                        corners
+                            .windows(2)
+                            .any(|w| segment_distance(p, w[0], w[1]) < 4.0)
+                    },
                     0.75,
                 ),
             );
@@ -303,7 +314,13 @@ fn gradients_interleave_with_solid_and_retained_text() {
     let opposite = Render2dComposition::new(vec![solid, text, gradient]).unwrap();
     let mut executor = Render2dExecutor::new();
     let first_pixels = execute(&context, &mut executor, &first, &resources, "gradient/text");
-    let reverse_pixels = execute(&context, &mut executor, &opposite, &resources, "text/gradient");
+    let reverse_pixels = execute(
+        &context,
+        &mut executor,
+        &opposite,
+        &resources,
+        "text/gradient",
+    );
     assert_ne!(pixel(&first_pixels, 20, 20), pixel(&reverse_pixels, 20, 20));
     executor.discard_cache();
     let reconstructed = execute(&context, &mut executor, &first, &resources, "reconstruct");
@@ -326,15 +343,12 @@ fn unrepresentable_and_oversized_stops_fail_before_execution() {
             runen_render::execution_2d::Render2dVectorError::PrecisionLimit,
         ),
         (
-            (0..258)
-                .map(|i| (f64::from(i) / 257.0, [255; 4]))
-                .collect(),
+            (0..258).map(|i| (f64::from(i) / 257.0, [255; 4])).collect(),
             runen_render::execution_2d::Render2dVectorError::ResourceLimit,
         ),
     ] {
         let brush = Render2dBrush::Linear(
-            Render2dLinearGradient::new(point(0.0, 0.0), point(64.0, 0.0), stops(&values))
-                .unwrap(),
+            Render2dLinearGradient::new(point(0.0, 0.0), point(64.0, 0.0), stops(&values)).unwrap(),
         );
         let composition =
             Render2dComposition::new(vec![item(brush, Render2dAffineTransform::IDENTITY, 1.0)])
@@ -350,6 +364,9 @@ fn unrepresentable_and_oversized_stops_fail_before_execution() {
         ));
     }
     let solid = Render2dBrush::solid(Render2dColorRgba8::WHITE);
-    let actual = rendered(&context, vec![item(solid, Render2dAffineTransform::IDENTITY, 1.0)]);
+    let actual = rendered(
+        &context,
+        vec![item(solid, Render2dAffineTransform::IDENTITY, 1.0)],
+    );
     check(pixel(&actual, 20, 20), [255; 4]);
 }
