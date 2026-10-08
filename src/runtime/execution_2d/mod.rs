@@ -223,21 +223,22 @@ impl Render2dExecutionState {
                 ordered.push(lowering::OrderedItem::Vector(mesh));
             }
             if !item.clips().is_empty() {
-                if let Some(mask) = clip::prepare(
-                    item,
-                    &ordered[root_start..],
-                    root_index,
-                    &admitted_target,
-                )? {
+                if let Some(mask) =
+                    clip::prepare(item, &ordered[root_start..], root_index, &admitted_target)?
+                {
                     clip_bytes = clip_bytes
                         .checked_add(u64::try_from(mask.rgba.len()).map_err(|_| {
-                            clip::failure(root_index,
-                                crate::execution_2d::Render2dClipError::ResourceLimit)
+                            clip::failure(
+                                root_index,
+                                crate::execution_2d::Render2dClipError::ResourceLimit,
+                            )
                         })?)
-                        .ok_or_else(|| clip::failure(
-                            root_index,
-                            crate::execution_2d::Render2dClipError::ResourceLimit,
-                        ))?;
+                        .ok_or_else(|| {
+                            clip::failure(
+                                root_index,
+                                crate::execution_2d::Render2dClipError::ResourceLimit,
+                            )
+                        })?;
                     if clip_bytes > 128 * 1024 * 1024 {
                         return Err(clip::failure(
                             root_index,

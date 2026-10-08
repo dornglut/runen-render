@@ -408,28 +408,34 @@ fn shaped_text_pipeline(
         })?;
     let vertex =
         GpuEntryPointName::new("vs_main").map_err(|error| gpu("vertex entry-point name", error))?;
-    let fragment = GpuEntryPointName::new(if clipped { "fs_main_clipped" } else { "fs_main" })
-        .map_err(|error| gpu("fragment entry-point name", error))?;
+    let fragment = GpuEntryPointName::new(if clipped {
+        "fs_main_clipped"
+    } else {
+        "fs_main"
+    })
+    .map_err(|error| gpu("fragment entry-point name", error))?;
     let mut refinements = vec![
-            GpuBindingLayoutRefinement::new(
-                GpuBindingKey::try_new(0, 0)
-                    .map_err(|error| gpu("field texture layout key", error))?,
-            )
-            .with_texture_sample_class(GpuTextureSampleClass::FloatFilterable),
-            GpuBindingLayoutRefinement::new(
-                GpuBindingKey::try_new(0, 1)
-                    .map_err(|error| gpu("field sampler layout key", error))?,
-            )
-            .with_sampler_class(GpuSamplerClass::Filtering),
-        ];
+        GpuBindingLayoutRefinement::new(
+            GpuBindingKey::try_new(0, 0).map_err(|error| gpu("field texture layout key", error))?,
+        )
+        .with_texture_sample_class(GpuTextureSampleClass::FloatFilterable),
+        GpuBindingLayoutRefinement::new(
+            GpuBindingKey::try_new(0, 1).map_err(|error| gpu("field sampler layout key", error))?,
+        )
+        .with_sampler_class(GpuSamplerClass::Filtering),
+    ];
     if clipped {
-        refinements.push(GpuBindingLayoutRefinement::new(
-            GpuBindingKey::try_new(0, 2)
-                .map_err(|error| gpu("clip texture layout key", error))?,
-        ).with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable));
+        refinements.push(
+            GpuBindingLayoutRefinement::new(
+                GpuBindingKey::try_new(0, 2)
+                    .map_err(|error| gpu("clip texture layout key", error))?,
+            )
+            .with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable),
+        );
     }
-    let program = GpuProgramDescriptor::new(source, [vertex.clone(), fragment.clone()], refinements)
-        .map_err(|error| gpu("shaped-text program descriptor", error))?;
+    let program =
+        GpuProgramDescriptor::new(source, [vertex.clone(), fragment.clone()], refinements)
+            .map_err(|error| gpu("shaped-text program descriptor", error))?;
     let vertex_layout = GpuVertexBufferLayoutDescriptor::new(
         0,
         VERTEX_STRIDE,
@@ -825,16 +831,22 @@ pub(super) fn lower_ordered(
         match item {
             OrderedItem::Glyph(glyph) => {
                 if glyph_root != Some(glyph.root_index) && !glyphs.is_empty() {
-                    operations.extend(lower(target, &glyphs,
-                        glyph_root.and_then(|root| clip_views.get(&root)))?);
+                    operations.extend(lower(
+                        target,
+                        &glyphs,
+                        glyph_root.and_then(|root| clip_views.get(&root)),
+                    )?);
                     glyphs.clear();
                 }
                 glyph_root = Some(glyph.root_index);
                 glyphs.push(glyph);
             }
             OrderedItem::Vector(mesh) => {
-                operations.extend(lower(target, &glyphs,
-                    glyph_root.and_then(|root| clip_views.get(&root)))?);
+                operations.extend(lower(
+                    target,
+                    &glyphs,
+                    glyph_root.and_then(|root| clip_views.get(&root)),
+                )?);
                 glyphs.clear();
                 glyph_root = None;
                 operations.extend(vector::lower(
@@ -847,8 +859,11 @@ pub(super) fn lower_ordered(
                 )?);
             }
             OrderedItem::Image(patch) => {
-                operations.extend(lower(target, &glyphs,
-                    glyph_root.and_then(|root| clip_views.get(&root)))?);
+                operations.extend(lower(
+                    target,
+                    &glyphs,
+                    glyph_root.and_then(|root| clip_views.get(&root)),
+                )?);
                 glyphs.clear();
                 glyph_root = None;
                 if !target.image_format {
@@ -885,7 +900,10 @@ pub(super) fn lower_ordered(
             }
         }
     }
-    operations.extend(lower(target, &glyphs,
-        glyph_root.and_then(|root| clip_views.get(&root)))?);
+    operations.extend(lower(
+        target,
+        &glyphs,
+        glyph_root.and_then(|root| clip_views.get(&root)),
+    )?;
     Ok(operations)
 }

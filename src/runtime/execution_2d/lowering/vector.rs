@@ -22,11 +22,23 @@ pub(super) fn vector_pipeline(
     })?;
     let vertex = GpuEntryPointName::new("vs_main").map_err(|e| gpu("vector entry", e))?;
     let fragment = GpuEntryPointName::new(if image {
-        if clipped { "fs_image_clipped" } else { "fs_image" }
+        if clipped {
+            "fs_image_clipped"
+        } else {
+            "fs_image"
+        }
     } else if gradient {
-        if clipped { "fs_gradient_clipped" } else { "fs_gradient" }
+        if clipped {
+            "fs_gradient_clipped"
+        } else {
+            "fs_gradient"
+        }
     } else if compose {
-        if clipped { "fs_compose_clipped" } else { "fs_compose" }
+        if clipped {
+            "fs_compose_clipped"
+        } else {
+            "fs_compose"
+        }
     } else {
         "fs_coverage"
     })
@@ -51,8 +63,9 @@ pub(super) fn vector_pipeline(
     if clipped {
         refinements.push(
             GpuBindingLayoutRefinement::new(
-                GpuBindingKey::try_new(0, 4).map_err(|e|gpu("clip binding key",e))?,
-            ).with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable)
+                GpuBindingKey::try_new(0, 4).map_err(|e| gpu("clip binding key", e))?,
+            )
+            .with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable),
         );
     }
     let program =
@@ -211,7 +224,13 @@ pub(super) fn lower(
     ]
     .concat();
     let gradient_data = gradient_payload(mesh)?;
-    let pipeline = vector_pipeline(target.format, true, gradient_data.is_some(), false, clipped.is_some())?;
+    let pipeline = vector_pipeline(
+        target.format,
+        true,
+        gradient_data.is_some(),
+        false,
+        clipped.is_some(),
+    )?;
     let mut binding_values = vec![texture_binding(0, mask)?];
     if let Some(words) = gradient_data {
         let prepared = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
