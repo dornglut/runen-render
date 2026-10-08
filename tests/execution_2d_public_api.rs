@@ -39,6 +39,8 @@ const BOX_GLYPH: u32 = 2;
 
 #[path = "execution_2d/gradient.rs"]
 mod gradient;
+#[path = "execution_2d/image.rs"]
+mod image;
 #[path = "execution_2d/vector.rs"]
 mod vector;
 

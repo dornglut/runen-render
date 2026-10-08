@@ -139,3 +139,11 @@ under their owning issue and must be validated on the exact reviewed head.
 Runenwerk downstream native/product integration remains downstream consumer
 evidence. Its predecessor cutover is complete and is no longer an activation
 gate for ordinary standalone RunenRender evolution.
+
+
+F3C GPU-required public image tests exercise immutable source-neutral RGBA8
+resource binding, exact continuous source/destination patches, private
+nearest-texel sampling, affine geometry, four-by-four physical edge coverage,
+linear-light premultiplication/source-over, patch and mixed painter ordering,
+no-work outcomes, typed format/precision/resource failures and reconstruction
+after cache discard. The image path must not depend on direct wgpu rendering.

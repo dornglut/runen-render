@@ -101,3 +101,49 @@ fn gradient_sample(physical: vec2<f32>) -> vec4<f32> {
     return result * (gradient.header[1].w /
         f32(COVERAGE_AXIS_SAMPLES * COVERAGE_AXIS_SAMPLES));
 }
+
+
+// F3C physical policy: one nearest RGBA8-sRGB texel for each independently
+// covered 4x4 physical sample. Mapping and patch order come from immutable F1.
+// Source alpha is straight; textureLoad decodes sRGB to linear before premultiplication.
+@group(0) @binding(2) var image_texture: texture_2d<f32>;
+struct ImageParameters {
+    header: array<vec4<f32>, 5>,
+}
+@group(0) @binding(3) var<storage, read> image_params: ImageParameters;
+
+@fragment fn fs_image(input: VertexOutput) -> @location(0) vec4<f32> {
+    let pixel = floor(input.position.xy);
+    let inverse_x = image_params.header[0];
+    let inverse_y = image_params.header[1];
+    let src = image_params.header[2];
+    let dst = image_params.header[3];
+    let image_size = vec2<i32>(textureDimensions(image_texture));
+    let sample_min = clamp(vec2<i32>(floor(src.xy)), vec2<i32>(0), image_size - vec2<i32>(1));
+    let sample_max = clamp(vec2<i32>(ceil(src.xy + src.zw)) - vec2<i32>(1),
+        sample_min, image_size - vec2<i32>(1));
+    var sum = vec4<f32>(0.0);
+    for (var y = 0; y < COVERAGE_AXIS_SAMPLES; y += 1) {
+        for (var x = 0; x < COVERAGE_AXIS_SAMPLES; x += 1) {
+            let physical = pixel +
+                (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) / f32(COVERAGE_AXIS_SAMPLES);
+            if (any(physical >= image_params.header[4].xy)) {
+                continue;
+            }
+            let local = vec2<f32>(
+                dot(inverse_x.xyz, vec3<f32>(physical, 1.0)),
+                dot(inverse_y.xyz, vec3<f32>(physical, 1.0))
+            );
+            let relative = (local - dst.xy) / dst.zw;
+            if (all(relative >= vec2<f32>(0.0)) &&
+                all(relative < vec2<f32>(1.0))) {
+                let source = src.xy + relative * src.zw;
+                let texel = clamp(vec2<i32>(floor(source)), sample_min, sample_max);
+                let straight_linear = textureLoad(image_texture, texel, 0);
+                sum += vec4<f32>(straight_linear.rgb * straight_linear.a,
+                    straight_linear.a);
+            }
+        }
+    }
+    return sum * (inverse_x.w / f32(COVERAGE_AXIS_SAMPLES * COVERAGE_AXIS_SAMPLES));
+}
