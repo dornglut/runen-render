@@ -48,11 +48,13 @@ use std::error::Error;
 use std::fmt;
 
 mod errors;
+mod invocation;
 mod lifecycle;
 mod operations;
 mod state;
 
 pub use errors::*;
+pub use invocation::*;
 pub use lifecycle::*;
 pub use operations::*;
 pub use state::*;

@@ -25,7 +25,7 @@ use runen_render::representation::{
 };
 use runen_render::request::{
     RenderObservationSpec, RenderOutputSpec, RenderOutputValue, RenderPerspectiveObservation,
-    RenderRadiometricRepresentation, RenderRequest, RenderRequestedOutput, RenderResultTopology,
+    RenderRadiometricRepresentation, RenderRequest, RenderRequestBuilder, RenderResultTopology,
     RenderSamplingSupport, RenderSemanticTolerance,
 };
 use runen_render::scene::{
@@ -41,7 +41,7 @@ use runen_render::surface_input::{
     RenderSurfaceSemanticInputGeneration, RenderSurfaceSemanticInputRequirement,
 };
 use runen_render::{
-    AdmittedRender, RenderEvaluationSelection, RenderExecutionSession,
+    AdmittedRender, RenderEvaluationSelection, RenderExecutionSession, RenderInvocation,
     RenderTemporalExecutionEvidence, admit_render,
 };
 use std::collections::BTreeSet;
@@ -124,33 +124,29 @@ fn build_request() -> ExampleResult<RenderRequest> {
         RenderSamplingSupport::perspective_lattice_cell(),
     )?);
     let lattice = || RenderResultTopology::sample_lattice_2d(WIDTH, HEIGHT);
-    let request = RenderRequest::new(
-        time,
-        vec![observation],
-        vec![
-            RenderRequestedOutput::new(
-                0,
-                RenderOutputSpec::new(
-                    RenderOutputValue::Radiance {
-                        representation:
-                            RenderRadiometricRepresentation::spectral_at_wavelength_meters(
-                                WAVELENGTH_METERS,
-                            )?,
-                    },
-                    lattice()?,
-                    RenderSemanticTolerance::absolute(2.0e-4)?,
+    let mut builder = RenderRequestBuilder::new(time);
+    let observation_handle = builder.add_observation(observation);
+    builder.add_output(
+        &observation_handle,
+        RenderOutputSpec::new(
+            RenderOutputValue::Radiance {
+                representation: RenderRadiometricRepresentation::spectral_at_wavelength_meters(
+                    WAVELENGTH_METERS,
                 )?,
-            ),
-            RenderRequestedOutput::new(
-                0,
-                RenderOutputSpec::new(
-                    RenderOutputValue::ObjectIdentity,
-                    lattice()?,
-                    RenderSemanticTolerance::exact(),
-                )?,
-            ),
-        ],
+            },
+            lattice()?,
+            RenderSemanticTolerance::absolute(2.0e-4)?,
+        )?,
     )?;
+    builder.add_output(
+        &observation_handle,
+        RenderOutputSpec::new(
+            RenderOutputValue::ObjectIdentity,
+            lattice()?,
+            RenderSemanticTolerance::exact(),
+        )?,
+    )?;
+    let request = builder.finish()?;
 
     if !matches!(
         request.outputs()[RADIANCE].spec().value(),
@@ -227,14 +223,14 @@ fn create_targets() -> ExampleResult<Targets> {
     Ok(Targets { radiance, identity })
 }
 
-fn output_bindings(targets: &Targets) -> [RenderOutputBinding; 2] {
+fn output_bindings(request: &RenderRequest, targets: &Targets) -> [RenderOutputBinding; 2] {
     [
         RenderOutputBinding::new(
-            RADIANCE,
+            request.output_handle(RADIANCE).expect("radiance output"),
             RenderOutputDestination::SampleLatticeTexture(targets.radiance.clone()),
         ),
         RenderOutputBinding::new(
-            OBJECT_ID,
+            request.output_handle(OBJECT_ID).expect("identity output"),
             RenderOutputDestination::SampleLatticeTexture(targets.identity.clone()),
         ),
     ]
@@ -259,10 +255,22 @@ fn validate_output_correlation(
             .admitted_plan()
             .outputs()
             .iter()
-            .find(|output| output.output_index() == index)
+            .find(|output| output.output().position() == index)
             .ok_or_else(|| io::Error::other("admitted output correlation disappeared"))?;
-        if output.observation_index() != 0
-            || output.binding().output_index() != index
+        if output.observation()
+            != admitted
+                .admitted_plan()
+                .plan()
+                .request()
+                .observation_handle(0)
+                .expect("request observation")
+            || output.binding().output()
+                != &admitted
+                    .admitted_plan()
+                    .plan()
+                    .request()
+                    .output_handle(index)
+                    .expect("request output")
             || output.binding().destination()
                 != &RenderOutputDestination::SampleLatticeTexture(target.clone())
         {
@@ -340,23 +348,27 @@ fn render_frame(
     let request = build_request()?;
     let surface_inputs = build_surface_inputs(ids)?;
     let availability = build_availability(ids);
-    let bindings = output_bindings(targets);
-    let admitted = admit_render(
-        snapshot,
-        &request,
-        &surface_inputs,
-        &[],
-        &availability,
-        &bindings,
-        context,
+    let bindings = output_bindings(&request, targets);
+    let invocation = RenderInvocation::new(
+        snapshot.clone(),
+        request.clone(),
+        surface_inputs.to_vec(),
+        Vec::new(),
+        availability.to_vec(),
+        bindings.to_vec(),
     )?;
+    let admitted = admit_render(&invocation, context)?;
     validate_output_correlation(&admitted, snapshot, targets)?;
 
-    let evaluation = RenderEvaluationSelection::new(RADIANCE, WIDTH, HEIGHT)
-        .ok_or_else(|| io::Error::other("full retained evaluation selection is invalid"))?;
+    let evaluation = RenderEvaluationSelection::new(
+        request.output_handle(RADIANCE).expect("radiance handle"),
+        WIDTH,
+        HEIGHT,
+    )
+    .ok_or_else(|| io::Error::other("full retained evaluation selection is invalid"))?;
     let occurrence = session.prepare(admitted, context, Some(evaluation))?;
     let temporal = occurrence
-        .radiance_output(RADIANCE)
+        .radiance_output(&request.output_handle(RADIANCE).expect("radiance output"))
         .and_then(|output| output.temporal_execution_evidence())
         .ok_or_else(|| io::Error::other("retained radiance temporal evidence is missing"))?;
     let expected_generation = RenderSurfaceSemanticInputGeneration::new(1);
@@ -397,13 +409,15 @@ fn render_frame(
         return Err(io::Error::other("retained session did not reconcile completed work").into());
     }
 
-    let capture = associated.request_radiance_capture(RADIANCE)?;
-    let decoder = associated.object_identity_decoder(OBJECT_ID)?;
+    let capture = associated
+        .request_radiance_capture(&request.output_handle(RADIANCE).expect("radiance output"))?;
+    let decoder = associated
+        .object_identity_decoder(&request.output_handle(OBJECT_ID).expect("identity output"))?;
     let identity_target = associated
         .admitted_plan()
         .outputs()
         .iter()
-        .find(|output| output.output_index() == OBJECT_ID)
+        .find(|output| output.output().position() == OBJECT_ID)
         .and_then(|output| match output.binding().destination() {
             RenderOutputDestination::SampleLatticeTexture(texture) => Some(texture.clone()),
             RenderOutputDestination::ScalarBuffer(_) => None,
@@ -432,7 +446,9 @@ fn render_frame(
 
     let radiance = associated.capture_radiance(capture, context, &readback_submission)?;
     let expected_topology = RenderResultTopology::sample_lattice_2d(WIDTH, HEIGHT)?;
-    if radiance.output_index() != RADIANCE || radiance.topology() != expected_topology {
+    if radiance.output() != &request.output_handle(RADIANCE).expect("radiance output")
+        || radiance.topology() != expected_topology
+    {
         return Err(io::Error::other("captured radiance output/topology changed").into());
     }
     let count = usize::try_from(u64::from(WIDTH) * u64::from(HEIGHT))?;

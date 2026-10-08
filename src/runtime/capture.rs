@@ -38,10 +38,6 @@ pub struct RenderDeterministicRadianceCaptureRequest {
 }
 
 impl RenderDeterministicRadianceCaptureRequest {
-    pub const fn output_index(&self) -> usize {
-        self.output_index
-    }
-
     /// Exact whole-base-mip source to use for the ordinary public RunenGPU readback operation.
     pub fn source(&self) -> &GpuTransferRegion {
         &self.source
@@ -66,6 +62,8 @@ pub struct RenderCapturedDeterministicRadiance {
 }
 
 impl RenderCapturedDeterministicRadiance {
+    /// Test-only deterministic position inspection; ordinary capture exposes typed correlation.
+    #[cfg(test)]
     pub const fn output_index(&self) -> usize {
         self.output_index
     }

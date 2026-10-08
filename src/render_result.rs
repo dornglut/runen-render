@@ -1,7 +1,7 @@
 use super::admission::AdmittedRenderPlan;
 use super::field_input::RenderFieldSemanticInputBinding;
 use super::method::RenderMethodId;
-use super::request::RenderRequest;
+use super::request::{RenderOutputHandle, RenderRequest};
 use super::scene::{RenderObjectId, RenderSceneRevision, RenderSceneSnapshot};
 use super::semantic_plan::{RenderApplicableRepresentationUse, RenderOutputApproximation};
 use super::surface_input::RenderSurfaceSemanticInputBinding;
@@ -78,16 +78,27 @@ impl RenderResultObjectRepresentation {
 /// Output-to-observation correlation is intentionally not duplicated here. `RenderResult` retains
 /// the exact immutable `RenderRequest`, so callers derive that relation through the requested output
 /// at `output_index`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RenderResultOutputEvidence {
-    output_index: usize,
+    output: RenderOutputHandle,
     approximation: RenderOutputApproximation,
     object_representations: Vec<RenderResultObjectRepresentation>,
 }
 
+impl PartialEq for RenderResultOutputEvidence {
+    fn eq(&self, other: &Self) -> bool {
+        self.output.position() == other.output.position()
+            && self.approximation == other.approximation
+            && self.object_representations == other.object_representations
+    }
+}
+
+impl Eq for RenderResultOutputEvidence {}
+
 impl RenderResultOutputEvidence {
-    pub const fn output_index(&self) -> usize {
-        self.output_index
+    /// Exact request-local output correlation, distinct from deterministic output order.
+    pub const fn output(&self) -> &RenderOutputHandle {
+        &self.output
     }
 
     pub const fn approximation(&self) -> RenderOutputApproximation {
@@ -172,7 +183,11 @@ impl RenderResult {
             .outputs()
             .iter()
             .map(|output| RenderResultOutputEvidence {
-                output_index: output.output_index(),
+                output: admitted
+                    .plan()
+                    .request()
+                    .output_handle(output.output_index())
+                    .expect("admitted request output"),
                 approximation: output.approximation(),
                 object_representations: output
                     .object_representations()
@@ -221,5 +236,59 @@ impl RenderResult {
 
     pub fn outputs(&self) -> &[RenderResultOutputEvidence] {
         &self.outputs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::request::{
+        RenderObservationSpec, RenderOutputSpec, RenderOutputValue, RenderProbeObservation,
+        RenderRequestBuilder, RenderResultTopology, RenderSamplingSupport, RenderSemanticTolerance,
+    };
+    use crate::space_time::{RenderAffineTransform3, RenderTimeInterval, RenderTimePoint};
+
+    fn equivalent_request() -> RenderRequest {
+        let shutter =
+            RenderTimeInterval::instant(RenderTimePoint::from_seconds(0.0).expect("finite time"));
+        let observation = RenderObservationSpec::Probe(
+            RenderProbeObservation::new(
+                RenderAffineTransform3::identity(),
+                shutter,
+                RenderSamplingSupport::ideal_ray(),
+            )
+            .expect("probe"),
+        );
+        let output = RenderOutputSpec::new(
+            RenderOutputValue::ObjectIdentity,
+            RenderResultTopology::scalar(),
+            RenderSemanticTolerance::exact(),
+        )
+        .expect("output");
+        let mut builder = RenderRequestBuilder::new(shutter);
+        let observation = builder.add_observation(observation);
+        builder
+            .add_output(&observation, output)
+            .expect("own observation");
+        builder.finish().expect("valid request")
+    }
+
+    #[test]
+    fn semantic_result_evidence_equality_does_not_acquire_request_pointer_identity() {
+        let first = equivalent_request();
+        let second = equivalent_request();
+        assert_eq!(first, second);
+        let first_handle = first.output_handle(0).expect("first output");
+        let second_handle = second.output_handle(0).expect("second output");
+        assert_ne!(first_handle, second_handle);
+        let evidence = |output| RenderResultOutputEvidence {
+            output,
+            approximation: RenderOutputApproximation::Exact,
+            object_representations: Vec::new(),
+        };
+        let left = evidence(first_handle);
+        let right = evidence(second_handle);
+        assert_eq!(left, right);
+        assert_ne!(left.output(), right.output());
     }
 }

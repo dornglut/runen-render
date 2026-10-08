@@ -6,8 +6,8 @@
 //! or planning authority.
 
 use crate::admission::{
-    RenderOutputBinding, RenderOutputDestination, RenderRepresentationAvailabilityFact,
-    RenderRepresentationAvailabilityState, admit_render_plan,
+    RenderAdmissionInputs, RenderOutputBinding, RenderOutputDestination,
+    RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState, admit_render_plan,
 };
 use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
 use crate::method::{
@@ -332,7 +332,7 @@ fn common_resource(label_text: &str) -> GpuResourceCommon {
     .expect("R6 proof resource common")
 }
 
-fn founding_output_bindings() -> Vec<RenderOutputBinding> {
+fn founding_output_bindings(request: &RenderRequest) -> Vec<RenderOutputBinding> {
     let mut allocator = GpuWorkResourceIdAllocator::new();
     let mut bindings = Vec::with_capacity(4);
     for (output_index, label_text) in [
@@ -369,7 +369,7 @@ fn founding_output_bindings() -> Vec<RenderOutputBinding> {
             .allocate_texture_handle(descriptor)
             .expect("R6 texture handle");
         bindings.push(RenderOutputBinding::new(
-            output_index,
+            request.output_handle(output_index).expect("output handle"),
             RenderOutputDestination::SampleLatticeTexture(texture),
         ));
     }
@@ -389,7 +389,7 @@ fn founding_output_bindings() -> Vec<RenderOutputBinding> {
         .allocate_buffer_handle(descriptor)
         .expect("R6 buffer handle");
     bindings.push(RenderOutputBinding::new(
-        3,
+        request.output_handle(3).expect("output handle"),
         RenderOutputDestination::ScalarBuffer(buffer),
     ));
     bindings
@@ -493,9 +493,13 @@ fn founding_scene_reaches_public_r5_admission_without_synthetic_semantic_binding
             )
         })
         .collect::<Vec<_>>();
-    let bindings = founding_output_bindings();
-    let admitted = admit_render_plan(&fixture.plan, &availability, &bindings, &context)
-        .expect("founding R6 plan should reach ordinary public R5 admission");
+    let bindings = founding_output_bindings(fixture.plan.request());
+    let admitted = admit_render_plan(
+        &fixture.plan,
+        RenderAdmissionInputs::new(&[], &[], &availability, &bindings),
+        &context,
+    )
+    .expect("founding R6 plan should reach ordinary public R5 admission");
 
     assert_eq!(admitted.plan(), &fixture.plan);
     assert_eq!(

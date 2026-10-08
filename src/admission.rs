@@ -9,6 +9,7 @@
 use super::field_input::{RenderFieldSemanticInput, RenderFieldSemanticInputBinding};
 use super::method::RenderAbstractExecutionRequirement;
 use super::representation::RenderRepresentationId;
+use super::request::RenderOutputHandle;
 use super::scene::{RenderObjectId, RenderSceneRevision};
 use super::semantic_binding::{
     RenderNormalizedSemanticInputs, RenderSemanticBindingInputError,
@@ -75,22 +76,34 @@ pub enum RenderOutputDestination {
     SampleLatticeTexture(GpuTextureHandle),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RenderOutputBinding {
-    output_index: usize,
+    output: RenderOutputHandle,
     destination: RenderOutputDestination,
 }
 
+impl PartialEq for RenderOutputBinding {
+    fn eq(&self, other: &Self) -> bool {
+        self.output.position() == other.output.position() && self.destination == other.destination
+    }
+}
+
+impl Eq for RenderOutputBinding {}
+
 impl RenderOutputBinding {
-    pub const fn new(output_index: usize, destination: RenderOutputDestination) -> Self {
+    pub fn new(output: RenderOutputHandle, destination: RenderOutputDestination) -> Self {
         Self {
-            output_index,
+            output,
             destination,
         }
     }
 
-    pub const fn output_index(&self) -> usize {
-        self.output_index
+    pub const fn output(&self) -> &RenderOutputHandle {
+        &self.output
+    }
+
+    pub(crate) const fn output_index(&self) -> usize {
+        self.output.position()
     }
 
     pub const fn destination(&self) -> &RenderOutputDestination {
@@ -124,12 +137,21 @@ pub struct RenderAdmittedOutput {
 }
 
 impl RenderAdmittedOutput {
-    pub const fn output_index(&self) -> usize {
+    pub const fn output(&self) -> &RenderOutputHandle {
+        self.binding.output()
+    }
+
+    pub(crate) const fn output_index(&self) -> usize {
         self.output_index
     }
 
-    pub const fn observation_index(&self) -> usize {
+    pub(crate) const fn observation_index(&self) -> usize {
         self.observation_index
+    }
+
+    /// Exact observation associated with this admitted, request-owned output.
+    pub fn observation(&self) -> crate::request::RenderObservationHandle {
+        self.output().observation()
     }
 
     pub const fn approximation(&self) -> RenderOutputApproximation {
@@ -222,6 +244,9 @@ pub enum RenderCandidateAdmissionRejectionReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderAdmissionInputError {
     SemanticBinding(RenderSemanticBindingInputError),
+    ForeignOutputBinding {
+        output: RenderOutputHandle,
+    },
     DuplicateAvailabilityFact {
         representation_id: RenderRepresentationId,
     },
@@ -378,48 +403,58 @@ impl CurrentExecutionFacts {
     }
 }
 
-/// Admit one accepted R4 plan that declares no request-scoped semantic-input prerequisite.
+/// The one canonical advanced admission input set.
 ///
-/// This preserves the pre-#566 zero-prerequisite call shape. A plan containing a representation use
-/// that declares a current surface or field semantic prerequisite cannot select that use through
-/// this entry. Use [`admit_render_plan_with_surface_inputs`] for the legacy surface-only shape or
-/// [`admit_render_plan_with_semantic_inputs`] when typed field bindings are required.
+/// Planning remains a separate public stage; this value only groups invocation-local semantic
+/// binding, availability, and physical output facts without acquiring semantic authority.
+#[derive(Debug, Clone, Copy)]
+pub struct RenderAdmissionInputs<'a> {
+    surface_inputs: &'a [RenderSurfaceSemanticInputBinding],
+    field_inputs: &'a [RenderFieldSemanticInputBinding],
+    availability: &'a [RenderRepresentationAvailabilityFact],
+    output_bindings: &'a [RenderOutputBinding],
+}
+
+impl<'a> RenderAdmissionInputs<'a> {
+    pub const fn new(
+        surface_inputs: &'a [RenderSurfaceSemanticInputBinding],
+        field_inputs: &'a [RenderFieldSemanticInputBinding],
+        availability: &'a [RenderRepresentationAvailabilityFact],
+        output_bindings: &'a [RenderOutputBinding],
+    ) -> Self {
+        Self {
+            surface_inputs,
+            field_inputs,
+            availability,
+            output_bindings,
+        }
+    }
+}
+
+/// Admit a public semantic plan using the canonical typed-input set and current GPU facts.
 pub fn admit_render_plan(
     plan: &RenderPlan,
-    availability: &[RenderRepresentationAvailabilityFact],
-    output_bindings: &[RenderOutputBinding],
+    inputs: RenderAdmissionInputs<'_>,
     context: &GpuContext,
 ) -> Result<AdmittedRenderPlan, RenderExecutionAdmissionFailure> {
-    admit_render_plan_with_semantic_inputs(plan, &[], &[], availability, output_bindings, context)
-}
-
-/// Preserve the existing surface-only R5 entry point.
-pub fn admit_render_plan_with_surface_inputs(
-    plan: &RenderPlan,
-    surface_inputs: &[RenderSurfaceSemanticInputBinding],
-    availability: &[RenderRepresentationAvailabilityFact],
-    output_bindings: &[RenderOutputBinding],
-    context: &GpuContext,
-) -> Result<AdmittedRenderPlan, RenderExecutionAdmissionFailure> {
-    admit_render_plan_with_semantic_inputs(
-        plan,
+    let RenderAdmissionInputs {
         surface_inputs,
-        &[],
+        field_inputs,
         availability,
         output_bindings,
-        context,
-    )
-}
+    } = inputs;
+    // Handle membership is structural invocation validity: reject foreign output identity
+    // even if every semantic candidate would subsequently fail to admit.
+    for binding in output_bindings {
+        if !plan.request().contains_output(binding.output()) {
+            return Err(RenderExecutionAdmissionFailure::InvalidInput(
+                RenderAdmissionInputError::ForeignOutputBinding {
+                    output: binding.output().clone(),
+                },
+            ));
+        }
+    }
 
-/// Admit one accepted R4 plan against current typed semantic bindings and operational facts.
-pub fn admit_render_plan_with_semantic_inputs(
-    plan: &RenderPlan,
-    surface_inputs: &[RenderSurfaceSemanticInputBinding],
-    field_inputs: &[RenderFieldSemanticInputBinding],
-    availability: &[RenderRepresentationAvailabilityFact],
-    output_bindings: &[RenderOutputBinding],
-    context: &GpuContext,
-) -> Result<AdmittedRenderPlan, RenderExecutionAdmissionFailure> {
     let semantic_inputs =
         RenderNormalizedSemanticInputs::normalize(plan, surface_inputs, field_inputs).map_err(
             |error| {
@@ -594,6 +629,13 @@ fn normalize_output_bindings(
     let output_count = plan.outputs().len();
     let mut normalized = BTreeMap::new();
     for binding in bindings {
+        if !plan.request().contains_output(binding.output()) {
+            return Err(RenderExecutionAdmissionFailure::InvalidInput(
+                RenderAdmissionInputError::ForeignOutputBinding {
+                    output: binding.output().clone(),
+                },
+            ));
+        }
         let output_index = binding.output_index();
         if output_index >= output_count {
             return Err(RenderExecutionAdmissionFailure::InvalidInput(
@@ -1152,7 +1194,11 @@ mod tests {
         }
     }
 
-    fn scalar_buffer_binding_for(output_index: usize, label_text: &str) -> RenderOutputBinding {
+    fn scalar_buffer_binding_for(
+        plan: &RenderPlan,
+        output_index: usize,
+        label_text: &str,
+    ) -> RenderOutputBinding {
         let label = GpuResourceLabel::new(label_text).expect("label");
         let provenance = GpuResourceProvenance::new(label.clone(), None, None);
         let common = GpuResourceCommon::owned(
@@ -1171,11 +1217,16 @@ mod tests {
         let buffer = allocator
             .allocate_buffer_handle(descriptor)
             .expect("buffer handle");
-        RenderOutputBinding::new(output_index, RenderOutputDestination::ScalarBuffer(buffer))
+        RenderOutputBinding::new(
+            plan.request()
+                .output_handle(output_index)
+                .expect("request output handle"),
+            RenderOutputDestination::ScalarBuffer(buffer),
+        )
     }
 
-    fn scalar_buffer_binding() -> RenderOutputBinding {
-        scalar_buffer_binding_for(0, "r5 scalar output")
+    fn scalar_buffer_binding(plan: &RenderPlan) -> RenderOutputBinding {
+        scalar_buffer_binding_for(plan, 0, "r5 scalar output")
     }
 
     fn lattice_texture(width: u32, height: u32, writable: bool) -> GpuTextureHandle {
@@ -1218,7 +1269,7 @@ mod tests {
         let (plan, first_id, second_id) = plan_with_two_surface_representations();
         let before = plan.scene_revision();
         let bindings =
-            normalize_output_bindings(&plan, &[scalar_buffer_binding()]).expect("bindings");
+            normalize_output_bindings(&plan, &[scalar_buffer_binding(&plan)]).expect("bindings");
         let first_order = normalize_availability(&[
             RenderRepresentationAvailabilityFact::new(
                 first_id,
@@ -1270,7 +1321,7 @@ mod tests {
     fn unavailable_is_not_unsupported_and_unknown_is_explicit() {
         let (plan, first_id, second_id) = plan_with_two_surface_representations();
         let bindings =
-            normalize_output_bindings(&plan, &[scalar_buffer_binding()]).expect("bindings");
+            normalize_output_bindings(&plan, &[scalar_buffer_binding(&plan)]).expect("bindings");
         let unavailable = normalize_availability(&[
             RenderRepresentationAvailabilityFact::new(
                 first_id,
@@ -1325,7 +1376,7 @@ mod tests {
             ))
         ));
 
-        let binding = scalar_buffer_binding();
+        let binding = scalar_buffer_binding(&plan);
         assert!(matches!(
             normalize_output_bindings(&plan, &[binding.clone(), binding]),
             Err(RenderExecutionAdmissionFailure::InvalidInput(
@@ -1354,7 +1405,7 @@ mod tests {
         );
 
         let bindings =
-            normalize_output_bindings(&plan, &[scalar_buffer_binding()]).expect("bindings");
+            normalize_output_bindings(&plan, &[scalar_buffer_binding(&plan)]).expect("bindings");
         let availability = normalize_availability(&[
             RenderRepresentationAvailabilityFact::new(
                 required_id,
@@ -1405,8 +1456,8 @@ mod tests {
         let bindings = normalize_output_bindings(
             &plan,
             &[
-                scalar_buffer_binding_for(1, "r5 output one"),
-                scalar_buffer_binding_for(0, "r5 output zero"),
+                scalar_buffer_binding_for(&plan, 1, "r5 output one"),
+                scalar_buffer_binding_for(&plan, 0, "r5 output zero"),
             ],
         )
         .expect("bindings");
@@ -1447,8 +1498,8 @@ mod tests {
     #[test]
     fn multi_output_bindings_are_correlated_by_index_not_input_order() {
         let (plan, representation_id) = two_output_plan();
-        let first = scalar_buffer_binding_for(0, "r5 output zero");
-        let second = scalar_buffer_binding_for(1, "r5 output one");
+        let first = scalar_buffer_binding_for(&plan, 0, "r5 output zero");
+        let second = scalar_buffer_binding_for(&plan, 1, "r5 output one");
         let ordered = normalize_output_bindings(&plan, &[second.clone(), first.clone()])
             .expect("reversed bindings normalize by output index");
         assert_eq!(ordered, vec![first.clone(), second.clone()]);
@@ -1501,7 +1552,7 @@ mod tests {
         ])
         .expect("availability");
         let bindings =
-            normalize_output_bindings(&plan, &[scalar_buffer_binding()]).expect("bindings");
+            normalize_output_bindings(&plan, &[scalar_buffer_binding(&plan)]).expect("bindings");
         let planned_approximation = plan.candidates()[0].outputs()[0].approximation();
         let admitted = admit_candidate(
             &plan.candidates()[0],
@@ -1522,7 +1573,7 @@ mod tests {
     fn scalar_output_rejects_lattice_texture_destination() {
         let (plan, _, _) = plan_with_two_surface_representations();
         let wrong = RenderOutputBinding::new(
-            0,
+            plan.request().output_handle(0).expect("output handle"),
             RenderOutputDestination::SampleLatticeTexture(lattice_texture(1, 1, true)),
         );
         assert!(matches!(
@@ -1575,13 +1626,13 @@ mod tests {
     fn lattice_binding_validation_uses_topology_extent_and_writability_not_semantic_format() {
         let plan = lattice_plan(4, 3);
         let valid = RenderOutputBinding::new(
-            0,
+            plan.request().output_handle(0).expect("output handle"),
             RenderOutputDestination::SampleLatticeTexture(lattice_texture(4, 3, true)),
         );
         normalize_output_bindings(&plan, &[valid]).expect("matching writable lattice binding");
 
         let wrong_extent = RenderOutputBinding::new(
-            0,
+            plan.request().output_handle(0).expect("output handle"),
             RenderOutputDestination::SampleLatticeTexture(lattice_texture(5, 3, true)),
         );
         assert!(matches!(
@@ -1597,13 +1648,30 @@ mod tests {
         ));
 
         let not_writable = RenderOutputBinding::new(
-            0,
+            plan.request().output_handle(0).expect("output handle"),
             RenderOutputDestination::SampleLatticeTexture(lattice_texture(4, 3, false)),
         );
         assert!(matches!(
             normalize_output_bindings(&plan, &[not_writable]),
             Err(RenderExecutionAdmissionFailure::InvalidInput(
                 RenderAdmissionInputError::LatticeTextureNotWritable { output_index: 0 }
+            ))
+        ));
+    }
+    #[test]
+    fn bindings_reject_equivalent_foreign_request_output_handles() {
+        let (plan, _, _) = plan_with_two_surface_representations();
+        let (other_plan, _, _) = plan_with_two_surface_representations();
+        assert_eq!(plan.request(), other_plan.request());
+        let foreign = scalar_buffer_binding(&other_plan);
+        assert_ne!(
+            foreign.output(),
+            &plan.request().output_handle(0).expect("own output"),
+        );
+        assert!(matches!(
+            normalize_output_bindings(&plan, &[foreign]),
+            Err(RenderExecutionAdmissionFailure::InvalidInput(
+                RenderAdmissionInputError::ForeignOutputBinding { .. }
             ))
         ));
     }

@@ -18,7 +18,7 @@ use runen_render::representation::{
 };
 use runen_render::request::{
     RenderObservationSpec, RenderOutputSpec, RenderOutputValue, RenderPerspectiveObservation,
-    RenderRadiometricRepresentation, RenderRequest, RenderRequestedOutput, RenderResultTopology,
+    RenderRadiometricRepresentation, RenderRequestBuilder, RenderResultTopology,
     RenderSamplingSupport, RenderSemanticTolerance,
 };
 use runen_render::scene::{RenderObjectId, RenderObjectState, RenderSceneStore, RenderSceneUpdate};
@@ -35,9 +35,9 @@ use runen_render::{
     AdmittedRender, AssociatedRenderOccurrence, PreparedRadianceOutput, PreparedRender,
     PreparedRenderOccurrence, RenderAdmissionError, RenderCapturedRadiance,
     RenderEvaluationSelection, RenderExecutionError, RenderExecutionErrorKind,
-    RenderExecutionSession, RenderExecutionSessionError, RenderObjectIdentityDecoderError,
-    RenderObjectIdentityDecoderErrorKind, RenderRadianceCaptureError,
-    RenderRadianceCaptureErrorKind, RenderRadianceCaptureRequest,
+    RenderExecutionSession, RenderExecutionSessionError, RenderInvocation,
+    RenderObjectIdentityDecoderError, RenderObjectIdentityDecoderErrorKind,
+    RenderRadianceCaptureError, RenderRadianceCaptureErrorKind, RenderRadianceCaptureRequest,
     RenderRadianceCaptureRequestError, RenderRadianceCaptureRequestErrorKind,
     RenderResultFormationError, RenderResultFormationErrorKind, RenderResultSubmissionError,
     RenderResultSubmissionErrorKind, RenderTemporalExecutionEvidence,
@@ -78,15 +78,15 @@ fn ordinary_semantic_renderer_surface_is_public_to_downstream_consumers() {
     let _ = RenderExecutionError::submission_error;
     let _ = RenderResultSubmissionError::kind;
     let _ = RenderResultSubmissionError::verification_eligibility_kind;
-    let _ = RenderResultSubmissionError::observation_index;
+    let _ = RenderResultSubmissionError::observation;
     let _ = RenderResultSubmissionError::object_id;
     let _ = RenderResultSubmissionError::readback_cardinality;
     let _ = RenderResultSubmissionError::output_correlation;
-    let _ = RenderResultSubmissionError::correlation_output_index;
+    let _ = RenderResultSubmissionError::correlation_output;
     let _ = RenderResultSubmissionError::correlation_channel;
     let _ = RenderResultFormationError::kind;
     let _ = RenderResultFormationError::verification_eligibility_kind;
-    let _ = RenderResultFormationError::output_index;
+    let _ = RenderResultFormationError::output;
     let _ = RenderResultFormationError::sample_index;
     let _ = RenderResultFormationError::channel;
     let _ = RenderResultFormationError::gpu_failure_kind;
@@ -107,9 +107,13 @@ fn ordinary_semantic_renderer_surface_is_public_to_downstream_consumers() {
     let _ = PreparedRenderOccurrence::work_set;
     let _ = PreparedRenderOccurrence::radiance_outputs;
     let _ = PreparedRenderOccurrence::radiance_output;
-    let selection = RenderEvaluationSelection::new(0, 64, 32).expect("non-zero extent");
-    assert_eq!(selection.output_index(), 0);
-    assert_eq!(selection.extent(), (64, 32));
+    fn assert_selection(output: runen_render::request::RenderOutputHandle) {
+        let selection =
+            RenderEvaluationSelection::new(output.clone(), 64, 32).expect("non-zero extent");
+        assert_eq!(selection.output(), &output);
+        assert_eq!(selection.extent(), (64, 32));
+    }
+    let _ = assert_selection;
 
     fn assert_temporal_evidence(evidence: &RenderTemporalExecutionEvidence) {
         let _ = (
@@ -139,7 +143,7 @@ fn ordinary_semantic_renderer_surface_is_public_to_downstream_consumers() {
     let _ = RenderVerificationEligibilityErrorKind::SamplingSupportUnsupported;
 
     fn assert_prepared_output_surface(output: &PreparedRadianceOutput<'_>) {
-        let _ = output.output_index();
+        let _ = output.output();
         let _ = output.resource();
         let _ = output.texture();
         let _ = output.export_relationship();
@@ -241,20 +245,20 @@ fn ordinary_surface_executes_headless_through_public_runengpu_only() {
         )
         .expect("public perspective observation"),
     );
-    let request = RenderRequest::new(
-        shutter,
-        vec![observation],
-        vec![RenderRequestedOutput::new(
-            0,
+    let mut builder = RenderRequestBuilder::new(shutter);
+    let observation_handle = builder.add_observation(observation);
+    builder
+        .add_output(
+            &observation_handle,
             RenderOutputSpec::new(
                 RenderOutputValue::ObjectIdentity,
                 RenderResultTopology::sample_lattice_2d(1, 1).expect("1x1 public lattice"),
                 RenderSemanticTolerance::exact(),
             )
             .expect("public object-identity output"),
-        )],
-    )
-    .expect("public render request");
+        )
+        .expect("own observation");
+    let request = builder.finish().expect("public render request");
 
     let semantic_inputs = [RenderSurfaceSemanticInputBinding::new(
         representation_id,
@@ -287,17 +291,20 @@ fn ordinary_surface_executes_headless_through_public_runengpu_only() {
         )
         .expect("public output handle");
     let output_bindings = [RenderOutputBinding::new(
-        0,
+        request.output_handle(0).expect("request output handle"),
         RenderOutputDestination::SampleLatticeTexture(destination),
     )];
 
     let admitted = admit_render(
-        &scene.snapshot(),
-        &request,
-        &semantic_inputs,
-        &[],
-        &availability,
-        &output_bindings,
+        &RenderInvocation::new(
+            scene.snapshot(),
+            request.clone(),
+            semantic_inputs.to_vec(),
+            Vec::new(),
+            availability.to_vec(),
+            output_bindings.to_vec(),
+        )
+        .expect("valid correlated invocation"),
         &context,
     )
     .expect("public ordinary admission");
@@ -448,10 +455,12 @@ fn admitted_identity_render(
         )
         .expect("retained perspective observation"),
     );
-    let outputs = (0..output_count)
-        .map(|_| {
-            RenderRequestedOutput::new(
-                0,
+    let mut builder = RenderRequestBuilder::new(shutter);
+    let observation_handle = builder.add_observation(observation);
+    for _ in 0..output_count {
+        builder
+            .add_output(
+                &observation_handle,
                 RenderOutputSpec::new(
                     RenderOutputValue::ObjectIdentity,
                     RenderResultTopology::sample_lattice_2d(1, 1).expect("retained lattice"),
@@ -459,10 +468,9 @@ fn admitted_identity_render(
                 )
                 .expect("retained identity output"),
             )
-        })
-        .collect::<Vec<_>>();
-    let request =
-        RenderRequest::new(shutter, vec![observation], outputs).expect("retained render request");
+            .expect("own observation");
+    }
+    let request = builder.finish().expect("retained render request");
 
     let semantic_inputs = [RenderSurfaceSemanticInputBinding::new(
         representation_id,
@@ -497,18 +505,23 @@ fn admitted_identity_render(
             )
             .expect("retained output handle");
         output_bindings.push(RenderOutputBinding::new(
-            output_index,
+            request
+                .output_handle(output_index)
+                .expect("request output handle"),
             RenderOutputDestination::SampleLatticeTexture(destination),
         ));
     }
 
     admit_render(
-        &scene.snapshot(),
-        &request,
-        &semantic_inputs,
-        &[],
-        &availability,
-        &output_bindings,
+        &RenderInvocation::new(
+            scene.snapshot(),
+            request.clone(),
+            semantic_inputs.to_vec(),
+            Vec::new(),
+            availability.to_vec(),
+            output_bindings.to_vec(),
+        )
+        .expect("valid correlated invocation"),
         context,
     )
     .expect("retained ordinary admission")
@@ -591,11 +604,11 @@ fn admitted_temporal_radiance_render_at_extent(
         )
         .expect("temporal perspective observation"),
     );
-    let request = RenderRequest::new(
-        shutter,
-        vec![observation],
-        vec![RenderRequestedOutput::new(
-            0,
+    let mut builder = RenderRequestBuilder::new(shutter);
+    let observation_handle = builder.add_observation(observation);
+    builder
+        .add_output(
+            &observation_handle,
             RenderOutputSpec::new(
                 RenderOutputValue::Radiance {
                     representation: RenderRadiometricRepresentation::spectral_at_wavelength_meters(
@@ -607,9 +620,9 @@ fn admitted_temporal_radiance_render_at_extent(
                 RenderSemanticTolerance::exact(),
             )
             .expect("temporal radiance output"),
-        )],
-    )
-    .expect("temporal render request");
+        )
+        .expect("own observation");
+    let request = builder.finish().expect("temporal render request");
 
     let semantic_inputs = [RenderSurfaceSemanticInputBinding::new(
         representation_id,
@@ -646,17 +659,20 @@ fn admitted_temporal_radiance_render_at_extent(
         )
         .expect("temporal output handle");
     let output_bindings = [RenderOutputBinding::new(
-        0,
+        request.output_handle(0).expect("request output handle"),
         RenderOutputDestination::SampleLatticeTexture(destination),
     )];
 
     admit_render(
-        &scene.snapshot(),
-        &request,
-        &semantic_inputs,
-        &[],
-        &availability,
-        &output_bindings,
+        &RenderInvocation::new(
+            scene.snapshot(),
+            request.clone(),
+            semantic_inputs.to_vec(),
+            Vec::new(),
+            availability.to_vec(),
+            output_bindings.to_vec(),
+        )
+        .expect("valid correlated invocation"),
         context,
     )
     .expect("temporal ordinary admission")
@@ -743,35 +759,36 @@ fn admitted_retained_capture_render(
     let topology = || {
         RenderResultTopology::sample_lattice_2d(EXTENT, EXTENT).expect("retained capture lattice")
     };
-    let request = RenderRequest::new(
-        shutter,
-        vec![observation],
-        vec![
-            RenderRequestedOutput::new(
-                0,
-                RenderOutputSpec::new(
-                    RenderOutputValue::Radiance {
-                        representation:
-                            RenderRadiometricRepresentation::spectral_at_wavelength_meters(550e-9)
-                                .expect("retained capture spectral radiance"),
-                    },
-                    topology(),
-                    RenderSemanticTolerance::absolute(2.0e-4).expect("retained capture tolerance"),
-                )
-                .expect("retained capture radiance output"),
-            ),
-            RenderRequestedOutput::new(
-                0,
-                RenderOutputSpec::new(
-                    RenderOutputValue::ObjectIdentity,
-                    topology(),
-                    RenderSemanticTolerance::exact(),
-                )
-                .expect("retained capture identity output"),
-            ),
-        ],
-    )
-    .expect("retained capture request");
+    let mut builder = RenderRequestBuilder::new(shutter);
+    let observation_handle = builder.add_observation(observation);
+    builder
+        .add_output(
+            &observation_handle,
+            RenderOutputSpec::new(
+                RenderOutputValue::Radiance {
+                    representation: RenderRadiometricRepresentation::spectral_at_wavelength_meters(
+                        550e-9,
+                    )
+                    .expect("retained capture spectral radiance"),
+                },
+                topology(),
+                RenderSemanticTolerance::absolute(2.0e-4).expect("retained capture tolerance"),
+            )
+            .expect("retained capture radiance output"),
+        )
+        .expect("own observation");
+    builder
+        .add_output(
+            &observation_handle,
+            RenderOutputSpec::new(
+                RenderOutputValue::ObjectIdentity,
+                topology(),
+                RenderSemanticTolerance::exact(),
+            )
+            .expect("retained capture identity output"),
+        )
+        .expect("own observation");
+    let request = builder.finish().expect("retained capture request");
 
     let semantic_inputs = [RenderSurfaceSemanticInputBinding::new(
         representation_id,
@@ -813,22 +830,25 @@ fn admitted_retained_capture_render(
     let identity_target = target("identity");
     let output_bindings = [
         RenderOutputBinding::new(
-            0,
+            request.output_handle(0).expect("request output handle"),
             RenderOutputDestination::SampleLatticeTexture(radiance_target),
         ),
         RenderOutputBinding::new(
-            1,
+            request.output_handle(1).expect("request output handle"),
             RenderOutputDestination::SampleLatticeTexture(identity_target.clone()),
         ),
     ];
 
     let admitted = admit_render(
-        &scene.snapshot(),
-        &request,
-        &semantic_inputs,
-        &[],
-        &availability,
-        &output_bindings,
+        &RenderInvocation::new(
+            scene.snapshot(),
+            request.clone(),
+            semantic_inputs.to_vec(),
+            Vec::new(),
+            availability.to_vec(),
+            output_bindings.to_vec(),
+        )
+        .expect("valid correlated invocation"),
         context,
     )
     .expect("retained capture admission");
@@ -856,7 +876,30 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
     let associated = session
         .associate_submission(occurrence, &renderer_submission)
         .expect("exact retained occurrence association");
-    let Err(pending_capture_error) = associated.request_radiance_capture(0) else {
+    // Invalid request identity takes precedence even while this occurrence is pending.
+    let (pending_foreign, _, _) =
+        admitted_retained_capture_render(&context, "pending foreign output");
+    let pending_foreign_output = pending_foreign
+        .admitted_plan()
+        .plan()
+        .request()
+        .output_handle(1)
+        .expect("pending foreign identity output");
+    assert_eq!(
+        associated
+            .object_identity_decoder(&pending_foreign_output)
+            .expect_err("foreign output must not acquire pending occurrence identity")
+            .kind(),
+        RenderObjectIdentityDecoderErrorKind::OutputNotAdmitted
+    );
+    let Err(pending_capture_error) = associated.request_radiance_capture(
+        &associated
+            .admitted_plan()
+            .plan()
+            .request()
+            .output_handle(0)
+            .expect("capture output"),
+    ) else {
         panic!("pending renderer submission cannot mint capture")
     };
     assert_eq!(
@@ -865,7 +908,14 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
     );
     assert_eq!(
         associated
-            .object_identity_decoder(1)
+            .object_identity_decoder(
+                &associated
+                    .admitted_plan()
+                    .plan()
+                    .request()
+                    .output_handle(1)
+                    .expect("decoder output"),
+            )
             .expect_err("pending renderer submission cannot expose decoder")
             .kind(),
         RenderObjectIdentityDecoderErrorKind::RendererSubmissionPending
@@ -880,21 +930,77 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
         associated.submission_status(),
         GpuSubmissionStatus::Completed
     );
+    // A new request with the same semantic output positions must not acquire the already
+    // associated occurrence's capture or decoder authority.
+    let (foreign_admitted, _, _) =
+        admitted_retained_capture_render(&context, "foreign request correlation");
+    let foreign_request = foreign_admitted.admitted_plan().plan().request();
+    assert_eq!(associated.admitted_plan().plan().request(), foreign_request);
+    let foreign_radiance = foreign_request.output_handle(0).expect("foreign radiance");
+    let foreign_identity = foreign_request.output_handle(1).expect("foreign identity");
+    assert_ne!(
+        &foreign_radiance,
+        &associated
+            .admitted_plan()
+            .plan()
+            .request()
+            .output_handle(0)
+            .expect("own radiance"),
+    );
+    let capture_error = associated
+        .request_radiance_capture(&foreign_radiance)
+        .err()
+        .expect("foreign request must not capture this occurrence");
+    assert_eq!(
+        capture_error.kind(),
+        RenderRadianceCaptureRequestErrorKind::OutputNotAdmitted
+    );
+    assert_eq!(capture_error.output(), &foreign_radiance);
+    let decoder_error = associated
+        .object_identity_decoder(&foreign_identity)
+        .expect_err("foreign request must not select this occurrence decoder");
+    assert_eq!(
+        decoder_error.kind(),
+        RenderObjectIdentityDecoderErrorKind::OutputNotAdmitted
+    );
+    assert_eq!(decoder_error.output(), &foreign_identity);
+
     assert_eq!(
         associated
-            .object_identity_decoder(0)
+            .object_identity_decoder(
+                &associated
+                    .admitted_plan()
+                    .plan()
+                    .request()
+                    .output_handle(0)
+                    .expect("decoder output"),
+            )
             .expect_err("radiance output is not object identity")
             .kind(),
         RenderObjectIdentityDecoderErrorKind::OutputNotObjectIdentity
     );
     let decoder = associated
-        .object_identity_decoder(1)
+        .object_identity_decoder(
+            &associated
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(1)
+                .expect("decoder output"),
+        )
         .expect("completed identity output decoder");
 
     let capture_request = associated
-        .request_radiance_capture(0)
+        .request_radiance_capture(
+            &associated
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("capture output"),
+        )
         .expect("completed retained radiance capture request");
-    assert_eq!(capture_request.output_index(), 0);
+    assert_eq!(capture_request.output().position(), 0);
     let capture_operation = GpuReadbackOperation::new(
         capture_request.source().clone(),
         capture_request.readback_id(),
@@ -913,7 +1019,7 @@ fn associated_occurrence_exposes_exact_retained_capture_and_identity_decoder() {
     let captured = associated
         .capture_radiance(capture_request, &context, &capture_submission)
         .expect("interpret retained radiance");
-    assert_eq!(captured.output_index(), 0);
+    assert_eq!(captured.output().position(), 0);
     assert_eq!(
         captured.topology().sample_lattice_dimensions(),
         Some((4, 4))
@@ -983,7 +1089,14 @@ fn associated_occurrence_failure_is_machine_actionable() {
         GpuSubmissionStatus::Failed(failure)
             if failure.kind() == GpuSubmissionFailureKind::ContextDropped
     ));
-    let Err(capture_error) = associated.request_radiance_capture(0) else {
+    let Err(capture_error) = associated.request_radiance_capture(
+        &associated
+            .admitted_plan()
+            .plan()
+            .request()
+            .output_handle(0)
+            .expect("capture output"),
+    ) else {
         panic!("failed renderer submission cannot mint capture")
     };
     assert_eq!(
@@ -995,7 +1108,14 @@ fn associated_occurrence_failure_is_machine_actionable() {
         Some(GpuSubmissionFailureKind::ContextDropped)
     );
     let identity_error = associated
-        .object_identity_decoder(1)
+        .object_identity_decoder(
+            &associated
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(1)
+                .expect("decoder output"),
+        )
         .expect_err("failed renderer submission cannot expose decoder");
     assert_eq!(
         identity_error.kind(),
@@ -1044,7 +1164,14 @@ fn associated_capture_requests_do_not_cross_correlate_between_occurrences() {
     second_session.reconcile();
 
     let request = first_associated
-        .request_radiance_capture(0)
+        .request_radiance_capture(
+            &first_associated
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("capture output"),
+        )
         .expect("first exact capture request");
     let operation = GpuReadbackOperation::new(request.source().clone(), request.readback_id())
         .expect("first exact capture readback");
@@ -1105,7 +1232,14 @@ fn associated_capture_rejects_a_superseded_retained_writer() {
     session.reconcile();
 
     let request = first_associated
-        .request_radiance_capture(0)
+        .request_radiance_capture(
+            &first_associated
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("capture output"),
+        )
         .expect("old occurrence can still form an exact readback request");
     let operation = GpuReadbackOperation::new(request.source().clone(), request.readback_id())
         .expect("stale capture readback operation");
@@ -1229,13 +1363,30 @@ fn associated_temporal_r32float_radiance_is_capturable_through_exact_occurrence(
     };
     let mut session = RenderExecutionSession::new();
     let admitted = admitted_temporal_radiance_render(&context, "capturable temporal radiance");
-    let evaluation = RenderEvaluationSelection::new(0, 2, 2).expect("full temporal evaluation");
+    let evaluation = RenderEvaluationSelection::new(
+        admitted
+            .admitted_plan()
+            .plan()
+            .request()
+            .output_handle(0)
+            .expect("evaluation output"),
+        2,
+        2,
+    )
+    .expect("full temporal evaluation");
 
     let occurrence = session
-        .prepare(admitted, &context, Some(evaluation))
+        .prepare(admitted, &context, Some(evaluation.clone()))
         .expect("temporal retained occurrence");
     let temporal = occurrence
-        .radiance_output(0)
+        .radiance_output(
+            &occurrence
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .and_then(|output| output.temporal_execution_evidence())
         .expect("ordinary R32Float radiance must expose temporal evidence");
     assert_eq!(temporal.requested_extent, (2, 2));
@@ -1256,7 +1407,14 @@ fn associated_temporal_r32float_radiance_is_capturable_through_exact_occurrence(
     assert!(!session.is_in_flight());
 
     let request = associated
-        .request_radiance_capture(0)
+        .request_radiance_capture(
+            &associated
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("capture output"),
+        )
         .expect("completed R32Float retained capture request");
     let readback_id = request.readback_id();
     let operation = GpuReadbackOperation::new(request.source().clone(), readback_id)
@@ -1274,7 +1432,7 @@ fn associated_temporal_r32float_radiance_is_capturable_through_exact_occurrence(
     let captured = associated
         .capture_radiance(request, &context, &product_submission)
         .expect("interpret ordinary R32Float retained radiance");
-    assert_eq!(captured.output_index(), 0);
+    assert_eq!(captured.output().position(), 0);
     assert_eq!(
         captured.topology().sample_lattice_dimensions(),
         Some((2, 2))
@@ -1307,13 +1465,27 @@ fn retained_radiance_sessions_use_independent_composable_graph_wiring() {
         .expect("second radiance preparation");
 
     let first_key = first_occurrence
-        .radiance_output(0)
+        .radiance_output(
+            &first_occurrence
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .expect("first composable radiance output")
         .export_relationship()
         .export_key()
         .clone();
     let second_key = second_occurrence
-        .radiance_output(0)
+        .radiance_output(
+            &second_occurrence
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .expect("second composable radiance output")
         .export_relationship()
         .export_key()
@@ -1348,13 +1520,30 @@ fn retained_session_abandonment_and_device_generation_reset_preserve_temporal_tr
     };
     let mut session = RenderExecutionSession::new();
     let admitted = admitted_temporal_radiance_render(&context, "temporal retained output");
-    let evaluation = RenderEvaluationSelection::new(0, 2, 2).expect("temporal evaluation");
+    let evaluation = RenderEvaluationSelection::new(
+        admitted
+            .admitted_plan()
+            .plan()
+            .request()
+            .output_handle(0)
+            .expect("evaluation output"),
+        2,
+        2,
+    )
+    .expect("temporal evaluation");
 
     let first = session
-        .prepare(admitted.clone(), &context, Some(evaluation))
+        .prepare(admitted.clone(), &context, Some(evaluation.clone()))
         .expect("first temporal preparation");
     let first_evidence = first
-        .radiance_output(0)
+        .radiance_output(
+            &first
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .and_then(|output| output.temporal_execution_evidence())
         .expect("first temporal evidence");
     assert!(first_evidence.history_reset);
@@ -1372,16 +1561,30 @@ fn retained_session_abandonment_and_device_generation_reset_preserve_temporal_tr
     session.reconcile();
 
     let abandoned = session
-        .prepare(admitted.clone(), &context, Some(evaluation))
+        .prepare(admitted.clone(), &context, Some(evaluation.clone()))
         .expect("abandoned temporal preparation");
     let abandoned_evidence = abandoned
-        .radiance_output(0)
+        .radiance_output(
+            &abandoned
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .and_then(|output| output.temporal_execution_evidence())
         .expect("abandoned temporal evidence");
     assert!(!abandoned_evidence.history_reset);
     assert_eq!(abandoned_evidence.history_age, 1);
     let abandoned_export = abandoned
-        .radiance_output(0)
+        .radiance_output(
+            &abandoned
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .expect("abandoned radiance output")
         .export_relationship()
         .export_key()
@@ -1396,10 +1599,17 @@ fn retained_session_abandonment_and_device_generation_reset_preserve_temporal_tr
     session.reconcile();
 
     let after_abandonment = session
-        .prepare(admitted, &context, Some(evaluation))
+        .prepare(admitted, &context, Some(evaluation.clone()))
         .expect("post-abandonment temporal preparation");
     let after_abandonment_evidence = after_abandonment
-        .radiance_output(0)
+        .radiance_output(
+            &after_abandonment
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .and_then(|output| output.temporal_execution_evidence())
         .expect("post-abandonment temporal evidence");
     assert!(after_abandonment_evidence.history_reset);
@@ -1408,7 +1618,14 @@ fn retained_session_abandonment_and_device_generation_reset_preserve_temporal_tr
     assert_ne!(
         abandoned_export,
         after_abandonment
-            .radiance_output(0)
+            .radiance_output(
+                &after_abandonment
+                    .admitted_plan()
+                    .plan()
+                    .request()
+                    .output_handle(0)
+                    .expect("radiance output")
+            )
             .expect("fresh radiance output")
             .export_relationship()
             .export_key()
@@ -1424,10 +1641,33 @@ fn retained_session_abandonment_and_device_generation_reset_preserve_temporal_tr
     let new_generation_admitted =
         admitted_temporal_radiance_render(&context, "new-generation temporal output");
     let after_generation_change = session
-        .prepare(new_generation_admitted, &context, Some(evaluation))
+        .prepare(
+            new_generation_admitted.clone(),
+            &context,
+            Some(
+                RenderEvaluationSelection::new(
+                    new_generation_admitted
+                        .admitted_plan()
+                        .plan()
+                        .request()
+                        .output_handle(0)
+                        .expect("new-generation output"),
+                    2,
+                    2,
+                )
+                .expect("fresh evaluation"),
+            ),
+        )
         .expect("new-generation temporal preparation");
     let reset_evidence = after_generation_change
-        .radiance_output(0)
+        .radiance_output(
+            &after_generation_change
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .and_then(|output| output.temporal_execution_evidence())
         .expect("new-generation temporal evidence");
     assert!(reset_evidence.history_reset);
@@ -1443,13 +1683,30 @@ fn retained_subnative_unassociated_work_cannot_reuse_in_place_history() {
     let mut session = RenderExecutionSession::new();
     let admitted =
         admitted_temporal_radiance_render_at_extent(&context, "sub-native in-place history", 4);
-    let evaluation = RenderEvaluationSelection::new(0, 2, 2).expect("sub-native evaluation");
+    let evaluation = RenderEvaluationSelection::new(
+        admitted
+            .admitted_plan()
+            .plan()
+            .request()
+            .output_handle(0)
+            .expect("evaluation output"),
+        2,
+        2,
+    )
+    .expect("sub-native evaluation");
 
     let first = session
-        .prepare(admitted.clone(), &context, Some(evaluation))
+        .prepare(admitted.clone(), &context, Some(evaluation.clone()))
         .expect("bootstrap sub-native history");
     let bootstrap = first
-        .radiance_output(0)
+        .radiance_output(
+            &first
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .and_then(|output| output.temporal_execution_evidence())
         .expect("bootstrap temporal evidence");
     assert!(bootstrap.history_reset);
@@ -1465,10 +1722,17 @@ fn retained_subnative_unassociated_work_cannot_reuse_in_place_history() {
     session.reconcile();
 
     let abandoned = session
-        .prepare(admitted.clone(), &context, Some(evaluation))
+        .prepare(admitted.clone(), &context, Some(evaluation.clone()))
         .expect("prepare sub-native in-place update");
     let previous = abandoned
-        .radiance_output(0)
+        .radiance_output(
+            &abandoned
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .and_then(|output| output.temporal_execution_evidence())
         .expect("previous temporal evidence");
     assert!(!previous.history_reset);
@@ -1482,10 +1746,17 @@ fn retained_subnative_unassociated_work_cannot_reuse_in_place_history() {
     session.reconcile();
 
     let renewed = session
-        .prepare(admitted, &context, Some(evaluation))
+        .prepare(admitted, &context, Some(evaluation.clone()))
         .expect("fresh history after unassociated GPU write");
     let next = renewed
-        .radiance_output(0)
+        .radiance_output(
+            &renewed
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .and_then(|output| output.temporal_execution_evidence())
         .expect("renewed temporal evidence");
     assert!(next.history_reset);

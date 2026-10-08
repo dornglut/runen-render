@@ -287,7 +287,7 @@ fn request_execution_context() -> Option<GpuContext> {
     }
 }
 
-fn output_bindings() -> Vec<RenderOutputBinding> {
+fn output_bindings(request: &RenderRequest) -> Vec<RenderOutputBinding> {
     let mut allocator = GpuWorkResourceIdAllocator::new();
     let mut bindings = Vec::with_capacity(4);
     for (output_index, label) in [
@@ -314,7 +314,7 @@ fn output_bindings() -> Vec<RenderOutputBinding> {
             )
             .expect("R6 maintained texture handle");
         bindings.push(RenderOutputBinding::new(
-            output_index,
+            request.output_handle(output_index).expect("output handle"),
             RenderOutputDestination::SampleLatticeTexture(texture),
         ));
     }
@@ -333,7 +333,7 @@ fn output_bindings() -> Vec<RenderOutputBinding> {
         )
         .expect("R6 maintained scalar handle");
     bindings.push(RenderOutputBinding::new(
-        3,
+        request.output_handle(3).expect("output handle"),
         RenderOutputDestination::ScalarBuffer(scalar),
     ));
     bindings
@@ -343,7 +343,7 @@ fn admit_execution(
     fixture: &ExecutionFixture,
     context: &GpuContext,
 ) -> AdmittedDeterministicRender {
-    let bindings = output_bindings();
+    let bindings = output_bindings(&fixture.request);
     admit_deterministic_render_with_semantic_inputs(
         &fixture.scene,
         &fixture.request,
@@ -783,9 +783,9 @@ fn founding_renderer_executes_through_maintained_path_and_matches_cpu_reference(
     );
     assert_eq!(result.outputs().len(), admitted_plan.outputs().len());
     for (result_output, admitted_output) in result.outputs().iter().zip(admitted_plan.outputs()) {
-        assert_eq!(result_output.output_index(), admitted_output.output_index());
+        assert_eq!(result_output.output().position(), admitted_output.output_index());
         assert_eq!(
-            result.request().outputs()[result_output.output_index()].observation_index(),
+            result.request().outputs()[result_output.output().position()].observation_index(),
             admitted_output.observation_index(),
             "result output-to-observation correlation must derive from the retained request"
         );

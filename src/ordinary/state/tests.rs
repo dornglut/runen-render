@@ -96,19 +96,22 @@ fn admit(fixture: &MaintainedExecutionFixture, context: &GpuContext) -> Admitted
             .expect("radiance destination descriptor"),
         )
         .expect("radiance destination identity");
-    admit_render(
-        &fixture.scene,
-        &fixture.request,
-        &fixture.semantic_inputs,
-        &[],
-        &fixture.availability,
-        &[RenderOutputBinding::new(
-            0,
+    let invocation = RenderInvocation::new(
+        fixture.scene.clone(),
+        fixture.request.clone(),
+        fixture.semantic_inputs.clone(),
+        Vec::new(),
+        fixture.availability.clone(),
+        vec![RenderOutputBinding::new(
+            fixture
+                .request
+                .output_handle(0)
+                .expect("radiance output handle"),
             RenderOutputDestination::SampleLatticeTexture(destination),
         )],
-        context,
     )
-    .expect("ordinary temporal admission")
+    .expect("valid correlated invocation");
+    admit_render(&invocation, context).expect("ordinary temporal admission")
 }
 
 fn wait_for_completion(context: &GpuContext, submission: &GpuSubmission) {
@@ -123,20 +126,73 @@ fn wait_for_completion(context: &GpuContext, submission: &GpuSubmission) {
     }
 }
 
+#[test]
+fn retained_evaluation_rejects_equivalent_foreign_request_before_preparation() {
+    let Some(context) = context() else {
+        return;
+    };
+    let first = admit(&temporal_fixture(2), &context);
+    let second = admit(&temporal_fixture(2), &context);
+    assert_eq!(
+        first.admitted_plan().plan().request(),
+        second.admitted_plan().plan().request()
+    );
+    let foreign = second
+        .admitted_plan()
+        .plan()
+        .request()
+        .output_handle(0)
+        .expect("second request output");
+    assert!(
+        !first
+            .admitted_plan()
+            .plan()
+            .request()
+            .contains_output(&foreign)
+    );
+    let selection = RenderEvaluationSelection::new(foreign.clone(), 2, 2).expect("valid extent");
+    let mut session = RenderExecutionSession::new();
+    let error = session
+        .prepare(first, &context, Some(selection))
+        .expect_err("foreign evaluation must fail");
+    assert!(matches!(
+        error,
+        RenderExecutionSessionError::ForeignEvaluationOutput { output } if output == foreign
+    ));
+    assert!(!session.is_in_flight());
+}
+
 fn prove_associated_failure_invalidates_history(requested_extent: u32) {
     let Some(context) = context() else {
         return;
     };
     let affinity = context.affinity();
     let admitted = admit(&temporal_fixture(requested_extent), &context);
-    let evaluation = RenderEvaluationSelection::new(0, 2, 2).expect("2x2 evaluation");
+    let evaluation = RenderEvaluationSelection::new(
+        admitted
+            .admitted_plan()
+            .plan()
+            .request()
+            .output_handle(0)
+            .expect("evaluation output"),
+        2,
+        2,
+    )
+    .expect("2x2 evaluation");
     let mut session = RenderExecutionSession::new();
 
     let bootstrap = session
-        .prepare(admitted.clone(), &context, Some(evaluation))
+        .prepare(admitted.clone(), &context, Some(evaluation.clone()))
         .expect("bootstrap occurrence");
     let initial = bootstrap
-        .radiance_output(0)
+        .radiance_output(
+            &bootstrap
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .and_then(|output| output.temporal_execution_evidence())
         .expect("bootstrap temporal evidence");
     assert!(initial.history_reset);
@@ -162,10 +218,17 @@ fn prove_associated_failure_invalidates_history(requested_extent: u32) {
     session.reconcile();
 
     let occurrence = session
-        .prepare(admitted, &context, Some(evaluation))
+        .prepare(admitted, &context, Some(evaluation.clone()))
         .expect("next compatible occurrence");
     let retained = occurrence
-        .radiance_output(0)
+        .radiance_output(
+            &occurrence
+                .admitted_plan()
+                .plan()
+                .request()
+                .output_handle(0)
+                .expect("radiance output"),
+        )
         .and_then(|output| output.temporal_execution_evidence())
         .expect("retained temporal evidence");
     assert!(!retained.history_reset);

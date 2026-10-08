@@ -133,7 +133,7 @@ fn admit_inputs(
         fields,
         &fixture.availability,
         &[RenderOutputBinding::new(
-            0,
+            fixture.request.output_handle(0).expect("output handle"),
             RenderOutputDestination::SampleLatticeTexture(texture),
         )],
         context,

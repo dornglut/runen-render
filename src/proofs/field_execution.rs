@@ -252,7 +252,8 @@ fn request_execution_context() -> Option<GpuContext> {
     }
 }
 
-fn lattice_bindings(output_count: usize) -> Vec<RenderOutputBinding> {
+fn lattice_bindings(request: &RenderRequest) -> Vec<RenderOutputBinding> {
+    let output_count = request.outputs().len();
     let mut allocator = GpuWorkResourceIdAllocator::new();
     (0..output_count)
         .map(|output_index| {
@@ -272,7 +273,7 @@ fn lattice_bindings(output_count: usize) -> Vec<RenderOutputBinding> {
                 )
                 .expect("sampled-field destination");
             RenderOutputBinding::new(
-                output_index,
+                request.output_handle(output_index).expect("output handle"),
                 RenderOutputDestination::SampleLatticeTexture(destination),
             )
         })
@@ -384,7 +385,7 @@ fn admit(
         surface_inputs,
         field_inputs,
         availability,
-        &lattice_bindings(request.outputs().len()),
+        &lattice_bindings(request),
         context,
     )
     .expect("sampled-field work must reach maintained deterministic admission")

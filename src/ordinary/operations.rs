@@ -6,25 +6,23 @@ use super::*;
 /// RunenGPU context. Method selection, planning, binding admission, and maintained compatibility
 /// remain inside RunenRender.
 pub fn admit_render(
-    scene: &RenderSceneSnapshot,
-    request: &RenderRequest,
-    surface_inputs: &[RenderSurfaceSemanticInputBinding],
-    field_inputs: &[RenderFieldSemanticInputBinding],
-    availability: &[RenderRepresentationAvailabilityFact],
-    output_bindings: &[RenderOutputBinding],
+    invocation: &RenderInvocation,
     context: &GpuContext,
 ) -> Result<AdmittedRender, RenderAdmissionError> {
     admit_deterministic_render_with_semantic_inputs(
-        scene,
-        request,
-        surface_inputs,
-        field_inputs,
-        availability,
-        output_bindings,
+        invocation.scene(),
+        invocation.request(),
+        invocation.surface_inputs(),
+        invocation.field_inputs(),
+        invocation.availability(),
+        invocation.output_bindings(),
         context,
     )
     .map(|inner| AdmittedRender { inner })
-    .map_err(|inner| RenderAdmissionError { inner })
+    .map_err(|inner| RenderAdmissionError {
+        inner,
+        request: invocation.request().clone(),
+    })
 }
 
 /// Lower one admitted ordinary render into composable public RunenGPU work without submitting it.
@@ -60,8 +58,12 @@ pub async fn submit_render_for_result(
     admitted: AdmittedRender,
     context: &GpuContext,
 ) -> Result<SubmittedRenderForResult, RenderResultSubmissionError> {
+    let request = admitted.admitted_plan().plan().request().clone();
     submit_deterministic_render_for_verified_result(admitted.inner, context)
         .await
         .map(|inner| SubmittedRenderForResult { inner })
-        .map_err(|inner| RenderResultSubmissionError { inner })
+        .map_err(|inner| RenderResultSubmissionError {
+            inner: Box::new(inner),
+            request: Box::new(request),
+        })
 }
