@@ -1,4 +1,4 @@
-//! Source-neutral composable execution boundary for the accepted two-dimensional F2 slice.
+//! Source-neutral composable execution boundary for the admitted two-dimensional execution classes.
 
 use crate::composition_2d::{
     Render2dComposition, Render2dResourceBindingError, Render2dResourceBindings, Render2dResourceId,
@@ -11,7 +11,7 @@ use runen_gpu::{
     GpuWorkAuthoringError, GpuWorkFragment, GpuWorkFragmentBuilder, GpuWorkNodeId,
 };
 
-/// Caller-owned RunenGPU target-content relationships for one F2 contribution.
+/// Caller-owned RunenGPU target-content relationships for one 2D contribution.
 ///
 /// Keys describe graph causality, never semantic resource identity or execution
 /// evidence. Use a distinct output key for each painting contribution. A prior
@@ -54,7 +54,7 @@ impl Render2dWorkBinding {
     }
 }
 
-/// Immutable invocation facts for one F2 color target.
+/// Immutable invocation facts for one 2D color target.
 ///
 /// Logical canvas extent and raster scale are invocation facts only. They do not enter
 /// immutable composition identity.
@@ -254,7 +254,7 @@ pub enum Render2dUnsupportedContent {
         /// Root painter-order index.
         root_index: usize,
     },
-    /// Non-shaped-text primitive is outside this slice.
+    /// Primitive or brush class is outside the admitted execution subset.
     Primitive {
         /// Root painter-order index.
         root_index: usize,
@@ -264,12 +264,12 @@ pub enum Render2dUnsupportedContent {
         /// Root painter-order index.
         root_index: usize,
     },
-    /// Non-opaque item opacity is outside this slice.
+    /// Non-opaque shaped-text item opacity is outside this slice.
     Opacity {
         /// Root painter-order index.
         root_index: usize,
     },
-    /// Non-translation affine transform is outside this slice.
+    /// Non-translation shaped-text transform is outside this slice.
     Transform {
         /// Root painter-order index.
         root_index: usize,
@@ -289,7 +289,7 @@ impl fmt::Display for Render2dUnsupportedContent {
             }
             Self::Primitive { root_index } => write!(
                 formatter,
-                "2D F2 root entry {root_index} is not shaped-text content"
+                "2D root entry {root_index} carries unsupported primitive or brush content"
             ),
             Self::Clips { root_index } => {
                 write!(formatter, "2D F2 root item {root_index} carries clips")
@@ -413,6 +413,13 @@ impl Error for Render2dShapedTextError {}
 /// Failure to prepare one bounded F2 contribution.
 #[derive(Debug)]
 pub enum Render2dExecutionError {
+    /// A vector item cannot be realized within current precision or resource limits.
+    Vector {
+        /// Root painter-order index of the affected item.
+        root_index: usize,
+        /// Stable renderer-owned failure class.
+        kind: Render2dVectorError,
+    },
     /// Composition/resource compatibility failed before maintained realization.
     ResourceBindings(Render2dResourceBindingError),
     /// Invocation target facts are not admitted.
@@ -445,6 +452,9 @@ pub enum Render2dExecutionError {
 impl fmt::Display for Render2dExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Vector { root_index, kind } => {
+                write!(formatter, "2D vector item {root_index}: {kind:?}")
+            }
             Self::ResourceBindings(error) => error.fmt(formatter),
             Self::Target(error) => error.fmt(formatter),
             Self::UnsupportedContent(error) => error.fmt(formatter),
@@ -472,6 +482,19 @@ impl fmt::Display for Render2dExecutionError {
 
 impl Error for Render2dExecutionError {}
 
+/// Renderer-owned vector realization failure, independent of the private tessellator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Render2dVectorError {
+    /// Coordinates or tolerance cannot preserve the admitted physical precision.
+    PrecisionLimit,
+    /// Geometry or intermediate storage exceeds the admitted bounded realization.
+    ResourceLimit,
+    /// The current device contract lacks the required coverage-target format roles.
+    CoverageFormatUnsupported,
+    /// Valid structural geometry could not be tessellated.
+    TessellationFailed,
+}
+
 impl From<Render2dResourceBindingError> for Render2dExecutionError {
     fn from(error: Render2dResourceBindingError) -> Self {
         Self::ResourceBindings(error)
@@ -496,7 +519,7 @@ impl From<Render2dShapedTextError> for Render2dExecutionError {
     }
 }
 
-/// Retained F2 execution owner.
+/// Retained 2D execution owner.
 ///
 /// Semantic identity observations survive private field-cache discard. Derived field data does
 /// not. A fresh executor reconstructs compatible private state from immutable bindings.
@@ -520,7 +543,7 @@ impl Render2dExecutor {
         self.state.discard_cache();
     }
 
-    /// Validates, realizes, lowers and transactionally commits one composable F2 contribution.
+    /// Validates, realizes, lowers and transactionally commits one composable 2D contribution.
     pub fn prepare(
         &mut self,
         context: &GpuContext,
@@ -536,41 +559,39 @@ impl Render2dExecutor {
 ///
 /// Preparation is not execution evidence. Consume this value through `append_to`
 /// for caller-owned lexical ordering, or `into_fragment` for typed cross-fragment
-/// composition. Both paths author the same lowered operation. Valid non-painting
+/// composition. Both paths author the same ordered lowered operations. Valid non-painting
 /// content produces no node, output, or execution token.
 #[derive(Debug)]
 pub struct Render2dPreparedContribution {
-    render: Option<GpuRenderOperation>,
+    render: Vec<GpuRenderOperation>,
     target: GpuTextureViewHandle,
 }
 
 impl Render2dPreparedContribution {
-    pub(crate) fn new(render: Option<GpuRenderOperation>, target: GpuTextureViewHandle) -> Self {
+    pub(crate) fn new(render: Vec<GpuRenderOperation>, target: GpuTextureViewHandle) -> Self {
         Self { render, target }
     }
 
     /// Returns whether this contribution contains actual RunenRender-authored render work.
     #[must_use]
     pub const fn has_render_work(&self) -> bool {
-        self.render.is_some()
+        !self.render.is_empty()
     }
 
-    /// Appends the exact renderer-authored operation to a caller-owned fragment.
+    /// Appends the exact renderer-authored operations to a caller-owned fragment.
     ///
     /// The caller owns surrounding work and lexical ordering, including clear and
     /// terminal work. RunenGPU derives resource hazards from the appended operation.
-    /// The returned single-use token identifies the actual newly authored node.
+    /// The returned single-use token identifies every actual newly authored node.
     pub fn append_to(
         self,
         builder: &mut GpuWorkFragmentBuilder,
     ) -> Result<Option<Render2dContributionToken>, GpuWorkAuthoringError> {
-        self.render
-            .map(|render| {
-                builder
-                    .operation("render admitted 2D shaped text", render)
-                    .map(Render2dContributionToken::new)
-            })
-            .transpose()
+        let mut nodes = Vec::with_capacity(self.render.len());
+        for render in self.render {
+            nodes.push(builder.operation("render admitted 2D composition", render)?);
+        }
+        Ok((!nodes.is_empty()).then_some(Render2dContributionToken { nodes }))
     }
 
     /// Authors a separate fragment with native target-content import/output wiring.
@@ -583,7 +604,7 @@ impl Render2dPreparedContribution {
     ) -> Result<(GpuWorkFragment, Option<Render2dContributionToken>), GpuWorkAuthoringError> {
         let mut token = None;
         let fragment =
-            GpuWorkFragment::build("runen-render 2D shaped-text contribution", |builder| {
+            GpuWorkFragment::build("runen-render 2D composition contribution", |builder| {
                 let target = self.target.clone();
                 token = self.append_to(builder)?;
                 if token.is_some() {
@@ -599,23 +620,23 @@ impl Render2dPreparedContribution {
     }
 }
 
-/// Single-use exact authored-work correlation for one prepared F2 contribution.
+/// Single-use exact authored-work correlation for one prepared 2D contribution.
 #[derive(Debug)]
 pub struct Render2dContributionToken {
-    node: GpuWorkNodeId,
+    nodes: Vec<GpuWorkNodeId>,
 }
 
 impl Render2dContributionToken {
-    fn new(node: GpuWorkNodeId) -> Self {
-        Self { node }
-    }
-
-    /// Consumes the token and proves exact-node participation plus terminal completion.
+    /// Consumes the token and proves every exact authored node participated and completed.
     pub fn completed_by(
         self,
         submission: &GpuSubmission,
     ) -> Result<Render2dContributionEvidence, Render2dContributionEvidenceError> {
-        if !submission.contains_work_node(&self.node) {
+        if !self
+            .nodes
+            .iter()
+            .all(|node| submission.contains_work_node(node))
+        {
             return Err(Render2dContributionEvidenceError::MissingWorkNode);
         }
         match submission.status() {
@@ -641,7 +662,7 @@ pub struct Render2dContributionEvidence {
 }
 
 impl Render2dContributionEvidence {
-    /// Returns terminal submission identity carrying the exact authored F2 work node.
+    /// Returns terminal submission identity carrying the exact authored 2D work nodes.
     #[must_use]
     pub const fn submission_id(self) -> GpuSubmissionId {
         self.submission_id
@@ -651,7 +672,7 @@ impl Render2dContributionEvidence {
 /// Failure to derive successful contribution evidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Render2dContributionEvidenceError {
-    /// The supplied submission did not contain the exact authored F2 work-node identity.
+    /// The supplied submission did not contain the exact authored 2D work-node identities.
     MissingWorkNode,
     /// Exact work-node membership exists, but the submission remains in-flight.
     SubmissionNotCompleted,
@@ -667,7 +688,7 @@ impl fmt::Display for Render2dContributionEvidenceError {
         match self {
             Self::MissingWorkNode => write!(
                 formatter,
-                "submission does not contain the exact prepared 2D contribution work node"
+                "submission does not contain every exact prepared 2D contribution work node"
             ),
             Self::SubmissionNotCompleted => write!(
                 formatter,
@@ -682,3 +703,6 @@ impl fmt::Display for Render2dContributionEvidenceError {
 }
 
 impl Error for Render2dContributionEvidenceError {}
+
+#[cfg(test)]
+mod evidence_tests;

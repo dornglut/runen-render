@@ -23,6 +23,7 @@ const REQUIRED_FILES: &[&str] = &[
     "src/lib.rs",
     "tests/composition_2d_public_api.rs",
     "tests/execution_2d_public_api.rs",
+    "tests/execution_2d/vector.rs",
     "tests/fixtures/f2_bitmap.ttf",
     "tests/fixtures/f2_colrv0.ttf",
     "tests/fixtures/f2_colrv1.ttf",
@@ -208,6 +209,7 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
         "bymsdfgen-core = { version = \"=0.1.1\", default-features = false }",
         "runen-gpu = { git = \"https://github.com/dornglut/runen-gpu\", rev = \"7a833e750bc92b28f05b2c8507e326660f100a1e\" }",
         "runen-shader = { git = \"https://github.com/dornglut/runen-shader\", rev = \"406f8165da92caa2d296b3a2f774ba534279870d\" }",
+        "lyon_tessellation = { version = \"=1.0.22\", default-features = false, features = [\"std\"] }",
         "skrifa = { version = \"=0.44.0\", default-features = false, features = [\"std\"] }",
     ] {
         require_contains("Cargo.toml", &manifest, required)?;

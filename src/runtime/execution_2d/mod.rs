@@ -1,14 +1,15 @@
-//! Private F2 semantic admission, retained field cache, and transactional lowering.
+//! Private 2D semantic admission, retained field cache, and transactional ordered lowering.
 
 mod field;
 mod intrinsic;
 mod lowering;
+mod vector;
 
 use self::field::{FieldSetKey, QualityTier, ResourceFields};
 use self::lowering::GlyphOccurrence;
 pub(crate) use self::lowering::add_target_boundary;
 use crate::composition_2d::{
-    Render2dComposition, Render2dEntry, Render2dOpacity, Render2dPrimitive,
+    Render2dBrush, Render2dComposition, Render2dEntry, Render2dOpacity, Render2dPrimitive,
     Render2dResourceBindings, Render2dResourceId, Render2dResourceValue,
 };
 use crate::execution_2d::{
@@ -40,8 +41,8 @@ impl Render2dExecutionState {
         target: &Render2dTarget,
     ) -> Result<Render2dPreparedContribution, Render2dExecutionError> {
         composition.validate_bindings(bindings)?;
-        let admitted_target = lowering::admit_target(context, target)?;
         let runs = admit_runs(composition)?;
+        let admitted_target = lowering::admit_target(context, target, !runs.is_empty())?;
         let unique_resources = runs
             .iter()
             .map(|run| run.resource_id)
@@ -88,7 +89,7 @@ impl Render2dExecutionState {
             field_updates.push((key, realized));
         }
 
-        let mut occurrences = Vec::new();
+        let mut occurrences = BTreeMap::<usize, Vec<GlyphOccurrence>>::new();
         for run in &runs {
             let value = bindings
                 .get(run.resource_id)
@@ -134,19 +135,45 @@ impl Render2dExecutionState {
                         ),
                     });
                 }
-                occurrences.push(GlyphOccurrence {
-                    resource_id: run.resource_id,
-                    field: Arc::clone(field),
-                    logical_x,
-                    logical_y,
-                    logical_width,
-                    logical_height,
-                    color: run.color,
-                });
+                occurrences
+                    .entry(run.root_index)
+                    .or_default()
+                    .push(GlyphOccurrence {
+                        resource_id: run.resource_id,
+                        field: Arc::clone(field),
+                        logical_x,
+                        logical_y,
+                        logical_width,
+                        logical_height,
+                        color: run.color,
+                    });
             }
         }
 
-        let lowered = lowering::lower(&admitted_target, &occurrences)?;
+        let mut ordered = Vec::new();
+        for (root_index, entry) in composition.root_entries().iter().enumerate() {
+            let Render2dEntry::Item(item) = entry else {
+                unreachable!("admitted root item")
+            };
+            if matches!(item.primitive(), Render2dPrimitive::ShapedText(_)) {
+                ordered.extend(
+                    occurrences
+                        .remove(&root_index)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(lowering::OrderedItem::Glyph),
+                );
+            } else if let Some(mesh) = vector::realize(
+                item,
+                root_index,
+                admitted_target.raster_scale(),
+                admitted_target.canvas(),
+                admitted_target.max_buffer_bytes(),
+            )? {
+                ordered.push(lowering::OrderedItem::Vector(mesh));
+            }
+        }
+        let lowered = lowering::lower_ordered(&admitted_target, ordered)?;
 
         for (resource_id, value) in observed_updates {
             let previous = self.observed.insert(resource_id, value);
@@ -166,6 +193,7 @@ impl Render2dExecutionState {
 
 #[derive(Clone, Copy, Debug)]
 struct AdmittedRun {
+    root_index: usize,
     resource_id: Render2dResourceId,
     origin_x: f64,
     origin_y: f64,
@@ -185,6 +213,18 @@ fn admit_runs(
         if !item.clips().is_empty() {
             return Err(Render2dUnsupportedContent::Clips { root_index }.into());
         }
+        match item.primitive() {
+            Render2dPrimitive::Fill { brush, .. } | Render2dPrimitive::Stroke { brush, .. } => {
+                if !matches!(brush, Render2dBrush::Solid(_)) {
+                    return Err(Render2dUnsupportedContent::Primitive { root_index }.into());
+                }
+                continue;
+            }
+            Render2dPrimitive::Image(_) => {
+                return Err(Render2dUnsupportedContent::Primitive { root_index }.into());
+            }
+            Render2dPrimitive::ShapedText(_) => {}
+        }
         if item.opacity() != Render2dOpacity::OPAQUE {
             return Err(Render2dUnsupportedContent::Opacity { root_index }.into());
         }
@@ -196,6 +236,7 @@ fn admit_runs(
             return Err(Render2dUnsupportedContent::Primitive { root_index }.into());
         };
         runs.push(AdmittedRun {
+            root_index,
             resource_id: text.resource_id(),
             origin_x: text.origin().x(),
             origin_y: text.origin().y(),

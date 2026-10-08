@@ -12,7 +12,7 @@ Repository-local `xtask` owns the merge-readiness baseline. It proves:
 - RunenRender package/repository/version/license/MSRV identity;
 - complete GPLv3 license text;
 - exact immutable RunenGPU and RunenShader dependency revisions plus exact
-  private F2 shaped-text realization dependency declarations;
+  private shaped-text and vector realization dependency declarations;
 - no moving sibling branch/tag dependency;
 - public semantic modules plus private runtime/proof ownership boundaries;
 - no `Deterministic*` vocabulary in the package-level ordinary public consumer;
@@ -68,6 +68,24 @@ clipping, and malformed intrinsic tables or glyph IDs failing closed. CPU
 field proofs establish deterministic reconstruction and later texture-limit
 revalidation without requiring an adapter.
 
+The same external 2D execution suite includes solid vector output proofs:
+structural shapes and curved paths, an independent winding oracle for both fill
+rules, caps/joins/miter fallback, an independent distance-to-segment sample-union
+oracle for translucent crossing strokes, linear-light alpha and item opacity,
+vector/text interleaving, affine and raster-scale mapping, fractional target
+coverage, caller clear/import ordering, no-work, unsupported classes, late
+preparation rejection and cache/device reconstruction. A private GPU proof
+rejects terminal subsets of a required multi-node contribution.
+
+Private vector coverage uses sixteen regular samples per output pixel and a
+shared cropped RGBA8 mask cleared for each item. Flattening targets 1/64 physical
+pixel; geometry conversion fails closed when precision cannot support it.
+Preprocessing/geometry are bounded to 1,048,576 elements; vertex storage respects
+device/workload buffer limits; the mask respects texture dimensions and a 64 MiB
+private allocation bound. These are replaceable physical policy, not semantic
+geometry or public quality controls. Supersampling costs and precision/limit
+rejections are supported limitations, not native performance claims.
+
 The environment variable enforces GPU-required tests. It converts
 `NoAdapterAvailable` from an allowed local skip into CI failure; production
 RunenRender does not read environment variables.
@@ -83,8 +101,8 @@ baseline through unchanged reviewed-head and accepted-main evidence. The
 retained proof surface establishes:
 
 - package-level ordinary public conformance;
-- exact four-maintained-program RunenShader artifact -> RunenGPU admission,
-  including the F2 shaped-text program;
+- exact maintained-program RunenShader artifact -> RunenGPU admission,
+  including shaped text and solid vector coverage/composition;
 - successful maintained-program compilation/admission retained across both
   one-shot and stateful renderer resource-cache lifetimes rather than per-frame
   compilation;

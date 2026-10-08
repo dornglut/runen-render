@@ -1,4 +1,6 @@
-//! Private RunenGPU lowering for one admitted F2 contribution.
+//! Ordered private RunenGPU lowering for admitted text and solid vectors.
+
+mod vector;
 
 use super::field::GlyphField;
 use crate::composition_2d::{Render2dColorRgba8, Render2dResourceId};
@@ -14,7 +16,7 @@ use std::{
 };
 
 const FIELD_FORMAT: GpuTextureFormat = GpuTextureFormat::Rgba8Unorm;
-const VERTEX_STRIDE: u64 = 32;
+const VERTEX_STRIDE: u64 = crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE;
 const FLOATS_PER_VERTEX: usize = 8;
 const VERTICES_PER_GLYPH: u32 = 6;
 const GLYPH_VERTEX_ARRAY_LEN: usize = 6;
@@ -29,9 +31,18 @@ pub(super) struct AdmittedTarget {
     continuous_height: f64,
     raster_scale: f64,
     max_texture_dimension_2d: u32,
+    max_buffer_bytes: u64,
+    coverage_format: bool,
 }
 
 impl AdmittedTarget {
+    pub(super) const fn canvas(&self) -> [f64; 2] {
+        [self.continuous_width, self.continuous_height]
+    }
+    pub(super) const fn max_buffer_bytes(&self) -> u64 {
+        self.max_buffer_bytes
+    }
+
     pub(super) const fn raster_scale(&self) -> f64 {
         self.raster_scale
     }
@@ -77,6 +88,7 @@ struct DrawSpec {
 pub(super) fn admit_target(
     context: &GpuContext,
     target: &Render2dTarget,
+    needs_fields: bool,
 ) -> Result<AdmittedTarget, Render2dExecutionError> {
     let continuous_width = target.logical_width() * target.raster_scale();
     let continuous_height = target.logical_height() * target.raster_scale();
@@ -178,7 +190,7 @@ pub(super) fn admit_target(
         GpuFormatRole::Filterable,
         GpuFormatRole::CopyDestination,
     ] {
-        if !admitted_roles.contains(&(FIELD_FORMAT, role)) {
+        if needs_fields && !admitted_roles.contains(&(FIELD_FORMAT, role)) {
             return Err(Render2dTargetAdmissionError::FieldFormatUnsupported.into());
         }
     }
@@ -207,6 +219,21 @@ pub(super) fn admit_target(
         continuous_height,
         raster_scale: target.raster_scale(),
         max_texture_dimension_2d,
+        coverage_format: [GpuFormatRole::ColorAttachment, GpuFormatRole::Sampled]
+            .into_iter()
+            .all(|role| admitted_roles.contains(&(FIELD_FORMAT, role))),
+        max_buffer_bytes: context
+            .device_facts()
+            .device_limits()
+            .values()
+            .max_buffer_size()
+            .min(
+                context
+                    .device_facts()
+                    .workload_budget()
+                    .limits()
+                    .max_buffer_size(),
+            ),
     })
 }
 
@@ -687,4 +714,96 @@ fn gpu_text(stage: &'static str, detail: impl Into<String>) -> Render2dExecution
         stage,
         detail: detail.into(),
     }
+}
+
+#[derive(Debug)]
+pub(super) enum OrderedItem {
+    Glyph(GlyphOccurrence),
+    Vector(super::vector::VectorMesh),
+}
+
+// One contribution-local coverage surface is reused in lexical order. Clearing the
+// complete mask before each vector item keeps discarded geometry and painter history
+// out of coverage. Overlapping triangles overwrite 1; brush alpha is applied only
+// after resolving the 16 binary samples of each destination pixel.
+pub(super) fn lower_ordered(
+    target: &AdmittedTarget,
+    ordered: Vec<OrderedItem>,
+) -> Result<Vec<GpuRenderOperation>, Render2dExecutionError> {
+    use crate::execution_2d::Render2dVectorError;
+    let mut mask_width = 0;
+    let mut mask_height = 0;
+    for item in &ordered {
+        if let OrderedItem::Vector(mesh) = item {
+            let fail = |kind| super::vector::error(mesh.root_index, kind);
+            if !target.coverage_format {
+                return Err(fail(Render2dVectorError::CoverageFormatUnsupported));
+            }
+            let width = mesh.bounds[2]
+                .checked_mul(crate::runtime::program::abi::VECTOR_COVERAGE_AXIS_SAMPLES)
+                .ok_or_else(|| fail(Render2dVectorError::ResourceLimit))?;
+            let height = mesh.bounds[3]
+                .checked_mul(crate::runtime::program::abi::VECTOR_COVERAGE_AXIS_SAMPLES)
+                .ok_or_else(|| fail(Render2dVectorError::ResourceLimit))?;
+            mask_width = mask_width.max(width);
+            mask_height = mask_height.max(height);
+            if mask_width > target.max_texture_dimension_2d
+                || mask_height > target.max_texture_dimension_2d
+                || u64::from(mask_width) * u64::from(mask_height) * 4 > 64 * 1024 * 1024
+            {
+                return Err(fail(Render2dVectorError::ResourceLimit));
+            }
+        }
+    }
+    let mut resources = GpuResourceScope::new();
+    let mask = if mask_width > 0 && mask_height > 0 {
+        let texture = resources
+            .texture(
+                GpuTextureDescriptor::ordinary_owned_2d(
+                    "runen-render vector union coverage",
+                    GpuResourceLifetime::Transient,
+                    GpuReconstruction::SourceBacked,
+                    mask_width,
+                    mask_height,
+                    FIELD_FORMAT,
+                    [GpuTextureUsage::ColorAttachment, GpuTextureUsage::Sampled],
+                    GpuTextureInitialization::Uninitialized,
+                )
+                .map_err(|e| gpu("coverage texture descriptor", e))?,
+            )
+            .map_err(|e| gpu("coverage texture", e))?;
+        Some(
+            resources
+                .texture_view(
+                    GpuTextureViewDescriptor::ordinary_full_owned(
+                        "runen-render vector union coverage view",
+                        &texture,
+                    )
+                    .map_err(|e| gpu("coverage view descriptor", e))?,
+                )
+                .map_err(|e| gpu("coverage view", e))?,
+        )
+    } else {
+        None
+    };
+    let mut operations = Vec::new();
+    let mut glyphs = Vec::new();
+    for item in ordered {
+        match item {
+            OrderedItem::Glyph(glyph) => glyphs.push(glyph),
+            OrderedItem::Vector(mesh) => {
+                operations.extend(lower(target, &glyphs)?);
+                glyphs.clear();
+                operations.extend(vector::lower(
+                    target,
+                    &mesh,
+                    mask.as_ref().expect("vector mask"),
+                    [mask_width, mask_height],
+                    &mut resources,
+                )?);
+            }
+        }
+    }
+    operations.extend(lower(target, &glyphs)?);
+    Ok(operations)
 }
