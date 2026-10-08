@@ -39,6 +39,8 @@ const BOX_GLYPH: u32 = 2;
 
 #[path = "execution_2d/vector.rs"]
 mod vector;
+#[path = "execution_2d/gradient.rs"]
+mod gradient;
 
 #[test]
 fn f2_public_execution_surface_is_available_to_downstream_consumers() {

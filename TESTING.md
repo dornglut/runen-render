@@ -68,7 +68,7 @@ clipping, and malformed intrinsic tables or glyph IDs failing closed. CPU
 field proofs establish deterministic reconstruction and later texture-limit
 revalidation without requiring an adapter.
 
-The same external 2D execution suite includes solid vector output proofs:
+The same external 2D execution suite includes solid and gradient vector output proofs:
 structural shapes and curved paths, an independent winding oracle for both fill
 rules, caps/joins/miter fallback, an independent distance-to-segment sample-union
 oracle for translucent crossing strokes, linear-light alpha and item opacity,
@@ -85,6 +85,13 @@ device/workload buffer limits; the mask respects texture dimensions and a 64 MiB
 private allocation bound. These are replaceable physical policy, not semantic
 geometry or public quality controls. Supersampling costs and precision/limit
 rejections are supported limitations, not native performance claims.
+
+F3B Vulkan-required tests independently assert premultiplied linear and radial
+stop interpolation, hard-stop boundary colors, transformed brush coordinates,
+per-sample translucent stroke coverage, mixed text/gradient order, retained
+reconstruction and fail-closed resource/precision limits. Gradient stop buffers
+are private bounded storage; no source-framework identity or per-frame public
+brush state is introduced.
 
 The environment variable enforces GPU-required tests. It converts
 `NoAdapterAvailable` from an allowed local skip into CI failure; production

@@ -20,7 +20,9 @@ const MAX_ELEMENTS: usize = 1_048_576;
 pub(super) struct VectorMesh {
     pub triangles: Vec<[f64; 2]>,
     pub bounds: [u32; 4], // left, top, width, height on the target pixel lattice
-    pub color: Render2dColorRgba8,
+    pub brush: Render2dBrush,
+    pub transform: Render2dAffineTransform,
+    pub raster_scale: f64,
     pub opacity: f64,
     pub root_index: usize,
 }
@@ -45,9 +47,6 @@ pub(super) fn realize(
         } => (shape, brush, Some(*style)),
         _ => unreachable!("vector admission"),
     };
-    let Render2dBrush::Solid(color) = brush else {
-        unreachable!("solid admission")
-    };
     let fail = |kind| error(root_index, kind);
     let [a, b, c, d, tx, ty] = item.local_to_parent().components();
     // Frobenius norm is a conservative upper bound on all directional scale.
@@ -57,7 +56,19 @@ pub(super) fn realize(
     }
     if stretch == 0.0
         || item.opacity().get() == 0.0
-        || color.channels()[3] == 0
+        || match brush {
+            Render2dBrush::Solid(color) => color.channels()[3] == 0,
+            Render2dBrush::Linear(gradient) => gradient
+                .stops()
+                .as_slice()
+                .iter()
+                .all(|stop| stop.color().channels()[3] == 0),
+            Render2dBrush::Radial(gradient) => gradient
+                .stops()
+                .as_slice()
+                .iter()
+                .all(|stop| stop.color().channels()[3] == 0),
+        }
         || stroke.is_some_and(|style| style.width() == 0.0)
     {
         return Ok(None);
@@ -184,7 +195,9 @@ pub(super) fn realize(
             right.ceil() as u32 - left,
             bottom.ceil() as u32 - top,
         ],
-        color: *color,
+        brush: brush.clone(),
+        transform: item.local_to_parent(),
+        raster_scale: scale,
         opacity: item.opacity().get(),
         root_index,
     }))

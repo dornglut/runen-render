@@ -24,6 +24,7 @@ const REQUIRED_FILES: &[&str] = &[
     "tests/composition_2d_public_api.rs",
     "tests/execution_2d_public_api.rs",
     "tests/execution_2d/vector.rs",
+    "tests/execution_2d/gradient.rs",
     "tests/fixtures/f2_bitmap.ttf",
     "tests/fixtures/f2_colrv0.ttf",
     "tests/fixtures/f2_colrv1.ttf",

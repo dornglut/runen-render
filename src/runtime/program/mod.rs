@@ -26,7 +26,7 @@ const SHAPED_TEXT_MODULE_ID: u64 = 4;
 const SHAPED_TEXT_SOURCE_UNIT_ID: u64 = 4;
 const VECTOR_MODULE_ID: u64 = 5;
 const VECTOR_SOURCE_UNIT_ID: u64 = 5;
-const VECTOR_REVISION: u64 = 1;
+const VECTOR_REVISION: u64 = 2;
 const VECTOR_WGSL: &str = include_str!("shaders/solid_vector.wgsl");
 
 pub(crate) const MAINTAINED_EVALUATOR_REVISION: u64 = 3;
