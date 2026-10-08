@@ -9,7 +9,7 @@ use self::field::{FieldSetKey, QualityTier, ResourceFields};
 use self::lowering::GlyphOccurrence;
 pub(crate) use self::lowering::add_target_boundary;
 use crate::composition_2d::{
-    Render2dBrush, Render2dComposition, Render2dEntry, Render2dOpacity, Render2dPrimitive,
+    Render2dComposition, Render2dEntry, Render2dOpacity, Render2dPrimitive,
     Render2dResourceBindings, Render2dResourceId, Render2dResourceValue,
 };
 use crate::execution_2d::{
@@ -214,12 +214,7 @@ fn admit_runs(
             return Err(Render2dUnsupportedContent::Clips { root_index }.into());
         }
         match item.primitive() {
-            Render2dPrimitive::Fill { brush, .. } | Render2dPrimitive::Stroke { brush, .. } => {
-                if !matches!(brush, Render2dBrush::Solid(_)) {
-                    return Err(Render2dUnsupportedContent::Primitive { root_index }.into());
-                }
-                continue;
-            }
+            Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => continue,
             Render2dPrimitive::Image(_) => {
                 return Err(Render2dUnsupportedContent::Primitive { root_index }.into());
             }

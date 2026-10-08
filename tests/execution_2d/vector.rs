@@ -680,7 +680,7 @@ fn late_vector_failure_preserves_target_and_unobserved_text_identity() {
 }
 
 #[test]
-fn unimplemented_semantics_reject_even_when_nonpainting() {
+fn supported_gradient_no_work_and_unsupported_clip_fail_closed() {
     let Some(context) = context() else {
         return;
     };
@@ -697,6 +697,25 @@ fn unimplemented_semantics_reject_even_when_nonpainting() {
         )
         .unwrap(),
     );
+    let empty = item(
+        Render2dPrimitive::Fill {
+            shape: rect(0.0, 0.0, 0.0, 0.0),
+            brush: gradient,
+        },
+        Render2dAffineTransform::IDENTITY,
+        0.0,
+    );
+    assert!(
+        !Render2dExecutor::new()
+            .prepare(
+                &context,
+                &Render2dComposition::new(vec![empty]).unwrap(),
+                &Render2dResourceBindings::default(),
+                &target,
+            )
+            .expect("admitted empty gradient must have no render work")
+            .has_render_work()
+    );
     let clipped = Render2dEntry::item(Render2dItem::new(
         Render2dPrimitive::Fill {
             shape: rect(8.0, 8.0, 10.0, 10.0),
@@ -709,27 +728,15 @@ fn unimplemented_semantics_reject_even_when_nonpainting() {
         )],
         Render2dOpacity::TRANSPARENT,
     ));
-    for entry in [
-        item(
-            Render2dPrimitive::Fill {
-                shape: rect(0.0, 0.0, 0.0, 0.0),
-                brush: gradient,
-            },
-            Render2dAffineTransform::IDENTITY,
-            0.0,
+    assert!(matches!(
+        Render2dExecutor::new().prepare(
+            &context,
+            &Render2dComposition::new(vec![clipped]).unwrap(),
+            &Render2dResourceBindings::default(),
+            &target,
         ),
-        clipped,
-    ] {
-        assert!(matches!(
-            Render2dExecutor::new().prepare(
-                &context,
-                &Render2dComposition::new(vec![entry]).unwrap(),
-                &Render2dResourceBindings::default(),
-                &target
-            ),
-            Err(Render2dExecutionError::UnsupportedContent(_))
-        ));
-    }
+        Err(Render2dExecutionError::UnsupportedContent(_))
+    ));
 }
 
 #[test]

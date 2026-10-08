@@ -90,9 +90,9 @@ consumers.
 
 The 2D composition extension defines durable semantic and ownership authority.
 The immutable composition/resource model is implemented. Maintained execution
-realizes direct-root solid vector fills/strokes and the retained F2 shaped-text
-subset described below. Groups, clips, gradients, images, effects and native
-presentation are not claimed as implemented.
+realizes direct-root solid, linear-gradient and radial-gradient vector fills/strokes
+with the retained F2 shaped-text subset described below. Groups, clips, images,
+effects and native presentation are not claimed as implemented.
 
 The reusable semantic root is one lifetime-neutral immutable 2D composition
 value. It represents resolved renderer meaning such as:
@@ -214,7 +214,13 @@ coverage surface resolves tessellation overlap before applying the semantic
 brush/opacity once. Sampling, tolerances, mask layout and tessellation remain
 private; unrepresentable precision or geometry/storage limits reject structurally.
 Vector-only execution does not require shaped-field upload/filter capabilities.
-Shaped text retains the F2 opaque-item, identity/translation class; arbitrary
+Gradient brushes reuse the same coverage mask and per-item ordered contribution.
+A private read-only buffer preserves authored stop order and premultiplied linear
+RGB/alpha; the gradient compose pass integrates painted color at each covered
+4×4 sample in local brush coordinates before applying item opacity once. Hard
+stop and precision/storage limitations reject structurally rather than altering
+immutable authored semantics. Shaped text retains the F2 opaque-item,
+identity/translation class; arbitrary
 text transforms and run opacity remain fail-closed.
 
 One ordered private lowering produces coverage/composition operations and
