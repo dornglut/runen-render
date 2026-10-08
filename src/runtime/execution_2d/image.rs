@@ -116,21 +116,18 @@ pub(super) fn realize(
         // disappears in the intermediate dot products. Bound the worst-case
         // local f32 rounding in physical pixels, rather than checking only
         // the f64-to-f32 conversion of individual parameters.
-        let maximum_local_x = (inverse[0].abs() * canvas[0]
-            + inverse[1].abs() * canvas[1]
-            + inverse[2].abs())
-        .max(dest.x().abs())
-        .max((dest.x() + dest.width()).abs());
-        let maximum_local_y = (inverse[3].abs() * canvas[0]
-            + inverse[4].abs() * canvas[1]
-            + inverse[5].abs())
-        .max(dest.y().abs())
-        .max((dest.y() + dest.height()).abs());
+        let maximum_local_x =
+            (inverse[0].abs() * canvas[0] + inverse[1].abs() * canvas[1] + inverse[2].abs())
+                .max(dest.x().abs())
+                .max((dest.x() + dest.width()).abs());
+        let maximum_local_y =
+            (inverse[3].abs() * canvas[0] + inverse[4].abs() * canvas[1] + inverse[5].abs())
+                .max(dest.y().abs())
+                .max((dest.y() + dest.height()).abs());
         let roundoff_pixels = 4.0
             * f64::from(f32::EPSILON)
             * raster_scale
-            * (maximum_local_x * (a.abs() + b.abs())
-                + maximum_local_y * (c.abs() + d.abs()));
+            * (maximum_local_x * (a.abs() + b.abs()) + maximum_local_y * (c.abs() + d.abs()));
         if !roundoff_pixels.is_finite() || roundoff_pixels > 1.0 / 16.0 {
             return Err(failure(root_index, Render2dImageError::PrecisionLimit));
         }

@@ -354,12 +354,7 @@ fn cancelled_large_local_coordinates_fail_before_image_gpu_authoring() {
     let composition = Render2dComposition::new(vec![translated]).unwrap();
     let (_, image_target) = target("F3C cancellation precision");
     assert!(matches!(
-        Render2dExecutor::new().prepare(
-            &ctx,
-            &composition,
-            &bindings(id, bytes()),
-            &image_target,
-        ),
+        Render2dExecutor::new().prepare(&ctx, &composition, &bindings(id, bytes()), &image_target,),
         Err(Render2dExecutionError::Image {
             root_index: 0,
             kind: Render2dImageError::PrecisionLimit,
