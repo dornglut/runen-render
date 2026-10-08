@@ -1,8 +1,8 @@
 //! Private 2D semantic admission, retained field cache, and transactional ordered lowering.
 
 mod field;
-mod intrinsic;
 mod image;
+mod intrinsic;
 mod lowering;
 mod vector;
 
@@ -191,7 +191,9 @@ impl Render2dExecutionState {
                         .map(lowering::OrderedItem::Glyph),
                 );
             } else if let Render2dPrimitive::Image(image) = item.primitive() {
-                let value = bindings.get(image.resource_id()).expect("validated image binding");
+                let value = bindings
+                    .get(image.resource_id())
+                    .expect("validated image binding");
                 let Render2dResourceValue::ImageRgba8Srgb(source) = value else {
                     unreachable!("validated image binding kind")
                 };

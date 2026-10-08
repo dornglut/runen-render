@@ -31,9 +31,12 @@ pub(super) fn vector_pipeline(
     })
     .map_err(|e| gpu("vector entry", e))?;
     let refinements = if image {
-        vec![GpuBindingLayoutRefinement::new(
-            GpuBindingKey::try_new(0, 2).map_err(|e| gpu("image binding key", e))?,
-        ).with_texture_sample_class(GpuTextureSampleClass::FloatFilterable)]
+        vec![
+            GpuBindingLayoutRefinement::new(
+                GpuBindingKey::try_new(0, 2).map_err(|e| gpu("image binding key", e))?,
+            )
+            .with_texture_sample_class(GpuTextureSampleClass::FloatFilterable),
+        ]
     } else if compose {
         vec![
             GpuBindingLayoutRefinement::new(

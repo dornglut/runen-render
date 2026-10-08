@@ -224,9 +224,13 @@ pub(super) fn admit_target(
         coverage_format: [GpuFormatRole::ColorAttachment, GpuFormatRole::Sampled]
             .into_iter()
             .all(|role| admitted_roles.contains(&(FIELD_FORMAT, role))),
-        image_format: [GpuFormatRole::Sampled, GpuFormatRole::Filterable, GpuFormatRole::CopyDestination]
-            .into_iter()
-            .all(|role| admitted_roles.contains(&(GpuTextureFormat::Rgba8UnormSrgb, role))),
+        image_format: [
+            GpuFormatRole::Sampled,
+            GpuFormatRole::Filterable,
+            GpuFormatRole::CopyDestination,
+        ]
+        .into_iter()
+        .all(|role| admitted_roles.contains(&(GpuTextureFormat::Rgba8UnormSrgb, role))),
         max_buffer_bytes: context
             .device_facts()
             .device_limits()
@@ -814,21 +818,32 @@ pub(super) fn lower_ordered(
                 operations.extend(lower(target, &glyphs)?);
                 glyphs.clear();
                 if !target.image_format {
-                    return Err(super::image::failure(patch.root_index, crate::execution_2d::Render2dImageError::FormatUnsupported));
+                    return Err(super::image::failure(
+                        patch.root_index,
+                        crate::execution_2d::Render2dImageError::FormatUnsupported,
+                    ));
                 }
                 if !image_views.contains_key(&patch.resource_id) {
                     let bytes = patch.source.rgba8_srgb().len() as u64;
-                    image_bytes = image_bytes
-                        .checked_add(bytes)
-                        .ok_or_else(|| super::image::failure(patch.root_index, crate::execution_2d::Render2dImageError::ResourceLimit))?;
+                    image_bytes = image_bytes.checked_add(bytes).ok_or_else(|| {
+                        super::image::failure(
+                            patch.root_index,
+                            crate::execution_2d::Render2dImageError::ResourceLimit,
+                        )
+                    })?;
                     if image_bytes > 128 * 1024 * 1024 {
-                        return Err(super::image::failure(patch.root_index, crate::execution_2d::Render2dImageError::ResourceLimit));
+                        return Err(super::image::failure(
+                            patch.root_index,
+                            crate::execution_2d::Render2dImageError::ResourceLimit,
+                        ));
                     }
                     let view = image::upload(target, &patch, &mut resources)?;
                     image_views.insert(patch.resource_id, view);
                 }
                 operations.push(image::lower(
-                    target, &patch, image_views.get(&patch.resource_id).expect("uploaded image"),
+                    target,
+                    &patch,
+                    image_views.get(&patch.resource_id).expect("uploaded image"),
                     &mut resources,
                 )?);
             }

@@ -1,7 +1,6 @@
 //! Private bounded image mapping into independent ordered painter patches.
 use crate::composition_2d::{
-    Render2dImagePrimitive, Render2dImageResource, Render2dItem, Render2dRect,
-    Render2dResourceId,
+    Render2dImagePrimitive, Render2dImageResource, Render2dItem, Render2dRect, Render2dResourceId,
 };
 use crate::execution_2d::{Render2dExecutionError, Render2dImageError};
 
@@ -14,10 +13,7 @@ pub(super) struct ImagePatchWork {
     pub(super) payload: [f32; 20],
 }
 
-pub(super) fn failure(
-    root_index: usize,
-    kind: Render2dImageError,
-) -> Render2dExecutionError {
+pub(super) fn failure(root_index: usize, kind: Render2dImageError) -> Render2dExecutionError {
     Render2dExecutionError::Image { root_index, kind }
 }
 
@@ -77,8 +73,7 @@ pub(super) fn realize(
     for patch in image.patches() {
         let dest: Render2dRect = patch.destination();
         let src = patch.source();
-        if dest.width() == 0.0 || dest.height() == 0.0
-            || src.width() == 0.0 || src.height() == 0.0
+        if dest.width() == 0.0 || dest.height() == 0.0 || src.width() == 0.0 || src.height() == 0.0
         {
             continue;
         }
@@ -95,9 +90,12 @@ pub(super) fn realize(
         for [x, y] in corners {
             let px = a.mul_add(x, c.mul_add(y, tx)) * raster_scale;
             let py = b.mul_add(x, d.mul_add(y, ty)) * raster_scale;
-            if !px.is_finite() || !py.is_finite() || ![px, py].into_iter().all(|v| {
-                v.abs() * f64::EPSILON < 1.0 / 4096.0
-            }) {
+            if !px.is_finite()
+                || !py.is_finite()
+                || ![px, py]
+                    .into_iter()
+                    .all(|v| v.abs() * f64::EPSILON < 1.0 / 4096.0)
+            {
                 return Err(failure(root_index, Render2dImageError::PrecisionLimit));
             }
             left = left.min(px.max(0.0));
@@ -123,19 +121,32 @@ pub(super) fn realize(
             bottom.ceil() as u32,
         ];
         let floats = [
-            inverse[0], inverse[1], inverse[2], item.opacity().get(),
-            inverse[3], inverse[4], inverse[5], 0.0,
-            src.x(), src.y(), src.width(), src.height(),
-            dest.x(), dest.y(), dest.width(), dest.height(),
-            canvas[0], canvas[1], 0.0, 0.0,
+            inverse[0],
+            inverse[1],
+            inverse[2],
+            item.opacity().get(),
+            inverse[3],
+            inverse[4],
+            inverse[5],
+            0.0,
+            src.x(),
+            src.y(),
+            src.width(),
+            src.height(),
+            dest.x(),
+            dest.y(),
+            dest.width(),
+            dest.height(),
+            canvas[0],
+            canvas[1],
+            0.0,
+            0.0,
         ];
         let mut payload = [0.0_f32; 20];
         for (index, number) in floats.into_iter().enumerate() {
             payload[index] = narrow(number, root_index)?;
         }
-        if payload[12] + payload[14] == payload[12]
-            || payload[13] + payload[15] == payload[13]
-        {
+        if payload[12] + payload[14] == payload[12] || payload[13] + payload[15] == payload[13] {
             return Err(failure(root_index, Render2dImageError::PrecisionLimit));
         }
         output.push(ImagePatchWork {
