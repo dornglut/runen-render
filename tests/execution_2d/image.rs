@@ -335,3 +335,44 @@ fn fractional_destination_resolves_edge_coverage_before_image_alpha() {
     check(pixel(&result, 9, 20), [0, 0, 0, 0]);
     check(pixel(&result, 11, 21), [240, 30, 5, 255]);
 }
+
+#[test]
+fn cancelled_large_local_coordinates_fail_before_image_gpu_authoring() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let id = Render2dResourceId::new(409).unwrap();
+    let translated = item(
+        id,
+        vec![patch(
+            [0.0, 0.0, 2.0, 2.0],
+            [100_000_000.0, 4.0, 32.0, 32.0],
+        )],
+        Render2dAffineTransform::translation(-100_000_000.0, 0.0).unwrap(),
+        1.0,
+    );
+    let composition = Render2dComposition::new(vec![translated]).unwrap();
+    let (_, image_target) = target("F3C cancellation precision");
+    assert!(matches!(
+        Render2dExecutor::new().prepare(
+            &ctx,
+            &composition,
+            &bindings(id, bytes()),
+            &image_target,
+        ),
+        Err(Render2dExecutionError::Image {
+            root_index: 0,
+            kind: Render2dImageError::PrecisionLimit,
+        })
+    ));
+
+    // An ordinary on-screen placement remains representable and paints normally.
+    let ordinary = item(
+        id,
+        vec![patch([0.0, 0.0, 2.0, 2.0], [8.0, 4.0, 32.0, 32.0])],
+        Render2dAffineTransform::IDENTITY,
+        1.0,
+    );
+    let actual = draw(&ctx, vec![ordinary], &bindings(id, bytes()));
+    check(pixel(&actual, 10, 8), [240, 30, 5, 255]);
+}

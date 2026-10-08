@@ -247,8 +247,10 @@ once. Original source bytes and semantic identity are independent of uploads,
 views and device residency. Sampling is private physical policy, not a new
 source-framework fit/crop or public semantic filter flag; future alternatives
 must preserve admitted F1 content meaning and accepted consumer evidence.
-Resource budgets/precision and image-format capabilities fail structurally
-before contribution work is authored. No shared image cache/residency backend
+Resource budgets, GPU-format capabilities, and precision fail structurally
+before contribution work is authored. Precision admission also bounds f32
+subpixel loss from cancellation between large local coordinates and opposing
+transforms, even when each scalar is individually representable. No shared image cache/residency backend
 is introduced by this slice.
 
 ### Private realization boundary
