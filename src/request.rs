@@ -1240,5 +1240,4 @@ mod tests {
         assert_eq!(request.observation_for_output(&second_output), Some(second));
         assert_eq!(request.clone().output_handle(1), Some(second_output));
     }
-
 }

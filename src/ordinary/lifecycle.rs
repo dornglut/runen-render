@@ -342,10 +342,17 @@ impl RenderRadianceCaptureRequest {
 }
 
 /// Finite maintained radiance samples interpreted from a product-owned readback.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct RenderCapturedRadiance {
     pub(super) inner: RenderCapturedDeterministicRadiance,
     pub(super) output: RenderOutputHandle,
+}
+
+// Observed value equality remains semantic; request allocation identity is only for correlation.
+impl PartialEq for RenderCapturedRadiance {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
 }
 
 impl RenderCapturedRadiance {
