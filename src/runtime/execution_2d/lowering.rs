@@ -823,7 +823,8 @@ pub(super) fn lower_ordered(
                         crate::execution_2d::Render2dImageError::FormatUnsupported,
                     ));
                 }
-                if !image_views.contains_key(&patch.resource_id) {
+                let vacant = image_views.entry(patch.resource_id);
+                if let std::collections::btree_map::Entry::Vacant(entry) = vacant {
                     let bytes = patch.source.rgba8_srgb().len() as u64;
                     image_bytes = image_bytes.checked_add(bytes).ok_or_else(|| {
                         super::image::failure(
@@ -838,7 +839,7 @@ pub(super) fn lower_ordered(
                         ));
                     }
                     let view = image::upload(target, &patch, &mut resources)?;
-                    image_views.insert(patch.resource_id, view);
+                    entry.insert(view);
                 }
                 operations.push(image::lower(
                     target,

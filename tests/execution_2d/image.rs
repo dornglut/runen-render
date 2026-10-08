@@ -297,3 +297,41 @@ fn mixed_images_shaped_text_and_retained_reconstruction_match() {
     let rebuilt = execute(&ctx, &mut executor, &first, &resources, "F3C cache rebuilt");
     assert_eq!(pixels.as_bytes(), rebuilt.as_bytes());
 }
+
+#[test]
+fn fractional_destination_resolves_edge_coverage_before_image_alpha() {
+    let Some(ctx) = context() else { return };
+    let id = Render2dResourceId::new(408).unwrap();
+    let image = item(
+        id,
+        vec![patch([0.0, 0.0, 1.0, 1.0], [10.25, 20.25, 10.0, 10.0])],
+        Render2dAffineTransform::IDENTITY,
+        1.0,
+    );
+    let result = draw(&ctx, vec![image], &bindings(id, bytes()));
+    // 3/4 of the four samples on each axis are covered, i.e. 9/16.
+    // The independently expected output encodes premultiplied linear RGB,
+    // not the product of already-encoded RGB and the coverage factor.
+    let covered = 9.0 / 16.0;
+    let encode = |v: u8| {
+        let srgb = f64::from(v) / 255.0;
+        let linear = if srgb <= 0.04045 {
+            srgb / 12.92
+        } else {
+            ((srgb + 0.055) / 1.055).powf(2.4)
+        };
+        let painted = linear * covered;
+        let encoded = if painted <= 0.0031308 {
+            painted * 12.92
+        } else {
+            1.055 * painted.powf(1.0 / 2.4) - 0.055
+        };
+        (encoded * 255.0).round() as u8
+    };
+    check(
+        pixel(&result, 10, 20),
+        [encode(240), encode(30), encode(5), 143],
+    );
+    check(pixel(&result, 9, 20), [0, 0, 0, 0]);
+    check(pixel(&result, 11, 21), [240, 30, 5, 255]);
+}
