@@ -244,15 +244,13 @@ mod tests {
     use super::*;
     use crate::request::{
         RenderObservationSpec, RenderOutputSpec, RenderOutputValue, RenderProbeObservation,
-        RenderRequestBuilder, RenderResultTopology, RenderSamplingSupport,
-        RenderSemanticTolerance,
+        RenderRequestBuilder, RenderResultTopology, RenderSamplingSupport, RenderSemanticTolerance,
     };
     use crate::space_time::{RenderAffineTransform3, RenderTimeInterval, RenderTimePoint};
 
     fn equivalent_request() -> RenderRequest {
-        let shutter = RenderTimeInterval::instant(
-            RenderTimePoint::from_seconds(0.0).expect("finite time"),
-        );
+        let shutter =
+            RenderTimeInterval::instant(RenderTimePoint::from_seconds(0.0).expect("finite time"));
         let observation = RenderObservationSpec::Probe(
             RenderProbeObservation::new(
                 RenderAffineTransform3::identity(),
@@ -269,7 +267,9 @@ mod tests {
         .expect("output");
         let mut builder = RenderRequestBuilder::new(shutter);
         let observation = builder.add_observation(observation);
-        builder.add_output(&observation, output).expect("own observation");
+        builder
+            .add_output(&observation, output)
+            .expect("own observation");
         builder.finish().expect("valid request")
     }
 

@@ -130,10 +130,9 @@ fn build_request() -> ExampleResult<RenderRequest> {
         &observation_handle,
         RenderOutputSpec::new(
             RenderOutputValue::Radiance {
-                representation:
-                    RenderRadiometricRepresentation::spectral_at_wavelength_meters(
-                        WAVELENGTH_METERS,
-                    )?,
+                representation: RenderRadiometricRepresentation::spectral_at_wavelength_meters(
+                    WAVELENGTH_METERS,
+                )?,
             },
             lattice()?,
             RenderSemanticTolerance::absolute(2.0e-4)?,
@@ -259,7 +258,13 @@ fn validate_output_correlation(
             .find(|output| output.output().position() == index)
             .ok_or_else(|| io::Error::other("admitted output correlation disappeared"))?;
         if output.observation_index() != 0
-            || output.binding().output() != &admitted.admitted_plan().plan().request().output_handle(index).expect("request output")
+            || output.binding().output()
+                != &admitted
+                    .admitted_plan()
+                    .plan()
+                    .request()
+                    .output_handle(index)
+                    .expect("request output")
             || output.binding().destination()
                 != &RenderOutputDestination::SampleLatticeTexture(target.clone())
         {
@@ -349,8 +354,12 @@ fn render_frame(
     let admitted = admit_render(&invocation, context)?;
     validate_output_correlation(&admitted, snapshot, targets)?;
 
-    let evaluation = RenderEvaluationSelection::new(request.output_handle(RADIANCE).expect("radiance handle"), WIDTH, HEIGHT)
-        .ok_or_else(|| io::Error::other("full retained evaluation selection is invalid"))?;
+    let evaluation = RenderEvaluationSelection::new(
+        request.output_handle(RADIANCE).expect("radiance handle"),
+        WIDTH,
+        HEIGHT,
+    )
+    .ok_or_else(|| io::Error::other("full retained evaluation selection is invalid"))?;
     let occurrence = session.prepare(admitted, context, Some(evaluation))?;
     let temporal = occurrence
         .radiance_output(&request.output_handle(RADIANCE).expect("radiance output"))
@@ -394,8 +403,10 @@ fn render_frame(
         return Err(io::Error::other("retained session did not reconcile completed work").into());
     }
 
-    let capture = associated.request_radiance_capture(&request.output_handle(RADIANCE).expect("radiance output"))?;
-    let decoder = associated.object_identity_decoder(&request.output_handle(OBJECT_ID).expect("identity output"))?;
+    let capture = associated
+        .request_radiance_capture(&request.output_handle(RADIANCE).expect("radiance output"))?;
+    let decoder = associated
+        .object_identity_decoder(&request.output_handle(OBJECT_ID).expect("identity output"))?;
     let identity_target = associated
         .admitted_plan()
         .outputs()
@@ -429,7 +440,9 @@ fn render_frame(
 
     let radiance = associated.capture_radiance(capture, context, &readback_submission)?;
     let expected_topology = RenderResultTopology::sample_lattice_2d(WIDTH, HEIGHT)?;
-    if radiance.output() != &request.output_handle(RADIANCE).expect("radiance output") || radiance.topology() != expected_topology {
+    if radiance.output() != &request.output_handle(RADIANCE).expect("radiance output")
+        || radiance.topology() != expected_topology
+    {
         return Err(io::Error::other("captured radiance output/topology changed").into());
     }
     let count = usize::try_from(u64::from(WIDTH) * u64::from(HEIGHT))?;

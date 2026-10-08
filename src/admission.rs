@@ -92,7 +92,10 @@ impl Eq for RenderOutputBinding {}
 
 impl RenderOutputBinding {
     pub fn new(output: RenderOutputHandle, destination: RenderOutputDestination) -> Self {
-        Self { output, destination }
+        Self {
+            output,
+            destination,
+        }
     }
 
     pub const fn output(&self) -> &RenderOutputHandle {
@@ -236,7 +239,9 @@ pub enum RenderCandidateAdmissionRejectionReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderAdmissionInputError {
     SemanticBinding(RenderSemanticBindingInputError),
-    ForeignOutputBinding { output: RenderOutputHandle },
+    ForeignOutputBinding {
+        output: RenderOutputHandle,
+    },
     DuplicateAvailabilityFact {
         representation_id: RenderRepresentationId,
     },
@@ -412,7 +417,12 @@ impl<'a> RenderAdmissionInputs<'a> {
         availability: &'a [RenderRepresentationAvailabilityFact],
         output_bindings: &'a [RenderOutputBinding],
     ) -> Self {
-        Self { surface_inputs, field_inputs, availability, output_bindings }
+        Self {
+            surface_inputs,
+            field_inputs,
+            availability,
+            output_bindings,
+        }
     }
 }
 
@@ -1179,7 +1189,11 @@ mod tests {
         }
     }
 
-    fn scalar_buffer_binding_for(plan: &RenderPlan, output_index: usize, label_text: &str) -> RenderOutputBinding {
+    fn scalar_buffer_binding_for(
+        plan: &RenderPlan,
+        output_index: usize,
+        label_text: &str,
+    ) -> RenderOutputBinding {
         let label = GpuResourceLabel::new(label_text).expect("label");
         let provenance = GpuResourceProvenance::new(label.clone(), None, None);
         let common = GpuResourceCommon::owned(
@@ -1199,7 +1213,9 @@ mod tests {
             .allocate_buffer_handle(descriptor)
             .expect("buffer handle");
         RenderOutputBinding::new(
-            plan.request().output_handle(output_index).expect("request output handle"),
+            plan.request()
+                .output_handle(output_index)
+                .expect("request output handle"),
             RenderOutputDestination::ScalarBuffer(buffer),
         )
     }
@@ -1654,5 +1670,4 @@ mod tests {
             ))
         ));
     }
-
 }

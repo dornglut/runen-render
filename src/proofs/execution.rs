@@ -683,7 +683,7 @@ fn public_verified_result_path_forms_once_from_exact_submission() {
         fixture.semantic_inputs.as_slice()
     );
     assert_eq!(result.outputs().len(), 1);
-    assert_eq!(result.outputs()[0].output_index(), 0);
+    assert_eq!(result.outputs()[0].output().position(), 0);
     assert_eq!(
         submitted.try_form_verified_result(),
         Err(RenderDeterministicResultFormationError::ResultAlreadyFormed),

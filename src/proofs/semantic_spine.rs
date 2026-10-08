@@ -494,7 +494,7 @@ fn founding_scene_reaches_public_r5_admission_without_synthetic_semantic_binding
         })
         .collect::<Vec<_>>();
     let bindings = founding_output_bindings(fixture.plan.request());
-    let admitted = admit_render_plan(&fixture.plan, &availability, &bindings, &context)
+    let admitted = admit_render_plan(&fixture.plan, RenderAdmissionInputs::new(&[], &[], &availability, &bindings), &context)
         .expect("founding R6 plan should reach ordinary public R5 admission");
 
     assert_eq!(admitted.plan(), &fixture.plan);

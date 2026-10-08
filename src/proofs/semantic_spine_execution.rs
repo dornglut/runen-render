@@ -783,9 +783,9 @@ fn founding_renderer_executes_through_maintained_path_and_matches_cpu_reference(
     );
     assert_eq!(result.outputs().len(), admitted_plan.outputs().len());
     for (result_output, admitted_output) in result.outputs().iter().zip(admitted_plan.outputs()) {
-        assert_eq!(result_output.output_index(), admitted_output.output_index());
+        assert_eq!(result_output.output().position(), admitted_output.output_index());
         assert_eq!(
-            result.request().outputs()[result_output.output_index()].observation_index(),
+            result.request().outputs()[result_output.output().position()].observation_index(),
             admitted_output.observation_index(),
             "result output-to-observation correlation must derive from the retained request"
         );

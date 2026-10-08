@@ -418,7 +418,9 @@ mod tests {
             &retained.input().signed_distance_samples_meters,
         ));
         drop(binding);
-        assert_eq!(retained.input().signed_distance_sample_meters(63), Some(1.0));
+        assert_eq!(
+            retained.input().signed_distance_sample_meters(63),
+            Some(1.0)
+        );
     }
-
 }

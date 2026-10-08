@@ -6,9 +6,8 @@ fn error_request() -> RenderRequest {
         RenderRequestBuilder, RenderResultTopology, RenderSamplingSupport, RenderSemanticTolerance,
     };
     use crate::space_time::{RenderAffineTransform3, RenderTimeInterval, RenderTimePoint};
-    let shutter = RenderTimeInterval::instant(
-        RenderTimePoint::from_seconds(0.0).expect("finite test time"),
-    );
+    let shutter =
+        RenderTimeInterval::instant(RenderTimePoint::from_seconds(0.0).expect("finite test time"));
     let observation = RenderObservationSpec::Probe(
         RenderProbeObservation::new(
             RenderAffineTransform3::identity(),
@@ -34,7 +33,6 @@ fn error_request() -> RenderRequest {
     }
     builder.finish().expect("five valid test outputs")
 }
-
 
 #[test]
 fn execution_error_preserves_runenshader_owner_category() {
@@ -74,7 +72,10 @@ fn result_submission_preserves_structured_eligibility_and_correlation() {
         eligibility.verification_eligibility_kind(),
         Some(RenderVerificationEligibilityErrorKind::SamplingSupportUnsupported)
     );
-    assert_eq!(eligibility.observation().map(|handle| handle.position()), Some(3));
+    assert_eq!(
+        eligibility.observation().map(|handle| handle.position()),
+        Some(3)
+    );
     assert!(Error::source(&eligibility).is_some());
 
     let correlation = RenderResultSubmissionError {
@@ -88,7 +89,12 @@ fn result_submission_preserves_structured_eligibility_and_correlation() {
         correlation.kind(),
         RenderResultSubmissionErrorKind::Correlation
     );
-    assert_eq!(correlation.correlation_output().map(|handle| handle.position()), Some(2));
+    assert_eq!(
+        correlation
+            .correlation_output()
+            .map(|handle| handle.position()),
+        Some(2)
+    );
     assert_eq!(correlation.correlation_channel(), Some("canonical-output"));
 }
 
@@ -108,7 +114,10 @@ fn result_formation_preserves_semantic_verification_location() {
         correlation.kind(),
         RenderResultFormationErrorKind::VerificationCorrelation
     );
-    assert_eq!(correlation.output().map(|handle| handle.position()), Some(2));
+    assert_eq!(
+        correlation.output().map(|handle| handle.position()),
+        Some(2)
+    );
     assert_eq!(correlation.sample_index(), Some(7));
     assert!(Error::source(&correlation).is_some());
 
@@ -142,7 +151,10 @@ fn result_formation_preserves_semantic_verification_location() {
         inconclusive.kind(),
         RenderResultFormationErrorKind::VerificationInconclusive
     );
-    assert_eq!(inconclusive.output().map(|handle| handle.position()), Some(3));
+    assert_eq!(
+        inconclusive.output().map(|handle| handle.position()),
+        Some(3)
+    );
     assert_eq!(inconclusive.sample_index(), None);
 
     let physical = RenderResultFormationError {

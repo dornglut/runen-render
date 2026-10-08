@@ -8,17 +8,27 @@ fn checked_identity_decoder<'a>(
     decoder: &'a RenderObjectIdentityDecoder,
 ) -> Result<&'a RenderObjectIdentityDecoder, RenderObjectIdentityDecoderError> {
     match status {
-        GpuSubmissionStatus::Accepted => return Err(RenderObjectIdentityDecoderError::submission_pending(output)),
+        GpuSubmissionStatus::Accepted => {
+            return Err(RenderObjectIdentityDecoderError::submission_pending(output));
+        }
         GpuSubmissionStatus::Failed(failure) => {
-            return Err(RenderObjectIdentityDecoderError::submission_failed(failure.kind(), output));
+            return Err(RenderObjectIdentityDecoderError::submission_failed(
+                failure.kind(),
+                output,
+            ));
         }
         GpuSubmissionStatus::Completed => {}
     }
     let request = admitted.plan().request();
     if !request.contains_output(output)
-        || !admitted.outputs().iter().any(|candidate| candidate.output_index() == output.position())
+        || !admitted
+            .outputs()
+            .iter()
+            .any(|candidate| candidate.output_index() == output.position())
     {
-        return Err(RenderObjectIdentityDecoderError::output_index_out_of_range(output));
+        return Err(RenderObjectIdentityDecoderError::output_index_out_of_range(
+            output,
+        ));
     }
     if !matches!(
         request.outputs()[output.position()].spec().value(),
@@ -28,7 +38,6 @@ fn checked_identity_decoder<'a>(
     }
     Ok(decoder)
 }
-
 
 /// Maintained invocation after semantic planning, binding, and execution admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,18 +79,31 @@ impl PreparedRender {
             .iter()
             .map(move |inner| PreparedRadianceOutput {
                 inner,
-                output: request.output_handle(inner.output_index()).expect("admitted output handle"),
+                output: request
+                    .output_handle(inner.output_index())
+                    .expect("admitted output handle"),
             })
     }
 
     /// Prepared radiance output for one requested output index, when applicable.
-    pub fn radiance_output(&self, output: &RenderOutputHandle) -> Option<PreparedRadianceOutput<'_>> {
-        if !self.admitted_plan().plan().request().contains_output(output) {
+    pub fn radiance_output(
+        &self,
+        output: &RenderOutputHandle,
+    ) -> Option<PreparedRadianceOutput<'_>> {
+        if !self
+            .admitted_plan()
+            .plan()
+            .request()
+            .contains_output(output)
+        {
             return None;
         }
         self.inner
             .radiance_output(output.position())
-            .map(|inner| PreparedRadianceOutput { inner, output: output.clone() })
+            .map(|inner| PreparedRadianceOutput {
+                inner,
+                output: output.clone(),
+            })
     }
 }
 
@@ -116,17 +138,30 @@ impl PreparedRenderOccurrence {
             .iter()
             .map(move |inner| PreparedRadianceOutput {
                 inner,
-                output: request.output_handle(inner.output_index()).expect("admitted output handle"),
+                output: request
+                    .output_handle(inner.output_index())
+                    .expect("admitted output handle"),
             })
     }
 
-    pub fn radiance_output(&self, output: &RenderOutputHandle) -> Option<PreparedRadianceOutput<'_>> {
-        if !self.admitted_plan().plan().request().contains_output(output) {
+    pub fn radiance_output(
+        &self,
+        output: &RenderOutputHandle,
+    ) -> Option<PreparedRadianceOutput<'_>> {
+        if !self
+            .admitted_plan()
+            .plan()
+            .request()
+            .contains_output(output)
+        {
             return None;
         }
         self.inner
             .radiance_output(output.position())
-            .map(|inner| PreparedRadianceOutput { inner, output: output.clone() })
+            .map(|inner| PreparedRadianceOutput {
+                inner,
+                output: output.clone(),
+            })
     }
 }
 
@@ -163,7 +198,12 @@ impl AssociatedRenderOccurrence {
         &self,
         output: &RenderOutputHandle,
     ) -> Result<RenderRadianceCaptureRequest, RenderRadianceCaptureRequestError> {
-        if !self.admitted_plan().plan().request().contains_output(output) {
+        if !self
+            .admitted_plan()
+            .plan()
+            .request()
+            .contains_output(output)
+        {
             return Err(RenderRadianceCaptureRequestError {
                 inner: RenderDeterministicRadianceCaptureRequestError::OutputIndexOutOfRange,
                 output: output.clone(),
@@ -177,11 +217,12 @@ impl AssociatedRenderOccurrence {
         .map(|inner| RenderRadianceCaptureRequest {
             inner,
             output: output.clone(),
-            retained_occurrence_identity: Some(std::sync::Arc::clone(
-                &self.occurrence_identity,
-            )),
+            retained_occurrence_identity: Some(std::sync::Arc::clone(&self.occurrence_identity)),
         })
-        .map_err(|inner| RenderRadianceCaptureRequestError { inner, output: output.clone() })
+        .map_err(|inner| RenderRadianceCaptureRequestError {
+            inner,
+            output: output.clone(),
+        })
     }
 
     /// Interpret one completed caller-owned RunenGPU readback through this exact occurrence.
@@ -211,7 +252,10 @@ impl AssociatedRenderOccurrence {
             context,
             product_submission,
         )
-        .map(|inner| RenderCapturedRadiance { inner, output: output.clone() })
+        .map(|inner| RenderCapturedRadiance {
+            inner,
+            output: output.clone(),
+        })
         .map_err(|inner| RenderRadianceCaptureError { inner, output })
     }
 
@@ -406,7 +450,12 @@ impl SubmittedRenderForResult {
         &self,
         output: &RenderOutputHandle,
     ) -> Result<RenderRadianceCaptureRequest, RenderRadianceCaptureRequestError> {
-        if !self.admitted_plan().plan().request().contains_output(output) {
+        if !self
+            .admitted_plan()
+            .plan()
+            .request()
+            .contains_output(output)
+        {
             return Err(RenderRadianceCaptureRequestError {
                 inner: RenderDeterministicRadianceCaptureRequestError::OutputIndexOutOfRange,
                 output: output.clone(),
@@ -419,7 +468,10 @@ impl SubmittedRenderForResult {
                 output: output.clone(),
                 retained_occurrence_identity: None,
             })
-            .map_err(|inner| RenderRadianceCaptureRequestError { inner, output: output.clone() })
+            .map_err(|inner| RenderRadianceCaptureRequestError {
+                inner,
+                output: output.clone(),
+            })
     }
 
     /// Interpret one completed product-owned RunenGPU readback through the maintained carrier.
@@ -438,7 +490,10 @@ impl SubmittedRenderForResult {
         let output = request.output.clone();
         self.inner
             .capture_deterministic_radiance(request.inner, context, product_submission)
-            .map(|inner| RenderCapturedRadiance { inner, output: output.clone() })
+            .map(|inner| RenderCapturedRadiance {
+                inner,
+                output: output.clone(),
+            })
             .map_err(|inner| RenderRadianceCaptureError { inner, output })
     }
 }

@@ -562,7 +562,6 @@ impl RenderRequestedOutput {
     }
 }
 
-
 #[derive(Debug, Clone)]
 struct RenderRequestCorrelation(Arc<()>);
 
@@ -631,7 +630,10 @@ impl RenderRequestBuilder {
         }
     }
 
-    pub fn add_observation(&mut self, observation: RenderObservationSpec) -> RenderObservationHandle {
+    pub fn add_observation(
+        &mut self,
+        observation: RenderObservationSpec,
+    ) -> RenderObservationHandle {
         let position = self.observations.len();
         self.observations.push(observation);
         RenderObservationHandle {
@@ -1195,8 +1197,10 @@ mod tests {
         let mut first_hasher = DefaultHasher::new();
         first_output.hash(&mut first_hasher);
         let mut cloned_hasher = DefaultHasher::new();
-        clone.output_handle(0).expect("retained output").hash(&mut cloned_hasher);
+        clone
+            .output_handle(0)
+            .expect("retained output")
+            .hash(&mut cloned_hasher);
         assert_eq!(first_hasher.finish(), cloned_hasher.finish());
     }
-
 }

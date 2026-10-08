@@ -19,7 +19,10 @@ pub fn admit_render(
         context,
     )
     .map(|inner| AdmittedRender { inner })
-    .map_err(|inner| RenderAdmissionError { inner, request: invocation.request().clone() })
+    .map_err(|inner| RenderAdmissionError {
+        inner,
+        request: invocation.request().clone(),
+    })
 }
 
 /// Lower one admitted ordinary render into composable public RunenGPU work without submitting it.

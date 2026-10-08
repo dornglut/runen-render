@@ -113,9 +113,16 @@ impl RenderAdmissionError {
                 | Input::DuplicateAvailabilityFact { .. } => None,
             },
             Failure::Compatibility(compatibility) => match compatibility {
-                Compatibility::SelectedRepresentationSurfaceInputUnsupported { output_index, .. }
-                | Compatibility::SelectedRepresentationFieldInputUnsupported { output_index, .. }
-                | Compatibility::SelectedObjectFieldTransformNotSimilarity { output_index, .. }
+                Compatibility::SelectedRepresentationSurfaceInputUnsupported {
+                    output_index,
+                    ..
+                }
+                | Compatibility::SelectedRepresentationFieldInputUnsupported {
+                    output_index, ..
+                }
+                | Compatibility::SelectedObjectFieldTransformNotSimilarity {
+                    output_index, ..
+                }
                 | Compatibility::SelectedObjectStateMissing { output_index, .. }
                 | Compatibility::SelectedObjectTransformNonInvertible { output_index, .. }
                 | Compatibility::LatticeFormatUnsupported { output_index, .. }
@@ -158,24 +165,40 @@ impl RenderAdmissionError {
             RenderExecutionAdmissionFailure as Admission,
         };
         use crate::runtime::admission::RenderDeterministicAdmissionFailure as Failure;
-        let Failure::Admission(Admission::NoExecutableCandidate { rejections }) = &self.inner else {
+        let Failure::Admission(Admission::NoExecutableCandidate { rejections }) = &self.inner
+        else {
             return Vec::new();
         };
-        rejections.iter().map(|rejection| {
-            let (kind, index) = match rejection.reason() {
-                Reason::ExecutionLifecycle { .. } => (RenderCandidateFailureKind::ExecutionLifecycle, None),
-                Reason::RequiredCapabilityUnsupported { .. } => (RenderCandidateFailureKind::CapabilityUnsupported, None),
-                Reason::RequiredCapabilityNotEnabled { .. } => (RenderCandidateFailureKind::CapabilityNotEnabled, None),
-                Reason::NoSemanticallyAdmissibleRepresentation { output_index, .. } => (RenderCandidateFailureKind::UnsupportedSemantics, Some(*output_index)),
-                Reason::AvailabilityUnknown { output_index, .. }
-                | Reason::NoAvailableRepresentation { output_index, .. } => (RenderCandidateFailureKind::RepresentationUnavailable, Some(*output_index)),
-            };
-            RenderCandidateFailure {
-                candidate_index: rejection.candidate_index(),
-                kind,
-                output: index.and_then(|position| self.request.output_handle(position)),
-            }
-        }).collect()
+        rejections
+            .iter()
+            .map(|rejection| {
+                let (kind, index) = match rejection.reason() {
+                    Reason::ExecutionLifecycle { .. } => {
+                        (RenderCandidateFailureKind::ExecutionLifecycle, None)
+                    }
+                    Reason::RequiredCapabilityUnsupported { .. } => {
+                        (RenderCandidateFailureKind::CapabilityUnsupported, None)
+                    }
+                    Reason::RequiredCapabilityNotEnabled { .. } => {
+                        (RenderCandidateFailureKind::CapabilityNotEnabled, None)
+                    }
+                    Reason::NoSemanticallyAdmissibleRepresentation { output_index, .. } => (
+                        RenderCandidateFailureKind::UnsupportedSemantics,
+                        Some(*output_index),
+                    ),
+                    Reason::AvailabilityUnknown { output_index, .. }
+                    | Reason::NoAvailableRepresentation { output_index, .. } => (
+                        RenderCandidateFailureKind::RepresentationUnavailable,
+                        Some(*output_index),
+                    ),
+                };
+                RenderCandidateFailure {
+                    candidate_index: rejection.candidate_index(),
+                    kind,
+                    output: index.and_then(|position| self.request.output_handle(position)),
+                }
+            })
+            .collect()
     }
 }
 
@@ -492,14 +515,18 @@ impl RenderResultSubmissionError {
     /// Expected and actual output indices when readback/output correlation changed.
     pub fn output_correlation(
         &self,
-    ) -> Option<(crate::request::RenderOutputHandle, Option<crate::request::RenderOutputHandle>)> {
+    ) -> Option<(
+        crate::request::RenderOutputHandle,
+        Option<crate::request::RenderOutputHandle>,
+    )> {
         match &self.inner {
             RenderDeterministicVerifiedSubmissionError::OutputCorrelationChanged {
                 expected_output_index,
                 actual_output_index,
-            } => self.request.output_handle(*expected_output_index).map(|expected| {
-                (expected, self.request.output_handle(*actual_output_index))
-            }),
+            } => self
+                .request
+                .output_handle(*expected_output_index)
+                .map(|expected| (expected, self.request.output_handle(*actual_output_index))),
             _ => None,
         }
     }
@@ -905,7 +932,10 @@ impl RenderObjectIdentityDecoderError {
         }
     }
 
-    pub(super) fn submission_failed(kind: GpuSubmissionFailureKind, output: &crate::request::RenderOutputHandle) -> Self {
+    pub(super) fn submission_failed(
+        kind: GpuSubmissionFailureKind,
+        output: &crate::request::RenderOutputHandle,
+    ) -> Self {
         Self {
             kind: RenderObjectIdentityDecoderErrorKind::RendererSubmissionFailed,
             gpu_failure_kind: Some(kind),

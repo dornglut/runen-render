@@ -19,23 +19,36 @@ pub struct RenderInvocation {
 /// Structural output-binding failure prior to GPU-dependent semantic admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderInvocationError {
-    ForeignOutput { output: crate::request::RenderOutputHandle },
-    DuplicateOutput { position: usize },
-    MissingOutput { position: usize },
+    ForeignOutput {
+        output: crate::request::RenderOutputHandle,
+    },
+    DuplicateOutput {
+        position: usize,
+    },
+    MissingOutput {
+        position: usize,
+    },
 }
 
 impl fmt::Display for RenderInvocationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ForeignOutput { output } => write!(
-                formatter, "output handle at position {} is not owned by this request",
+                formatter,
+                "output handle at position {} is not owned by this request",
                 output.position()
             ),
             Self::DuplicateOutput { position } => {
-                write!(formatter, "output position {position} has multiple physical bindings")
+                write!(
+                    formatter,
+                    "output position {position} has multiple physical bindings"
+                )
             }
             Self::MissingOutput { position } => {
-                write!(formatter, "requested output position {position} has no physical binding")
+                write!(
+                    formatter,
+                    "requested output position {position} has no physical binding"
+                )
             }
         }
     }
