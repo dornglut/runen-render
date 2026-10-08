@@ -6,8 +6,8 @@
 //! or planning authority.
 
 use crate::admission::{
-    RenderOutputBinding, RenderOutputDestination, RenderRepresentationAvailabilityFact,
-    RenderRepresentationAvailabilityState, admit_render_plan,
+    RenderAdmissionInputs, RenderOutputBinding, RenderOutputDestination,
+    RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState, admit_render_plan,
 };
 use crate::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};
 use crate::method::{
@@ -494,8 +494,12 @@ fn founding_scene_reaches_public_r5_admission_without_synthetic_semantic_binding
         })
         .collect::<Vec<_>>();
     let bindings = founding_output_bindings(fixture.plan.request());
-    let admitted = admit_render_plan(&fixture.plan, RenderAdmissionInputs::new(&[], &[], &availability, &bindings), &context)
-        .expect("founding R6 plan should reach ordinary public R5 admission");
+    let admitted = admit_render_plan(
+        &fixture.plan,
+        RenderAdmissionInputs::new(&[], &[], &availability, &bindings),
+        &context,
+    )
+    .expect("founding R6 plan should reach ordinary public R5 admission");
 
     assert_eq!(admitted.plan(), &fixture.plan);
     assert_eq!(
