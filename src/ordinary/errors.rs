@@ -429,7 +429,7 @@ pub enum RenderResultSubmissionErrorKind {
 #[derive(Debug)]
 pub struct RenderResultSubmissionError {
     pub(super) inner: RenderDeterministicVerifiedSubmissionError,
-    pub(super) request: RenderRequest,
+    pub(super) request: Box<RenderRequest>,
 }
 
 impl RenderResultSubmissionError {

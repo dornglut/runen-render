@@ -62,5 +62,8 @@ pub async fn submit_render_for_result(
     submit_deterministic_render_for_verified_result(admitted.inner, context)
         .await
         .map(|inner| SubmittedRenderForResult { inner })
-        .map_err(|inner| RenderResultSubmissionError { inner, request })
+        .map_err(|inner| RenderResultSubmissionError {
+            inner,
+            request: Box::new(request),
+        })
 }

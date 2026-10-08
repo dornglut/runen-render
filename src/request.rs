@@ -704,6 +704,7 @@ impl PartialEq for RenderRequest {
 impl Eq for RenderRequest {}
 
 impl RenderRequest {
+    #[cfg(test)]
     pub(crate) fn new(
         render_interval: RenderTimeInterval,
         observations: Vec<RenderObservationSpec>,

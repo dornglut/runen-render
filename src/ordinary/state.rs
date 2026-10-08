@@ -132,17 +132,16 @@ impl RenderExecutionSession {
         context: &GpuContext,
         evaluation: Option<RenderEvaluationSelection>,
     ) -> Result<PreparedRenderOccurrence, RenderExecutionSessionError> {
-        if let Some(selection) = evaluation.as_ref() {
-            if !admitted
+        if let Some(selection) = evaluation.as_ref()
+            && !admitted
                 .admitted_plan()
                 .plan()
                 .request()
                 .contains_output(selection.output())
-            {
-                return Err(RenderExecutionSessionError::ForeignEvaluationOutput {
-                    output: selection.output().clone(),
-                });
-            }
+        {
+            return Err(RenderExecutionSessionError::ForeignEvaluationOutput {
+                output: selection.output().clone(),
+            });
         }
         self.reconcile();
 

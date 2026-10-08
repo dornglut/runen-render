@@ -57,7 +57,7 @@ fn execution_error_preserves_runenshader_owner_category() {
 #[test]
 fn result_submission_preserves_structured_eligibility_and_correlation() {
     let eligibility = RenderResultSubmissionError {
-        request: error_request(),
+        request: Box::new(error_request()),
         inner: RenderDeterministicVerifiedSubmissionError::Eligibility(
             RenderDeterministicVerificationEligibilityError::SamplingSupportUnsupported {
                 observation_index: 3,
@@ -79,7 +79,7 @@ fn result_submission_preserves_structured_eligibility_and_correlation() {
     assert!(Error::source(&eligibility).is_some());
 
     let correlation = RenderResultSubmissionError {
-        request: error_request(),
+        request: Box::new(error_request()),
         inner: RenderDeterministicVerifiedSubmissionError::MissingSubmissionReadback {
             output_index: 2,
             channel: "canonical-output",
@@ -310,8 +310,7 @@ fn invocation_reports_missing_output_with_request_owned_identity() {
         Vec::new(),
         Vec::new(),
     )
-    .err()
-    .expect("each requested output requires a destination");
+    .expect_err("each requested output requires a destination");
     assert!(matches!(
         error,
         RenderInvocationError::MissingOutput { output } if output == expected
