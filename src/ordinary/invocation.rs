@@ -1,4 +1,5 @@
 use super::*;
+use crate::request::RenderOutputHandle;
 use std::collections::BTreeSet;
 
 /// All renderer-owned facts for one bounded ordinary invocation.
@@ -20,13 +21,13 @@ pub struct RenderInvocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderInvocationError {
     ForeignOutput {
-        output: crate::request::RenderOutputHandle,
+        output: RenderOutputHandle,
     },
     DuplicateOutput {
-        position: usize,
+        output: RenderOutputHandle,
     },
     MissingOutput {
-        position: usize,
+        output: RenderOutputHandle,
     },
 }
 
@@ -38,16 +39,18 @@ impl fmt::Display for RenderInvocationError {
                 "output handle at position {} is not owned by this request",
                 output.position()
             ),
-            Self::DuplicateOutput { position } => {
+            Self::DuplicateOutput { output } => {
                 write!(
                     formatter,
-                    "output position {position} has multiple physical bindings"
+                    "output {} has multiple physical bindings",
+                    output.position()
                 )
             }
-            Self::MissingOutput { position } => {
+            Self::MissingOutput { output } => {
                 write!(
                     formatter,
-                    "requested output position {position} has no physical binding"
+                    "requested output {} has no physical binding",
+                    output.position()
                 )
             }
         }
@@ -80,12 +83,16 @@ impl RenderInvocation {
             }
             let position = binding.output_index();
             if !seen.insert(position) {
-                return Err(RenderInvocationError::DuplicateOutput { position });
+                return Err(RenderInvocationError::DuplicateOutput {
+                    output: binding.output().clone(),
+                });
             }
         }
         for position in 0..output_count {
             if !seen.contains(&position) {
-                return Err(RenderInvocationError::MissingOutput { position });
+                return Err(RenderInvocationError::MissingOutput {
+                    output: request.output_handle(position).expect("requested output"),
+                });
             }
         }
         Ok(Self {

@@ -33,9 +33,7 @@ pub(super) fn classify_candidate_rejection(
 ) -> (RenderCandidateFailureKind, Option<usize>) {
     use crate::admission::RenderCandidateAdmissionRejectionReason as Reason;
     match reason {
-        Reason::ExecutionLifecycle { .. } => {
-            (RenderCandidateFailureKind::ExecutionLifecycle, None)
-        }
+        Reason::ExecutionLifecycle { .. } => (RenderCandidateFailureKind::ExecutionLifecycle, None),
         Reason::RequiredCapabilityUnsupported { .. } => {
             (RenderCandidateFailureKind::CapabilityUnsupported, None)
         }

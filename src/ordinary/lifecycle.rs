@@ -85,7 +85,7 @@ impl PreparedRender {
             })
     }
 
-    /// Prepared radiance output for one requested output index, when applicable.
+    /// Prepared radiance output for an exact request-owned output handle, when applicable.
     pub fn radiance_output(
         &self,
         output: &RenderOutputHandle,
@@ -284,7 +284,7 @@ pub struct PreparedRadianceOutput<'a> {
 }
 
 impl PreparedRadianceOutput<'_> {
-    /// Requested output index correlated to this prepared destination.
+    /// Exact request-owned output correlated to this prepared destination.
     pub const fn output(&self) -> &RenderOutputHandle {
         &self.output
     }
@@ -325,7 +325,7 @@ pub struct RenderRadianceCaptureRequest {
 }
 
 impl RenderRadianceCaptureRequest {
-    /// Requested output index correlated to this capture.
+    /// Exact request-owned output correlated to this capture.
     pub const fn output(&self) -> &RenderOutputHandle {
         &self.output
     }
@@ -356,7 +356,7 @@ impl PartialEq for RenderCapturedRadiance {
 }
 
 impl RenderCapturedRadiance {
-    /// Requested output index whose retained destination was observed.
+    /// Exact request-owned output whose retained destination was observed.
     pub const fn output(&self) -> &RenderOutputHandle {
         &self.output
     }

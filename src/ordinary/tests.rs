@@ -198,7 +198,10 @@ fn ordinary_admission_failure_exposes_actionable_owner_categories() {
         })),
         request: error_request(),
     };
-    assert_eq!(target.kind(), RenderAdmissionErrorKind::OutputTargetMismatch);
+    assert_eq!(
+        target.kind(),
+        RenderAdmissionErrorKind::OutputTargetMismatch
+    );
     assert_eq!(target.output(), target.request().output_handle(0));
 
     let unsupported = RenderAdmissionError {
@@ -207,7 +210,10 @@ fn ordinary_admission_failure_exposes_actionable_owner_categories() {
         }),
         request: error_request(),
     };
-    assert_eq!(unsupported.kind(), RenderAdmissionErrorKind::UnsupportedSemantics);
+    assert_eq!(
+        unsupported.kind(),
+        RenderAdmissionErrorKind::UnsupportedSemantics
+    );
     assert!(unsupported.output().is_none());
 
     let candidates = RenderAdmissionError {
@@ -216,7 +222,10 @@ fn ordinary_admission_failure_exposes_actionable_owner_categories() {
         }),
         request: error_request(),
     };
-    assert_eq!(candidates.kind(), RenderAdmissionErrorKind::NoExecutableCandidate);
+    assert_eq!(
+        candidates.kind(),
+        RenderAdmissionErrorKind::NoExecutableCandidate
+    );
 }
 
 #[test]
@@ -286,4 +295,25 @@ fn candidate_rejections_preserve_distinct_actionable_causes() {
             (expected_kind, expected_output)
         );
     }
+}
+
+#[test]
+fn invocation_reports_missing_output_with_request_owned_identity() {
+    let request = error_request();
+    let expected = request.output_handle(0).expect("first output");
+    let scene = crate::scene::RenderSceneStore::new().snapshot();
+    let error = RenderInvocation::new(
+        scene,
+        request,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .err()
+    .expect("each requested output requires a destination");
+    assert!(matches!(
+        error,
+        RenderInvocationError::MissingOutput { output } if output == expected
+    ));
 }
