@@ -63,7 +63,7 @@ pub async fn submit_render_for_result(
         .await
         .map(|inner| SubmittedRenderForResult { inner })
         .map_err(|inner| RenderResultSubmissionError {
-            inner,
+            inner: Box::new(inner),
             request: Box::new(request),
         })
 }

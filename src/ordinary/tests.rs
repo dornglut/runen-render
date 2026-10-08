@@ -58,11 +58,11 @@ fn execution_error_preserves_runenshader_owner_category() {
 fn result_submission_preserves_structured_eligibility_and_correlation() {
     let eligibility = RenderResultSubmissionError {
         request: Box::new(error_request()),
-        inner: RenderDeterministicVerifiedSubmissionError::Eligibility(
+        inner: Box::new(RenderDeterministicVerifiedSubmissionError::Eligibility(
             RenderDeterministicVerificationEligibilityError::SamplingSupportUnsupported {
                 observation_index: 3,
             },
-        ),
+        )),
     };
     assert_eq!(
         eligibility.kind(),
@@ -80,10 +80,10 @@ fn result_submission_preserves_structured_eligibility_and_correlation() {
 
     let correlation = RenderResultSubmissionError {
         request: Box::new(error_request()),
-        inner: RenderDeterministicVerifiedSubmissionError::MissingSubmissionReadback {
+        inner: Box::new(RenderDeterministicVerifiedSubmissionError::MissingSubmissionReadback {
             output_index: 2,
             channel: "canonical-output",
-        },
+        }),
     };
     assert_eq!(
         correlation.kind(),

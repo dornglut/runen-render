@@ -428,14 +428,14 @@ pub enum RenderResultSubmissionErrorKind {
 /// Failure while selecting result-verification intent or authoring its exact submission.
 #[derive(Debug)]
 pub struct RenderResultSubmissionError {
-    pub(super) inner: RenderDeterministicVerifiedSubmissionError,
+    pub(super) inner: Box<RenderDeterministicVerifiedSubmissionError>,
     pub(super) request: Box<RenderRequest>,
 }
 
 impl RenderResultSubmissionError {
     /// Owner-oriented failure category.
     pub fn kind(&self) -> RenderResultSubmissionErrorKind {
-        match &self.inner {
+        match self.inner.as_ref() {
             RenderDeterministicVerifiedSubmissionError::Eligibility(_) => {
                 RenderResultSubmissionErrorKind::Eligibility
             }
@@ -455,7 +455,7 @@ impl RenderResultSubmissionError {
 
     /// Verifier-domain reason when submission was rejected before maintained execution.
     pub fn verification_eligibility_kind(&self) -> Option<RenderVerificationEligibilityErrorKind> {
-        let RenderDeterministicVerifiedSubmissionError::Eligibility(error) = &self.inner else {
+        let RenderDeterministicVerifiedSubmissionError::Eligibility(error) = self.inner.as_ref() else {
             return None;
         };
         Some(verification_eligibility_kind(error))
@@ -463,7 +463,7 @@ impl RenderResultSubmissionError {
 
     /// Referenced observation index when eligibility failure is observation-scoped.
     pub fn observation(&self) -> Option<crate::request::RenderObservationHandle> {
-        let position = match &self.inner {
+        let position = match self.inner.as_ref() {
             RenderDeterministicVerifiedSubmissionError::Eligibility(
                 RenderDeterministicVerificationEligibilityError::SelectedObservationMissing {
                     observation_index,
@@ -485,7 +485,7 @@ impl RenderResultSubmissionError {
 
     /// Referenced renderer object when eligibility failure is object-scoped.
     pub const fn object_id(&self) -> Option<RenderObjectId> {
-        match &self.inner {
+        match self.inner.as_ref() {
             RenderDeterministicVerifiedSubmissionError::Eligibility(
                 RenderDeterministicVerificationEligibilityError::SelectedObjectStateMissing {
                     object_id,
@@ -506,7 +506,7 @@ impl RenderResultSubmissionError {
 
     /// Expected and actual readback counts when exact-submission cardinality changed.
     pub const fn readback_cardinality(&self) -> Option<(usize, usize)> {
-        match &self.inner {
+        match self.inner.as_ref() {
             RenderDeterministicVerifiedSubmissionError::ReadbackCardinality {
                 expected,
                 actual,
@@ -522,7 +522,7 @@ impl RenderResultSubmissionError {
         crate::request::RenderOutputHandle,
         Option<crate::request::RenderOutputHandle>,
     )> {
-        match &self.inner {
+        match self.inner.as_ref() {
             RenderDeterministicVerifiedSubmissionError::OutputCorrelationChanged {
                 expected_output_index,
                 actual_output_index,
@@ -536,7 +536,7 @@ impl RenderResultSubmissionError {
 
     /// Output index for channel-scoped exact-submission correlation failures.
     pub fn correlation_output(&self) -> Option<crate::request::RenderOutputHandle> {
-        let position = match &self.inner {
+        let position = match self.inner.as_ref() {
             RenderDeterministicVerifiedSubmissionError::DuplicateReadbackCorrelation {
                 output_index,
                 ..
@@ -552,7 +552,7 @@ impl RenderResultSubmissionError {
 
     /// Verification channel for channel-scoped exact-submission correlation failures.
     pub const fn correlation_channel(&self) -> Option<&'static str> {
-        match &self.inner {
+        match self.inner.as_ref() {
             RenderDeterministicVerifiedSubmissionError::DuplicateReadbackCorrelation {
                 channel,
                 ..
@@ -599,7 +599,7 @@ fn verification_eligibility_kind(
 
 impl fmt::Display for RenderResultSubmissionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.inner {
+        match self.inner.as_ref() {
             RenderDeterministicVerifiedSubmissionError::Eligibility(error) => {
                 write!(
                     formatter,
@@ -641,7 +641,7 @@ impl fmt::Display for RenderResultSubmissionError {
 
 impl Error for RenderResultSubmissionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&self.inner)
+        Some(self.inner.as_ref())
     }
 }
 
