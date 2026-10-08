@@ -420,6 +420,13 @@ pub enum Render2dExecutionError {
         /// Stable renderer-owned failure class.
         kind: Render2dVectorError,
     },
+    /// An immutable image patch cannot be realized under physical precision or resource limits.
+    Image {
+        /// Root painter-order index of the affected image.
+        root_index: usize,
+        /// Stable source-neutral realization failure.
+        kind: Render2dImageError,
+    },
     /// Composition/resource compatibility failed before maintained realization.
     ResourceBindings(Render2dResourceBindingError),
     /// Invocation target facts are not admitted.
@@ -455,6 +462,9 @@ impl fmt::Display for Render2dExecutionError {
             Self::Vector { root_index, kind } => {
                 write!(formatter, "2D vector item {root_index}: {kind:?}")
             }
+            Self::Image { root_index, kind } => {
+                write!(formatter, "2D image item {root_index}: {kind:?}")
+            }
             Self::ResourceBindings(error) => error.fmt(formatter),
             Self::Target(error) => error.fmt(formatter),
             Self::UnsupportedContent(error) => error.fmt(formatter),
@@ -481,6 +491,17 @@ impl fmt::Display for Render2dExecutionError {
 }
 
 impl Error for Render2dExecutionError {}
+
+/// Stable image physical realization failure, without exposing texture/backend identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Render2dImageError {
+    /// Image dimensions, total upload bytes or prepared GPU storage exceed bounded limits.
+    ResourceLimit,
+    /// Geometry, mapping or affine inverse cannot preserve required physical precision.
+    PrecisionLimit,
+    /// The admitted device lacks RGBA8-sRGB texture sampling/upload capabilities.
+    FormatUnsupported,
+}
 
 /// Renderer-owned vector realization failure, independent of the private tessellator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

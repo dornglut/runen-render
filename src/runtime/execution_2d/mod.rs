@@ -2,6 +2,7 @@
 
 mod field;
 mod intrinsic;
+mod image;
 mod lowering;
 mod vector;
 
@@ -47,6 +48,17 @@ impl Render2dExecutionState {
             .iter()
             .map(|run| run.resource_id)
             .collect::<BTreeSet<_>>();
+        let image_resources = composition
+            .root_entries()
+            .iter()
+            .filter_map(|entry| match entry {
+                Render2dEntry::Item(item) => match item.primitive() {
+                    Render2dPrimitive::Image(image) => Some(image.resource_id()),
+                    _ => None,
+                },
+                Render2dEntry::Group(_) => None,
+            })
+            .collect::<BTreeSet<_>>();
 
         let mut observed_updates = Vec::new();
         let mut field_updates = Vec::new();
@@ -87,6 +99,21 @@ impl Render2dExecutionState {
             )?);
             resolved_fields.insert(key, Arc::clone(&realized));
             field_updates.push((key, realized));
+        }
+
+        // Resource identity is observed transactionally for admitted image items too,
+        // including empty/fully transparent mappings.
+        for resource_id in image_resources {
+            let value = bindings
+                .get(resource_id)
+                .expect("composition validation proves every image binding exists");
+            if let Some(existing) = self.observed.get(&resource_id) {
+                if existing != value {
+                    return Err(Render2dExecutionError::ResourceIdentityRebound { resource_id });
+                }
+            } else {
+                observed_updates.push((resource_id, value.clone()));
+            }
         }
 
         let mut occurrences = BTreeMap::<usize, Vec<GlyphOccurrence>>::new();
@@ -163,6 +190,22 @@ impl Render2dExecutionState {
                         .into_iter()
                         .map(lowering::OrderedItem::Glyph),
                 );
+            } else if let Render2dPrimitive::Image(image) = item.primitive() {
+                let value = bindings.get(image.resource_id()).expect("validated image binding");
+                let Render2dResourceValue::ImageRgba8Srgb(source) = value else {
+                    unreachable!("validated image binding kind")
+                };
+                for patch in image::realize(
+                    item,
+                    image,
+                    source,
+                    root_index,
+                    admitted_target.raster_scale(),
+                    admitted_target.canvas(),
+                    admitted_target.max_texture_dimension_2d(),
+                )? {
+                    ordered.push(lowering::OrderedItem::Image(patch));
+                }
             } else if let Some(mesh) = vector::realize(
                 item,
                 root_index,
@@ -215,9 +258,7 @@ fn admit_runs(
         }
         match item.primitive() {
             Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => continue,
-            Render2dPrimitive::Image(_) => {
-                return Err(Render2dUnsupportedContent::Primitive { root_index }.into());
-            }
+            Render2dPrimitive::Image(_) => continue,
             Render2dPrimitive::ShapedText(_) => {}
         }
         if item.opacity() != Render2dOpacity::OPAQUE {

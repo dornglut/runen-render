@@ -1,5 +1,6 @@
 //! Ordered private RunenGPU lowering for admitted text and solid vectors.
 
+mod image;
 mod vector;
 
 use super::field::GlyphField;
@@ -33,6 +34,7 @@ pub(super) struct AdmittedTarget {
     max_texture_dimension_2d: u32,
     max_buffer_bytes: u64,
     coverage_format: bool,
+    image_format: bool,
 }
 
 impl AdmittedTarget {
@@ -222,6 +224,9 @@ pub(super) fn admit_target(
         coverage_format: [GpuFormatRole::ColorAttachment, GpuFormatRole::Sampled]
             .into_iter()
             .all(|role| admitted_roles.contains(&(FIELD_FORMAT, role))),
+        image_format: [GpuFormatRole::Sampled, GpuFormatRole::Filterable, GpuFormatRole::CopyDestination]
+            .into_iter()
+            .all(|role| admitted_roles.contains(&(GpuTextureFormat::Rgba8UnormSrgb, role))),
         max_buffer_bytes: context
             .device_facts()
             .device_limits()
@@ -720,6 +725,7 @@ fn gpu_text(stage: &'static str, detail: impl Into<String>) -> Render2dExecution
 pub(super) enum OrderedItem {
     Glyph(GlyphOccurrence),
     Vector(super::vector::VectorMesh),
+    Image(super::image::ImagePatchWork),
 }
 
 // One contribution-local coverage surface is reused in lexical order. Clearing the
@@ -788,6 +794,8 @@ pub(super) fn lower_ordered(
     };
     let mut operations = Vec::new();
     let mut glyphs = Vec::new();
+    let mut image_views = BTreeMap::new();
+    let mut image_bytes: u64 = 0;
     for item in ordered {
         match item {
             OrderedItem::Glyph(glyph) => glyphs.push(glyph),
@@ -799,6 +807,28 @@ pub(super) fn lower_ordered(
                     &mesh,
                     mask.as_ref().expect("vector mask"),
                     [mask_width, mask_height],
+                    &mut resources,
+                )?);
+            }
+            OrderedItem::Image(patch) => {
+                operations.extend(lower(target, &glyphs)?);
+                glyphs.clear();
+                if !target.image_format {
+                    return Err(super::image::failure(patch.root_index, crate::execution_2d::Render2dImageError::FormatUnsupported));
+                }
+                if !image_views.contains_key(&patch.resource_id) {
+                    let bytes = patch.source.rgba8_srgb().len() as u64;
+                    image_bytes = image_bytes
+                        .checked_add(bytes)
+                        .ok_or_else(|| super::image::failure(patch.root_index, crate::execution_2d::Render2dImageError::ResourceLimit))?;
+                    if image_bytes > 128 * 1024 * 1024 {
+                        return Err(super::image::failure(patch.root_index, crate::execution_2d::Render2dImageError::ResourceLimit));
+                    }
+                    let view = image::upload(target, &patch, &mut resources)?;
+                    image_views.insert(patch.resource_id, view);
+                }
+                operations.push(image::lower(
+                    target, &patch, image_views.get(&patch.resource_id).expect("uploaded image"),
                     &mut resources,
                 )?);
             }

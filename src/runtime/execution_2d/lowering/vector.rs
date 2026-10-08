@@ -7,10 +7,11 @@ use crate::composition_2d::Render2dBrush;
 use crate::execution_2d::{Render2dExecutionError, Render2dVectorError};
 use runen_gpu::*;
 
-fn vector_pipeline(
+pub(super) fn vector_pipeline(
     format: GpuTextureFormat,
     compose: bool,
     gradient: bool,
+    image: bool,
 ) -> Result<GpuRenderPipelineDescriptor, Render2dExecutionError> {
     let source = crate::runtime::program::retained_vector_source().map_err(|error| {
         Render2dExecutionError::Program {
@@ -19,7 +20,9 @@ fn vector_pipeline(
         }
     })?;
     let vertex = GpuEntryPointName::new("vs_main").map_err(|e| gpu("vector entry", e))?;
-    let fragment = GpuEntryPointName::new(if gradient {
+    let fragment = GpuEntryPointName::new(if image {
+        "fs_image"
+    } else if gradient {
         "fs_gradient"
     } else if compose {
         "fs_compose"
@@ -27,7 +30,11 @@ fn vector_pipeline(
         "fs_coverage"
     })
     .map_err(|e| gpu("vector entry", e))?;
-    let refinements = if compose {
+    let refinements = if image {
+        vec![GpuBindingLayoutRefinement::new(
+            GpuBindingKey::try_new(0, 2).map_err(|e| gpu("image binding key", e))?,
+        ).with_texture_sample_class(GpuTextureSampleClass::FloatFilterable)]
+    } else if compose {
         vec![
             GpuBindingLayoutRefinement::new(
                 GpuBindingKey::try_new(0, 0).map_err(|e| gpu("mask binding key", e))?,
@@ -80,7 +87,7 @@ fn vector_pipeline(
     .map_err(|e| gpu("vector pipeline", e))
 }
 
-fn vector_draw(
+pub(super) fn vector_draw(
     pipeline: GpuRenderPipelineDescriptor,
     bindings: GpuRuntimeBindingSet,
     vertices: &[f32],
@@ -145,7 +152,7 @@ pub(super) fn lower(
             1.0,
         ]);
     }
-    let pipeline = vector_pipeline(FIELD_FORMAT, false, false)?;
+    let pipeline = vector_pipeline(FIELD_FORMAT, false, false, false)?;
     let bindings = pipeline
         .runtime_bindings([])
         .map_err(|e| gpu("coverage bindings", e))?;
@@ -192,7 +199,7 @@ pub(super) fn lower(
     ]
     .concat();
     let gradient_data = gradient_payload(mesh)?;
-    let pipeline = vector_pipeline(target.format, true, gradient_data.is_some())?;
+    let pipeline = vector_pipeline(target.format, true, gradient_data.is_some(), false)?;
     let mut binding_values = vec![texture_binding(0, mask)?];
     if let Some(words) = gradient_data {
         let prepared = PreparedGpuData::<TransferData>::ordinary_pod_transfer(

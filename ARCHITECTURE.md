@@ -90,9 +90,9 @@ consumers.
 
 The 2D composition extension defines durable semantic and ownership authority.
 The immutable composition/resource model is implemented. Maintained execution
-realizes direct-root solid, linear-gradient and radial-gradient vector fills/strokes
-with the retained F2 shaped-text subset described below. Groups, clips, images,
-effects and native presentation are not claimed as implemented.
+realizes direct-root solid, linear-gradient and radial-gradient vector fills/strokes,
+immutable RGBA8-sRGB image patches and the retained F2 shaped-text subset.
+Groups, clips, effects and native presentation are not claimed as implemented.
 
 The reusable semantic root is one lifetime-neutral immutable 2D composition
 value. It represents resolved renderer meaning such as:
@@ -238,8 +238,18 @@ Legitimate no-work MUST NOT be represented by fabricated GPU work or identity.
 
 The initial admitted image payload class is immutable tightly packed
 unpremultiplied RGBA8 sRGB plus exact non-zero intrinsic extent and resolved
-source/destination mapping. Sampled textures, uploads, caches, and device
-residency remain private.
+source/destination mapping. The F3C physical image path uses transient RGBA8-sRGB sampled textures uploaded
+through RunenGPU. Its initial private nearest-texel policy reads only texels
+intersecting each already-resolved source crop; fractional/affine destination
+geometry is evaluated on the established 4×4 physical sample lattice. Source
+sRGB is decoded to linear before premultiplication, and item opacity applies
+once. Original source bytes and semantic identity are independent of uploads,
+views and device residency. Sampling is private physical policy, not a new
+source-framework fit/crop or public semantic filter flag; future alternatives
+must preserve admitted F1 content meaning and accepted consumer evidence.
+Resource budgets/precision and image-format capabilities fail structurally
+before contribution work is authored. No shared image cache/residency backend
+is introduced by this slice.
 
 ### Private realization boundary
 
