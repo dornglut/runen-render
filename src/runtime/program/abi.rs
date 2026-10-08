@@ -119,6 +119,9 @@ pub(crate) mod camera {
 
 pub(crate) const WORKGROUP_SIZE: u32 = 64;
 
+pub(crate) const COMPOSITION_VERTEX_STRIDE: u64 = 32;
+pub(crate) const VECTOR_COVERAGE_AXIS_SAMPLES: u32 = 4;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +134,14 @@ mod tests {
 
     fn indexed(name: &str, index: usize) -> String {
         format!("{name}[{index}u]")
+    }
+
+    #[test]
+    fn vector_coverage_sampling_matches_the_exact_shader_contract() {
+        assert!(super::super::VECTOR_WGSL.contains(&format!(
+            "const COVERAGE_AXIS_SAMPLES: i32 = {VECTOR_COVERAGE_AXIS_SAMPLES};"
+        )));
+        assert_eq!(COMPOSITION_VERTEX_STRIDE, 8 * size_of::<f32>() as u64);
     }
 
     fn based(name: &str, index: usize) -> String {

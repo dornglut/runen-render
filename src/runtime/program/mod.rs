@@ -24,6 +24,10 @@ const CAMERA_MODULE_ID: u64 = 3;
 const CAMERA_SOURCE_UNIT_ID: u64 = 3;
 const SHAPED_TEXT_MODULE_ID: u64 = 4;
 const SHAPED_TEXT_SOURCE_UNIT_ID: u64 = 4;
+const VECTOR_MODULE_ID: u64 = 5;
+const VECTOR_SOURCE_UNIT_ID: u64 = 5;
+const VECTOR_REVISION: u64 = 1;
+const VECTOR_WGSL: &str = include_str!("shaders/solid_vector.wgsl");
 
 pub(crate) const MAINTAINED_EVALUATOR_REVISION: u64 = 3;
 pub(crate) const TEMPORAL_RECONSTRUCTION_REVISION: u32 = 2;
@@ -58,6 +62,7 @@ enum MaintainedShaderProgram {
     TemporalReconstruction,
     CameraReprojection,
     ShapedText,
+    Vector,
 }
 
 impl MaintainedShaderProgram {
@@ -67,6 +72,7 @@ impl MaintainedShaderProgram {
             Self::TemporalReconstruction => "temporal reconstruction",
             Self::CameraReprojection => "camera reprojection",
             Self::ShapedText => "2D shaped text",
+            Self::Vector => "2D solid vector coverage",
         }
     }
 
@@ -76,6 +82,7 @@ impl MaintainedShaderProgram {
             Self::TemporalReconstruction => "runenrender.maintained.temporal_reconstruction",
             Self::CameraReprojection => "runenrender.maintained.camera_reprojection",
             Self::ShapedText => "runenrender.maintained.shaped_text",
+            Self::Vector => "runenrender.maintained.solid_vector",
         }
     }
 
@@ -85,6 +92,7 @@ impl MaintainedShaderProgram {
             Self::TemporalReconstruction => TEMPORAL_MODULE_ID,
             Self::CameraReprojection => CAMERA_MODULE_ID,
             Self::ShapedText => SHAPED_TEXT_MODULE_ID,
+            Self::Vector => VECTOR_MODULE_ID,
         }
     }
 
@@ -94,6 +102,7 @@ impl MaintainedShaderProgram {
             Self::TemporalReconstruction => TEMPORAL_SOURCE_UNIT_ID,
             Self::CameraReprojection => CAMERA_SOURCE_UNIT_ID,
             Self::ShapedText => SHAPED_TEXT_SOURCE_UNIT_ID,
+            Self::Vector => VECTOR_SOURCE_UNIT_ID,
         }
     }
 }
@@ -354,6 +363,19 @@ pub(crate) fn retained_shaped_text_source()
             program: MaintainedShaderProgram::ShapedText,
             revision: SHAPED_TEXT_REVISION,
             wgsl: SHAPED_TEXT_WGSL,
+        },
+    )
+}
+
+pub(crate) fn retained_vector_source()
+-> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
+    static PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
+    retained_program_source(
+        &PROGRAM,
+        MaintainedShaderSpec {
+            program: MaintainedShaderProgram::Vector,
+            revision: VECTOR_REVISION,
+            wgsl: VECTOR_WGSL,
         },
     )
 }

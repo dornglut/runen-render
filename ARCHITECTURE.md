@@ -89,11 +89,10 @@ consumers.
 ## 2D composition extension contract
 
 The 2D composition extension defines durable semantic and ownership authority.
-The immutable composition/resource model is implemented, and the initial F2
-execution slice realizes the bounded direct-root shaped-text subset described
-below. This section does not claim that the complete 2D production subsystem,
-other primitive families, groups, clips, effects, or native presentation are
-already implemented.
+The immutable composition/resource model is implemented. Maintained execution
+realizes direct-root solid vector fills/strokes and the retained F2 shaped-text
+subset described below. Groups, clips, gradients, images, effects and native
+presentation are not claimed as implemented.
 
 The reusable semantic root is one lifetime-neutral immutable 2D composition
 value. It represents resolved renderer meaning such as:
@@ -207,26 +206,29 @@ field textures, vertex buffers, sampler state, and draw bindings are
 contribution-local disposable realization state. No global atlas or device
 residency authority is introduced by this slice.
 
-A painting F2 contribution prepares one private RunenGPU render operation containing
-painter-ordered glyph draws. Consuming it appends one renderer-authored node to a
-caller-owned RunenGPU fragment, or authors a separate fragment. Both paths use
-the same lowering. Caller-owned `Render2dWorkBinding` keys connect
-prior target contents and the resulting target output through RunenGPU's typed
-import/export relationships. They are graph wiring, not semantic identity or
-execution evidence. Non-painting contributions expose no fabricated output;
-callers retain the prior target-content relationship when no render work exists.
-Successful contribution evidence requires exact
-membership of that authored `GpuWorkNodeId` in the downstream-composed
-submission and terminal `Completed` status from that same submission. Valid
-non-painting content authors no synthetic draw or sentinel and therefore has no
-execution token.
+Solid vector items admit rectangles, canonical rounded rectangles, ellipses and
+structural paths, both fill rules, centered strokes with caps/joins/miter,
+affine transforms and item opacity. Private Lyon tessellation expands strokes
+in local coordinates before transforming geometry. A contribution-local bounded
+coverage surface resolves tessellation overlap before applying the semantic
+brush/opacity once. Sampling, tolerances, mask layout and tessellation remain
+private; unrepresentable precision or geometry/storage limits reject structurally.
+Vector-only execution does not require shaped-field upload/filter capabilities.
+Shaped text retains the F2 opaque-item, identity/translation class; arbitrary
+text transforms and run opacity remain fail-closed.
 
-The one-node shape is specific to the initial F2 realization and is not a
-permanent contribution contract. Later 2D realization may require multiple
-renderer-authored nodes, but successful evidence MUST still correlate the exact
-required authored work with the containing submission and terminal completion.
-Legitimate no-work remains an explicit semantic execution outcome and MUST NOT
-be represented by fabricated GPU work, output, or sentinel identity.
+One ordered private lowering produces coverage/composition operations and
+painter-ordered shaped-text draws. Consuming a prepared contribution appends the
+complete sequence to caller-owned RunenGPU work, or authors a separate fragment.
+Caller-owned `Render2dWorkBinding` keys connect prior target contents and the
+resulting target output through RunenGPU typed import/export relationships.
+These keys are graph wiring, not semantic identity or execution evidence.
+Successful contribution evidence MUST require exact membership of **every** authored
+work node in the same downstream submission plus its terminal `Completed` status.
+Caller methods and opaque correlation types remain the same for single-node text
+and multi-node mixed work. Non-painting content authors no synthetic node, output
+or token; callers retain the prior target-content relationship in that case.
+Legitimate no-work MUST NOT be represented by fabricated GPU work or identity.
 
 The initial admitted image payload class is immutable tightly packed
 unpremultiplied RGBA8 sRGB plus exact non-zero intrinsic extent and resolved
@@ -312,7 +314,8 @@ runtime
 ├─ execution_2d
 │  ├─ intrinsic      fail-closed font/glyph representation admission
 │  ├─ field          retained reconstructible shaped-outline/MSDF field realization
-│  └─ lowering       contribution-local RunenGPU resources, ordered draws, and work
+│  ├─ vector         bounded private local geometry tessellation and target clipping
+│  └─ lowering       ordered text/coverage/composition RunenGPU resources and work
 ├─ capture
 └─ verification
 ```
