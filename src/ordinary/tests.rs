@@ -174,3 +174,116 @@ fn result_formation_preserves_semantic_verification_location() {
     assert_eq!(physical.output().map(|handle| handle.position()), Some(4));
     assert_eq!(physical.sample_index(), Some(2));
 }
+
+#[test]
+fn ordinary_admission_failure_exposes_actionable_owner_categories() {
+    use crate::admission::{
+        RenderAdmissionInputError as Input, RenderExecutionAdmissionFailure as Admission,
+    };
+    use crate::runtime::admission::RenderDeterministicAdmissionFailure as Failure;
+    use crate::semantic_plan::RenderPlanningFailure as Planning;
+
+    let invalid = RenderAdmissionError {
+        inner: Failure::Admission(Admission::InvalidInput(Input::MissingOutputBinding {
+            output_index: 0,
+        })),
+        request: error_request(),
+    };
+    assert_eq!(invalid.kind(), RenderAdmissionErrorKind::InvalidInvocation);
+    assert_eq!(invalid.output(), invalid.request().output_handle(0));
+
+    let target = RenderAdmissionError {
+        inner: Failure::Admission(Admission::InvalidInput(Input::OutputDestinationKind {
+            output_index: 0,
+        })),
+        request: error_request(),
+    };
+    assert_eq!(target.kind(), RenderAdmissionErrorKind::OutputTargetMismatch);
+    assert_eq!(target.output(), target.request().output_handle(0));
+
+    let unsupported = RenderAdmissionError {
+        inner: Failure::Planning(Planning::NoSemanticSolution {
+            rejections: Vec::new(),
+        }),
+        request: error_request(),
+    };
+    assert_eq!(unsupported.kind(), RenderAdmissionErrorKind::UnsupportedSemantics);
+    assert!(unsupported.output().is_none());
+
+    let candidates = RenderAdmissionError {
+        inner: Failure::Admission(Admission::NoExecutableCandidate {
+            rejections: Vec::new(),
+        }),
+        request: error_request(),
+    };
+    assert_eq!(candidates.kind(), RenderAdmissionErrorKind::NoExecutableCandidate);
+}
+
+#[test]
+fn candidate_rejections_preserve_distinct_actionable_causes() {
+    use crate::admission::RenderCandidateAdmissionRejectionReason as Reason;
+    use crate::ordinary::errors::classify_candidate_rejection;
+    use runen_gpu::{GpuCapabilityFeature, GpuExecutionLifecycleState};
+
+    let object_id = crate::scene::RenderSceneStore::new()
+        .allocate_object_id()
+        .expect("object identity");
+    let representation_id =
+        crate::representation::RenderRepresentationId::from_raw(1).expect("representation");
+    let cases = [
+        (
+            Reason::NoSemanticallyAdmissibleRepresentation {
+                output_index: 0,
+                object_id,
+                representation_ids: vec![representation_id],
+            },
+            RenderCandidateFailureKind::UnsupportedSemantics,
+            Some(0),
+        ),
+        (
+            Reason::AvailabilityUnknown {
+                output_index: 1,
+                object_id,
+                representation_id,
+            },
+            RenderCandidateFailureKind::RepresentationUnavailable,
+            Some(1),
+        ),
+        (
+            Reason::NoAvailableRepresentation {
+                output_index: 2,
+                object_id,
+                representation_ids: vec![representation_id],
+            },
+            RenderCandidateFailureKind::RepresentationUnavailable,
+            Some(2),
+        ),
+        (
+            Reason::RequiredCapabilityUnsupported {
+                feature: GpuCapabilityFeature::Compute,
+            },
+            RenderCandidateFailureKind::CapabilityUnsupported,
+            None,
+        ),
+        (
+            Reason::RequiredCapabilityNotEnabled {
+                feature: GpuCapabilityFeature::Compute,
+            },
+            RenderCandidateFailureKind::CapabilityNotEnabled,
+            None,
+        ),
+        (
+            Reason::ExecutionLifecycle {
+                state: GpuExecutionLifecycleState::ShuttingDown,
+            },
+            RenderCandidateFailureKind::ExecutionLifecycle,
+            None,
+        ),
+    ];
+    for (reason, expected_kind, expected_output) in cases {
+        assert_eq!(
+            classify_candidate_rejection(&reason),
+            (expected_kind, expected_output)
+        );
+    }
+}

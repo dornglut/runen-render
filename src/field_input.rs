@@ -423,4 +423,39 @@ mod tests {
             Some(1.0)
         );
     }
+    #[test]
+    fn equivalent_independent_dense_inputs_preserve_value_equality_and_hashing() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let build = || {
+            RenderFieldSemanticInput::dense(
+                [0.0; 3],
+                [1.0; 3],
+                [2, 2, 2],
+                (0..8).map(f64::from).collect(),
+                0.5,
+                RenderTemporalSupport::unbounded(),
+            )
+            .expect("dense input")
+        };
+        let first = build();
+        let second = build();
+        assert_eq!(first, second);
+        assert!(!Arc::ptr_eq(
+            &first.signed_distance_samples_meters,
+            &second.signed_distance_samples_meters,
+        ));
+
+        let digest = |input: &RenderFieldSemanticInput| {
+            let mut hasher = DefaultHasher::new();
+            input.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(digest(&first), digest(&second));
+        assert!(Arc::ptr_eq(
+            &first.signed_distance_samples_meters,
+            &first.clone().signed_distance_samples_meters,
+        ));
+    }
 }

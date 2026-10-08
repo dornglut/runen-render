@@ -27,6 +27,33 @@ pub struct RenderCandidateFailure {
     pub output: Option<crate::request::RenderOutputHandle>,
 }
 
+/// Map a single candidate's rejection without flattening mixed-candidate outcomes.
+pub(super) fn classify_candidate_rejection(
+    reason: &crate::admission::RenderCandidateAdmissionRejectionReason,
+) -> (RenderCandidateFailureKind, Option<usize>) {
+    use crate::admission::RenderCandidateAdmissionRejectionReason as Reason;
+    match reason {
+        Reason::ExecutionLifecycle { .. } => {
+            (RenderCandidateFailureKind::ExecutionLifecycle, None)
+        }
+        Reason::RequiredCapabilityUnsupported { .. } => {
+            (RenderCandidateFailureKind::CapabilityUnsupported, None)
+        }
+        Reason::RequiredCapabilityNotEnabled { .. } => {
+            (RenderCandidateFailureKind::CapabilityNotEnabled, None)
+        }
+        Reason::NoSemanticallyAdmissibleRepresentation { output_index, .. } => (
+            RenderCandidateFailureKind::UnsupportedSemantics,
+            Some(*output_index),
+        ),
+        Reason::AvailabilityUnknown { output_index, .. }
+        | Reason::NoAvailableRepresentation { output_index, .. } => (
+            RenderCandidateFailureKind::RepresentationUnavailable,
+            Some(*output_index),
+        ),
+    }
+}
+
 /// Failure while planning, semantically admitting, or checking maintained-method compatibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderAdmissionError {
@@ -160,10 +187,7 @@ impl RenderAdmissionError {
     /// Every rejected candidate remains inspectable; mixed reasons are never collapsed to a
     /// fictitious single availability/capability/semantic cause.
     pub fn candidate_failures(&self) -> Vec<RenderCandidateFailure> {
-        use crate::admission::{
-            RenderCandidateAdmissionRejectionReason as Reason,
-            RenderExecutionAdmissionFailure as Admission,
-        };
+        use crate::admission::RenderExecutionAdmissionFailure as Admission;
         use crate::runtime::admission::RenderDeterministicAdmissionFailure as Failure;
         let Failure::Admission(Admission::NoExecutableCandidate { rejections }) = &self.inner
         else {
@@ -172,26 +196,7 @@ impl RenderAdmissionError {
         rejections
             .iter()
             .map(|rejection| {
-                let (kind, index) = match rejection.reason() {
-                    Reason::ExecutionLifecycle { .. } => {
-                        (RenderCandidateFailureKind::ExecutionLifecycle, None)
-                    }
-                    Reason::RequiredCapabilityUnsupported { .. } => {
-                        (RenderCandidateFailureKind::CapabilityUnsupported, None)
-                    }
-                    Reason::RequiredCapabilityNotEnabled { .. } => {
-                        (RenderCandidateFailureKind::CapabilityNotEnabled, None)
-                    }
-                    Reason::NoSemanticallyAdmissibleRepresentation { output_index, .. } => (
-                        RenderCandidateFailureKind::UnsupportedSemantics,
-                        Some(*output_index),
-                    ),
-                    Reason::AvailabilityUnknown { output_index, .. }
-                    | Reason::NoAvailableRepresentation { output_index, .. } => (
-                        RenderCandidateFailureKind::RepresentationUnavailable,
-                        Some(*output_index),
-                    ),
-                };
+                let (kind, index) = classify_candidate_rejection(rejection.reason());
                 RenderCandidateFailure {
                     candidate_index: rejection.candidate_index(),
                     kind,
