@@ -62,6 +62,12 @@ pub struct RenderCapturedDeterministicRadiance {
 }
 
 impl RenderCapturedDeterministicRadiance {
+    /// Test-only deterministic position inspection; ordinary capture exposes typed correlation.
+    #[cfg(test)]
+    pub const fn output_index(&self) -> usize {
+        self.output_index
+    }
+
     pub const fn topology(&self) -> RenderResultTopology {
         self.topology
     }
