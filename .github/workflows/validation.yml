@@ -100,3 +100,6 @@ jobs:
           cargo +stable test -p runen-render             --test execution_2d_public_api             --locked -- --nocapture --test-threads=1
 
           cargo +stable test -p runen-render             --example headless_scene             --locked -- --nocapture --test-threads=1
+
+          # Execute the compact ordinary lifecycle's main; testing an example alone does not run it.
+          cargo +stable run -p runen-render --example ordinary_render --locked

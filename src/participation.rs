@@ -49,6 +49,11 @@ impl Error for RenderParticipationValidationError {}
 /// do not depend on caller insertion order. Material assignment is the founding typed relationship:
 /// the owning `RenderObjectId` endpoint is supplied by the scene leaf, while this value carries the
 /// typed renderer-semantic material target. No independent material identity is invented in R3.
+///
+/// Construct the representation set with [`Self::from_representations`], then optionally name
+/// material assignment and emitter facts. Empty, material-only, and emitter-only values are legal.
+/// Publishing an empty value through [`crate::scene::RenderSceneUpdate::replace_participation`]
+/// clears the existing participation facet; it does not attach a persistent empty value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderObjectParticipation {
     representations: Vec<RenderRepresentationRecord>,
@@ -57,11 +62,17 @@ pub struct RenderObjectParticipation {
 }
 
 impl RenderObjectParticipation {
-    pub fn new(
-        mut representations: Vec<RenderRepresentationRecord>,
-        material_assignment: Option<RenderMaterialAssignment>,
-        emitter: Option<RenderDirectionalEmitter>,
+    /// Canonicalize a caller-assembled representation collection (or iterator).
+    ///
+    /// Callers may accumulate entries in a collection before construction, or supply an iterator.
+    /// An empty iterator creates legitimate empty participation without material or emitter facts.
+    ///
+    /// # Errors
+    /// Returns [`RenderParticipationValidationError::DuplicateRepresentationId`] for duplicate IDs.
+    pub fn from_representations(
+        representations: impl IntoIterator<Item = RenderRepresentationRecord>,
     ) -> Result<Self, RenderParticipationValidationError> {
+        let mut representations = representations.into_iter().collect::<Vec<_>>();
         representations.sort_by_key(RenderRepresentationRecord::id);
         if let Some(pair) = representations
             .windows(2)
@@ -75,9 +86,26 @@ impl RenderObjectParticipation {
         }
         Ok(Self {
             representations,
-            material_assignment,
-            emitter,
+            material_assignment: None,
+            emitter: None,
         })
+    }
+
+    /// Replace or clear the named material-assignment fact without rebuilding representations.
+    #[must_use]
+    pub fn with_material_assignment(
+        mut self,
+        assignment: Option<RenderMaterialAssignment>,
+    ) -> Self {
+        self.material_assignment = assignment;
+        self
+    }
+
+    /// Replace or clear the named emitter fact without rebuilding representations.
+    #[must_use]
+    pub fn with_emitter(mut self, emitter: Option<RenderDirectionalEmitter>) -> Self {
+        self.emitter = emitter;
+        self
     }
 
     pub fn representations(&self) -> &[RenderRepresentationRecord] {
@@ -113,33 +141,31 @@ impl RenderObjectParticipation {
 mod tests {
     use super::*;
     use crate::representation::{
-        RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderRefinementEvidence,
-        RenderSurfaceProtocolEvidence,
+        RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderSurfaceProtocolEvidence,
     };
     use crate::space_time::{RenderSpatialCoverage, RenderTemporalSupport};
 
     fn representation(raw: u64) -> RenderRepresentationRecord {
-        RenderRepresentationRecord::new(
+        RenderRepresentationRecord::builder(
             RenderRepresentationId::from_raw(raw).expect("non-zero representation id"),
             RenderSpatialCoverage::unbounded(),
             RenderTemporalSupport::unbounded(),
-            RenderRefinementEvidence::none(),
-            Some(
-                RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
-                    .expect("valid protocol"),
-            ),
-            None,
         )
+        .surface_query(Some(
+            RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
+                .expect("valid protocol"),
+        ))
+        .build()
         .expect("valid representation")
     }
 
     #[test]
     fn representation_order_is_semantic_not_caller_order() {
-        let participation = RenderObjectParticipation::new(
-            vec![representation(3), representation(1), representation(2)],
-            None,
-            None,
-        )
+        let participation = RenderObjectParticipation::from_representations(vec![
+            representation(3),
+            representation(1),
+            representation(2),
+        ])
         .expect("unique representations");
         let ids = participation
             .representations()
@@ -160,11 +186,11 @@ mod tests {
     fn duplicate_representation_identity_rejects_deterministically() {
         let duplicate = RenderRepresentationId::from_raw(2).expect("id");
         assert_eq!(
-            RenderObjectParticipation::new(
-                vec![representation(2), representation(1), representation(2)],
-                None,
-                None,
-            ),
+            RenderObjectParticipation::from_representations(vec![
+                representation(2),
+                representation(1),
+                representation(2)
+            ]),
             Err(
                 RenderParticipationValidationError::DuplicateRepresentationId {
                     representation_id: duplicate,

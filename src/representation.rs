@@ -367,25 +367,23 @@ pub struct RenderRepresentationRecord {
 }
 
 impl RenderRepresentationRecord {
-    pub fn new(
+    /// Begin named construction with explicit intrinsic spatial and temporal meaning.
+    ///
+    /// No protocol is enabled initially. Refinement defaults to absence of evidence,
+    /// not an exactness or coverage guarantee. Finalization rejects a record with no protocols.
+    pub fn builder(
         id: RenderRepresentationId,
         spatial_coverage: RenderSpatialCoverage,
         temporal_support: RenderTemporalSupport,
-        refinement: RenderRefinementEvidence,
-        surface_query: Option<RenderSurfaceProtocolEvidence>,
-        field_distance: Option<RenderFieldDistanceProtocolEvidence>,
-    ) -> Result<Self, RenderRepresentationValidationError> {
-        if surface_query.is_none() && field_distance.is_none() {
-            return Err(RenderRepresentationValidationError::NoProtocols);
-        }
-        Ok(Self {
+    ) -> RenderRepresentationRecordBuilder {
+        RenderRepresentationRecordBuilder {
             id,
             spatial_coverage,
             temporal_support,
-            refinement,
-            surface_query,
-            field_distance,
-        })
+            refinement: RenderRefinementEvidence::none(),
+            surface_query: None,
+            field_distance: None,
+        }
     }
 
     pub const fn id(&self) -> RenderRepresentationId {
@@ -479,6 +477,62 @@ impl RenderRepresentationRecord {
             evidence.revision(),
         )?;
         Ok(evidence)
+    }
+}
+
+/// Ephemeral named construction of one canonical [`RenderRepresentationRecord`].
+///
+/// Optional channels accept typed `Option` values so dynamically assembled protocol facts
+/// use the same route as fixed surface-only, field-only, and combined declarations.
+/// Repeated setters replace the corresponding fact; `None` clears that channel.
+/// This value is construction state and cannot be attached to a scene before [`Self::build`].
+#[derive(Debug)]
+#[must_use]
+pub struct RenderRepresentationRecordBuilder {
+    id: RenderRepresentationId,
+    spatial_coverage: RenderSpatialCoverage,
+    temporal_support: RenderTemporalSupport,
+    refinement: RenderRefinementEvidence,
+    surface_query: Option<RenderSurfaceProtocolEvidence>,
+    field_distance: Option<RenderFieldDistanceProtocolEvidence>,
+}
+
+impl RenderRepresentationRecordBuilder {
+    /// Declare or clear the surface-query protocol, including its oriented/input refinements.
+    pub fn surface_query(mut self, evidence: Option<RenderSurfaceProtocolEvidence>) -> Self {
+        self.surface_query = evidence;
+        self
+    }
+
+    /// Declare or clear the independent field-distance protocol.
+    pub fn field_distance(mut self, evidence: Option<RenderFieldDistanceProtocolEvidence>) -> Self {
+        self.field_distance = evidence;
+        self
+    }
+
+    /// Replace the default absence of refinement evidence with an explicit intrinsic fact.
+    pub fn refinement(mut self, evidence: RenderRefinementEvidence) -> Self {
+        self.refinement = evidence;
+        self
+    }
+
+    /// Validate and consume construction state into the canonical record.
+    ///
+    /// # Errors
+    /// Returns [`RenderRepresentationValidationError::NoProtocols`] when both channels are absent.
+    /// Protocol revisions and guarantees are validated by their typed evidence constructors.
+    pub fn build(self) -> Result<RenderRepresentationRecord, RenderRepresentationValidationError> {
+        if self.surface_query.is_none() && self.field_distance.is_none() {
+            return Err(RenderRepresentationValidationError::NoProtocols);
+        }
+        Ok(RenderRepresentationRecord {
+            id: self.id,
+            spatial_coverage: self.spatial_coverage,
+            temporal_support: self.temporal_support,
+            refinement: self.refinement,
+            surface_query: self.surface_query,
+            field_distance: self.field_distance,
+        })
     }
 }
 
@@ -776,14 +830,14 @@ mod tests {
         surface: Option<RenderSurfaceProtocolEvidence>,
         field: Option<RenderFieldDistanceProtocolEvidence>,
     ) -> RenderRepresentationRecord {
-        RenderRepresentationRecord::new(
+        RenderRepresentationRecord::builder(
             RenderRepresentationId::from_raw(id).expect("non-zero representation id"),
             RenderSpatialCoverage::unbounded(),
             RenderTemporalSupport::unbounded(),
-            RenderRefinementEvidence::none(),
-            surface,
-            field,
         )
+        .surface_query(surface)
+        .field_distance(field)
+        .build()
         .expect("valid representation")
     }
 
@@ -791,14 +845,12 @@ mod tests {
     fn representation_requires_typed_protocol_without_family_enum() {
         let id = RenderRepresentationId::from_raw(1).expect("non-zero representation id");
         assert_eq!(
-            RenderRepresentationRecord::new(
+            RenderRepresentationRecord::builder(
                 id,
                 RenderSpatialCoverage::unbounded(),
-                RenderTemporalSupport::unbounded(),
-                RenderRefinementEvidence::none(),
-                None,
-                None,
-            ),
+                RenderTemporalSupport::unbounded()
+            )
+            .build(),
             Err(RenderRepresentationValidationError::NoProtocols)
         );
     }
@@ -971,18 +1023,18 @@ mod tests {
     fn refinement_and_intrinsic_coverage_are_representation_evidence() {
         let id = RenderRepresentationId::from_raw(1).expect("non-zero representation id");
         let interval = RenderTimeInterval::instant(instant());
-        let record = RenderRepresentationRecord::new(
+        let record = RenderRepresentationRecord::builder(
             id,
             RenderSpatialCoverage::axis_aligned_bounds([-1.0; 3], [1.0; 3])
                 .expect("valid coverage"),
             RenderTemporalSupport::interval(interval),
-            RenderRefinementEvidence::bounded(0.01).expect("valid refinement evidence"),
-            Some(
-                RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
-                    .expect("valid protocol"),
-            ),
-            None,
         )
+        .refinement(RenderRefinementEvidence::bounded(0.01).expect("valid refinement evidence"))
+        .surface_query(Some(
+            RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
+                .expect("valid protocol"),
+        ))
+        .build()
         .expect("valid representation");
         assert_eq!(
             record.refinement().finest_absolute_error_meters(),

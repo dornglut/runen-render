@@ -50,6 +50,11 @@ That job:
 - proves the software Vulkan adapter with `vulkaninfo --summary`;
 - sets `RUNEN_RENDER_REQUIRE_GPU=1`;
 - runs the standalone `runen-render` package tests serially;
+- retains the comprehensive `headless_scene` two-frame conformance path;
+- executes `cargo +stable run --example ordinary_render --locked`, including its
+  actual `main`, two output meanings, original request-owned handles, reversed
+  physical bindings, exact occurrence association, completion and readback.
+  Adapter unavailability fails the executable; this path never silently skips;
 - runs the external F2 2D execution consumer proof with the Vulkan adapter
   required, including downstream graph composition, exact work-node completion
   evidence, shaped-outline readback, cache reconstruction, non-painting glyphs,
@@ -63,7 +68,7 @@ clipping, and malformed intrinsic tables or glyph IDs failing closed. CPU
 field proofs establish deterministic reconstruction and later texture-limit
 revalidation without requiring an adapter.
 
-The environment variable is test-only enforcement. It converts
+The environment variable enforces GPU-required tests. It converts
 `NoAdapterAvailable` from an allowed local skip into CI failure; production
 RunenRender does not read environment variables.
 

@@ -21,8 +21,8 @@ use crate::representation::{
     RENDER_FIELD_DISTANCE_PROTOCOL_REVISION, RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
     RENDER_SURFACE_QUERY_PROTOCOL_REVISION, RenderFieldDistanceGuarantee,
     RenderFieldDistanceProtocolEvidence, RenderOrientedSurfaceProtocolEvidence,
-    RenderRefinementEvidence, RenderRepresentationId, RenderRepresentationProtocol,
-    RenderRepresentationRecord, RenderSurfaceProtocolEvidence,
+    RenderRepresentationId, RenderRepresentationProtocol, RenderRepresentationRecord,
+    RenderSurfaceProtocolEvidence,
 };
 use crate::request::{
     RenderDistanceConvention, RenderObservationSpec, RenderOutputSpec, RenderOutputValue,
@@ -118,20 +118,21 @@ fn represented_geometry(
         )
         .expect("exact field-distance protocol")
     });
-    let representation = RenderRepresentationRecord::new(
+    let representation = RenderRepresentationRecord::builder(
         representation_id,
         RenderSpatialCoverage::unbounded(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        Some(oriented_surface_evidence()),
-        field_distance,
     )
+    .surface_query(Some(oriented_surface_evidence()))
+    .field_distance(field_distance)
+    .build()
     .expect("R6 geometry representation");
     let material = RenderMaterialAssignment::new(
         RenderDiffuseMaterial::new(0.5).expect("minimum diffuse material"),
     );
-    let participation = RenderObjectParticipation::new(vec![representation], Some(material), None)
-        .expect("R6 geometry participation");
+    let participation = RenderObjectParticipation::from_representations(vec![representation])
+        .expect("R6 geometry participation")
+        .with_material_assignment(Some(material));
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
     store
@@ -148,8 +149,9 @@ fn insert_directional_emitter(store: &mut RenderSceneStore) -> RenderObjectId {
 
     let emitter = RenderDirectionalEmitter::new([0.0, 1.0, 1.0], PROOF_WAVELENGTH_METERS, 12.0)
         .expect("directional emitter");
-    let participation = RenderObjectParticipation::new(vec![], None, Some(emitter))
-        .expect("R6 emitter participation");
+    let participation = RenderObjectParticipation::from_representations([])
+        .expect("R6 emitter participation")
+        .with_emitter(Some(emitter));
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
     store

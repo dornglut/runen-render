@@ -1027,17 +1027,16 @@ mod tests {
         let representation_id = store
             .allocate_representation_id(object_id)
             .expect("representation ID should allocate");
-        RenderRepresentationRecord::new(
+        RenderRepresentationRecord::builder(
             representation_id,
             RenderSpatialCoverage::unbounded(),
             RenderTemporalSupport::unbounded(),
-            RenderRefinementEvidence::none(),
-            Some(
-                RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
-                    .expect("valid surface protocol"),
-            ),
-            None,
         )
+        .surface_query(Some(
+            RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
+                .expect("valid surface protocol"),
+        ))
+        .build()
         .expect("valid surface representation")
     }
 
@@ -1048,21 +1047,20 @@ mod tests {
         let representation_id = store
             .allocate_representation_id(object_id)
             .expect("representation ID should allocate");
-        RenderRepresentationRecord::new(
+        RenderRepresentationRecord::builder(
             representation_id,
             RenderSpatialCoverage::unbounded(),
             RenderTemporalSupport::unbounded(),
-            RenderRefinementEvidence::bounded(0.01).expect("valid refinement"),
-            None,
-            Some(
-                RenderFieldDistanceProtocolEvidence::new(
-                    RENDER_FIELD_DISTANCE_PROTOCOL_REVISION,
-                    RenderFieldDistanceGuarantee::conservative(0.01)
-                        .expect("valid field guarantee"),
-                )
-                .expect("valid field protocol"),
-            ),
         )
+        .refinement(RenderRefinementEvidence::bounded(0.01).expect("valid refinement"))
+        .field_distance(Some(
+            RenderFieldDistanceProtocolEvidence::new(
+                RENDER_FIELD_DISTANCE_PROTOCOL_REVISION,
+                RenderFieldDistanceGuarantee::conservative(0.01).expect("valid field guarantee"),
+            )
+            .expect("valid field protocol"),
+        ))
+        .build()
         .expect("valid field representation")
     }
 
@@ -1547,7 +1545,7 @@ mod tests {
 
         let first = surface_representation(&mut store, object_id);
         let second = field_representation(&mut store, object_id);
-        let participation = RenderObjectParticipation::new(vec![second, first], None, None)
+        let participation = RenderObjectParticipation::from_representations(vec![second, first])
             .expect("valid participation");
         let mut update = RenderSceneUpdate::new();
         update.replace_participation(object_id, participation.clone());
@@ -1581,7 +1579,7 @@ mod tests {
         insert_one(&mut store, second);
         let representation = surface_representation(&mut store, first);
         let representation_id = representation.id();
-        let participation = RenderObjectParticipation::new(vec![representation], None, None)
+        let participation = RenderObjectParticipation::from_representations(vec![representation])
             .expect("valid participation");
         let before = store.snapshot();
 
@@ -1606,7 +1604,7 @@ mod tests {
         insert.insert_with_state(object_id, object_state(0.0, 1.0));
         store.commit(insert).expect("insert should commit");
         let representation = surface_representation(&mut store, object_id);
-        let participation = RenderObjectParticipation::new(vec![representation], None, None)
+        let participation = RenderObjectParticipation::from_representations(vec![representation])
             .expect("valid participation");
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(object_id, participation.clone());
@@ -1637,8 +1635,9 @@ mod tests {
         insert_one(&mut store, object_id);
         let material =
             RenderMaterialAssignment::new(RenderDiffuseMaterial::new(0.5).expect("valid material"));
-        let material_only =
-            RenderObjectParticipation::new(Vec::new(), Some(material), None).expect("valid state");
+        let material_only = RenderObjectParticipation::from_representations([])
+            .expect("valid state")
+            .with_material_assignment(Some(material));
         let mut material_update = RenderSceneUpdate::new();
         material_update.replace_participation(object_id, material_only);
         let material_commit = store
@@ -1659,9 +1658,10 @@ mod tests {
 
         let emitter =
             RenderDirectionalEmitter::new([0.0, 1.0, 0.0], 550e-9, 2.0).expect("valid emitter");
-        let with_emitter =
-            RenderObjectParticipation::new(Vec::new(), Some(material), Some(emitter))
-                .expect("valid state");
+        let with_emitter = RenderObjectParticipation::from_representations([])
+            .expect("valid state")
+            .with_material_assignment(Some(material))
+            .with_emitter(Some(emitter));
         let mut emitter_update = RenderSceneUpdate::new();
         emitter_update.replace_participation(object_id, with_emitter);
         let emitter_commit = store
@@ -1688,7 +1688,7 @@ mod tests {
 
         let first_representation = surface_representation(&mut store, object_id);
         let initial_participation =
-            RenderObjectParticipation::new(vec![first_representation], None, None)
+            RenderObjectParticipation::from_representations(vec![first_representation])
                 .expect("valid initial participation");
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(object_id, initial_participation.clone());
@@ -1702,8 +1702,9 @@ mod tests {
         let material =
             RenderMaterialAssignment::new(RenderDiffuseMaterial::new(0.5).expect("material"));
         let next_participation =
-            RenderObjectParticipation::new(vec![second_representation], Some(material), None)
-                .expect("valid next participation");
+            RenderObjectParticipation::from_representations(vec![second_representation])
+                .expect("valid next participation")
+                .with_material_assignment(Some(material));
         let next_state = object_state(2.0, 2.0);
 
         let mut update = RenderSceneUpdate::new();
@@ -1756,8 +1757,8 @@ mod tests {
         let add_id = add.allocate_object_id().expect("object ID");
         insert_one(&mut add, add_id);
         let field = field_representation(&mut add, add_id);
-        let field_participation =
-            RenderObjectParticipation::new(vec![field], None, None).expect("field participation");
+        let field_participation = RenderObjectParticipation::from_representations(vec![field])
+            .expect("field participation");
         let mut add_both = RenderSceneUpdate::new();
         add_both
             .replace_state(add_id, object_state(0.0, 1.0))
@@ -1775,8 +1776,8 @@ mod tests {
         insert.insert_with_state(clear_id, object_state(0.0, 1.0));
         clear.commit(insert).expect("stateful insert");
         let field = field_representation(&mut clear, clear_id);
-        let field_participation =
-            RenderObjectParticipation::new(vec![field], None, None).expect("field participation");
+        let field_participation = RenderObjectParticipation::from_representations(vec![field])
+            .expect("field participation");
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(clear_id, field_participation);
         clear
@@ -1801,8 +1802,8 @@ mod tests {
         insert_one(&mut invalid, invalid_id);
         let field = field_representation(&mut invalid, invalid_id);
         let representation_id = field.id();
-        let participation =
-            RenderObjectParticipation::new(vec![field], None, None).expect("field participation");
+        let participation = RenderObjectParticipation::from_representations(vec![field])
+            .expect("field participation");
         let before = invalid.snapshot();
         let revision = invalid.revision();
         let mut invalid_joint = RenderSceneUpdate::new();
@@ -1831,7 +1832,7 @@ mod tests {
 
         let first_representation = surface_representation(&mut store, object_id);
         let first_participation =
-            RenderObjectParticipation::new(vec![first_representation], None, None)
+            RenderObjectParticipation::from_representations(vec![first_representation])
                 .expect("initial participation");
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(object_id, first_participation.clone());
@@ -1839,7 +1840,7 @@ mod tests {
 
         let next_representation = surface_representation(&mut store, object_id);
         let next_participation =
-            RenderObjectParticipation::new(vec![next_representation], None, None)
+            RenderObjectParticipation::from_representations(vec![next_representation])
                 .expect("next participation");
         let previous_revision = store.revision();
         let mut update = RenderSceneUpdate::new();
@@ -1905,8 +1906,8 @@ mod tests {
         let object_id = store.allocate_object_id().expect("object ID");
         insert_one(&mut store, object_id);
         let representation = surface_representation(&mut store, object_id);
-        let participation =
-            RenderObjectParticipation::new(vec![representation], None, None).expect("valid state");
+        let participation = RenderObjectParticipation::from_representations(vec![representation])
+            .expect("valid state");
         let before = store.snapshot();
 
         let mut update = RenderSceneUpdate::new();
@@ -1925,8 +1926,8 @@ mod tests {
         let object_id = store.allocate_object_id().expect("object ID");
         insert_one(&mut store, object_id);
         let first = surface_representation(&mut store, object_id);
-        let first_state =
-            RenderObjectParticipation::new(vec![first], None, None).expect("valid participation");
+        let first_state = RenderObjectParticipation::from_representations(vec![first])
+            .expect("valid participation");
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(object_id, first_state.clone());
         let retained = store
@@ -1936,8 +1937,8 @@ mod tests {
             .clone();
 
         let second = surface_representation(&mut store, object_id);
-        let second_state =
-            RenderObjectParticipation::new(vec![second], None, None).expect("valid participation");
+        let second_state = RenderObjectParticipation::from_representations(vec![second])
+            .expect("valid participation");
         let mut replace = RenderSceneUpdate::new();
         replace.replace_participation(object_id, second_state.clone());
         store.commit(replace).expect("replacement should commit");
@@ -1956,8 +1957,9 @@ mod tests {
         insert_one(&mut full, full_id);
         let full_first = surface_representation(&mut full, full_id);
         let full_second = field_representation(&mut full, full_id);
-        let full_state = RenderObjectParticipation::new(vec![full_first, full_second], None, None)
-            .expect("valid participation");
+        let full_state =
+            RenderObjectParticipation::from_representations(vec![full_first, full_second])
+                .expect("valid participation");
         let mut full_update = RenderSceneUpdate::new();
         full_update.replace_state(full_id, object_state(0.0, 1.0));
         full.commit(full_update).expect("R2 state should commit");
@@ -1976,26 +1978,22 @@ mod tests {
         incremental
             .commit(incremental_state)
             .expect("R2 state should commit");
-        let first_only = RenderObjectParticipation::new(vec![incremental_first], None, None)
+        let first_only = RenderObjectParticipation::from_representations(vec![incremental_first])
             .expect("valid participation");
         let mut first_update = RenderSceneUpdate::new();
         first_update.replace_participation(incremental_id, first_only);
         incremental
             .commit(first_update)
             .expect("first representation should commit");
-        let incremental_final = RenderObjectParticipation::new(
-            vec![
-                incremental
-                    .snapshot()
-                    .object_participation(incremental_id)
-                    .expect("participation")
-                    .representations()[0]
-                    .clone(),
-                incremental_second,
-            ],
-            None,
-            None,
-        )
+        let incremental_final = RenderObjectParticipation::from_representations(vec![
+            incremental
+                .snapshot()
+                .object_participation(incremental_id)
+                .expect("participation")
+                .representations()[0]
+                .clone(),
+            incremental_second,
+        ])
         .expect("valid participation");
         let mut final_update = RenderSceneUpdate::new();
         final_update.replace_participation(incremental_id, incremental_final.clone());
@@ -2032,8 +2030,8 @@ mod tests {
         insert_one(&mut missing_state, object_id);
         let field = field_representation(&mut missing_state, object_id);
         let representation_id = field.id();
-        let participation =
-            RenderObjectParticipation::new(vec![field], None, None).expect("valid participation");
+        let participation = RenderObjectParticipation::from_representations(vec![field])
+            .expect("valid participation");
         let before = missing_state.snapshot();
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(object_id, participation);
@@ -2064,8 +2062,8 @@ mod tests {
             .expect("R2 insert accepts degenerate object transform");
         let field = field_representation(&mut singular, singular_id);
         let representation_id = field.id();
-        let participation =
-            RenderObjectParticipation::new(vec![field], None, None).expect("valid participation");
+        let participation = RenderObjectParticipation::from_representations(vec![field])
+            .expect("valid participation");
         let before = singular.snapshot();
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(singular_id, participation);
@@ -2088,8 +2086,8 @@ mod tests {
         store.commit(insert).expect("insert should commit");
         let field = field_representation(&mut store, object_id);
         let representation_id = field.id();
-        let participation =
-            RenderObjectParticipation::new(vec![field], None, None).expect("valid participation");
+        let participation = RenderObjectParticipation::from_representations(vec![field])
+            .expect("valid participation");
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(object_id, participation.clone());
         store
@@ -2132,7 +2130,7 @@ mod tests {
         }
         let object_id = target.expect("target object");
         let representation = surface_representation(&mut store, object_id);
-        let participation = RenderObjectParticipation::new(vec![representation], None, None)
+        let participation = RenderObjectParticipation::from_representations(vec![representation])
             .expect("valid participation");
         let (_, copies) = store.objects.replaced_facets(
             object_id,

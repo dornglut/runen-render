@@ -53,7 +53,51 @@ selected Rust 1.93.0, but executable transfer validation proved that the
 accepted RunenShader dependency graph requires Rust 1.97.1 through its exact
 WESL 0.5.0 graph.
 
-## Runnable headless scene-inspector example
+## Start with the ordinary API
+
+The compact public-only [ordinary example](examples/ordinary_render.rs) builds a
+scene with named representation/participation construction, retains the
+request-owned observation and output handles, and binds two distinguishable
+outputs: spectral radiance at 550 nm and object identity. It carries those
+original handles through late physical binding, admission, prepared-output
+lookup and associated capture/decoding. Reversed physical binding order shows
+that output positions are not identity.
+
+```sh
+cargo run --example ordinary_render --locked
+cargo doc --open --no-deps --locked
+```
+
+The example prepares renderer work through a `RenderExecutionSession`, submits
+it explicitly through caller-owned RunenGPU, associates the exact occurrence,
+waits for bounded terminal completion, reconciles the session, and observes
+outputs through a separate caller-owned readback. It requires a GPU adapter;
+failures propagate from `main`. It has no file/artifact, ECS or Present policy.
+The repository's Vulkan lane executes its actual `main`.
+
+The crate front page includes a GPU-independent compiling construction example
+and navigation to the ordinary and advanced APIs. Use
+`RenderRepresentationRecord::builder(id, spatial_coverage, temporal_support)`
+with named `surface_query`, `field_distance` and optional `refinement`, then
+fallible `build()`. Spatial/temporal meaning is always explicit; default
+refinement means no evidence, not exactness. Named optional channels accept
+typed `Option` values, including dynamic source-adapter facts.
+
+Use `RenderObjectParticipation::from_representations(collection_or_iterator)?`
+then `with_material_assignment` / `with_emitter` as needed. Representation order
+is canonical and duplicate IDs fail with the existing typed error. Empty,
+material-only and emitter-only participation are legal; publishing empty
+participation clears the scene facet. Object insertion and participation
+attachment remain separate transactions; atomic multi-facet replacement applies
+to existing objects.
+
+For one-shot work, use `prepare_render` or `submit_render`. For certified
+semantic result formation, select `submit_render_for_result` before submission
+and poll `try_form_result` after progressing RunenGPU. Retained physical capture
+and execution-local identity decoding are distinct from `RenderResult`
+certification and semantic definedness.
+
+## Deeper retained headless scene-inspector example
 
 The public-only [headless scene inspector](examples/headless_scene.rs) exercises
 the retained ordinary API without Runenwerk, an ECS, native windows, or Present.

@@ -894,8 +894,9 @@ mod tests {
                 RenderDiffuseMaterial::new(0.5).expect("diffuse material"),
             )
         });
-        let participation =
-            RenderObjectParticipation::new(representations, material, None).expect("participation");
+        let participation = RenderObjectParticipation::from_representations(representations)
+            .expect("participation")
+            .with_material_assignment(material);
         let mut update = RenderSceneUpdate::new();
         update.replace_participation(object_id, participation);
         store.commit(update).expect("attach representations");
@@ -911,14 +912,16 @@ mod tests {
         let id = store
             .allocate_representation_id(object_id)
             .expect("representation id");
-        RenderRepresentationRecord::new(
+        RenderRepresentationRecord::builder(
             id,
             RenderSpatialCoverage::unbounded(),
             temporal_support,
-            refinement,
-            Some(RenderSurfaceProtocolEvidence::exact(revision).expect("surface protocol")),
-            None,
         )
+        .refinement(refinement)
+        .surface_query(Some(
+            RenderSurfaceProtocolEvidence::exact(revision).expect("surface protocol"),
+        ))
+        .build()
         .expect("surface representation")
     }
 
@@ -938,14 +941,14 @@ mod tests {
         let surface = RenderSurfaceProtocolEvidence::exact(surface_revision)
             .expect("surface protocol")
             .with_oriented_surface(oriented);
-        RenderRepresentationRecord::new(
+        RenderRepresentationRecord::builder(
             id,
             RenderSpatialCoverage::unbounded(),
             temporal_support,
-            refinement,
-            Some(surface),
-            None,
         )
+        .refinement(refinement)
+        .surface_query(Some(surface))
+        .build()
         .expect("oriented surface representation")
     }
 
@@ -960,17 +963,16 @@ mod tests {
         let id = store
             .allocate_representation_id(object_id)
             .expect("representation id");
-        RenderRepresentationRecord::new(
+        RenderRepresentationRecord::builder(
             id,
             RenderSpatialCoverage::unbounded(),
             temporal_support,
-            refinement,
-            None,
-            Some(
-                RenderFieldDistanceProtocolEvidence::new(revision, guarantee)
-                    .expect("field protocol"),
-            ),
         )
+        .refinement(refinement)
+        .field_distance(Some(
+            RenderFieldDistanceProtocolEvidence::new(revision, guarantee).expect("field protocol"),
+        ))
+        .build()
         .expect("field representation")
     }
 

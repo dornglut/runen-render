@@ -108,20 +108,21 @@ fn insert_execution_geometry(
         )
         .expect("R6 exact field-distance protocol")
     });
-    let representation = RenderRepresentationRecord::new(
+    let representation = RenderRepresentationRecord::builder(
         representation_id,
         RenderSpatialCoverage::unbounded(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        Some(maintained_surface_evidence()),
-        field_distance,
     )
+    .surface_query(Some(maintained_surface_evidence()))
+    .field_distance(field_distance)
+    .build()
     .expect("R6 maintained representation");
     let material = RenderMaterialAssignment::new(
         RenderDiffuseMaterial::new(0.5).expect("R6 diffuse material"),
     );
-    let participation = RenderObjectParticipation::new(vec![representation], Some(material), None)
-        .expect("R6 geometry participation");
+    let participation = RenderObjectParticipation::from_representations(vec![representation])
+        .expect("R6 geometry participation")
+        .with_material_assignment(Some(material));
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
     store

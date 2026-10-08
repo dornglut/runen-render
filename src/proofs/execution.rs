@@ -16,7 +16,7 @@ use crate::participation::RenderMaterialAssignment;
 use crate::participation::RenderObjectParticipation;
 use crate::representation::{
     RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION, RENDER_SURFACE_QUERY_PROTOCOL_REVISION,
-    RenderOrientedSurfaceProtocolEvidence, RenderRefinementEvidence, RenderRepresentationRecord,
+    RenderOrientedSurfaceProtocolEvidence, RenderRepresentationRecord,
     RenderSurfaceProtocolEvidence,
 };
 use crate::request::{
@@ -138,20 +138,20 @@ pub(crate) fn maintained_fixture() -> MaintainedExecutionFixture {
     let representation_id = store
         .allocate_representation_id(object_id)
         .expect("R7 maintained proof representation id");
-    let representation = RenderRepresentationRecord::new(
+    let representation = RenderRepresentationRecord::builder(
         representation_id,
         RenderSpatialCoverage::unbounded(),
         RenderTemporalSupport::unbounded(),
-        RenderRefinementEvidence::none(),
-        Some(maintained_surface_evidence()),
-        None,
     )
+    .surface_query(Some(maintained_surface_evidence()))
+    .build()
     .expect("R7 maintained proof representation");
     let material = RenderMaterialAssignment::new(
         RenderDiffuseMaterial::new(0.5).expect("R7 maintained proof diffuse material"),
     );
-    let participation = RenderObjectParticipation::new(vec![representation], Some(material), None)
-        .expect("R7 maintained proof participation");
+    let participation = RenderObjectParticipation::from_representations(vec![representation])
+        .expect("R7 maintained proof participation")
+        .with_material_assignment(Some(material));
     let mut attach = RenderSceneUpdate::new();
     attach.replace_participation(object_id, participation);
     store
