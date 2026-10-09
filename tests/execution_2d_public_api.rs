@@ -384,7 +384,6 @@ fn f2_context_with_blendable_role(blendable: bool) -> Option<GpuContext> {
                 GpuFormatRole::ColorAttachment,
             )
             .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource)
-            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment)
             .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled)
             .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Filterable)
             .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::CopyDestination)

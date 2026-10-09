@@ -3,6 +3,35 @@ use super::*;
 use runen_gpu::{GpuExplicitOrder, GpuWorkNodeId};
 use runen_render::composition_2d::{Render2dBrush, Render2dRect, Render2dShape};
 
+/// Unlike the text-only admission context, mixed F2 vector masks require
+/// their own normalized RGBA8 coverage color-attachment capability.
+fn mixed_f2_context() -> Option<GpuContext> {
+    let descriptor =
+        GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
+            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::ColorAttachment)
+            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Blendable)
+            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource)
+            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment)
+            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled)
+            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Filterable)
+            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::CopyDestination)
+            .with_fallback_policy(GpuSoftwareFallbackPolicy::Require)
+            .with_allowed_backends([GpuBackendFamily::Vulkan])
+            .with_label("RunenRender F2 mixed shape/text control proof");
+    match pollster::block_on(GpuContext::request(descriptor)) {
+        Ok(context) => Some(context),
+        Err(error) if error.category() == GpuContextRequestErrorCategory::NoAdapterAvailable => {
+            assert_ne!(
+                std::env::var("RUNEN_RENDER_REQUIRE_GPU").ok().as_deref(),
+                Some("1"),
+                "mixed F2 control proof requires real Vulkan"
+            );
+            None
+        }
+        Err(error) => panic!("mixed F2 Vulkan context: {error}"),
+    }
+}
+
 fn clear(target: &Render2dTarget, red: f64) -> GpuRenderOperation {
     GpuRenderOperation::new(
         [GpuRenderColorAttachment::new(
@@ -49,7 +78,7 @@ fn vector_item(x: f64) -> Render2dEntry {
 
 #[test]
 fn independent_predecessor_and_successor_bracket_every_authored_f2_node() {
-    let Some(context) = f2_context() else { return };
+    let Some(context) = mixed_f2_context() else { return };
     let id = Render2dResourceId::new(923).expect("test id");
     let composition = Render2dComposition::new(vec![
         vector_item(0.0),
@@ -61,10 +90,14 @@ fn independent_predecessor_and_successor_bracket_every_authored_f2_node() {
     let (main_texture, main_target) = target("controlled F2 surface");
     let (_, before_target) = target("independent predecessor surface");
     let (_, after_target) = target("independent successor surface");
-    let prepared_f2 = Render2dExecutor::new()
+    let mut executor = Render2dExecutor::new();
+    let prepared_f2 = executor
         .prepare(&context, &composition, &source, &main_target)
         .expect("real mixed contribution");
     assert!(prepared_f2.has_render_work());
+    // Prepared GPU work is independently owned: CPU semantic cache retirement
+    // cannot invalidate a contribution that is waiting for GPU acceptance.
+    drop(executor);
     let readback = GpuReadbackOperation::ordinary(
         GpuTextureCopyRegion::whole_base_mip(&main_texture)
             .expect("full target")
