@@ -205,7 +205,7 @@ pub(super) fn inspect(
                     let kind = Render2dUnsupportedContent::Shadows {
                         root_index: path[0],
                     };
-                    return Err(super::super::super::super::unsupported_at(path, kind));
+                    return Err(crate::runtime::execution_2d::unsupported_at(path, kind));
                 }
                 depth += 1;
                 peak = peak.max(depth);
