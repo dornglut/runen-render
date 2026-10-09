@@ -181,6 +181,8 @@ pub enum Render2dTargetAdmissionError {
     TargetFormatNotBlendable,
     /// The admitted context cannot realize the private filtered field texture contract.
     FieldFormatUnsupported,
+    /// The admitted context lacks the unified correlated Rgba16Float sample plane.
+    SamplePlaneFormatUnsupported,
     /// Target or private field dimensions exceed the admitted device/workload limit.
     TextureDimensionLimitExceeded,
     /// The admitted context lacks render-pipeline execution.
@@ -229,6 +231,10 @@ impl fmt::Display for Render2dTargetAdmissionError {
             Self::FieldFormatUnsupported => write!(
                 formatter,
                 "2D F2 private field format is not sampled/filterable/copy-destination capable"
+            ),
+            Self::SamplePlaneFormatUnsupported => write!(
+                formatter,
+                "2D correlated F1 rendering requires admitted Rgba16Float sample-plane and Rgba8 coverage roles"
             ),
             Self::TextureDimensionLimitExceeded => write!(
                 formatter,
