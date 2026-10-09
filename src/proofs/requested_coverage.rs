@@ -1473,7 +1473,6 @@ fn equal_numeric_scene_revisions_do_not_certify_different_illumination_histories
     assert_ne!(current.history_generation, previous.history_generation);
 }
 
-
 /// Exercise two independent renderer continuities on the same Vulkan context.
 /// A compatible view must retain its phase while an unrelated view invalidates
 /// its source generation or camera pose. Every reset must produce only truthful
@@ -1495,9 +1494,9 @@ fn phase_fallback_gpu_isolates_views_and_resets_incompatible_sources_and_cameras
         (0, 0.0, 0.0, 9, 2, false),
         (1, 0.5, 0.0, 9, 1, false),
         (0, 0.0, 0.0, 9, 3, false),
-        (0, 0.0, 0.0, 9, 0, false), // Completed four-phase wrap.
-        (0, 0.0, 40.0, 10, 0, true), // New surface generation.
-        (1, 0.5, 0.0, 9, 2, false), // Independent view remains compatible.
+        (0, 0.0, 0.0, 9, 0, false),   // Completed four-phase wrap.
+        (0, 0.0, 40.0, 10, 0, true),  // New surface generation.
+        (1, 0.5, 0.0, 9, 2, false),   // Independent view remains compatible.
         (0, 0.75, 40.0, 10, 0, true), // Sub-native camera movement.
     ];
     for (view, camera_x, sphere_x, source_generation, expected_phase, reset) in steps {
@@ -1535,7 +1534,8 @@ fn phase_fallback_gpu_isolates_views_and_resets_incompatible_sources_and_cameras
         }
         generations[view] = Some(evidence.history_generation);
         let resolved = cache.buffers[&(0, DeterministicBufferKind::TemporalProvisional)].clone();
-        let availability = cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
+        let availability =
+            cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
         let counts = match &cache.temporal_histories[&0].storage {
             DeterministicTemporalStorage::Static { sample_counts, .. } => sample_counts.clone(),
             _ => panic!("sub-native view needs static history"),
