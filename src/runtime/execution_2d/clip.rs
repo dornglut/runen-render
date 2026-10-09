@@ -267,12 +267,7 @@ pub(super) fn prepare_bounded(
         let [m11, m12, m21, m22, tx, ty] = clip_to_root.coefficients();
         let transform = Render2dAffineTransform::new(m11, m12, m21, m22, tx, ty)
             .expect("composed F3E clip affine was checked finite");
-        let support = Render2dItem::new(
-            primitive,
-            transform,
-            vec![],
-            Render2dOpacity::OPAQUE,
-        );
+        let support = Render2dItem::new(primitive, transform, vec![], Render2dOpacity::OPAQUE);
         let mesh = vector::realize(
             &support,
             root_index,

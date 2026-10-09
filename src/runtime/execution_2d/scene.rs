@@ -24,7 +24,11 @@ impl Affine {
         Self(value.components())
     }
 
-    pub(super) fn compose(self, child: Self, path: &[usize]) -> Result<Self, Render2dExecutionError> {
+    pub(super) fn compose(
+        self,
+        child: Self,
+        path: &[usize],
+    ) -> Result<Self, Render2dExecutionError> {
         let [a, b, c, d, x, y] = self.0;
         let [e, f, g, h, u, v] = child.0;
         let product = [
