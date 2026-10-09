@@ -1210,7 +1210,13 @@ mod tests {
         assert_eq!(prepared.origin_x, -40);
         assert_eq!(prepared.origin_y, 0);
         assert_eq!((prepared.width, prepared.height), (36, 8));
-        assert!(prepared.values.iter().all(|alpha| *alpha == 1.0));
+        // The signed rectangle has exactly 9 x 2 logical units of neutral
+        // area, or 288 covered cells at 4 samples per logical axis.
+        // Polygon edge arithmetic is floating point, so physical area
+        // conservation—not bit-exact per-cell equality—is the oracle.
+        let area = prepared.values.iter().sum::<f64>();
+        assert!((area - 288.0).abs() < 1.0e-9);
+        assert!(prepared.values.iter().all(|&v| (0.0..=1.0).contains(&v)));
         // Offset (+12,0) remains a separate parent-frame painter translation.
         // Its shift is +48 samples: [-40,-4] -> [8,44], even though the
         // current unshifted source lies entirely off the caller's canvas.

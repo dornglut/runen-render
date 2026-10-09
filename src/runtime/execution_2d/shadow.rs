@@ -15,7 +15,11 @@ use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 const MAX_NEUTRAL_VERTICES: usize = 1_048_576;
 const MAX_NEUTRAL_CLIP_WORK: usize = 16_777_216;
 
-fn failed(path: &[usize], kind: Render2dSampleSpaceError, detail: &'static str) -> Render2dExecutionError {
+fn failed(
+    path: &[usize],
+    kind: Render2dSampleSpaceError,
+    detail: &'static str,
+) -> Render2dExecutionError {
     Render2dExecutionError::SampleSpace {
         kind,
         path: Some(path.to_vec()),
@@ -36,7 +40,12 @@ pub(super) fn empty_mesh() -> NeutralMesh {
     NeutralMesh {
         units_per_parent_logical_unit: 1.0,
         triangles: Vec::new(),
-        bounds: [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY],
+        bounds: [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
     }
 }
 
@@ -57,30 +66,44 @@ pub(super) fn append(
     {
         return Err(precision(path, "invalid neutral mesh source or scale"));
     }
-    let required = output.triangles.len().checked_add(source.triangles.len())
+    let required = output
+        .triangles
+        .len()
+        .checked_add(source.triangles.len())
         .ok_or_else(|| resource(path, "neutral geometry vertex count overflow"))?;
     if required > MAX_NEUTRAL_VERTICES {
-        return Err(resource(path, "neutral geometry exceeds bounded vertex admission"));
+        return Err(resource(
+            path,
+            "neutral geometry exceeds bounded vertex admission",
+        ));
     }
     let [a, b, c, d, tx, ty] = source_to_parent.components();
     let scale = source.units_per_parent_logical_unit;
     let mut prepared = Vec::new();
-    prepared.try_reserve_exact(source.triangles.len())
+    prepared
+        .try_reserve_exact(source.triangles.len())
         .map_err(|_| resource(path, "neutral geometry allocation failed"))?;
     for &[x, y] in &source.triangles {
         let x = x / scale;
         let y = y / scale;
-        let transformed = [a.mul_add(x, c.mul_add(y, tx)), b.mul_add(x, d.mul_add(y, ty))];
-        if !transformed.iter().all(|v| v.is_finite())
-            || transformed.iter().any(|v| v.abs() > 1.0e9)
+        let transformed = [
+            a.mul_add(x, c.mul_add(y, tx)),
+            b.mul_add(x, d.mul_add(y, ty)),
+        ];
+        if !transformed.iter().all(|v| v.is_finite()) || transformed.iter().any(|v| v.abs() > 1.0e9)
         {
-            return Err(precision(path, "neutral parent-space transform lost precision"));
+            return Err(precision(
+                path,
+                "neutral parent-space transform lost precision",
+            ));
         }
         prepared.push(transformed);
     }
     // Two-dimensional rank-deficient transforms have zero area and cannot
     // create a false positive-area source for finite ordinary shadows.
-    output.triangles.try_reserve(prepared.len())
+    output
+        .triangles
+        .try_reserve(prepared.len())
         .map_err(|_| resource(path, "neutral destination geometry allocation failed"))?;
     for triangle in prepared.chunks_exact(3) {
         if orient(triangle[0], triangle[1], triangle[2]) == 0.0 {
