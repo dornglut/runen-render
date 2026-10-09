@@ -316,6 +316,46 @@ mod neutral_tests {
     }
 
     #[test]
+    fn equal_image_destinations_at_different_tessellation_scales_keep_shadow_size() {
+        let extent = Render2dPixelExtent::new(2, 2).unwrap();
+        let image = Render2dImagePrimitive::new(
+            Render2dResourceId::new(9).unwrap(),
+            extent,
+            vec![Render2dImagePatch::new(
+                Render2dImageSourceRect::new(0.0, 0.0, 2.0, 2.0).unwrap(),
+                Render2dRect::new(-3.0, 1.0, 4.0, 2.0).unwrap(),
+            )],
+        )
+        .unwrap();
+        let item = Render2dItem::new(
+            crate::composition_2d::Render2dPrimitive::Image(image.clone()),
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let low = neutral_support(&item, &image, 0, 1.0, 4096)
+            .unwrap()
+            .unwrap();
+        let high = neutral_support(&item, &image, 0, 2.0, 4096)
+            .unwrap()
+            .unwrap();
+        let first = super::super::support::prepare_untranslated_shadow_coverage(
+            &low, 0.5, 0.25, 4.0, &[1, 2],
+        )
+        .unwrap()
+        .unwrap();
+        let second = super::super::support::prepare_untranslated_shadow_coverage(
+            &high, 0.5, 0.25, 4.0, &[1, 2],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(first.origin_x, second.origin_x);
+        assert_eq!(first.origin_y, second.origin_y);
+        assert_eq!((first.width, first.height), (second.width, second.height));
+        assert_eq!(first.values, second.values);
+    }
+
+    #[test]
     fn image_neutral_support_preserves_affine_geometry_and_empty_source() {
         let extent = Render2dPixelExtent::new(4, 4).unwrap();
         let image = Render2dImagePrimitive::new(
