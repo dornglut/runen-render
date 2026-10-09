@@ -55,7 +55,8 @@ fn pipeline(
                                 GpuTextureSampleClass::FloatFilterable
                             } else {
                                 GpuTextureSampleClass::FloatUnfilterable
-                            }),
+                            },
+                        ),
                     ]
                 })
                 .map_err(|e| gpu("F3E source texture layout key", e))
@@ -279,7 +280,12 @@ impl PreparedItem {
         match self {
             Self::Vector(mesh) => {
                 let [left, top, width, height] = mesh.bounds;
-                [left, top, left.saturating_add(width), top.saturating_add(height)]
+                [
+                    left,
+                    top,
+                    left.saturating_add(width),
+                    top.saturating_add(height),
+                ]
             }
             Self::Image(patches) => {
                 let mut bounds = [u32::MAX, u32::MAX, 0, 0];
@@ -408,14 +414,16 @@ fn inspect(
                     item.opacity(),
                 );
                 let realized = match item.primitive() {
-                    Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } =>
+                    Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => {
                         geometry::realize(
                             &derived,
                             path[0],
                             target.raster_scale(),
                             target.canvas(),
                             target.max_buffer_bytes(),
-                        )?.map(PreparedItem::Vector),
+                        )?
+                        .map(PreparedItem::Vector)
+                    }
                     Render2dPrimitive::Image(image) => {
                         if !target.image_format {
                             return Err(image_semantics::failure(
@@ -423,9 +431,9 @@ fn inspect(
                                 crate::execution_2d::Render2dImageError::FormatUnsupported,
                             ));
                         }
-                        let value = bindings
-                            .get(image.resource_id())
-                            .expect("the composition already validated immutable image resource bindings");
+                        let value = bindings.get(image.resource_id()).expect(
+                            "the composition already validated immutable image resource bindings",
+                        );
                         let Render2dResourceValue::ImageRgba8Srgb(source) = value else {
                             unreachable!("validated source-neutral F1 image binding kind");
                         };
@@ -505,7 +513,9 @@ pub(in crate::runtime::execution_2d) fn lower(
     if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
         return Ok(Vec::new());
     }
-    let has_images = items.iter().any(|item| matches!(item, Some(PreparedItem::Image(_))));
+    let has_images = items
+        .iter()
+        .any(|item| matches!(item, Some(PreparedItem::Image(_))));
     let extra_layer = if has_images { 1 } else { 0 };
     let side = tile_side(target, peak + extra_layer)?;
     let x0 = bounds[0] / side * side;
@@ -569,7 +579,8 @@ pub(in crate::runtime::execution_2d) fn lower(
                             crate::execution_2d::Render2dImageError::ResourceLimit,
                         )
                     };
-                    let size = u64::try_from(patch.source.rgba8_srgb().len()).map_err(|_| fail())?;
+                    let size =
+                        u64::try_from(patch.source.rgba8_srgb().len()).map_err(|_| fail())?;
                     total_source_bytes = total_source_bytes.checked_add(size).ok_or_else(fail)?;
                     if total_source_bytes > MAX_IMAGE_UPLOAD_BYTES {
                         return Err(fail());
@@ -591,21 +602,24 @@ pub(in crate::runtime::execution_2d) fn lower(
                     )
                 };
                 total_patch_bytes = total_patch_bytes.checked_add(bytes).ok_or_else(fail)?;
-                if bytes > target.max_buffer_bytes() || total_patch_bytes > MAX_PATCH_PARAMETER_BYTES {
+                if bytes > target.max_buffer_bytes()
+                    || total_patch_bytes > MAX_PATCH_PARAMETER_BYTES
+                {
                     return Err(fail());
                 }
-                let parameters = resources.buffer(
-                    GpuBufferDescriptor::ordinary_owned(
-                        "runen-render F3E source image patch mapping",
-                        GpuResourceLifetime::Transient,
-                        GpuReconstruction::SourceBacked,
-                        bytes,
-                        [GpuBufferUsage::Storage, GpuBufferUsage::CopyDestination],
-                        GpuBufferInitialization::Prepared(payload),
+                let parameters = resources
+                    .buffer(
+                        GpuBufferDescriptor::ordinary_owned(
+                            "runen-render F3E source image patch mapping",
+                            GpuResourceLifetime::Transient,
+                            GpuReconstruction::SourceBacked,
+                            bytes,
+                            [GpuBufferUsage::Storage, GpuBufferUsage::CopyDestination],
+                            GpuBufferInitialization::Prepared(payload),
+                        )
+                        .map_err(|e| gpu("F3E image patch descriptor", e))?,
                     )
-                    .map_err(|e| gpu("F3E image patch descriptor", e))?,
-                )
-                .map_err(|e| gpu("F3E image patch buffer", e))?;
+                    .map_err(|e| gpu("F3E image patch buffer", e))?;
                 prepared.push(PreparedPatch {
                     bounds: patch.bounds,
                     image,
@@ -686,11 +700,7 @@ pub(in crate::runtime::execution_2d) fn lower(
         "fs_sample_gradient_clipped",
         Some(0),
     )?;
-    let image_pipeline = pipeline(
-        GpuTextureFormat::Rgba16Float,
-        "fs_sample_image",
-        Some(2),
-    )?;
+    let image_pipeline = pipeline(GpuTextureFormat::Rgba16Float, "fs_sample_image", Some(2))?;
     let resolve_pipeline = pipeline(target.format, "fs_sample_resolve", Some(6))?;
 
     let mut operations = Vec::new();
@@ -710,8 +720,7 @@ pub(in crate::runtime::execution_2d) fn lower(
             }
             let has_content = items.iter().flatten().any(|item| {
                 let b = item.bounds();
-                b[0] < end[0] && b[2] > origin[0]
-                    && b[1] < end[1] && b[3] > origin[1]
+                b[0] < end[0] && b[2] > origin[0] && b[1] < end[1] && b[3] > origin[1]
             });
             if !has_content {
                 continue;
@@ -803,10 +812,14 @@ pub(in crate::runtime::execution_2d) fn lower(
                         if group_stack.last().is_some_and(|frame| !frame.visible) {
                             continue;
                         }
-                        let Some(content) = &items[index] else { continue };
+                        let Some(content) = &items[index] else {
+                            continue;
+                        };
                         let b = content.bounds();
-                        if b[0] >= end[0] || b[2] <= origin[0]
-                            || b[1] >= end[1] || b[3] <= origin[1]
+                        if b[0] >= end[0]
+                            || b[2] <= origin[0]
+                            || b[1] >= end[1]
+                            || b[3] <= origin[1]
                         {
                             continue;
                         }
