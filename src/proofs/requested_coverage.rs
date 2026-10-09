@@ -1585,3 +1585,167 @@ fn phase_fallback_gpu_isolates_views_and_resets_incompatible_sources_and_cameras
         cache.reconcile_temporal_outputs(true);
     }
 }
+
+
+/// A shadow blocker is never on the camera's primary center rays, but lies on
+/// the sphere's positive-cosine directional-light ray. Consequently the
+/// primary depth stays identical while the evaluated surface radiance changes.
+fn directional_shadow_fixture(extent: (u32, u32)) -> MaintainedExecutionFixture {
+    use crate::admission::{RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState};
+    use crate::appearance::RenderDiffuseMaterial;
+    use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
+    use crate::representation::{
+        RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION, RENDER_SURFACE_QUERY_PROTOCOL_REVISION,
+        RenderOrientedSurfaceProtocolEvidence, RenderRepresentationRecord,
+        RenderSurfaceProtocolEvidence,
+    };
+    use crate::scene::{RenderSceneStore, RenderSceneUpdate};
+    use crate::space_time::RenderSpatialCoverage;
+    use crate::surface_input::RenderSurfaceSemanticInputRequirement;
+
+    let mut fixture = fixture_with_directional_illumination(extent, [1.0, 0.0, 1.0]);
+    let original = fixture.scene.clone();
+    let mut store = RenderSceneStore::new();
+    // Retain exactly the semantic scene facts (including the original emitter)
+    // and their object/representation identities before inserting the occluder.
+    for object in original.object_ids() {
+        let copy = store.allocate_object_id().unwrap();
+        assert_eq!(copy, object);
+        let mut insert = RenderSceneUpdate::new();
+        insert.insert_with_state(copy, original.object_state(object).unwrap().clone());
+        store.commit(insert).unwrap();
+        let participation = original.object_participation(object).unwrap().clone();
+        for representation in participation.representations() {
+            assert_eq!(store.allocate_representation_id(copy).unwrap(), representation.id());
+        }
+        let mut attach = RenderSceneUpdate::new();
+        attach.replace_participation(copy, participation);
+        store.commit(attach).unwrap();
+    }
+    let original_sphere = original.object_ids()[0];
+    let blocker = store.allocate_object_id().unwrap();
+    let mut insert = RenderSceneUpdate::new();
+    insert.insert_with_state(
+        blocker,
+        original.object_state(original_sphere).unwrap().clone(),
+    );
+    store.commit(insert).unwrap();
+    let representation_id = store.allocate_representation_id(blocker).unwrap();
+    let protocol = RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
+        .unwrap()
+        .with_oriented_surface(
+            RenderOrientedSurfaceProtocolEvidence::exact(
+                RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
+            )
+            .unwrap(),
+        )
+        .with_semantic_input_requirement(RenderSurfaceSemanticInputRequirement::current());
+    let representation = RenderRepresentationRecord::builder(
+        representation_id,
+        RenderSpatialCoverage::unbounded(),
+        RenderTemporalSupport::unbounded(),
+    )
+    .surface_query(Some(protocol))
+    .build()
+    .unwrap();
+    let participation = RenderObjectParticipation::from_representations([representation])
+        .unwrap()
+        .with_material_assignment(Some(RenderMaterialAssignment::new(
+            RenderDiffuseMaterial::new(0.5).unwrap(),
+        )));
+    let mut attach = RenderSceneUpdate::new();
+    attach.replace_participation(blocker, participation);
+    store.commit(attach).unwrap();
+    // The reused object transform translates local z by -3. Thus this sphere
+    // is centered at world (1.5, 0, -0.5), on the shadow ray from the front
+    // surface of the original unit sphere centered at world (0, 0, -3).
+    fixture.semantic_inputs.push(
+        RenderSurfaceSemanticInputBinding::new(
+            representation_id,
+            RenderSurfaceSemanticInput::sphere(
+                [1.5, 0.0, 2.5],
+                0.7,
+                RenderTemporalSupport::unbounded(),
+            )
+            .unwrap(),
+        )
+        .with_generation(RenderSurfaceSemanticInputGeneration::new(9)),
+    );
+    fixture.availability.push(RenderRepresentationAvailabilityFact::new(
+        representation_id,
+        RenderRepresentationAvailabilityState::Available,
+    ));
+    fixture.scene = store.snapshot();
+    fixture
+}
+
+#[test]
+fn gpu_phase_fallback_preserves_hard_shadow_radiance_with_same_primary_geometry() {
+    use crate::runtime::program::abi::temporal_fallback;
+    let Some(context) = context() else { return };
+    let requested = (32_u32, 32_u32);
+    let bare = fixture_with_directional_illumination(requested, [1.0, 0.0, 1.0]);
+    let blocked = directional_shadow_fixture(requested);
+    let mut observations = Vec::new();
+    for fixture in [&bare, &blocked] {
+        let native = evaluate(
+            &context,
+            packed(
+                fixture,
+                &context,
+                0,
+                MaintainedExecutionKind::Semantic(fixture.request.outputs()[0].spec().value()),
+            ),
+        );
+        let mut cache = DeterministicResourceCache::default();
+        let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+            admit(fixture, &context),
+            &context,
+            &mut cache,
+            Some((0, (16, 16))),
+            false,
+        )
+        .expect("admitted fallback with real occluder");
+        let resolved = cache.buffers[&(0, DeterministicBufferKind::TemporalProvisional)].clone();
+        let availability =
+            cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
+        let actual = observe(
+            &context,
+            prepared.work_set().fragments().to_vec(),
+            &[resolved, availability],
+        );
+        cache.reconcile_temporal_outputs(true);
+        observations.push((native, actual));
+    }
+    let stride = observations[0].1[0].len() / requested.1 as usize;
+    let mut proven_shadow_cells = 0;
+    for cell in 0..(requested.0 * requested.1) as usize {
+        let physical = (cell / requested.0 as usize) * stride + cell % requested.0 as usize;
+        let first = &observations[0].0;
+        let shadowed = &observations[1].0;
+        if first[1][cell] != 1
+            || shadowed[1][cell] != 1
+            || first[3][physical] != shadowed[3][physical]
+            || first[4][physical * 4] != shadowed[4][physical * 4]
+            || first[0][physical] == shadowed[0][physical]
+        {
+            continue;
+        }
+        assert!(
+            f32::from_bits(first[0][physical]) > f32::from_bits(shadowed[0][physical]),
+            "the occluder must lower, not invent, same-depth direct radiance"
+        );
+        for (native, actual) in &observations {
+            assert_eq!(actual[1][cell], temporal_fallback::CURRENT_PHASE);
+            assert_eq!(
+                actual[0][physical], native[0][physical],
+                "actual Vulkan fallback must match maintained same-phase shading"
+            );
+        }
+        proven_shadow_cells += 1;
+    }
+    assert!(
+        proven_shadow_cells > 0,
+        "GPU fixture must actually produce differing hard shadows at identical primary depth"
+    );
+}
