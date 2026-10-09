@@ -769,3 +769,38 @@ fn opaque_overlapping_ordered_patches_apply_item_opacity_and_quarter_clip_once()
     pixel_close(pixel(&result, 10, 20), [0, 0, encode_linear(0.25), 64]);
     pixel_close(pixel(&result, 11, 20), [0, 0, 0, 0]);
 }
+
+#[test]
+fn overlapping_opaque_group_children_clipped_once_blend_over_prior_green_target() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let painted_children = vec![
+        solid(Render2dColorRgba8::new(255, 0, 0, 255), 0.0, 64.0),
+        solid(Render2dColorRgba8::new(0, 0, 255, 255), 0.0, 64.0),
+    ];
+    let clipped = Render2dGroup::new(
+        painted_children,
+        Render2dAffineTransform::IDENTITY,
+        vec![clip(10.0, 0.5)],
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    );
+    let composition = Render2dComposition::new(vec![Render2dEntry::group(clipped)]).unwrap();
+    let (texture, target) = super::target("F3E D3 prior opaque target");
+    let result = super::execute_inline(
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        &texture,
+        &target,
+        Some([0.0, 1.0, 0.0, 1.0]),
+    );
+    // D3: blue overwrites red in isolated group first. A half-coverage
+    // structural clip then yields blue=.5 / alpha=.5, composited once
+    // over the caller's opaque green. Distributing clip to children
+    // would leave illicit red and yield wrong alpha before prior blending.
+    pixel_close(pixel(&result, 10, 20), [0, 188, 188, 255]);
+    pixel_close(pixel(&result, 11, 20), [0, 255, 0, 255]);
+}
