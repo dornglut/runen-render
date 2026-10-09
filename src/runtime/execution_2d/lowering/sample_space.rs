@@ -10,7 +10,9 @@ use crate::composition_2d::{
     Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dGroup, Render2dItem,
     Render2dPrimitive, Render2dResourceBindings, Render2dResourceId, Render2dResourceValue,
 };
-use crate::execution_2d::{Render2dTargetAdmissionError, Render2dUnsupportedContent};
+use crate::execution_2d::{
+    Render2dSampleSpaceError, Render2dTargetAdmissionError, Render2dUnsupportedContent,
+};
 use crate::runtime::execution_2d::{
     clip as clip_geometry, image as image_semantics, scene, vector as geometry,
 };
@@ -35,8 +37,17 @@ const COLOR_BYTES_PER_PIXEL: u64 = 128;
 const MASK_BYTES_PER_PIXEL: u64 = 64;
 
 fn failure(detail: impl Into<String>) -> Render2dExecutionError {
-    Render2dExecutionError::Gpu {
-        stage: "F3E correlated sample lowering",
+    Render2dExecutionError::SampleSpace {
+        kind: Render2dSampleSpaceError::ResourceLimit,
+        path: None,
+        detail: detail.into(),
+    }
+}
+
+fn precision_failure(path: &[usize], detail: impl Into<String>) -> Render2dExecutionError {
+    Render2dExecutionError::SampleSpace {
+        kind: Render2dSampleSpaceError::PrecisionLimit,
+        path: Some(path.to_vec()),
         detail: detail.into(),
     }
 }
@@ -559,9 +570,8 @@ fn inspect(
                 ..
             } => {
                 let [a, b, c, d, tx, ty] = to_root.coefficients();
-                let transform = Render2dAffineTransform::new(a, b, c, d, tx, ty).map_err(|_| {
-                    failure(format!("entry path {path:?}: unrepresentable transform"))
-                })?;
+                let transform = Render2dAffineTransform::new(a, b, c, d, tx, ty)
+                    .map_err(|_| precision_failure(path, "unrepresentable cumulative transform"))?;
                 let derived = Render2dItem::new(
                     item.primitive().clone(),
                     transform,
@@ -1325,8 +1335,8 @@ mod tile_budget_tests {
         assert!(admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024).is_ok());
         assert!(matches!(
             admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024 + 1),
-            Err(Render2dExecutionError::Gpu {
-                stage: "F3E correlated sample lowering",
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
                 ..
             })
         ));
