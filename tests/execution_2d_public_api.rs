@@ -311,17 +311,49 @@ fn f2_nonpainting_and_unsupported_content_fail_or_elide_structurally() {
     let grouped = Render2dComposition::new(vec![Render2dEntry::group(group)])
         .expect("structurally valid group composition");
     let (_, grouped_target) = target("group target");
-    assert!(matches!(
-        executor.prepare(
+    let no_work = executor
+        .prepare(
             &context,
             &grouped,
             &Render2dResourceBindings::default(),
             &grouped_target,
+        )
+        .expect("structurally empty atomic group has no painter work");
+    assert!(!no_work.has_render_work());
+    let (fragment, token) = no_work
+        .into_fragment(&work_binding("empty group"))
+        .expect("no-work contribution is composable");
+    assert!(token.is_none());
+    assert!(fragment.nodes().is_empty());
+
+    // Empty nested descendants are also safe, without recursive execution.
+    let nested = Render2dComposition::new(vec![Render2dEntry::group(
+        Render2dGroup::new(
+            vec![Render2dEntry::group(Render2dGroup::new(
+                Vec::new(),
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::OPAQUE,
+                Vec::new(),
+            ))],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            Vec::new(),
         ),
-        Err(Render2dExecutionError::UnsupportedContent(
-            Render2dUnsupportedContent::Group { root_index: 0 }
-        ))
-    ));
+    )])
+    .unwrap();
+    assert!(
+        !executor
+            .prepare(
+                &context,
+                &nested,
+                &Render2dResourceBindings::default(),
+                &grouped_target,
+            )
+            .expect("empty nested groups elide without work")
+            .has_render_work()
+    );
 
     for (index, (font, expected)) in [
         (COLR_V0_FONT, Render2dUnsupportedGlyphKind::ColrV0),

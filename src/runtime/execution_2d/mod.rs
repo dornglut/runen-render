@@ -186,7 +186,10 @@ impl Render2dExecutionState {
         for (root_index, entry) in composition.root_entries().iter().enumerate() {
             let root_start = ordered.len();
             let Render2dEntry::Item(item) = entry else {
-                unreachable!("admitted root item")
+                // Structurally empty nested groups have no painter contribution.
+                // They were admitted before GPU lowering; no synthetic pass,
+                // mask or completion token is manufactured for them.
+                continue;
             };
             if matches!(item.primitive(), Render2dPrimitive::ShapedText(_)) {
                 ordered.extend(
@@ -288,12 +291,40 @@ struct AdmittedRun {
     translate_y: f64,
 }
 
+/// Determines whether a recursively nested group has no paint or effects.
+///
+/// This structural proof is deliberately iterative: arbitrarily deep immutable
+/// F1 group trees must not consume the Rust call stack during admission.
+/// Opaque resource-bearing items, even when visually empty, are not elided here
+/// because they still require immutable resource observation.
+fn group_is_structurally_empty(group: &crate::composition_2d::Render2dGroup) -> bool {
+    let mut pending = vec![group];
+    while let Some(current) = pending.pop() {
+        if !current.shadows().is_empty() {
+            return false;
+        }
+        for entry in current.entries() {
+            match entry {
+                Render2dEntry::Item(_) => return false,
+                Render2dEntry::Group(child) => pending.push(child),
+            }
+        }
+    }
+    true
+}
+
 fn admit_runs(
     composition: &Render2dComposition,
 ) -> Result<Vec<AdmittedRun>, Render2dExecutionError> {
     let mut runs = Vec::with_capacity(composition.root_entries().len());
     for (root_index, entry) in composition.root_entries().iter().enumerate() {
         let Render2dEntry::Item(item) = entry else {
+            let Render2dEntry::Group(group) = entry else {
+                unreachable!("F1 entries are items or groups");
+            };
+            if group_is_structurally_empty(group) {
+                continue;
+            }
             return Err(Render2dUnsupportedContent::Group { root_index }.into());
         };
         match item.primitive() {
