@@ -421,3 +421,37 @@ fn clipped_translucent_self_intersecting_stroke_is_shaded_only_once() {
         [encode_linear(alpha), 0, 0, (alpha * 255.0).round() as u8],
     );
 }
+
+#[test]
+fn affine_parent_space_clip_with_double_raster_scale_is_not_transformed_twice() {
+    let Some(ctx) = context() else { return };
+    // A rotated/sheared, anisotropic clip is authored in parent coordinates.
+    // The owner moves independently and MUST NOT translate this clip again.
+    let affine = Render2dAffineTransform::new(0.0, 1.0, -1.5, 0.25, 24.0, 4.0).unwrap();
+    let owner = Render2dAffineTransform::translation(2.0, 0.0).unwrap();
+    let entry = painted(
+        Render2dBrush::solid(Render2dColorRgba8::WHITE),
+        vec![Render2dClip::new(Render2dShape::rect(r(0.0, 0.0, 8.0, 8.0)), affine)],
+        owner,
+        1.0,
+    );
+    let composition = Render2dComposition::new(vec![entry]).unwrap();
+    let (texture, ordinary_target) = target("F3D parent space scaled clip");
+    let scaled_target =
+        Render2dTarget::new(ordinary_target.view().clone(), 32.0, 32.0, 2.0).unwrap();
+    let pixels = execute_inline(
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        &texture,
+        &scaled_target,
+        Some([0.0; 4]),
+    );
+    // Inverse mapping of pixel center (36.5,18.5) / 2 falls strictly inside
+    // the parent-space affine clip and the translated owner geometry.
+    check(pixel(&pixels, 36, 18), [255; 4]);
+    // Pixel center (49.5,18.5) / 2 is outside the original clip, but would
+    // become inside if the owner's +2 translation were incorrectly applied.
+    check(pixel(&pixels, 49, 18), [0; 4]);
+}
