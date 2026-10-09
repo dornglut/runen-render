@@ -274,3 +274,17 @@ fn clip_hit(pixel: vec2<i32>, sx: i32, sy: i32) -> f32 {
     let sample = textureLoad(sample_layer, vec2<i32>(floor(input.position.xy)), 0);
     return sample * input.color.a;
 }
+
+
+// F3E group clip is an exact 4x4 binary sample mask in the owner's
+// immediate parent coordinates. Unlike a resolved fractional-pixel alpha,
+// the packed bit masks multiply the *completed* isolated group at each
+// correlated physical sample before once-only group opacity/source-over.
+@fragment fn fs_sample_merge_clipped(input: VertexOutput) -> @location(0) vec4<f32> {
+    let physical = vec2<i32>(floor(input.position.xy));
+    let logical = physical / COVERAGE_AXIS_SAMPLES;
+    let offset = physical % COVERAGE_AXIS_SAMPLES;
+    let visible = clip_hit(logical, offset.x, offset.y);
+    let sample = textureLoad(sample_layer, physical, 0);
+    return sample * (input.color.a * visible);
+}
