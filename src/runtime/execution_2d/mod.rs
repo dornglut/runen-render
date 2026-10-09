@@ -12,7 +12,7 @@ use self::field::{FieldSetKey, QualityTier, ResourceFields};
 use self::lowering::GlyphOccurrence;
 pub(crate) use self::lowering::add_target_boundary;
 use crate::composition_2d::{
-    Render2dComposition, Render2dOpacity, Render2dPrimitive, Render2dResourceBindings,
+    Render2dComposition, Render2dPrimitive, Render2dResourceBindings,
     Render2dResourceId, Render2dResourceRequirement, Render2dResourceValue,
 };
 use crate::execution_2d::{
@@ -45,22 +45,9 @@ impl Render2dExecutionState {
     ) -> Result<Render2dPreparedContribution, Render2dExecutionError> {
         composition.validate_bindings(bindings)?;
         let plan = scene::analyze(composition)?;
-        // Admitted grouped or mixed content shares one correlated compositor.
-        // The retained direct-root F2-only path is still available to contexts
-        // without the sample-plane roles until the full F3E cutover is proven.
-        let has_group = plan
-            .events
-            .iter()
-            .any(|event| matches!(event, scene::Event::BeginGroup { .. }));
-        let has_non_text = plan.events.iter().any(|event| match event {
-            scene::Event::Item { item, .. } => {
-                !matches!(item.primitive(), Render2dPrimitive::ShapedText(_))
-            }
-            scene::Event::BeginGroup { .. } | scene::Event::EndGroup => false,
-        });
-        let use_sample =
-            has_group || (has_non_text && lowering::sample_space::admits_sample_plane(context));
-        let runs = admit_runs(&plan, use_sample)?;
+        // One F1 semantic contribution has one correlated physical law.
+        // Missing sample-plane roles are rejected explicitly by that compiler.
+        let runs = admit_runs(&plan)?;
         let admitted_target = lowering::admit_target(context, target, !runs.is_empty())?;
         // The immutable F1 composition is the complete resource authority,
         // including resources nested below groups. Do not infer observation
@@ -196,109 +183,13 @@ impl Render2dExecutionState {
             }
         }
 
-        if use_sample {
-            let lowered = lowering::sample_space::lower(
-                context,
-                &admitted_target,
-                &plan,
-                bindings,
-                &occurrences,
-            )?;
-            for (resource_id, value) in observed_updates {
-                self.observed.insert(resource_id, value);
-            }
-            for (key, fields) in field_updates {
-                self.fields.insert(key, fields);
-            }
-            return Ok(Render2dPreparedContribution::new(
-                lowered,
-                target.view().clone(),
-            ));
-        }
-
-        let mut ordered = Vec::new();
-        let mut clips = BTreeMap::new();
-        let mut clip_bytes = 0u64;
-        let mut clip_raster_work = 0u64;
-        for (event_index, event) in plan.events.iter().enumerate() {
-            let root_start = ordered.len();
-            let scene::Event::Item { path, item, .. } = event else {
-                unreachable!("active groups enter sample-space lowering");
-            };
-            let root_index = path[0];
-            if matches!(item.primitive(), Render2dPrimitive::ShapedText(_)) {
-                ordered.extend(
-                    occurrences
-                        .remove(&event_index)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(lowering::OrderedItem::Glyph),
-                );
-            } else if let Render2dPrimitive::Image(image) = item.primitive() {
-                let value = bindings
-                    .get(image.resource_id())
-                    .expect("validated image binding");
-                let Render2dResourceValue::ImageRgba8Srgb(source) = value else {
-                    unreachable!("validated image binding kind")
-                };
-                for patch in image::realize(
-                    item,
-                    image,
-                    source,
-                    root_index,
-                    admitted_target.raster_scale(),
-                    admitted_target.canvas(),
-                    admitted_target.max_texture_dimension_2d(),
-                )? {
-                    ordered.push(lowering::OrderedItem::Image(patch));
-                }
-            } else if let Some(mesh) = vector::realize(
-                item,
-                root_index,
-                admitted_target.raster_scale(),
-                admitted_target.canvas(),
-                admitted_target.max_buffer_bytes(),
-            )? {
-                ordered.push(lowering::OrderedItem::Vector(mesh));
-            }
-            if !item.clips().is_empty() {
-                if let Some(mask) = clip::prepare(
-                    item,
-                    &ordered[root_start..],
-                    root_index,
-                    &admitted_target,
-                    clip_bytes,
-                    &mut clip_raster_work,
-                )? {
-                    clip_bytes = clip_bytes
-                        .checked_add(u64::try_from(mask.rgba.len()).map_err(|_| {
-                            clip::failure(
-                                root_index,
-                                crate::execution_2d::Render2dClipError::ResourceLimit,
-                            )
-                        })?)
-                        .ok_or_else(|| {
-                            clip::failure(
-                                root_index,
-                                crate::execution_2d::Render2dClipError::ResourceLimit,
-                            )
-                        })?;
-                    if clip_bytes > clip::MAX_TOTAL_MASK_BYTES {
-                        return Err(clip::failure(
-                            root_index,
-                            crate::execution_2d::Render2dClipError::ResourceLimit,
-                        ));
-                    }
-                    clips.insert(root_index, mask);
-                } else {
-                    // Intersection is empty; preserve semantic resource observation,
-                    // but author no synthetic GPU work for this item.
-                    ordered.truncate(root_start);
-                }
-            }
-        }
-        let lowered = lowering::lower_ordered(&admitted_target, ordered, clips)?;
-
+        let lowered = lowering::sample_space::lower(
+            context,
+            &admitted_target,
+            &plan,
+            bindings,
+            &occurrences,
+        )?;
         for (resource_id, value) in observed_updates {
             let previous = self.observed.insert(resource_id, value);
             debug_assert!(previous.is_none());
@@ -307,7 +198,6 @@ impl Render2dExecutionState {
             let previous = self.fields.insert(key, fields);
             debug_assert!(previous.is_none());
         }
-
         Ok(Render2dPreparedContribution::new(
             lowered,
             target.view().clone(),
@@ -327,10 +217,7 @@ struct AdmittedRun {
     translate_y: f64,
 }
 
-fn admit_runs(
-    plan: &scene::Plan<'_>,
-    sample_mode: bool,
-) -> Result<Vec<AdmittedRun>, Render2dExecutionError> {
+fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecutionError> {
     let mut runs = Vec::new();
     for (event_index, event) in plan.events.iter().enumerate() {
         let (root_index, item, to_root) = match event {
@@ -341,11 +228,6 @@ fn admit_runs(
                 ..
             } => {
                 let root_index = path[0];
-                // The existing direct-root compiler remains fail-closed until
-                // the complete F3E sample-space group lowering is available.
-                if !sample_mode && path.len() != 1 {
-                    return Err(Render2dUnsupportedContent::Group { root_index }.into());
-                }
                 (root_index, *item, *to_root)
             }
             scene::Event::BeginGroup { path, group, .. } => {
@@ -363,9 +245,6 @@ fn admit_runs(
             Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => continue,
             Render2dPrimitive::Image(_) => continue,
             Render2dPrimitive::ShapedText(_) => {}
-        }
-        if !sample_mode && item.opacity() != Render2dOpacity::OPAQUE {
-            return Err(Render2dUnsupportedContent::Opacity { root_index }.into());
         }
         let [m11, m12, m21, m22, translate_x, translate_y] = to_root.coefficients();
         if m11 != 1.0 || m12 != 0.0 || m21 != 0.0 || m22 != 1.0 {
@@ -393,7 +272,7 @@ mod tests {
     use super::*;
     use crate::composition_2d::{
         Render2dAffineTransform, Render2dColorRgba8, Render2dEntry, Render2dFontBinding,
-        Render2dGlyph, Render2dItem, Render2dPoint, Render2dResourceBinding,
+        Render2dGlyph, Render2dItem, Render2dOpacity, Render2dPoint, Render2dResourceBinding,
         Render2dShapedTextPrimitive, Render2dShapedTextResource,
     };
 
@@ -433,7 +312,6 @@ mod tests {
         );
         let runs = admit_runs(
             &scene::analyze(&composition).expect("finite source tree"),
-            false,
         )
         .expect("translation is inside F2");
         assert_eq!(runs.len(), 1);
@@ -445,8 +323,7 @@ mod tests {
         );
         assert!(matches!(
             admit_runs(
-                &scene::analyze(&composition).expect("finite source tree"),
-                false
+                &scene::analyze(&composition).expect("finite source tree")
             ),
             Err(Render2dExecutionError::UnsupportedContent(
                 Render2dUnsupportedContent::Transform { root_index: 0 }
