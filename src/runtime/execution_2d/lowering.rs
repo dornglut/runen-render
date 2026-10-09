@@ -904,6 +904,6 @@ pub(super) fn lower_ordered(
         target,
         &glyphs,
         glyph_root.and_then(|root| clip_views.get(&root)),
-    )?;
+    )?);
     Ok(operations)
 }
