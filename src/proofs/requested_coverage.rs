@@ -1617,7 +1617,10 @@ fn directional_shadow_fixture(extent: (u32, u32)) -> MaintainedExecutionFixture 
         store.commit(insert).unwrap();
         let participation = original.object_participation(object).unwrap().clone();
         for representation in participation.representations() {
-            assert_eq!(store.allocate_representation_id(copy).unwrap(), representation.id());
+            assert_eq!(
+                store.allocate_representation_id(copy).unwrap(),
+                representation.id()
+            );
         }
         let mut attach = RenderSceneUpdate::new();
         attach.replace_participation(copy, participation);
@@ -1672,10 +1675,12 @@ fn directional_shadow_fixture(extent: (u32, u32)) -> MaintainedExecutionFixture 
         )
         .with_generation(RenderSurfaceSemanticInputGeneration::new(9)),
     );
-    fixture.availability.push(RenderRepresentationAvailabilityFact::new(
-        representation_id,
-        RenderRepresentationAvailabilityState::Available,
-    ));
+    fixture
+        .availability
+        .push(RenderRepresentationAvailabilityFact::new(
+            representation_id,
+            RenderRepresentationAvailabilityState::Available,
+        ));
     fixture.scene = store.snapshot();
     fixture
 }
