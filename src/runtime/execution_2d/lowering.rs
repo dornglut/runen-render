@@ -929,7 +929,8 @@ mod sample_space_gpu_proof {
         entry: &str,
         blend: bool,
     ) -> GpuRenderPipelineDescriptor {
-        let source = retained_vector_source().expect("maintained vector shader source");
+        let source = crate::runtime::program::retained_vector_source()
+            .expect("maintained vector shader source");
         let vertex = GpuEntryPointName::new("vs_main").unwrap();
         let fragment = GpuEntryPointName::new(entry).unwrap();
         let refinements = if entry == "fs_sample_resolve" {
@@ -989,12 +990,7 @@ mod sample_space_gpu_proof {
         .unwrap()
     }
 
-    fn rectangle(
-        vertices: &mut Vec<f32>,
-        bounds: [f32; 4],
-        extent: [f32; 2],
-        color: [f32; 4],
-    ) {
+    fn rectangle(vertices: &mut Vec<f32>, bounds: [f32; 4], extent: [f32; 2], color: [f32; 4]) {
         let [left, top, right, bottom] = bounds;
         for [x, y] in [
             [left, top],
@@ -1020,16 +1016,23 @@ mod sample_space_gpu_proof {
     #[test]
     #[ignore = "GPU-required F3E proof: explicitly executed by the Vulkan workflow"]
     fn retained_gpu_plane_resolves_correlated_siblings_once_over_prior_target() {
-        let mut request =
-            GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
-                .with_fallback_policy(GpuSoftwareFallbackPolicy::Require)
-                .with_allowed_backends([GpuBackendFamily::Vulkan])
-                .with_label("F3E float sample-plane and final resolve proof");
+        let mut request = GpuContextDescriptor::new(
+            GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements(),
+        )
+        .with_fallback_policy(GpuSoftwareFallbackPolicy::Require)
+        .with_allowed_backends([GpuBackendFamily::Vulkan])
+        .with_label("F3E float sample-plane and final resolve proof");
         for (format, role) in [
-            (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::ColorAttachment),
+            (
+                GpuTextureFormat::Rgba8UnormSrgb,
+                GpuFormatRole::ColorAttachment,
+            ),
             (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Blendable),
             (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource),
-            (GpuTextureFormat::Rgba16Float, GpuFormatRole::ColorAttachment),
+            (
+                GpuTextureFormat::Rgba16Float,
+                GpuFormatRole::ColorAttachment,
+            ),
             (GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable),
             (GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled),
         ] {
@@ -1056,8 +1059,7 @@ mod sample_space_gpu_proof {
             .unwrap();
         let sample_view = resources
             .texture_view(
-                GpuTextureViewDescriptor::ordinary_full_owned("F3E sample view", &sample)
-                    .unwrap(),
+                GpuTextureViewDescriptor::ordinary_full_owned("F3E sample view", &sample).unwrap(),
             )
             .unwrap();
         let output = resources
@@ -1069,7 +1071,10 @@ mod sample_space_gpu_proof {
                     64,
                     64,
                     GpuTextureFormat::Rgba8UnormSrgb,
-                    [GpuTextureUsage::ColorAttachment, GpuTextureUsage::CopySource],
+                    [
+                        GpuTextureUsage::ColorAttachment,
+                        GpuTextureUsage::CopySource,
+                    ],
                     GpuTextureInitialization::Zeroed,
                 )
                 .unwrap(),
@@ -1077,8 +1082,7 @@ mod sample_space_gpu_proof {
             .unwrap();
         let output_view = resources
             .texture_view(
-                GpuTextureViewDescriptor::ordinary_full_owned("F3E output view", &output)
-                    .unwrap(),
+                GpuTextureViewDescriptor::ordinary_full_owned("F3E output view", &output).unwrap(),
             )
             .unwrap();
 
@@ -1098,11 +1102,7 @@ mod sample_space_gpu_proof {
             [256.0, 256.0],
             [0.0, 0.0, 1.0, 1.0],
         );
-        let sample_pipeline = pipeline(
-            GpuTextureFormat::Rgba16Float,
-            "fs_sample_fill",
-            true,
-        );
+        let sample_pipeline = pipeline(GpuTextureFormat::Rgba16Float, "fs_sample_fill", true);
         let sample_draw = vector::vector_draw(
             sample_pipeline.clone(),
             sample_pipeline.runtime_bindings([]).unwrap(),
@@ -1114,9 +1114,7 @@ mod sample_space_gpu_proof {
         let samples = GpuRenderOperation::new(
             [GpuRenderColorAttachment::new(
                 sample_view.clone(),
-                GpuColorAttachmentLoad::Clear(
-                    GpuColorClearValue::new(0.0, 0.0, 0.0, 0.0).unwrap(),
-                ),
+                GpuColorAttachmentLoad::Clear(GpuColorClearValue::new(0.0, 0.0, 0.0, 0.0).unwrap()),
                 GpuAttachmentStore::Store,
                 None,
             )
@@ -1127,11 +1125,8 @@ mod sample_space_gpu_proof {
         )
         .unwrap();
 
-        let resolve_pipeline = pipeline(
-            GpuTextureFormat::Rgba8UnormSrgb,
-            "fs_sample_resolve",
-            true,
-        );
+        let resolve_pipeline =
+            pipeline(GpuTextureFormat::Rgba8UnormSrgb, "fs_sample_resolve", true);
         let mut output_vertices = Vec::new();
         rectangle(
             &mut output_vertices,
@@ -1152,9 +1147,7 @@ mod sample_space_gpu_proof {
         let clear = GpuRenderOperation::new(
             [GpuRenderColorAttachment::new(
                 output_view.clone(),
-                GpuColorAttachmentLoad::Clear(
-                    GpuColorClearValue::new(0.0, 0.0, 1.0, 1.0).unwrap(),
-                ),
+                GpuColorAttachmentLoad::Clear(GpuColorClearValue::new(0.0, 0.0, 1.0, 1.0).unwrap()),
                 GpuAttachmentStore::Store,
                 None,
             )
@@ -1178,7 +1171,9 @@ mod sample_space_gpu_proof {
         )
         .unwrap();
         let readback = GpuReadbackOperation::ordinary(
-            GpuTextureCopyRegion::whole_base_mip(&output).unwrap().into(),
+            GpuTextureCopyRegion::whole_base_mip(&output)
+                .unwrap()
+                .into(),
         )
         .unwrap();
         let readback_id = readback.id();
@@ -1221,7 +1216,10 @@ mod sample_space_gpu_proof {
         // Linear 0.5 is sRGB 188. The last 0.5 blue comes from the
         // *composed sample plane*, not from partially obscured caller blue.
         for (actual, expected) in pixel(10, 20).iter().zip([188_u8, 0, 188, 255]) {
-            assert!(actual.abs_diff(expected) <= 4, "correlated color {actual}, expected {expected}");
+            assert!(
+                actual.abs_diff(expected) <= 4,
+                "correlated color {actual}, expected {expected}"
+            );
         }
         assert_eq!(pixel(11, 20), &[0, 0, 255, 255]);
     }
