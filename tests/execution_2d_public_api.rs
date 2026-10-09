@@ -22,8 +22,8 @@ use runen_render::composition_2d::{
 use runen_render::execution_2d::{
     Render2dContributionEvidence, Render2dContributionEvidenceError, Render2dContributionToken,
     Render2dExecutionError, Render2dExecutor, Render2dPreparedContribution,
-    Render2dShapedTextError, Render2dTarget, Render2dTargetError, Render2dUnsupportedContent,
-    Render2dUnsupportedGlyphKind, Render2dWorkBinding,
+    Render2dShapedTextError, Render2dTarget, Render2dTargetError, Render2dUnsupportedGlyphKind,
+    Render2dWorkBinding,
 };
 use std::time::{Duration, Instant};
 
@@ -43,6 +43,8 @@ mod clip;
 mod control_order;
 #[path = "execution_2d/gradient.rs"]
 mod gradient;
+#[path = "execution_2d/group.rs"]
+mod group;
 #[path = "execution_2d/image.rs"]
 mod image;
 #[path = "execution_2d/vector.rs"]
@@ -311,17 +313,47 @@ fn f2_nonpainting_and_unsupported_content_fail_or_elide_structurally() {
     let grouped = Render2dComposition::new(vec![Render2dEntry::group(group)])
         .expect("structurally valid group composition");
     let (_, grouped_target) = target("group target");
-    assert!(matches!(
-        executor.prepare(
+    let no_work = executor
+        .prepare(
             &context,
             &grouped,
             &Render2dResourceBindings::default(),
             &grouped_target,
-        ),
-        Err(Render2dExecutionError::UnsupportedContent(
-            Render2dUnsupportedContent::Group { root_index: 0 }
-        ))
-    ));
+        )
+        .expect("structurally empty atomic group has no painter work");
+    assert!(!no_work.has_render_work());
+    let (fragment, token) = no_work
+        .into_fragment(&work_binding("empty group"))
+        .expect("no-work contribution is composable");
+    assert!(token.is_none());
+    assert!(fragment.nodes().is_empty());
+
+    // Empty nested descendants are also safe, without recursive execution.
+    let nested = Render2dComposition::new(vec![Render2dEntry::group(Render2dGroup::new(
+        vec![Render2dEntry::group(Render2dGroup::new(
+            Vec::new(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            Vec::new(),
+        ))],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ))])
+    .unwrap();
+    assert!(
+        !executor
+            .prepare(
+                &context,
+                &nested,
+                &Render2dResourceBindings::default(),
+                &grouped_target,
+            )
+            .expect("empty nested groups elide without work")
+            .has_render_work()
+    );
 
     for (index, (font, expected)) in [
         (COLR_V0_FONT, Render2dUnsupportedGlyphKind::ColrV0),
@@ -379,6 +411,13 @@ fn f2_context() -> Option<GpuContext> {
 fn f2_context_with_blendable_role(blendable: bool) -> Option<GpuContext> {
     let mut descriptor =
         GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
+            .require_format_role(
+                GpuTextureFormat::Rgba16Float,
+                GpuFormatRole::ColorAttachment,
+            )
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable)
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled)
+            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment)
             .require_format_role(
                 GpuTextureFormat::Rgba8UnormSrgb,
                 GpuFormatRole::ColorAttachment,
@@ -478,6 +517,10 @@ fn shaped_entry(
 }
 
 fn target(name: &str) -> (GpuTextureHandle, Render2dTarget) {
+    target_sized(name, WIDTH, HEIGHT)
+}
+
+fn target_sized(name: &str, width: u32, height: u32) -> (GpuTextureHandle, Render2dTarget) {
     let mut resources = GpuResourceScope::new();
     let texture = resources
         .texture(
@@ -485,8 +528,8 @@ fn target(name: &str) -> (GpuTextureHandle, Render2dTarget) {
                 name,
                 GpuResourceLifetime::Transient,
                 GpuReconstruction::SourceBacked,
-                WIDTH,
-                HEIGHT,
+                width,
+                height,
                 GpuTextureFormat::Rgba8UnormSrgb,
                 [
                     GpuTextureUsage::ColorAttachment,
@@ -503,7 +546,7 @@ fn target(name: &str) -> (GpuTextureHandle, Render2dTarget) {
                 .expect("F2 target view descriptor"),
         )
         .expect("F2 target view identity");
-    let target = Render2dTarget::new(view, f64::from(WIDTH), f64::from(HEIGHT), 1.0)
+    let target = Render2dTarget::new(view, f64::from(width), f64::from(height), 1.0)
         .expect("exact F2 target mapping");
     (texture, target)
 }
@@ -515,7 +558,28 @@ fn execute(
     bindings: &Render2dResourceBindings,
     label: &str,
 ) -> GpuReadbackBytes {
-    let (texture, target) = target(label);
+    execute_sized(
+        context,
+        executor,
+        composition,
+        bindings,
+        label,
+        WIDTH,
+        HEIGHT,
+    )
+}
+
+/// Bounded canvas-size override for independent F3E multi-tile public oracles.
+fn execute_sized(
+    context: &GpuContext,
+    executor: &mut Render2dExecutor,
+    composition: &Render2dComposition,
+    bindings: &Render2dResourceBindings,
+    label: &str,
+    width: u32,
+    height: u32,
+) -> GpuReadbackBytes {
+    let (texture, target) = target_sized(label, width, height);
     let contribution = executor
         .prepare(context, composition, bindings, &target)
         .expect("F2 contribution preparation");
@@ -743,12 +807,36 @@ fn f2_separate_fragment_imports_prior_target_contents_instead_of_array_order() {
     let (fragment, token) = contribution
         .into_fragment(&work_binding("after prior").after(prior_key))
         .unwrap();
+    let prior_clear = prior.nodes()[0].id().clone();
+    let final_target_resolve = token
+        .as_ref()
+        .expect("painting 2D contribution has a token")
+        .authored_nodes()
+        .last()
+        .expect("at least one authored target-resolve node")
+        .clone();
     let graph = GpuPreparedWorkGraph::prepare(
         GpuResourceLabel::new("reversed fragment inventory").unwrap(),
         [fragment, prior],
     )
     .unwrap();
-    assert_eq!(graph.topological_order()[0].fragment_ordinal(), 1);
+    // Private sample-plane work is independent and may execute before the
+    // caller's prior producer. Only the final target-writing resolve MUST
+    // follow the imported producer, irrespective of fragment array order.
+    let position = |authored: &runen_gpu::GpuWorkNodeId| {
+        let prepared = graph
+            .nodes()
+            .iter()
+            .find(|node| node.node().id() == authored)
+            .expect("authored node is in prepared graph")
+            .id();
+        graph
+            .topological_order()
+            .iter()
+            .position(|node| *node == prepared)
+            .expect("authored node is scheduled")
+    };
+    assert!(position(&prior_clear) < position(&final_target_resolve));
     let prepared = pollster::block_on(context.prepare_submission(graph)).unwrap();
     let submission = context.submit_prepared(prepared).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -844,7 +932,11 @@ fn assert_rendered_box(bytes: &GpuReadbackBytes) {
 }
 
 fn pixel(bytes: &GpuReadbackBytes, x: u32, y: u32) -> [u8; 4] {
-    let offset = usize::try_from((y * WIDTH + x) * 4).expect("small proof offset");
+    pixel_sized(bytes, WIDTH, x, y)
+}
+
+fn pixel_sized(bytes: &GpuReadbackBytes, width: u32, x: u32, y: u32) -> [u8; 4] {
+    let offset = usize::try_from((y * width + x) * 4).expect("bounded proof offset");
     bytes.as_bytes()[offset..offset + 4]
         .try_into()
         .expect("RGBA8 pixel")

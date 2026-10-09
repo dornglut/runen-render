@@ -11,6 +11,12 @@ fn context_with_text_roles(text: bool) -> Option<GpuContext> {
     let mut descriptor =
         GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
             .require_format_role(
+                GpuTextureFormat::Rgba16Float,
+                GpuFormatRole::ColorAttachment,
+            )
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable)
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled)
+            .require_format_role(
                 GpuTextureFormat::Rgba8UnormSrgb,
                 GpuFormatRole::ColorAttachment,
             )
@@ -580,7 +586,9 @@ fn vector_nonpainting_and_capability_failures_are_structural() {
         assert!(fragment.outputs().is_empty());
         assert!(token.is_none());
     }
-    let Some(no_mask) = f2_context() else {
+    // The coherent F3E target role contract also admits vectors in contexts
+    // originally used for F2 text: adding an identity group never changes law.
+    let Some(unified) = f2_context() else {
         return;
     };
     let composition = Render2dComposition::new(vec![fill(
@@ -588,18 +596,17 @@ fn vector_nonpainting_and_capability_failures_are_structural() {
         Render2dColorRgba8::WHITE,
     )])
     .unwrap();
-    assert!(matches!(
-        executor.prepare(
-            &no_mask,
-            &composition,
-            &Render2dResourceBindings::default(),
-            &target
-        ),
-        Err(Render2dExecutionError::Vector {
-            kind: Render2dVectorError::CoverageFormatUnsupported,
-            ..
-        })
-    ));
+    assert!(
+        executor
+            .prepare(
+                &unified,
+                &composition,
+                &Render2dResourceBindings::default(),
+                &target
+            )
+            .expect("one admitted correlated compositor also covers vector roots")
+            .has_render_work()
+    );
     let composition = Render2dComposition::new(vec![fill(
         rect(1e30, 0.0, 1e20, 10.0),
         Render2dColorRgba8::WHITE,
@@ -819,8 +826,8 @@ fn all_vector_nodes_execute_with_caller_owned_clear_and_prior_import() {
         .unwrap();
     assert_eq!(
         fragment.nodes().len(),
-        4,
-        "two vectors require coverage and composition each"
+        6,
+        "one root sample clear, two coverage/color pairs and one final target resolve"
     );
     let nodes = fragment
         .nodes()
@@ -910,7 +917,7 @@ fn vector_only_context_needs_no_text_field_upload_or_filter_roles() {
 }
 
 #[test]
-fn oversized_private_coverage_is_rejected_before_gpu_authoring() {
+fn large_vector_coverage_is_accepted_with_bounded_tiles() {
     let Some(context) = context() else {
         return;
     };
@@ -942,18 +949,19 @@ fn oversized_private_coverage_is_rejected_before_gpu_authoring() {
         Render2dColorRgba8::WHITE,
     )])
     .unwrap();
-    assert!(matches!(
-        Render2dExecutor::new().prepare(
-            &context,
-            &composition,
-            &Render2dResourceBindings::default(),
-            &target
-        ),
-        Err(Render2dExecutionError::Vector {
-            kind: Render2dVectorError::ResourceLimit,
-            ..
-        })
-    ));
+    assert!(
+        Render2dExecutor::new()
+            .prepare(
+                &context,
+                &composition,
+                &Render2dResourceBindings::default(),
+                &target
+            )
+            .expect(
+                "large F3E vector uses bounded reusable tiles rather than one full-surface mask"
+            )
+            .has_render_work()
+    );
 }
 
 #[test]

@@ -244,3 +244,141 @@ fn clip_hit(pixel: vec2<i32>, sx: i32, sy: i32) -> f32 {
     }
     return sum * (inverse_x.w / f32(COVERAGE_AXIS_SAMPLES * COVERAGE_AXIS_SAMPLES));
 }
+
+
+// F3E GPU proof and future physical cutover: composited colors remain in
+// one linear-premultiplied 4x4 sample space until the *single* root resolve.
+// The sample texture is private derived work, not a source representation.
+@fragment fn fs_sample_fill(input: VertexOutput) -> @location(0) vec4<f32> {
+    let alpha = input.color.a;
+    return vec4<f32>(input.color.rgb * alpha, alpha);
+}
+
+@group(0) @binding(6) var sample_layer: texture_2d<f32>;
+@fragment fn fs_sample_resolve(input: VertexOutput) -> @location(0) vec4<f32> {
+    // The interpolated coordinate is local to the cropped sample tile.
+    let base = vec2<i32>(floor(input.mask_pixel)) * COVERAGE_AXIS_SAMPLES;
+    var sum = vec4<f32>(0.0);
+    for (var y = 0; y < COVERAGE_AXIS_SAMPLES; y += 1) {
+        for (var x = 0; x < COVERAGE_AXIS_SAMPLES; x += 1) {
+            sum += textureLoad(sample_layer, base + vec2<i32>(x, y), 0);
+        }
+    }
+    return sum / f32(COVERAGE_AXIS_SAMPLES * COVERAGE_AXIS_SAMPLES);
+}
+
+
+// F3E isolated-group source-over at the same correlated physical sample.
+// Child content is already premultiplied and composited onto transparent
+// scratch. Vertex alpha is the group opacity, applied ONCE to that result.
+@fragment fn fs_sample_merge(input: VertexOutput) -> @location(0) vec4<f32> {
+    let sample = textureLoad(sample_layer, vec2<i32>(floor(input.position.xy)), 0);
+    return sample * input.color.a;
+}
+
+
+// F3E group clip is an exact 4x4 binary sample mask in the owner's
+// immediate parent coordinates. Unlike a resolved fractional-pixel alpha,
+// the packed bit masks multiply the *completed* isolated group at each
+// correlated physical sample before once-only group opacity/source-over.
+@fragment fn fs_sample_merge_clipped(input: VertexOutput) -> @location(0) vec4<f32> {
+    let local_sample = vec2<i32>(floor(input.position.xy));
+    // The clip is authored in the owner's parent space; the interpolated
+    // coordinate carries the corresponding global 4x4 sample location.
+    // Texture addressing remains tile-local, including nonzero tile origins.
+    let global_sample = vec2<i32>(floor(input.mask_pixel));
+    let logical = global_sample / COVERAGE_AXIS_SAMPLES;
+    let offset = global_sample % COVERAGE_AXIS_SAMPLES;
+    let visible = clip_hit(logical, offset.x, offset.y);
+    let sample = textureLoad(sample_layer, local_sample, 0);
+    return sample * (input.color.a * visible);
+}
+
+
+// F3E physical sample-plane union coverage, not independently averaged alpha.
+// Each vector's tessellation triangles first write an idempotent 4x4 mask;
+// one source-over draw per covered *sample* then applies the brush/item alpha.
+@fragment fn fs_sample_mask_fill(input: VertexOutput) -> @location(0) vec4<f32> {
+    let sample = vec2<i32>(floor(input.position.xy));
+    let coverage = textureLoad(coverage_mask, sample, 0).r;
+    let alpha = input.color.a * coverage;
+    return vec4<f32>(input.color.rgb * alpha, alpha);
+}
+
+
+// F3E item-level clip intersects exact union coverage at each correlated
+// sample before applying the item's opacity once. The coverage texture uses
+// tile-local coordinates; clip bits use the immediate-parent/global 4x4 phase.
+@fragment fn fs_sample_mask_fill_clipped(input: VertexOutput) -> @location(0) vec4<f32> {
+    let local_sample = vec2<i32>(floor(input.position.xy));
+    let global_sample = vec2<i32>(floor(input.mask_pixel));
+    let logical = global_sample / COVERAGE_AXIS_SAMPLES;
+    let offset = global_sample % COVERAGE_AXIS_SAMPLES;
+    let membership = textureLoad(coverage_mask, local_sample, 0).r;
+    let visible = clip_hit(logical, offset.x, offset.y);
+    let alpha = input.color.a * membership * visible;
+    return vec4<f32>(input.color.rgb * alpha, alpha);
+}
+
+
+// F3E gradients sample the same F1 brush-space interpolation once at each
+// actual 4x4 physical sample. GPU payload stops are already premultiplied
+// linear RGBA, so group isolation and source-over need no color reinterpretation.
+@fragment fn fs_sample_gradient(input: VertexOutput) -> @location(0) vec4<f32> {
+    let local_sample = vec2<i32>(floor(input.position.xy));
+    let physical_sample = floor(input.mask_pixel);
+    let global_pixel = (physical_sample + vec2<f32>(0.5)) / f32(COVERAGE_AXIS_SAMPLES);
+    let membership = textureLoad(coverage_mask, local_sample, 0).r;
+    let painted = gradient_sample(global_pixel);
+    return painted * (membership * gradient.header[1].w);
+}
+
+@fragment fn fs_sample_gradient_clipped(input: VertexOutput) -> @location(0) vec4<f32> {
+    let local_sample = vec2<i32>(floor(input.position.xy));
+    let physical_sample = floor(input.mask_pixel);
+    let global_pixel = (physical_sample + vec2<f32>(0.5)) / f32(COVERAGE_AXIS_SAMPLES);
+    let global_sample = vec2<i32>(physical_sample);
+    let logical = global_sample / COVERAGE_AXIS_SAMPLES;
+    let offset = global_sample % COVERAGE_AXIS_SAMPLES;
+    let membership = textureLoad(coverage_mask, local_sample, 0).r;
+    let visible = clip_hit(logical, offset.x, offset.y);
+    let painted = gradient_sample(global_pixel);
+    return painted * (membership * visible * gradient.header[1].w);
+}
+
+
+// F3E immutable RGBA8 image patch at ONE correlated 4x4 sample. Every
+// patch composites at its full source alpha into a private item layer; the
+// image ITEM opacity and item/group clips are applied ONCE when that
+// completed layer is merged into the parent sample plane.
+@fragment fn fs_sample_image(input: VertexOutput) -> @location(0) vec4<f32> {
+    let physical = (floor(input.mask_pixel) + vec2<f32>(0.5)) /
+        f32(COVERAGE_AXIS_SAMPLES);
+    if (any(physical >= image_params.header[4].xy)) {
+        return vec4<f32>(0.0);
+    }
+    let inverse_x = image_params.header[0];
+    let inverse_y = image_params.header[1];
+    let src = image_params.header[2];
+    let dst = image_params.header[3];
+    let local = vec2<f32>(
+        dot(inverse_x.xyz, vec3<f32>(physical, 1.0)),
+        dot(inverse_y.xyz, vec3<f32>(physical, 1.0))
+    );
+    let relative = (local - dst.xy) / dst.zw;
+    if (any(relative < vec2<f32>(0.0)) || any(relative >= vec2<f32>(1.0))) {
+        return vec4<f32>(0.0);
+    }
+    let image_size = vec2<i32>(textureDimensions(image_texture));
+    let sample_min = clamp(vec2<i32>(floor(src.xy)),
+        vec2<i32>(0), image_size - vec2<i32>(1));
+    let sample_max = clamp(vec2<i32>(ceil(src.xy + src.zw)) - vec2<i32>(1),
+        sample_min, image_size - vec2<i32>(1));
+    let source = src.xy + relative * src.zw;
+    let texel = clamp(vec2<i32>(floor(source)), sample_min, sample_max);
+    let straight_linear = textureLoad(image_texture, texel, 0);
+    return vec4<f32>(
+        straight_linear.rgb * straight_linear.a,
+        straight_linear.a
+    );
+}

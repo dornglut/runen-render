@@ -90,11 +90,14 @@ consumers.
 
 The 2D composition extension defines durable semantic and ownership authority.
 The immutable composition/resource model is implemented. Maintained execution
-realizes direct-root solid, linear-gradient and radial-gradient vector fills/strokes,
-immutable RGBA8-sRGB image patches and the retained F2 shaped-text subset.
-Nested groups, group clips, effects and native presentation are not claimed as implemented.
-Direct-root item conjunctive clips now use a private bounded packed 16-sample mask,
-sampled in RunenGPU on the same 4×4 coverage lattice as vectors and images.
+realizes one mixed direct-root and nested-group painter tree: solid, linear-gradient
+and radial-gradient vector fills/strokes, immutable RGBA8-sRGB image patches,
+retained F2 shaped monochrome outline text, and item/group opacity and clips.
+All admitted painting uses one correlated 4×4 color sample lattice followed by
+one final source-over resolve into the caller-owned target. Group children are
+composed in isolated sample-space color before group clips and group opacity
+apply exactly once. Ordinary shadows/effects and native presentation remain
+outside the admitted realization and reject or stay downstream-owned respectively.
 
 The reusable semantic root is one lifetime-neutral immutable 2D composition
 value. It represents resolved renderer meaning such as:
@@ -196,9 +199,9 @@ distinct capability classes and fail closed until an exact separately accepted
 realization exists. They must not be silently flattened to monochrome outline
 semantics.
 
-The initial F2 production execution boundary is `execution_2d`. It accepts a
-caller-owned RunenGPU color view plus logical canvas extent and raster scale,
-admits only the exact bounded direct-root shaped-text subset, and returns
+The historical initial F2 production execution boundary is `execution_2d`.
+It accepted a caller-owned RunenGPU color view plus logical canvas extent
+and raster scale, admitted a bounded direct-root shaped-text subset, and returned
 composable RunenGPU work wrapped with source-neutral execution correlation.
 Retained semantic identity observations are separate from the private derived
 field cache: cache discard may remove derived MSDF fields but cannot make an
@@ -221,9 +224,11 @@ A private read-only buffer preserves authored stop order and premultiplied linea
 RGB/alpha; the gradient compose pass integrates painted color at each covered
 4×4 sample in local brush coordinates before applying item opacity once. Hard
 stop and precision/storage limitations reject structurally rather than altering
-immutable authored semantics. Shaped text retains the F2 opaque-item,
-identity/translation class; arbitrary
-text transforms and run opacity remain fail-closed.
+immutable authored semantics. Shaped text retains F2's immutable outline font/shaping and
+identity/translation geometry class. The F3E sample compositor applies
+item and ancestor group opacity/clipping exactly once after rendering the
+retained glyph coverage; non-translation text transforms and unsupported
+intrinsic glyph classes remain fail-closed.
 
 One ordered private lowering produces coverage/composition operations and
 painter-ordered shaped-text draws. Consuming a prepared contribution appends the
@@ -528,17 +533,26 @@ Historical transfer details remain provenance in `BOOTSTRAP.md`; they are not
 current execution sequencing or a reason to preserve extraction-era internal
 layout.
 
-F3D's direct-root item clipping starts from accepted parent-space self-contained
-clip shapes. The existing private Lyon fill tessellator decomposes each clip into
-disposable geometry, and a cropped, bounded CPU raster step ORs covered 4×4
-subsamples per clip then ANDs the sixteen-bit sample sets across authored clips.
-The two mask bytes are packed into a contribution-local RGBA8-unorm RunenGPU
-texture per clipped root; fragment evaluation intersects these exact shared
-samples with vector/image coverage before source-over and once-only opacity.
-F2 MSDF text retains its separately admitted pixel-level coverage law, multiplied
-once by the average of accepted binary clip samples. The clip mask never becomes
-resource, group, source-layout, cache, or semantic identity. Empty intersections
-emit no synthetic work; preflight caps texture dimensions, 64 MiB per mask,
-128 MiB aggregate uploaded masks (checked before allocation), bounded retained clip geometry,
-and a contribution-wide triangle-sample work budget. Group clips,
-atomic groups, group opacity and ordinary shadows are still outside this slice.
+F3D established the retained clip invariant: independent binary 4×4 sample
+masks are unioned within shapes and ANDed across the owner's conjunctive clips.
+F3E reuses that exact private clipped-geometry/packed-mask implementation for
+both items and groups. Clips remain in the owner's immediate-parent coordinate
+system; a child's local transform never reapplies to its own clip.
+
+F3E's one source-neutral compositor keeps premultiplied linear color at the
+correlated samples through sibling painter order, image-patch ordering and
+atomic nested-group composition. Item/image opacity is applied once to the
+completed item; group opacity and clips are applied once to the completed group.
+Only the final 16-sample root average source-overs the caller's original target.
+A default identity group therefore has no separate image-formation law.
+Nontranslation shaped-text transforms and ordinary shadows are not admitted.
+
+The private implementation has bounded cropped/phase-aligned tiles, reusable
+depth scratch, cumulative clip, tessellation, gradient/image-upload, shaped-field
+and authored-work budgets, and typed capability, precision and resource
+rejection before external mutation. Private MSDF cache residency is a
+bounded, reconstructible successful-composition working set; immutable resource
+identity observations remain separate from that derived cache. The separately
+owned issue #72 governs long-lived identity retirement and continuous UI churn,
+not a new semantic owner inside this compositor. No 2D display list,
+backend-specific presentation surface or private GPU authority is introduced.

@@ -1,5 +1,5 @@
-//! Private source-neutral image texture upload and ordered patch composition.
-use super::{AdmittedTarget, gpu, physical_x_to_ndc, physical_y_to_ndc, texture_binding, vector};
+//! Source-backed immutable image upload for correlated 2D composition.
+use super::{AdmittedTarget, gpu};
 use crate::execution_2d::{Render2dExecutionError, Render2dImageError};
 use crate::runtime::execution_2d::image::{ImagePatchWork, failure};
 use runen_gpu::*;
@@ -60,87 +60,4 @@ pub(super) fn upload(
                 .map_err(|e| gpu("image view descriptor", e))?,
         )
         .map_err(|e| gpu("image view", e))
-}
-
-pub(super) fn lower(
-    target: &AdmittedTarget,
-    patch: &ImagePatchWork,
-    image_view: &GpuTextureViewHandle,
-    clipped: Option<&super::clip::ClipGpu>,
-    resources: &mut GpuResourceScope,
-) -> Result<GpuRenderOperation, Render2dExecutionError> {
-    let prepared = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
-        "runen-render 2D image patch parameters",
-        &patch.payload,
-    )
-    .map_err(|e| gpu("image patch payload", e))?;
-    let bytes = prepared.layout().byte_len();
-    let parameter_buffer = resources
-        .buffer(
-            GpuBufferDescriptor::ordinary_owned(
-                "runen-render 2D image patch parameters",
-                GpuResourceLifetime::Transient,
-                GpuReconstruction::SourceBacked,
-                bytes,
-                [GpuBufferUsage::Storage, GpuBufferUsage::CopyDestination],
-                GpuBufferInitialization::Prepared(prepared),
-            )
-            .map_err(|e| gpu("image parameter descriptor", e))?,
-        )
-        .map_err(|e| gpu("image parameter buffer", e))?;
-    let pipeline = vector::vector_pipeline(target.format, true, false, true, clipped.is_some())?;
-    let mut values = vec![
-        texture_binding(2, image_view)?,
-        GpuRuntimeBindingValue::whole_buffer(0, 3, &parameter_buffer),
-    ];
-    if let Some(clip) = clipped {
-        values.extend(super::clip::bindings(clip, 4, 5)?);
-    }
-    let bindings = pipeline
-        .runtime_bindings(values)
-        .map_err(|e| gpu("image runtime bindings", e))?;
-    let [left, top, right, bottom] = patch.bounds;
-    let vertex = |x: f64, y: f64| {
-        [
-            physical_x_to_ndc(x, target.physical_width),
-            physical_y_to_ndc(y, target.physical_height),
-            0.0_f32,
-            0.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-        ]
-    };
-    let (x0, y0, x1, y1) = (
-        f64::from(left),
-        f64::from(top),
-        f64::from(right),
-        f64::from(bottom),
-    );
-    let vertices = [
-        vertex(x0, y0),
-        vertex(x1, y0),
-        vertex(x0, y1),
-        vertex(x0, y1),
-        vertex(x1, y0),
-        vertex(x1, y1),
-    ]
-    .concat();
-    let draw = vector::vector_draw(
-        pipeline,
-        bindings,
-        &vertices,
-        [target.physical_width, target.physical_height],
-        resources,
-    )?;
-    let attachment = GpuRenderColorAttachment::new(
-        target.view.clone(),
-        GpuColorAttachmentLoad::Load,
-        GpuAttachmentStore::Store,
-        None,
-    )
-    .map_err(|e| gpu("image target attachment", e))?;
-    GpuRenderOperation::new([attachment], None, [draw], None)
-        .map_err(|e| gpu("image composition operation", e))
 }

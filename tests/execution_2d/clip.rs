@@ -7,6 +7,12 @@ fn context() -> Option<GpuContext> {
     let request =
         GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
             .require_format_role(
+                GpuTextureFormat::Rgba16Float,
+                GpuFormatRole::ColorAttachment,
+            )
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable)
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled)
+            .require_format_role(
                 GpuTextureFormat::Rgba8UnormSrgb,
                 GpuFormatRole::ColorAttachment,
             )
@@ -289,6 +295,12 @@ fn disjoint_clips_produce_no_work_without_invalidating_following_paint() {
 fn unadmitted_clip_format_has_typed_owner_level_failure() {
     let descriptor =
         GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
+            .require_format_role(
+                GpuTextureFormat::Rgba16Float,
+                GpuFormatRole::ColorAttachment,
+            )
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable)
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled)
             .require_format_role(
                 GpuTextureFormat::Rgba8UnormSrgb,
                 GpuFormatRole::ColorAttachment,
@@ -615,13 +627,14 @@ fn clipped_overlapping_image_patches_preserve_translucent_source_over() {
     .unwrap();
     let output = render(&ctx, vec![image], &bindings);
 
-    // One of four horizontal samples survives the clip, all four vertical
-    // samples survive. A translucent blue patch then source-overs the
-    // opaque red patch; both are independently clipped before compositing.
-    let first_alpha = 0.25;
-    let second_alpha = 0.25 * (128.0 / 255.0);
-    let retained_red = first_alpha * (1.0 - second_alpha);
-    let total_alpha = second_alpha + retained_red;
+    // F3E-R1 correction: source-over all image patches *inside the item*
+    // BEFORE a binary quarter-sample clip. The historical test applied the
+    // resolved 0.25 fraction to each patch, incorrectly yielding alpha .34375.
+    let covered = 0.25;
+    let blue_alpha = 128.0 / 255.0;
+    let retained_red = covered * (1.0 - blue_alpha);
+    let second_alpha = covered * blue_alpha;
+    let total_alpha = covered;
     check(
         pixel(&output, 10, 20),
         [

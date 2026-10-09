@@ -181,6 +181,8 @@ pub enum Render2dTargetAdmissionError {
     TargetFormatNotBlendable,
     /// The admitted context cannot realize the private filtered field texture contract.
     FieldFormatUnsupported,
+    /// The admitted context lacks the unified correlated Rgba16Float sample plane.
+    SamplePlaneFormatUnsupported,
     /// Target or private field dimensions exceed the admitted device/workload limit.
     TextureDimensionLimitExceeded,
     /// The admitted context lacks render-pipeline execution.
@@ -230,6 +232,10 @@ impl fmt::Display for Render2dTargetAdmissionError {
                 formatter,
                 "2D F2 private field format is not sampled/filterable/copy-destination capable"
             ),
+            Self::SamplePlaneFormatUnsupported => write!(
+                formatter,
+                "2D correlated F1 rendering requires admitted Rgba16Float sample-plane and Rgba8 coverage roles"
+            ),
             Self::TextureDimensionLimitExceeded => write!(
                 formatter,
                 "2D F2 texture extent exceeds admitted device or workload limits"
@@ -249,23 +255,8 @@ impl Error for Render2dTargetAdmissionError {}
 /// Bounded semantic class rejected by the Counter-critical F2 admission gate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Render2dUnsupportedContent {
-    /// Nested groups are outside this slice.
-    Group {
-        /// Root painter-order index.
-        root_index: usize,
-    },
-    /// Primitive or brush class is outside the admitted execution subset.
-    Primitive {
-        /// Root painter-order index.
-        root_index: usize,
-    },
-    /// Item clips are outside this slice.
-    Clips {
-        /// Root painter-order index.
-        root_index: usize,
-    },
-    /// Non-opaque shaped-text item opacity is outside this slice.
-    Opacity {
+    /// Ordinary group shadows are not admitted before F3F.
+    Shadows {
         /// Root painter-order index.
         root_index: usize,
     },
@@ -284,20 +275,12 @@ pub enum Render2dUnsupportedContent {
 impl fmt::Display for Render2dUnsupportedContent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Group { root_index } => {
-                write!(formatter, "2D F2 root entry {root_index} is a group")
+            Self::Shadows { root_index } => {
+                write!(
+                    formatter,
+                    "2D root entry {root_index} carries unsupported group shadows"
+                )
             }
-            Self::Primitive { root_index } => write!(
-                formatter,
-                "2D root entry {root_index} carries unsupported primitive or brush content"
-            ),
-            Self::Clips { root_index } => {
-                write!(formatter, "2D F2 root item {root_index} carries clips")
-            }
-            Self::Opacity { root_index } => write!(
-                formatter,
-                "2D F2 root item {root_index} carries non-opaque item opacity"
-            ),
             Self::Transform { root_index } => write!(
                 formatter,
                 "2D F2 root item {root_index} carries a non-translation transform"
@@ -365,6 +348,15 @@ pub enum Render2dShapedTextError {
         /// Admitted maximum 2D texture dimension.
         maximum: u32,
     },
+    /// Sum of retained shaped field allocations exceeds the F2/F3E invocation budget.
+    FieldBudgetExceeded {
+        /// Affected immutable shaped resource.
+        resource_id: Render2dResourceId,
+        /// Already-shaped glyph that would exceed the aggregate budget.
+        glyph_id: u32,
+        /// Maximum cumulative RGBA8 bytes admitted for shaped field data.
+        maximum_bytes: u64,
+    },
 }
 
 impl fmt::Display for Render2dShapedTextError {
@@ -404,13 +396,31 @@ impl fmt::Display for Render2dShapedTextError {
                 "2D shaped resource {} glyph {glyph_id} field {width}x{height} exceeds admitted dimension {maximum}",
                 resource_id.get()
             ),
+            Self::FieldBudgetExceeded {
+                resource_id,
+                glyph_id,
+                maximum_bytes,
+            } => write!(
+                formatter,
+                "2D shaped resource {} glyph {glyph_id} exceeds the {maximum_bytes}-byte cumulative retained field budget",
+                resource_id.get()
+            ),
         }
     }
 }
 
 impl Error for Render2dShapedTextError {}
 
-/// Failure to prepare one bounded F2 contribution.
+/// Machine-actionable admission failure for the one correlated 4x4 sample compiler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Render2dSampleSpaceError {
+    /// Aggregate geometry, scratch, tile replay, storage or work-node budget exceeded.
+    ResourceLimit,
+    /// An authored affine cannot preserve its required physical precision.
+    PrecisionLimit,
+}
+
+/// Failure to prepare one bounded F1/F2/F3 2D contribution.
 #[derive(Debug)]
 pub enum Render2dExecutionError {
     /// A vector item cannot be realized within current precision or resource limits.
@@ -438,8 +448,15 @@ pub enum Render2dExecutionError {
     ResourceBindings(Render2dResourceBindingError),
     /// Invocation target facts are not admitted.
     Target(Render2dTargetAdmissionError),
-    /// Composition content is outside the accepted F2 subset.
+    /// Composition content is outside the admitted supported subset.
     UnsupportedContent(Render2dUnsupportedContent),
+    /// A nested composition entry requires an unadmitted semantic capability.
+    UnsupportedEntry {
+        /// Exact zero-based authored F1 root/child occurrence path.
+        path: Vec<usize>,
+        /// Stable renderer-owned unsupported content class.
+        kind: Render2dUnsupportedContent,
+    },
     /// An already-observed semantic identity was rebound to different immutable content.
     ResourceIdentityRebound {
         /// Rebound semantic identity.
@@ -452,6 +469,15 @@ pub enum Render2dExecutionError {
         /// Maintained stage.
         stage: &'static str,
         /// Underlying diagnostic text.
+        detail: String,
+    },
+    /// Correlated-sample preparation rejects unavailable resources or precision before mutation.
+    SampleSpace {
+        /// Stable admission failure class.
+        kind: Render2dSampleSpaceError,
+        /// Exact nested entry path when attributable to one authored entry.
+        path: Option<Vec<usize>>,
+        /// Renderer-owned diagnostic for the failed preflight budget or projection.
         detail: String,
     },
     /// RunenGPU lowering failed at an owner-oriented stage.
@@ -478,6 +504,9 @@ impl fmt::Display for Render2dExecutionError {
             Self::ResourceBindings(error) => error.fmt(formatter),
             Self::Target(error) => error.fmt(formatter),
             Self::UnsupportedContent(error) => error.fmt(formatter),
+            Self::UnsupportedEntry { path, kind } => {
+                write!(formatter, "2D entry path {path:?}: {kind}")
+            }
             Self::ResourceIdentityRebound { resource_id } => write!(
                 formatter,
                 "2D semantic resource {} was rebound to different immutable content",
@@ -489,6 +518,13 @@ impl fmt::Display for Render2dExecutionError {
                     formatter,
                     "2D maintained program failure during {stage}: {detail}"
                 )
+            }
+            Self::SampleSpace { kind, path, detail } => {
+                write!(formatter, "2D correlated sample {kind:?}")?;
+                if let Some(path) = path {
+                    write!(formatter, " at entry path {path:?}")?;
+                }
+                write!(formatter, ": {detail}")
             }
             Self::Gpu { stage, detail } => {
                 write!(

@@ -5,14 +5,15 @@ mod field;
 mod image;
 mod intrinsic;
 mod lowering;
+mod scene;
 mod vector;
 
 use self::field::{FieldSetKey, QualityTier, ResourceFields};
 use self::lowering::GlyphOccurrence;
 pub(crate) use self::lowering::add_target_boundary;
 use crate::composition_2d::{
-    Render2dComposition, Render2dEntry, Render2dOpacity, Render2dPrimitive,
-    Render2dResourceBindings, Render2dResourceId, Render2dResourceValue,
+    Render2dComposition, Render2dPrimitive, Render2dResourceBindings, Render2dResourceId,
+    Render2dResourceRequirement, Render2dResourceValue,
 };
 use crate::execution_2d::{
     Render2dExecutionError, Render2dPreparedContribution, Render2dTarget,
@@ -43,26 +44,31 @@ impl Render2dExecutionState {
         target: &Render2dTarget,
     ) -> Result<Render2dPreparedContribution, Render2dExecutionError> {
         composition.validate_bindings(bindings)?;
-        let runs = admit_runs(composition)?;
+        let plan = scene::analyze(composition)?;
+        // One F1 semantic contribution has one correlated physical law.
+        // Missing sample-plane roles are rejected explicitly by that compiler.
+        let runs = admit_runs(&plan)?;
         let admitted_target = lowering::admit_target(context, target, !runs.is_empty())?;
-        let unique_resources = runs
-            .iter()
-            .map(|run| run.resource_id)
-            .collect::<BTreeSet<_>>();
-        let image_resources = composition
-            .root_entries()
-            .iter()
-            .filter_map(|entry| match entry {
-                Render2dEntry::Item(item) => match item.primitive() {
-                    Render2dPrimitive::Image(image) => Some(image.resource_id()),
-                    _ => None,
-                },
-                Render2dEntry::Group(_) => None,
-            })
-            .collect::<BTreeSet<_>>();
+        // The immutable F1 composition is the complete resource authority,
+        // including resources nested below groups. Do not infer observation
+        // only from currently emitted root painter operations.
+        let mut unique_resources = BTreeSet::new();
+        let mut image_resources = BTreeSet::new();
+        for requirement in composition.resource_requirements() {
+            match *requirement {
+                Render2dResourceRequirement::ShapedText { id } => {
+                    unique_resources.insert(id);
+                }
+                Render2dResourceRequirement::ImageRgba8Srgb { id, .. } => {
+                    image_resources.insert(id);
+                }
+            }
+        }
 
         let mut observed_updates = Vec::new();
-        let mut field_updates = Vec::new();
+        let mut field_budget = field::FieldBudget::default();
+        // One bounded active working set; evict fields no longer referenced by
+        // this successful composition instead of retaining unlimited past fonts.
         let mut resolved_fields = BTreeMap::<FieldSetKey, Arc<ResourceFields>>::new();
 
         for resource_id in unique_resources {
@@ -88,6 +94,9 @@ impl Render2dExecutionState {
                 existing
                     .validate_texture_limit(resource_id, admitted_target.max_texture_dimension_2d())
                     .map_err(crate::execution_2d::Render2dExecutionError::ShapedText)?;
+                existing
+                    .charge_cached(resource_id, &mut field_budget)
+                    .map_err(crate::execution_2d::Render2dExecutionError::ShapedText)?;
                 resolved_fields.insert(key, Arc::clone(existing));
                 continue;
             }
@@ -97,9 +106,9 @@ impl Render2dExecutionState {
                 resource,
                 quality,
                 admitted_target.max_texture_dimension_2d(),
+                &mut field_budget,
             )?);
-            resolved_fields.insert(key, Arc::clone(&realized));
-            field_updates.push((key, realized));
+            resolved_fields.insert(key, realized);
         }
 
         // Resource identity is observed transactionally for admitted image items too,
@@ -164,10 +173,9 @@ impl Render2dExecutionState {
                     });
                 }
                 occurrences
-                    .entry(run.root_index)
+                    .entry(run.event_index)
                     .or_default()
                     .push(GlyphOccurrence {
-                        root_index: run.root_index,
                         resource_id: run.resource_id,
                         field: Arc::clone(field),
                         logical_x,
@@ -179,97 +187,21 @@ impl Render2dExecutionState {
             }
         }
 
-        let mut ordered = Vec::new();
-        let mut clips = BTreeMap::new();
-        let mut clip_bytes = 0u64;
-        let mut clip_raster_work = 0u64;
-        for (root_index, entry) in composition.root_entries().iter().enumerate() {
-            let root_start = ordered.len();
-            let Render2dEntry::Item(item) = entry else {
-                unreachable!("admitted root item")
-            };
-            if matches!(item.primitive(), Render2dPrimitive::ShapedText(_)) {
-                ordered.extend(
-                    occurrences
-                        .remove(&root_index)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(lowering::OrderedItem::Glyph),
-                );
-            } else if let Render2dPrimitive::Image(image) = item.primitive() {
-                let value = bindings
-                    .get(image.resource_id())
-                    .expect("validated image binding");
-                let Render2dResourceValue::ImageRgba8Srgb(source) = value else {
-                    unreachable!("validated image binding kind")
-                };
-                for patch in image::realize(
-                    item,
-                    image,
-                    source,
-                    root_index,
-                    admitted_target.raster_scale(),
-                    admitted_target.canvas(),
-                    admitted_target.max_texture_dimension_2d(),
-                )? {
-                    ordered.push(lowering::OrderedItem::Image(patch));
-                }
-            } else if let Some(mesh) = vector::realize(
-                item,
-                root_index,
-                admitted_target.raster_scale(),
-                admitted_target.canvas(),
-                admitted_target.max_buffer_bytes(),
-            )? {
-                ordered.push(lowering::OrderedItem::Vector(mesh));
-            }
-            if !item.clips().is_empty() {
-                if let Some(mask) = clip::prepare(
-                    item,
-                    &ordered[root_start..],
-                    root_index,
-                    &admitted_target,
-                    clip_bytes,
-                    &mut clip_raster_work,
-                )? {
-                    clip_bytes = clip_bytes
-                        .checked_add(u64::try_from(mask.rgba.len()).map_err(|_| {
-                            clip::failure(
-                                root_index,
-                                crate::execution_2d::Render2dClipError::ResourceLimit,
-                            )
-                        })?)
-                        .ok_or_else(|| {
-                            clip::failure(
-                                root_index,
-                                crate::execution_2d::Render2dClipError::ResourceLimit,
-                            )
-                        })?;
-                    if clip_bytes > clip::MAX_TOTAL_MASK_BYTES {
-                        return Err(clip::failure(
-                            root_index,
-                            crate::execution_2d::Render2dClipError::ResourceLimit,
-                        ));
-                    }
-                    clips.insert(root_index, mask);
-                } else {
-                    // Intersection is empty; preserve semantic resource observation,
-                    // but author no synthetic GPU work for this item.
-                    ordered.truncate(root_start);
-                }
-            }
-        }
-        let lowered = lowering::lower_ordered(&admitted_target, ordered, clips)?;
-
+        let lowered = lowering::sample_space::lower(
+            context,
+            &admitted_target,
+            &plan,
+            bindings,
+            &occurrences,
+        )?;
         for (resource_id, value) in observed_updates {
             let previous = self.observed.insert(resource_id, value);
             debug_assert!(previous.is_none());
         }
-        for (key, fields) in field_updates {
-            let previous = self.fields.insert(key, fields);
-            debug_assert!(previous.is_none());
-        }
-
+        // Commit only after all semantic admission and GPU lowering succeeds.
+        // Existing observed resource identities are immutable; derived MSDF
+        // residency may change and is bounded by this invocation's field budget.
+        self.fields = resolved_fields;
         Ok(Render2dPreparedContribution::new(
             lowered,
             target.view().clone(),
@@ -279,7 +211,7 @@ impl Render2dExecutionState {
 
 #[derive(Clone, Copy, Debug)]
 struct AdmittedRun {
-    root_index: usize,
+    event_index: usize,
     resource_id: Render2dResourceId,
     origin_x: f64,
     origin_y: f64,
@@ -288,31 +220,58 @@ struct AdmittedRun {
     translate_y: f64,
 }
 
-fn admit_runs(
-    composition: &Render2dComposition,
-) -> Result<Vec<AdmittedRun>, Render2dExecutionError> {
-    let mut runs = Vec::with_capacity(composition.root_entries().len());
-    for (root_index, entry) in composition.root_entries().iter().enumerate() {
-        let Render2dEntry::Item(item) = entry else {
-            return Err(Render2dUnsupportedContent::Group { root_index }.into());
+fn unsupported_at(path: &[usize], kind: Render2dUnsupportedContent) -> Render2dExecutionError {
+    if path.len() <= 1 {
+        Render2dExecutionError::UnsupportedContent(kind)
+    } else {
+        Render2dExecutionError::UnsupportedEntry {
+            path: path.to_vec(),
+            kind,
+        }
+    }
+}
+
+fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecutionError> {
+    let mut runs = Vec::new();
+    for (event_index, event) in plan.events.iter().enumerate() {
+        let (root_index, item, to_root) = match event {
+            scene::Event::Item {
+                path,
+                item,
+                to_root,
+                ..
+            } => {
+                let root_index = path[0];
+                (root_index, *item, *to_root)
+            }
+            scene::Event::BeginGroup { path, group, .. } => {
+                if !group.shadows().is_empty() {
+                    let kind = Render2dUnsupportedContent::Shadows {
+                        root_index: path[0],
+                    };
+                    return Err(unsupported_at(path, kind));
+                }
+                continue;
+            }
+            scene::Event::EndGroup => continue,
         };
-        match item.primitive() {
-            Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => continue,
-            Render2dPrimitive::Image(_) => continue,
-            Render2dPrimitive::ShapedText(_) => {}
-        }
-        if item.opacity() != Render2dOpacity::OPAQUE {
-            return Err(Render2dUnsupportedContent::Opacity { root_index }.into());
-        }
-        let [m11, m12, m21, m22, translate_x, translate_y] = item.local_to_parent().components();
+        let text = match item.primitive() {
+            Render2dPrimitive::Fill { .. }
+            | Render2dPrimitive::Stroke { .. }
+            | Render2dPrimitive::Image(_) => continue,
+            Render2dPrimitive::ShapedText(text) => text,
+        };
+        let [m11, m12, m21, m22, translate_x, translate_y] = to_root.coefficients();
         if m11 != 1.0 || m12 != 0.0 || m21 != 0.0 || m22 != 1.0 {
-            return Err(Render2dUnsupportedContent::Transform { root_index }.into());
+            let kind = Render2dUnsupportedContent::Transform { root_index };
+            let path = match event {
+                scene::Event::Item { path, .. } => path,
+                _ => unreachable!("the admitted run is an item event"),
+            };
+            return Err(unsupported_at(path, kind));
         }
-        let Render2dPrimitive::ShapedText(text) = item.primitive() else {
-            return Err(Render2dUnsupportedContent::Primitive { root_index }.into());
-        };
         runs.push(AdmittedRun {
-            root_index,
+            event_index,
             resource_id: text.resource_id(),
             origin_x: text.origin().x(),
             origin_y: text.origin().y(),
@@ -328,9 +287,10 @@ fn admit_runs(
 mod tests {
     use super::*;
     use crate::composition_2d::{
-        Render2dAffineTransform, Render2dColorRgba8, Render2dEntry, Render2dFontBinding,
-        Render2dGlyph, Render2dItem, Render2dPoint, Render2dResourceBinding,
-        Render2dShapedTextPrimitive, Render2dShapedTextResource,
+        Render2dAffineTransform, Render2dColorRgba8, Render2dDropShadow, Render2dEntry,
+        Render2dFontBinding, Render2dGlyph, Render2dGroup, Render2dItem, Render2dOpacity,
+        Render2dPoint, Render2dResourceBinding, Render2dShapedTextPrimitive,
+        Render2dShapedTextResource,
     };
 
     fn shaped_composition(
@@ -363,11 +323,67 @@ mod tests {
     }
 
     #[test]
+    fn empty_nested_shadow_group_reports_exact_unsupported_effect_path() {
+        let shadow =
+            Render2dDropShadow::new(1.0, 1.0, 0.0, 0.0, Render2dColorRgba8::WHITE).unwrap();
+        let shadow_only = Render2dEntry::group(Render2dGroup::new(
+            Vec::new(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![shadow],
+        ));
+        let outer = Render2dGroup::new(
+            vec![shadow_only],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            Vec::new(),
+        );
+        let tree = Render2dComposition::new(vec![Render2dEntry::group(outer)]).unwrap();
+        let plan = scene::analyze(&tree).unwrap();
+        assert!(matches!(
+            admit_runs(&plan),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Shadows { root_index: 0 },
+            }) if path == [0, 0]
+        ));
+    }
+
+    #[test]
+    fn nested_nontranslation_text_reports_exact_authored_path() {
+        let (inner, bindings) =
+            shaped_composition(Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap());
+        let child = inner.root_entries()[0].clone();
+        let wrap = |entry| {
+            Render2dEntry::group(Render2dGroup::new(
+                vec![entry],
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::OPAQUE,
+                Vec::new(),
+            ))
+        };
+        let nested = Render2dComposition::new(vec![wrap(wrap(child))]).unwrap();
+        nested.validate_bindings(&bindings).unwrap();
+        let plan = scene::analyze(&nested).unwrap();
+        assert!(matches!(
+            admit_runs(&plan),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Transform { root_index: 0 },
+            }) if path == [0, 0, 0]
+        ));
+    }
+
+    #[test]
     fn semantic_gate_accepts_translation_without_widening_linear_transform() {
         let (composition, _) = shaped_composition(
             Render2dAffineTransform::translation(4.0, -2.0).expect("translation"),
         );
-        let runs = admit_runs(&composition).expect("translation is inside F2");
+        let runs = admit_runs(&scene::analyze(&composition).expect("finite source tree"))
+            .expect("translation is inside F2");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].translate_x, 4.0);
         assert_eq!(runs[0].translate_y, -2.0);
@@ -376,7 +392,7 @@ mod tests {
             Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).expect("finite transform"),
         );
         assert!(matches!(
-            admit_runs(&composition),
+            admit_runs(&scene::analyze(&composition).expect("finite source tree")),
             Err(Render2dExecutionError::UnsupportedContent(
                 Render2dUnsupportedContent::Transform { root_index: 0 }
             ))

@@ -1,7 +1,8 @@
-//! Ordered private RunenGPU lowering for admitted text and solid vectors.
+//! Private shared GPU admission, source-backed text fields and correlated-sample draws.
 
 mod clip;
 mod image;
+pub(super) mod sample_space;
 mod vector;
 
 use super::field::GlyphField;
@@ -11,17 +12,11 @@ use crate::execution_2d::{
 };
 use crate::runtime::program::retained_shaped_text_source;
 use runen_gpu::*;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-    sync::Arc,
-};
+use std::{collections::BTreeSet, fmt, sync::Arc};
 
 const FIELD_FORMAT: GpuTextureFormat = GpuTextureFormat::Rgba8Unorm;
 const VERTEX_STRIDE: u64 = crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE;
 const FLOATS_PER_VERTEX: usize = 8;
-const VERTICES_PER_GLYPH: u32 = 6;
-const GLYPH_VERTEX_ARRAY_LEN: usize = 6;
 
 #[derive(Clone, Debug)]
 pub(super) struct AdmittedTarget {
@@ -34,7 +29,6 @@ pub(super) struct AdmittedTarget {
     raster_scale: f64,
     max_texture_dimension_2d: u32,
     max_buffer_bytes: u64,
-    coverage_format: bool,
     image_format: bool,
     clip_format: bool,
 }
@@ -58,7 +52,6 @@ impl AdmittedTarget {
 
 #[derive(Clone, Debug)]
 pub(super) struct GlyphOccurrence {
-    pub(super) root_index: usize,
     pub(super) resource_id: Render2dResourceId,
     pub(super) field: Arc<GlyphField>,
     pub(super) logical_x: f64,
@@ -81,13 +74,6 @@ impl FieldTextureKey {
             glyph_id,
         }
     }
-}
-
-#[derive(Clone, Debug)]
-struct DrawSpec {
-    key: FieldTextureKey,
-    field: Arc<GlyphField>,
-    first_vertex: u32,
 }
 
 pub(super) fn admit_target(
@@ -224,9 +210,6 @@ pub(super) fn admit_target(
         continuous_height,
         raster_scale: target.raster_scale(),
         max_texture_dimension_2d,
-        coverage_format: [GpuFormatRole::ColorAttachment, GpuFormatRole::Sampled]
-            .into_iter()
-            .all(|role| admitted_roles.contains(&(FIELD_FORMAT, role))),
         image_format: [
             GpuFormatRole::Sampled,
             GpuFormatRole::Filterable,
@@ -250,114 +233,6 @@ pub(super) fn admit_target(
                     .max_buffer_size(),
             ),
     })
-}
-
-fn lower(
-    target: &AdmittedTarget,
-    occurrences: &[GlyphOccurrence],
-    clipped: Option<&clip::ClipGpu>,
-) -> Result<Option<GpuRenderOperation>, Render2dExecutionError> {
-    let mut vertex_values = Vec::<f32>::new();
-    let mut specs = Vec::<DrawSpec>::new();
-
-    for occurrence in occurrences {
-        let Some(vertices) = glyph_vertices(target, occurrence)? else {
-            continue;
-        };
-        let start = vertex_count(&vertex_values)?;
-        for vertex in vertices {
-            vertex_values.extend_from_slice(&vertex);
-        }
-        start
-            .checked_add(VERTICES_PER_GLYPH)
-            .ok_or_else(|| gpu_text("vertex range", "2D glyph draw range overflow"))?;
-        specs.push(DrawSpec {
-            key: FieldTextureKey::new(occurrence.resource_id, occurrence.field.glyph_id()),
-            field: Arc::clone(&occurrence.field),
-            first_vertex: start,
-        });
-    }
-
-    if specs.is_empty() {
-        return Ok(None);
-    }
-
-    let pipeline = shaped_text_pipeline(target.format, clipped.is_some())?;
-    let mut resources = GpuResourceScope::new();
-    let sampler = create_sampler(&mut resources)?;
-    let vertex_buffer = create_vertex_buffer(&mut resources, &vertex_values)?;
-    let vertex_binding = GpuVertexBufferBinding::new(
-        0,
-        &vertex_buffer,
-        GpuBufferRange::whole(&vertex_buffer).map_err(|error| gpu("vertex range", error))?,
-    )
-    .map_err(|error| gpu("vertex binding", error))?;
-
-    let mut views = BTreeMap::<FieldTextureKey, GpuTextureViewHandle>::new();
-    for spec in &specs {
-        if views.contains_key(&spec.key) {
-            continue;
-        }
-        let view = create_field_view(&mut resources, spec.key, &spec.field)?;
-        views.insert(spec.key, view);
-    }
-
-    let viewport = GpuViewport::new(
-        0.0,
-        0.0,
-        f32_from_u32(target.physical_width),
-        f32_from_u32(target.physical_height),
-        0.0,
-        1.0,
-    )
-    .map_err(|error| gpu("viewport", error))?;
-    let scissor = GpuScissorRect::new(0, 0, target.physical_width, target.physical_height)
-        .map_err(|error| gpu("scissor", error))?;
-    let blend_constant =
-        GpuBlendConstant::new(0.0, 0.0, 0.0, 0.0).map_err(|error| gpu("blend constant", error))?;
-
-    let mut draws = Vec::with_capacity(specs.len());
-    for spec in specs {
-        let view = views
-            .get(&spec.key)
-            .expect("every retained draw spec must have one prepared field view");
-        let mut values = vec![texture_binding(0, view)?, sampler_binding(1, &sampler)?];
-        if let Some(clip) = clipped {
-            values.extend(clip::bindings(clip, 2, 3)?);
-        }
-        let bindings = pipeline
-            .runtime_bindings(values)
-            .map_err(|error| gpu("runtime binding validation", error))?;
-        let draw = GpuRenderDraw::new(
-            pipeline.clone(),
-            bindings,
-            [vertex_binding.clone()],
-            None,
-            GpuDrawIntent::direct(
-                GpuDrawRange::new(spec.first_vertex, VERTICES_PER_GLYPH)
-                    .map_err(|error| gpu("direct vertex range", error))?,
-                GpuDrawRange::new(0, 1).map_err(|error| gpu("instance range", error))?,
-            ),
-            viewport,
-            scissor,
-            blend_constant,
-            0,
-        )
-        .map_err(|error| gpu("render draw", error))?;
-        draws.push(draw);
-    }
-
-    let attachment = GpuRenderColorAttachment::new(
-        target.view.clone(),
-        GpuColorAttachmentLoad::Load,
-        GpuAttachmentStore::Store,
-        None,
-    )
-    .map_err(|error| gpu("load/store target attachment", error))?;
-    let render = GpuRenderOperation::new([attachment], None, draws, None)
-        .map_err(|error| gpu("render operation", error))?;
-
-    Ok(Some(render))
 }
 
 pub(crate) fn add_target_boundary(
@@ -397,10 +272,8 @@ pub(crate) fn add_target_boundary(
     Ok(())
 }
 
-fn shaped_text_pipeline(
-    format: GpuTextureFormat,
-    clipped: bool,
-) -> Result<GpuRenderPipelineDescriptor, Render2dExecutionError> {
+pub(super) fn shaped_text_pipeline() -> Result<GpuRenderPipelineDescriptor, Render2dExecutionError>
+{
     let source =
         retained_shaped_text_source().map_err(|error| Render2dExecutionError::Program {
             stage: "retained shaped-text source",
@@ -408,13 +281,9 @@ fn shaped_text_pipeline(
         })?;
     let vertex =
         GpuEntryPointName::new("vs_main").map_err(|error| gpu("vertex entry-point name", error))?;
-    let fragment = GpuEntryPointName::new(if clipped {
-        "fs_main_clipped"
-    } else {
-        "fs_main"
-    })
-    .map_err(|error| gpu("fragment entry-point name", error))?;
-    let mut refinements = vec![
+    let fragment = GpuEntryPointName::new("fs_sample_projection")
+        .map_err(|error| gpu("fragment entry-point name", error))?;
+    let refinements = vec![
         GpuBindingLayoutRefinement::new(
             GpuBindingKey::try_new(0, 0).map_err(|error| gpu("field texture layout key", error))?,
         )
@@ -424,15 +293,6 @@ fn shaped_text_pipeline(
         )
         .with_sampler_class(GpuSamplerClass::Filtering),
     ];
-    if clipped {
-        refinements.push(
-            GpuBindingLayoutRefinement::new(
-                GpuBindingKey::try_new(0, 2)
-                    .map_err(|error| gpu("clip texture layout key", error))?,
-            )
-            .with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable),
-        );
-    }
     let program =
         GpuProgramDescriptor::new(source, [vertex.clone(), fragment.clone()], refinements)
             .map_err(|error| gpu("shaped-text program descriptor", error))?;
@@ -454,7 +314,7 @@ fn shaped_text_pipeline(
     )
     .map_err(|error| gpu("source-over blend component", error))?;
     let target = GpuColorTargetStateDescriptor::new(
-        format,
+        GpuTextureFormat::Rgba16Float,
         Some(GpuBlendState::new(blend_component, blend_component)),
         GpuColorWriteMask::ALL,
     )
@@ -644,10 +504,22 @@ fn f32_from_f64(value: f64) -> f32 {
     value as f32
 }
 
-fn glyph_vertices(
+#[derive(Clone, Copy, Debug)]
+pub(super) struct GlyphPlacement {
+    pub(super) x0: f64,
+    pub(super) y0: f64,
+    pub(super) width: f64,
+    pub(super) height: f64,
+    pub(super) left: f64,
+    pub(super) top: f64,
+    pub(super) right: f64,
+    pub(super) bottom: f64,
+}
+
+pub(super) fn glyph_placement(
     target: &AdmittedTarget,
     occurrence: &GlyphOccurrence,
-) -> Result<Option<[[f32; FLOATS_PER_VERTEX]; GLYPH_VERTEX_ARRAY_LEN]>, Render2dExecutionError> {
+) -> Result<Option<GlyphPlacement>, Render2dExecutionError> {
     if occurrence.logical_width <= 0.0 || occurrence.logical_height <= 0.0 {
         return Err(gpu_text("glyph bounds", "2D glyph extent must be positive"));
     }
@@ -679,29 +551,16 @@ fn glyph_vertices(
         return Ok(None);
     }
 
-    // Generated samples lie at texel centers. Geometry spans the texture edges,
-    // so normalized UVs preserve the field's exact projection without rescaling it.
-    let u0 = f32_from_f64(((left - x0) / width).clamp(0.0, 1.0));
-    let u1 = f32_from_f64(((right - x0) / width).clamp(0.0, 1.0));
-    let v0 = f32_from_f64(((top - y0) / height).clamp(0.0, 1.0));
-    let v1 = f32_from_f64(((bottom - y0) / height).clamp(0.0, 1.0));
-
-    let left_ndc = physical_x_to_ndc(left, target.physical_width);
-    let right_ndc = physical_x_to_ndc(right, target.physical_width);
-    let top_ndc = physical_y_to_ndc(top, target.physical_height);
-    let bottom_ndc = physical_y_to_ndc(bottom, target.physical_height);
-    let color = linear_color(occurrence.color);
-
-    let vertex =
-        |x: f32, y: f32, u: f32, v: f32| [x, y, u, v, color[0], color[1], color[2], color[3]];
-    Ok(Some([
-        vertex(left_ndc, top_ndc, u0, v0),
-        vertex(right_ndc, top_ndc, u1, v0),
-        vertex(left_ndc, bottom_ndc, u0, v1),
-        vertex(left_ndc, bottom_ndc, u0, v1),
-        vertex(right_ndc, top_ndc, u1, v0),
-        vertex(right_ndc, bottom_ndc, u1, v1),
-    ]))
+    Ok(Some(GlyphPlacement {
+        x0,
+        y0,
+        width,
+        height,
+        left,
+        top,
+        right,
+        bottom,
+    }))
 }
 
 fn physical_x_to_ndc(value: f64, physical_width: u32) -> f32 {
@@ -746,164 +605,5 @@ fn gpu_text(stage: &'static str, detail: impl Into<String>) -> Render2dExecution
     }
 }
 
-#[derive(Debug)]
-pub(super) enum OrderedItem {
-    Glyph(GlyphOccurrence),
-    Vector(super::vector::VectorMesh),
-    Image(super::image::ImagePatchWork),
-}
-
-// One contribution-local coverage surface is reused in lexical order. Clearing the
-// complete mask before each vector item keeps discarded geometry and painter history
-// out of coverage. Overlapping triangles overwrite 1; brush alpha is applied only
-// after resolving the 16 binary samples of each destination pixel.
-pub(super) fn lower_ordered(
-    target: &AdmittedTarget,
-    ordered: Vec<OrderedItem>,
-    clipped: BTreeMap<usize, crate::runtime::execution_2d::clip::ClipMask>,
-) -> Result<Vec<GpuRenderOperation>, Render2dExecutionError> {
-    use crate::execution_2d::Render2dVectorError;
-    let mut mask_width = 0;
-    let mut mask_height = 0;
-    for item in &ordered {
-        if let OrderedItem::Vector(mesh) = item {
-            let fail = |kind| super::vector::error(mesh.root_index, kind);
-            if !target.coverage_format {
-                return Err(fail(Render2dVectorError::CoverageFormatUnsupported));
-            }
-            let width = mesh.bounds[2]
-                .checked_mul(crate::runtime::program::abi::VECTOR_COVERAGE_AXIS_SAMPLES)
-                .ok_or_else(|| fail(Render2dVectorError::ResourceLimit))?;
-            let height = mesh.bounds[3]
-                .checked_mul(crate::runtime::program::abi::VECTOR_COVERAGE_AXIS_SAMPLES)
-                .ok_or_else(|| fail(Render2dVectorError::ResourceLimit))?;
-            mask_width = mask_width.max(width);
-            mask_height = mask_height.max(height);
-            if mask_width > target.max_texture_dimension_2d
-                || mask_height > target.max_texture_dimension_2d
-                || u64::from(mask_width) * u64::from(mask_height) * 4 > 64 * 1024 * 1024
-            {
-                return Err(fail(Render2dVectorError::ResourceLimit));
-            }
-        }
-    }
-    let mut resources = GpuResourceScope::new();
-    let mask = if mask_width > 0 && mask_height > 0 {
-        let texture = resources
-            .texture(
-                GpuTextureDescriptor::ordinary_owned_2d(
-                    "runen-render vector union coverage",
-                    GpuResourceLifetime::Transient,
-                    GpuReconstruction::SourceBacked,
-                    mask_width,
-                    mask_height,
-                    FIELD_FORMAT,
-                    [GpuTextureUsage::ColorAttachment, GpuTextureUsage::Sampled],
-                    GpuTextureInitialization::Uninitialized,
-                )
-                .map_err(|e| gpu("coverage texture descriptor", e))?,
-            )
-            .map_err(|e| gpu("coverage texture", e))?;
-        Some(
-            resources
-                .texture_view(
-                    GpuTextureViewDescriptor::ordinary_full_owned(
-                        "runen-render vector union coverage view",
-                        &texture,
-                    )
-                    .map_err(|e| gpu("coverage view descriptor", e))?,
-                )
-                .map_err(|e| gpu("coverage view", e))?,
-        )
-    } else {
-        None
-    };
-    let mut clip_views = BTreeMap::new();
-    for (root_index, mask) in &clipped {
-        clip_views.insert(*root_index, clip::upload(target, mask, &mut resources)?);
-    }
-    let mut operations = Vec::new();
-    let mut glyphs = Vec::new();
-    let mut glyph_root: Option<usize> = None;
-    let mut image_views = BTreeMap::new();
-    let mut image_bytes: u64 = 0;
-    for item in ordered {
-        match item {
-            OrderedItem::Glyph(glyph) => {
-                if glyph_root != Some(glyph.root_index) && !glyphs.is_empty() {
-                    operations.extend(lower(
-                        target,
-                        &glyphs,
-                        glyph_root.and_then(|root| clip_views.get(&root)),
-                    )?);
-                    glyphs.clear();
-                }
-                glyph_root = Some(glyph.root_index);
-                glyphs.push(glyph);
-            }
-            OrderedItem::Vector(mesh) => {
-                operations.extend(lower(
-                    target,
-                    &glyphs,
-                    glyph_root.and_then(|root| clip_views.get(&root)),
-                )?);
-                glyphs.clear();
-                glyph_root = None;
-                operations.extend(vector::lower(
-                    target,
-                    &mesh,
-                    mask.as_ref().expect("vector mask"),
-                    [mask_width, mask_height],
-                    clip_views.get(&mesh.root_index),
-                    &mut resources,
-                )?);
-            }
-            OrderedItem::Image(patch) => {
-                operations.extend(lower(
-                    target,
-                    &glyphs,
-                    glyph_root.and_then(|root| clip_views.get(&root)),
-                )?);
-                glyphs.clear();
-                glyph_root = None;
-                if !target.image_format {
-                    return Err(super::image::failure(
-                        patch.root_index,
-                        crate::execution_2d::Render2dImageError::FormatUnsupported,
-                    ));
-                }
-                let vacant = image_views.entry(patch.resource_id);
-                if let std::collections::btree_map::Entry::Vacant(entry) = vacant {
-                    let bytes = patch.source.rgba8_srgb().len() as u64;
-                    image_bytes = image_bytes.checked_add(bytes).ok_or_else(|| {
-                        super::image::failure(
-                            patch.root_index,
-                            crate::execution_2d::Render2dImageError::ResourceLimit,
-                        )
-                    })?;
-                    if image_bytes > 128 * 1024 * 1024 {
-                        return Err(super::image::failure(
-                            patch.root_index,
-                            crate::execution_2d::Render2dImageError::ResourceLimit,
-                        ));
-                    }
-                    let view = image::upload(target, &patch, &mut resources)?;
-                    entry.insert(view);
-                }
-                operations.push(image::lower(
-                    target,
-                    &patch,
-                    image_views.get(&patch.resource_id).expect("uploaded image"),
-                    clip_views.get(&patch.root_index),
-                    &mut resources,
-                )?);
-            }
-        }
-    }
-    operations.extend(lower(
-        target,
-        &glyphs,
-        glyph_root.and_then(|root| clip_views.get(&root)),
-    )?);
-    Ok(operations)
-}
+#[cfg(test)]
+mod sample_space_gpu_proof;
