@@ -265,3 +265,12 @@ fn clip_hit(pixel: vec2<i32>, sx: i32, sy: i32) -> f32 {
     }
     return sum / f32(COVERAGE_AXIS_SAMPLES * COVERAGE_AXIS_SAMPLES);
 }
+
+
+// F3E isolated-group source-over at the same correlated physical sample.
+// Child content is already premultiplied and composited onto transparent
+// scratch. Vertex alpha is the group opacity, applied ONCE to that result.
+@fragment fn fs_sample_merge(input: VertexOutput) -> @location(0) vec4<f32> {
+    let sample = textureLoad(sample_layer, vec2<i32>(floor(input.position.xy)), 0);
+    return sample * input.color.a;
+}

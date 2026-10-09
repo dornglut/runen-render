@@ -97,7 +97,7 @@ jobs:
 
           # F3E GPU-only shader proof is explicitly ignored by non-GPU canonical
           # validation and MUST run here against the proved Lavapipe adapter.
-          cargo +stable test -p runen-render             --lib retained_gpu_plane_resolves_correlated_siblings_once_over_prior_target             --locked -- --ignored --nocapture --test-threads=1
+          cargo +stable test -p runen-render             --lib sample_space_gpu_proof             --locked -- --ignored --nocapture --test-threads=1
 
           cargo +stable test -p runen-render             --test ordinary_public_api             --locked -- --nocapture --test-threads=1
 
