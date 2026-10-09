@@ -252,7 +252,7 @@ pub(super) fn admit_target(
     })
 }
 
-pub(super) fn lower(
+fn lower(
     target: &AdmittedTarget,
     occurrences: &[GlyphOccurrence],
     clipped: Option<&clip::ClipGpu>,

@@ -241,7 +241,7 @@ pub(super) fn prepare(
     let mut work = 0u64;
     for mesh in geometries {
         temporary.fill(0);
-        for triangle in mesh.triangles.chunks_exact(3) {
+        for triangle in mesh.triangles.as_chunks::<3>().0 {
             raster_triangle(
                 [triangle[0], triangle[1], triangle[2]],
                 bounds,
