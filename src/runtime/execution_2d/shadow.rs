@@ -92,13 +92,20 @@ fn neutral_item(
     let root_index = path[0];
     let result = match item.primitive() {
         Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => {
-            vector::neutral_support(item, root_index, scales.geometry_sample_scale, max_buffer_bytes)?
-        }
-        Render2dPrimitive::Image(primitive) => {
-            image::neutral_support(
-                item, primitive, root_index, scales.geometry_sample_scale, max_buffer_bytes,
+            vector::neutral_support(
+                item,
+                root_index,
+                scales.geometry_sample_scale,
+                max_buffer_bytes,
             )?
         }
+        Render2dPrimitive::Image(primitive) => image::neutral_support(
+            item,
+            primitive,
+            root_index,
+            scales.geometry_sample_scale,
+            max_buffer_bytes,
+        )?,
         Render2dPrimitive::ShapedText(primitive) => {
             let value = bindings
                 .get(primitive.resource_id())
@@ -129,11 +136,12 @@ fn neutral_item(
                     font_size: resource.font_size(),
                     to_parent: item.local_to_parent(),
                 };
-                if let Some(mesh) =
-                    vector::neutral_shaped_glyph(
-                        instance, path, scales.geometry_sample_scale, max_buffer_bytes,
-                    )?
-                {
+                if let Some(mesh) = vector::neutral_shaped_glyph(
+                    instance,
+                    path,
+                    scales.geometry_sample_scale,
+                    max_buffer_bytes,
+                )? {
                     append(&mut result, &mesh, Render2dAffineTransform::IDENTITY, path)?;
                 }
             }
@@ -186,14 +194,9 @@ pub(super) fn group_child_sources(
                 if active.is_empty() {
                     continue;
                 }
-                if let Some(mesh) = neutral_item(
-                    item,
-                    path,
-                    bindings,
-                    field_sets,
-                    scales,
-                    max_buffer_bytes,
-                )? {
+                if let Some(mesh) =
+                    neutral_item(item, path, bindings, field_sets, scales, max_buffer_bytes)?
+                {
                     charge_vertices(&mut retained_vertices, mesh.triangles.len(), path)?;
                     append(
                         &mut active.last_mut().expect("active source group").child_source,
@@ -702,8 +705,8 @@ mod tests {
     #[test]
     fn outlined_text_uses_f2_cached_field_tier_independent_of_4x_shadow_density() {
         use crate::composition_2d::{
-            Render2dComposition, Render2dEntry, Render2dFontBinding, Render2dGlyph,
-            Render2dGroup, Render2dPoint, Render2dResourceBinding, Render2dResourceId,
+            Render2dComposition, Render2dEntry, Render2dFontBinding, Render2dGlyph, Render2dGroup,
+            Render2dPoint, Render2dResourceBinding, Render2dResourceId,
             Render2dShapedTextPrimitive, Render2dShapedTextResource,
         };
         const FONT: &[u8] = include_bytes!("../../../tests/fixtures/f2_outline.ttf");
@@ -741,10 +744,8 @@ mod tests {
             Vec::new(),
             Render2dOpacity::TRANSPARENT,
         );
-        let shadow = Render2dDropShadow::new(
-            0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT,
-        )
-        .unwrap();
+        let shadow =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let group = Render2dGroup::new(
             vec![Render2dEntry::item(glyph)],
             Render2dAffineTransform::IDENTITY,
@@ -755,7 +756,9 @@ mod tests {
         let composition = Render2dComposition::new(vec![Render2dEntry::group(group)]).unwrap();
         let plan = scene::analyze(&composition).unwrap();
         let sources = group_child_sources(
-            &plan, &bindings, &cached,
+            &plan,
+            &bindings,
+            &cached,
             NeutralPreparationScale {
                 field_raster_scale: 1.0,
                 geometry_sample_scale: 4.0,
