@@ -508,3 +508,91 @@ fn singular_clip_transforms_produce_no_work_and_do_not_erase_siblings() {
         check(pixel(&pixels, 40, 40), [0, 255, 0, 255]);
     }
 }
+
+#[test]
+fn rounded_corner_clip_preserves_radial_gradient_without_corner_leakage() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let gradient = Render2dBrush::Radial(
+        Render2dRadialGradient::new(
+            Render2dPoint::new(32.0, 32.0).unwrap(),
+            16.0,
+            Render2dGradientStops::new(vec![
+                Render2dGradientStop::new(
+                    0.0,
+                    Render2dColorRgba8::new(255, 0, 0, 255),
+                )
+                .unwrap(),
+                Render2dGradientStop::new(
+                    0.5,
+                    Render2dColorRgba8::new(255, 0, 0, 255),
+                )
+                .unwrap(),
+                Render2dGradientStop::new(
+                    1.0,
+                    Render2dColorRgba8::new(0, 0, 255, 255),
+                )
+                .unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let rounded = Render2dShape::rounded_rect(
+        r(8.0, 8.0, 48.0, 48.0),
+        Render2dCornerRadii::new(16.0, 16.0, 16.0, 16.0).unwrap(),
+    );
+    let actual = render(
+        &ctx,
+        vec![painted(
+            gradient,
+            vec![cp(rounded)],
+            Render2dAffineTransform::IDENTITY,
+            1.0,
+        )],
+        &Render2dResourceBindings::default(),
+    );
+    check(pixel(&actual, 9, 9), [0; 4]);
+    check(pixel(&actual, 32, 32), [255, 0, 0, 255]);
+    check(pixel(&actual, 32, 12), [0, 0, 255, 255]);
+    check(pixel(&actual, 32, 58), [0; 4]);
+}
+
+#[test]
+fn nonzero_same_direction_nested_contours_do_not_become_evenodd_holes() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let point = |x, y| Render2dPoint::new(x, y).unwrap();
+    let mut commands = Vec::new();
+    for [x0, y0, x1, y1] in [[8.0, 8.0, 56.0, 56.0], [24.0, 24.0, 40.0, 40.0]] {
+        commands.extend([
+            Render2dPathCommand::MoveTo(point(x0, y0)),
+            Render2dPathCommand::LineTo(point(x1, y0)),
+            Render2dPathCommand::LineTo(point(x1, y1)),
+            Render2dPathCommand::LineTo(point(x0, y1)),
+            Render2dPathCommand::Close,
+        ]);
+    }
+    let render_rule = |rule| {
+        render(
+            &ctx,
+            vec![painted(
+                Render2dBrush::solid(Render2dColorRgba8::WHITE),
+                vec![cp(Render2dShape::path(
+                    Render2dPath::new(rule, commands.clone()).unwrap(),
+                ))],
+                Render2dAffineTransform::IDENTITY,
+                1.0,
+            )],
+            &Render2dResourceBindings::default(),
+        )
+    };
+    let nonzero = render_rule(Render2dFillRule::NonZero);
+    let evenodd = render_rule(Render2dFillRule::EvenOdd);
+    check(pixel(&nonzero, 32, 32), [255; 4]);
+    check(pixel(&evenodd, 32, 32), [0; 4]);
+    check(pixel(&nonzero, 16, 16), [255; 4]);
+    check(pixel(&evenodd, 16, 16), [255; 4]);
+}
