@@ -59,11 +59,13 @@ pub(super) enum Event<'a> {
     Item {
         path: Vec<usize>,
         item: &'a Render2dItem,
+        parent_to_root: Affine,
         to_root: Affine,
     },
     BeginGroup {
         path: Vec<usize>,
         group: &'a Render2dGroup,
+        parent_to_root: Affine,
     },
     EndGroup,
 }
@@ -210,6 +212,7 @@ pub(super) fn analyze(
                 events.push(Event::Item {
                     path,
                     item,
+                    parent_to_root,
                     to_root,
                 });
             }
@@ -221,7 +224,11 @@ pub(super) fn analyze(
                     validate_clips(group.clips(), parent_to_root, &path)?;
                     let to_root = parent_to_root
                         .compose(Affine::from_source(group.local_to_parent()), &path)?;
-                    events.push(Event::BeginGroup { path, group });
+                    events.push(Event::BeginGroup {
+                        path,
+                        group,
+                        parent_to_root,
+                    });
                     frames.push(to_root);
                 } else {
                     // Its children contain no items/effects. Keep balanced
@@ -396,7 +403,7 @@ mod tests {
         assert!(matches!(
             plan.events.as_slice(),
             [
-                Event::BeginGroup { group, path },
+                Event::BeginGroup { group, path, .. },
                 Event::Item { to_root, .. },
                 Event::EndGroup
             ] if group.opacity() == Render2dOpacity::OPAQUE

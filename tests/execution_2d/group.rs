@@ -2,7 +2,7 @@
 //! -> RunenGPU work/evidence -> unmodified caller-owned RGBA8-sRGB readback.
 //! These pixels are computed independently from straight-alpha source facts.
 use super::*;
-use runen_render::composition_2d::{Render2dBrush, Render2dRect, Render2dShape};
+use runen_render::composition_2d::{Render2dBrush, Render2dClip, Render2dRect, Render2dShape};
 
 fn context() -> Option<GpuContext> {
     let mut descriptor =
@@ -19,6 +19,7 @@ fn context() -> Option<GpuContext> {
         (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled),
+        (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::CopyDestination),
         (
             GpuTextureFormat::Rgba16Float,
             GpuFormatRole::ColorAttachment,
@@ -120,5 +121,77 @@ fn nested_groups_preserve_disjoint_sample_coverage_and_parent_order() {
     );
     // Each of the 16 samples is exactly red OR blue: alpha=1, no 0.75 leak.
     pixel_close(pixel(&image, 10, 20), [188, 0, 188, 255]);
+    pixel_close(pixel(&image, 11, 20), [0, 0, 0, 0]);
+}
+
+
+fn clip(left: f64, width: f64) -> Render2dClip {
+    Render2dClip::new(
+        Render2dShape::rect(Render2dRect::new(left, 0.0, width, 64.0).unwrap()),
+        Render2dAffineTransform::IDENTITY,
+    )
+}
+
+#[test]
+fn grouped_half_pixel_and_identical_parent_clip_correlate_once() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let group = Render2dGroup::new(
+        vec![solid(Render2dColorRgba8::new(255, 0, 0, 255), 10.0, 0.5)],
+        Render2dAffineTransform::IDENTITY,
+        vec![clip(10.0, 0.5)],
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    );
+    let composition = Render2dComposition::new(vec![Render2dEntry::group(group)]).unwrap();
+    let image = execute(
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3E independent group intersected sample clip",
+    );
+    // Both binary masks select the same 8/16 samples. Applying the
+    // resolved 0.5 mask independently would incorrectly yield 0.25.
+    pixel_close(pixel(&image, 10, 20), [188, 0, 0, 128]);
+    pixel_close(pixel(&image, 11, 20), [0, 0, 0, 0]);
+}
+
+#[test]
+fn group_item_clip_uses_its_own_parent_space_after_group_transform() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    // The child's local x=[3,3.25) maps through outer x'=2x+4 to
+    // global x=[10,10.5). The item clip is in the *outer group's*
+    // local space x=[3,3.25), while the group's own clip is in
+    // global x=[10,10.5). Neither clip may inherit its owner's
+    // own local transform twice.
+    let child = Render2dEntry::item(Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::rect(Render2dRect::new(3.0, 0.0, 0.25, 64.0).unwrap()),
+            brush: Render2dBrush::solid(Render2dColorRgba8::new(255, 0, 0, 255)),
+        },
+        Render2dAffineTransform::IDENTITY,
+        vec![clip(3.0, 0.25)],
+        Render2dOpacity::OPAQUE,
+    ));
+    let outer = Render2dGroup::new(
+        vec![child],
+        Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 4.0, 0.0).unwrap(),
+        vec![clip(10.0, 0.5)],
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    );
+    let composition = Render2dComposition::new(vec![Render2dEntry::group(outer)]).unwrap();
+    let image = execute(
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3E independent parent-frame item and group clip",
+    );
+    pixel_close(pixel(&image, 10, 20), [188, 0, 0, 128]);
     pixel_close(pixel(&image, 11, 20), [0, 0, 0, 0]);
 }

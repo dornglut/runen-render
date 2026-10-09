@@ -304,3 +304,18 @@ fn clip_hit(pixel: vec2<i32>, sx: i32, sy: i32) -> f32 {
     let alpha = input.color.a * coverage;
     return vec4<f32>(input.color.rgb * alpha, alpha);
 }
+
+
+// F3E item-level clip intersects exact union coverage at each correlated
+// sample before applying the item's opacity once. The coverage texture uses
+// tile-local coordinates; clip bits use the immediate-parent/global 4x4 phase.
+@fragment fn fs_sample_mask_fill_clipped(input: VertexOutput) -> @location(0) vec4<f32> {
+    let local_sample = vec2<i32>(floor(input.position.xy));
+    let global_sample = vec2<i32>(floor(input.mask_pixel));
+    let logical = global_sample / COVERAGE_AXIS_SAMPLES;
+    let offset = global_sample % COVERAGE_AXIS_SAMPLES;
+    let membership = textureLoad(coverage_mask, local_sample, 0).r;
+    let visible = clip_hit(logical, offset.x, offset.y);
+    let alpha = input.color.a * membership * visible;
+    return vec4<f32>(input.color.rgb * alpha, alpha);
+}

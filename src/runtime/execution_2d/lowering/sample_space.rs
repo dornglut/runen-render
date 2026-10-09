@@ -7,10 +7,11 @@
 //! 4x4 sample lattice, with one final pixel resolve to the caller target.
 use super::*;
 use crate::composition_2d::{
-    Render2dAffineTransform, Render2dBrush, Render2dItem, Render2dPrimitive,
+    Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dGroup, Render2dItem,
+    Render2dPrimitive,
 };
 use crate::execution_2d::Render2dUnsupportedContent;
-use crate::runtime::execution_2d::{scene, vector as geometry};
+use crate::runtime::execution_2d::{clip as clip_geometry, scene, vector as geometry};
 use crate::runtime::program::retained_vector_source;
 
 // At RGBA16F each 4x4 sample tile occupies 128 bytes per logical pixel/layer.
@@ -42,7 +43,7 @@ fn pipeline(
     })?;
     let vertex = GpuEntryPointName::new("vs_main").map_err(|e| gpu("F3E vertex entry", e))?;
     let fragment = GpuEntryPointName::new(entry).map_err(|e| gpu("F3E fragment entry", e))?;
-    let refinements = sample_binding
+    let mut refinements = sample_binding
         .map(|binding| {
             GpuBindingKey::try_new(0, u64::from(binding))
                 .map(|key| {
@@ -55,6 +56,14 @@ fn pipeline(
         })
         .transpose()?
         .unwrap_or_default();
+    if matches!(entry, "fs_sample_mask_fill_clipped" | "fs_sample_merge_clipped") {
+        let key = GpuBindingKey::try_new(0, 4)
+            .map_err(|e| gpu("F3E structural clip binding layout", e))?;
+        refinements.push(
+            GpuBindingLayoutRefinement::new(key)
+                .with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable),
+        );
+    }
     let program =
         GpuProgramDescriptor::new(source, [vertex.clone(), fragment.clone()], refinements)
             .map_err(|e| gpu("F3E sample program", e))?;
@@ -189,15 +198,19 @@ fn rectangle(
 fn draw(
     pipeline: &GpuRenderPipelineDescriptor,
     sampled: Option<(u32, &GpuTextureViewHandle)>,
+    clipped: Option<&super::clip::ClipGpu>,
     vertices: &[f32],
     extent: [u32; 2],
     resources: &mut GpuResourceScope,
 ) -> Result<GpuRenderDraw, Render2dExecutionError> {
-    let values = sampled
+    let mut values = sampled
         .map(|(binding, view)| texture_binding(binding, view))
         .transpose()?
         .into_iter()
         .collect::<Vec<_>>();
+    if let Some(clipped) = clipped {
+        values.extend(super::clip::bindings(clipped, 4, 5)?);
+    }
     let bindings = pipeline
         .runtime_bindings(values)
         .map_err(|e| gpu("F3E sample bindings", e))?;
@@ -232,6 +245,44 @@ struct Inspected {
     peak_group_depth: usize,
 }
 
+struct GroupFrame<'a> {
+    group: &'a Render2dGroup,
+    visible: bool,
+    clip: Option<super::clip::ClipGpu>,
+}
+
+/// A clip remains in the owner's immediate-parent coordinate frame. The
+/// existing F3D mask/RunenGPU upload is reused; no second clip semantics.
+fn prepare_clip(
+    clips: &[Render2dClip],
+    parent_to_root: scene::Affine,
+    tile: [u32; 4],
+    root_index: usize,
+    target: &AdmittedTarget,
+    reserved_bytes: &mut u64,
+    sample_work: &mut u64,
+    resources: &mut GpuResourceScope,
+) -> Result<Option<super::clip::ClipGpu>, Render2dExecutionError> {
+    let Some(mask) = clip_geometry::prepare_bounded(
+        clips,
+        tile,
+        parent_to_root,
+        root_index,
+        target,
+        *reserved_bytes,
+        sample_work,
+    )? else {
+        return Ok(None);
+    };
+    let exceeded = || clip_geometry::failure(
+        root_index,
+        crate::execution_2d::Render2dClipError::ResourceLimit,
+    );
+    let bytes = u64::try_from(mask.rgba.len()).map_err(|_| exceeded())?;
+    *reserved_bytes = reserved_bytes.checked_add(bytes).ok_or_else(exceeded)?;
+    super::clip::upload(target, &mask, resources).map(Some)
+}
+
 fn inspect(
     plan: &scene::Plan<'_>,
     target: &AdmittedTarget,
@@ -242,8 +293,8 @@ fn inspect(
     let mut peak = 0usize;
     for event in &plan.events {
         match event {
-            scene::Event::BeginGroup { group, path } => {
-                if !group.clips().is_empty() || !group.shadows().is_empty() {
+            scene::Event::BeginGroup { group, path, .. } => {
+                if !group.shadows().is_empty() {
                     return Err(Render2dUnsupportedContent::Group {
                         root_index: path[0],
                     }
@@ -261,9 +312,9 @@ fn inspect(
                 item,
                 path,
                 to_root,
+                ..
             } => {
-                if !item.clips().is_empty()
-                    || !matches!(
+                if !matches!(
                         item.primitive(),
                         Render2dPrimitive::Fill {
                             brush: Render2dBrush::Solid(_),
@@ -390,9 +441,21 @@ pub(in crate::runtime::execution_2d) fn lower(
         Some(0),
     )?;
     let merge_pipeline = pipeline(GpuTextureFormat::Rgba16Float, "fs_sample_merge", Some(6))?;
+    let merge_clipped_pipeline = pipeline(
+        GpuTextureFormat::Rgba16Float,
+        "fs_sample_merge_clipped",
+        Some(6),
+    )?;
+    let fill_clipped_pipeline = pipeline(
+        GpuTextureFormat::Rgba16Float,
+        "fs_sample_mask_fill_clipped",
+        Some(0),
+    )?;
     let resolve_pipeline = pipeline(target.format, "fs_sample_resolve", Some(6))?;
 
     let mut operations = Vec::new();
+    let mut reserved_clip_bytes = 0u64;
+    let mut clip_sample_work = 0u64;
     for row in 0..rows {
         for col in 0..cols {
             let origin = [
@@ -423,41 +486,88 @@ pub(in crate::runtime::execution_2d) fn lower(
             }
             append(&mut operations, operation(&layers[0], true, Vec::new())?)?;
             let mut depth = 0usize;
-            let mut group_stack = Vec::new();
+            let mut group_stack = Vec::<GroupFrame<'_>>::new();
+            let tile_bounds = [origin[0], origin[1], end[0], end[1]];
             for (index, event) in plan.events.iter().enumerate() {
                 match event {
-                    scene::Event::BeginGroup { group, .. } => {
+                    scene::Event::BeginGroup {
+                        group,
+                        path,
+                        parent_to_root,
+                    } => {
                         depth += 1;
-                        group_stack.push(group);
-                        append(
-                            &mut operations,
-                            operation(&layers[depth], true, Vec::new())?,
-                        )?;
+                        let parent_visible = group_stack.last().is_none_or(|f| f.visible);
+                        let clip = if !parent_visible || group.clips().is_empty() {
+                            None
+                        } else {
+                            prepare_clip(
+                                group.clips(),
+                                *parent_to_root,
+                                tile_bounds,
+                                path[0],
+                                target,
+                                &mut reserved_clip_bytes,
+                                &mut clip_sample_work,
+                                &mut resources,
+                            )?
+                        };
+                        let visible = parent_visible && (group.clips().is_empty() || clip.is_some());
+                        group_stack.push(GroupFrame {
+                            group,
+                            visible,
+                            clip,
+                        });
+                        if visible {
+                            append(
+                                &mut operations,
+                                operation(&layers[depth], true, Vec::new())?,
+                            )?;
+                        }
                     }
                     scene::Event::EndGroup => {
-                        let group = group_stack.pop().expect("balanced F1 group plan");
-                        let mut vertices = Vec::new();
-                        rectangle(
-                            &mut vertices,
-                            [0.0, 0.0, f64::from(dimension), f64::from(dimension)],
-                            physical,
-                            [1.0, 1.0, 1.0, f32_from_f64(group.opacity().get())],
-                            [0.0, 0.0],
-                        );
-                        let merged = draw(
-                            &merge_pipeline,
-                            Some((6, &layers[depth])),
-                            &vertices,
-                            physical,
-                            &mut resources,
-                        )?;
-                        append(
-                            &mut operations,
-                            operation(&layers[depth - 1], false, vec![merged])?,
-                        )?;
+                        let frame = group_stack.pop().expect("balanced F1 group plan");
+                        if frame.visible {
+                            let mut vertices = Vec::new();
+                            let origin_sample = [
+                                f64::from(origin[0]) * f64::from(SAMPLES),
+                                f64::from(origin[1]) * f64::from(SAMPLES),
+                            ];
+                            rectangle(
+                                &mut vertices,
+                                [0.0, 0.0, f64::from(dimension), f64::from(dimension)],
+                                physical,
+                                [1.0, 1.0, 1.0, f32_from_f64(frame.group.opacity().get())],
+                                origin_sample,
+                            );
+                            let pipeline = if frame.clip.is_some() {
+                                &merge_clipped_pipeline
+                            } else {
+                                &merge_pipeline
+                            };
+                            let merged = draw(
+                                pipeline,
+                                Some((6, &layers[depth])),
+                                frame.clip.as_ref(),
+                                &vertices,
+                                physical,
+                                &mut resources,
+                            )?;
+                            append(
+                                &mut operations,
+                                operation(&layers[depth - 1], false, vec![merged])?,
+                            )?;
+                        }
                         depth -= 1;
                     }
-                    scene::Event::Item { .. } => {
+                    scene::Event::Item {
+                        item,
+                        path,
+                        parent_to_root,
+                        ..
+                    } => {
+                        if group_stack.last().is_some_and(|frame| !frame.visible) {
+                            continue;
+                        }
                         let Some(mesh) = &meshes[index] else { continue };
                         let [left, top, width, height] = mesh.bounds;
                         if left >= end[0]
@@ -467,6 +577,23 @@ pub(in crate::runtime::execution_2d) fn lower(
                         {
                             continue;
                         }
+                        let item_clip = if item.clips().is_empty() {
+                            None
+                        } else {
+                            let Some(mask) = prepare_clip(
+                                item.clips(),
+                                *parent_to_root,
+                                tile_bounds,
+                                path[0],
+                                target,
+                                &mut reserved_clip_bytes,
+                                &mut clip_sample_work,
+                                &mut resources,
+                            )? else {
+                                continue;
+                            };
+                            Some(mask)
+                        };
                         let mut coverage_vertices = Vec::with_capacity(mesh.triangles.len() * 8);
                         for &[x, y] in &mesh.triangles {
                             let x = (x - f64::from(origin[0])) * f64::from(SAMPLES);
@@ -485,6 +612,7 @@ pub(in crate::runtime::execution_2d) fn lower(
                         let coverage_draw = draw(
                             &coverage_pipeline,
                             None,
+                            None,
                             &coverage_vertices,
                             physical,
                             &mut resources,
@@ -499,16 +627,26 @@ pub(in crate::runtime::execution_2d) fn lower(
                         let mut rgba = linear_color(*color);
                         rgba[3] *= f32_from_f64(mesh.opacity);
                         let mut full_quad = Vec::new();
+                        let origin_sample = [
+                            f64::from(origin[0]) * f64::from(SAMPLES),
+                            f64::from(origin[1]) * f64::from(SAMPLES),
+                        ];
                         rectangle(
                             &mut full_quad,
                             [0.0, 0.0, f64::from(dimension), f64::from(dimension)],
                             physical,
                             rgba,
-                            [0.0, 0.0],
+                            origin_sample,
                         );
+                        let pipeline = if item_clip.is_some() {
+                            &fill_clipped_pipeline
+                        } else {
+                            &fill_pipeline
+                        };
                         let color_draw = draw(
-                            &fill_pipeline,
+                            pipeline,
                             Some((0, &mask)),
+                            item_clip.as_ref(),
                             &full_quad,
                             physical,
                             &mut resources,
@@ -536,6 +674,7 @@ pub(in crate::runtime::execution_2d) fn lower(
             let resolve_draw = draw(
                 &resolve_pipeline,
                 Some((6, &layers[0])),
+                None,
                 &resolve_vertices,
                 [target.physical_width, target.physical_height],
                 &mut resources,
