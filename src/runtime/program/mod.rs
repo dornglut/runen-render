@@ -26,13 +26,13 @@ const SHAPED_TEXT_MODULE_ID: u64 = 4;
 const SHAPED_TEXT_SOURCE_UNIT_ID: u64 = 4;
 const VECTOR_MODULE_ID: u64 = 5;
 const VECTOR_SOURCE_UNIT_ID: u64 = 5;
-const VECTOR_REVISION: u64 = 3;
+const VECTOR_REVISION: u64 = 4;
 const VECTOR_WGSL: &str = include_str!("shaders/solid_vector.wgsl");
 
 pub(crate) const MAINTAINED_EVALUATOR_REVISION: u64 = 3;
 pub(crate) const TEMPORAL_RECONSTRUCTION_REVISION: u32 = 2;
 pub(crate) const CAMERA_REPROJECTION_REVISION: u32 = 3;
-pub(crate) const SHAPED_TEXT_REVISION: u64 = 1;
+pub(crate) const SHAPED_TEXT_REVISION: u64 = 2;
 
 pub(crate) const SCENE_QUERY_WGSL: &str = include_str!("shaders/scene_query.wgsl");
 pub(crate) static EVALUATOR_WGSL: LazyLock<String> = LazyLock::new(|| {

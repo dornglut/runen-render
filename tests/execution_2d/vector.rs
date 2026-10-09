@@ -728,15 +728,17 @@ fn supported_gradient_no_work_and_unsupported_clip_fail_closed() {
         )],
         Render2dOpacity::TRANSPARENT,
     ));
-    assert!(matches!(
-        Render2dExecutor::new().prepare(
-            &context,
-            &Render2dComposition::new(vec![clipped]).unwrap(),
-            &Render2dResourceBindings::default(),
-            &target,
-        ),
-        Err(Render2dExecutionError::UnsupportedContent(_))
-    ));
+    assert!(
+        !Render2dExecutor::new()
+            .prepare(
+                &context,
+                &Render2dComposition::new(vec![clipped]).unwrap(),
+                &Render2dResourceBindings::default(),
+                &target,
+            )
+            .expect("clipped transparent content is admitted and has no work")
+            .has_render_work()
+    );
 }
 
 #[test]

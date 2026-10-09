@@ -420,6 +420,13 @@ pub enum Render2dExecutionError {
         /// Stable renderer-owned failure class.
         kind: Render2dVectorError,
     },
+    /// A semantic clip cannot be realized at the admitted physical precision/resources.
+    Clip {
+        /// Root painter-order index of the affected clipped item.
+        root_index: usize,
+        /// Stable clip realization failure.
+        kind: Render2dClipError,
+    },
     /// An immutable image patch cannot be realized under physical precision or resource limits.
     Image {
         /// Root painter-order index of the affected image.
@@ -465,6 +472,9 @@ impl fmt::Display for Render2dExecutionError {
             Self::Image { root_index, kind } => {
                 write!(formatter, "2D image item {root_index}: {kind:?}")
             }
+            Self::Clip { root_index, kind } => {
+                write!(formatter, "2D clipped item {root_index}: {kind:?}")
+            }
             Self::ResourceBindings(error) => error.fmt(formatter),
             Self::Target(error) => error.fmt(formatter),
             Self::UnsupportedContent(error) => error.fmt(formatter),
@@ -491,6 +501,19 @@ impl fmt::Display for Render2dExecutionError {
 }
 
 impl Error for Render2dExecutionError {}
+
+/// Stable conjunctive clip realization failure without a public mask or stencil backend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Render2dClipError {
+    /// Geometry or masking cannot preserve finite physical sample precision.
+    PrecisionLimit,
+    /// Tessellation input, temporary raster work, or mask memory exceeds policy.
+    ResourceLimit,
+    /// Device workload lacks private RGBA8 mask sampling/transfer capabilities.
+    FormatUnsupported,
+    /// Accepted source-neutral clip shape cannot be tessellated faithfully.
+    TessellationFailed,
+}
 
 /// Stable image physical realization failure, without exposing texture/backend identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
