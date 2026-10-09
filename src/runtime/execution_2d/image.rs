@@ -65,9 +65,9 @@ pub(super) fn neutral_support(
     ];
     for patch in image.patches() {
         let dest = patch.destination();
-        let src = patch.source();
-        if dest.width() == 0.0 || dest.height() == 0.0 || src.width() == 0.0 || src.height() == 0.0
-        {
+        // Even a zero-area source crop retains destination geometry under F1:
+        // sampled color is absent, but an enclosing effect can use this support.
+        if dest.width() == 0.0 || dest.height() == 0.0 {
             continue;
         }
         let points = [
@@ -339,7 +339,9 @@ mod neutral_tests {
         let support = neutral_support(&item, &image, 0, 1.0, 4096)
             .unwrap()
             .unwrap();
-        assert_eq!(support.bounds, [5.0, -2.0, 7.0, 4.0]);
-        assert_eq!(support.triangles.len(), 6);
+        // Source rectangle #2 has width zero but a positive destination extent.
+        // Both destination rectangles are neutral geometry despite zero item opacity.
+        assert_eq!(support.bounds, [5.0, -2.0, 21.0, 4.0]);
+        assert_eq!(support.triangles.len(), 12);
     }
 }
