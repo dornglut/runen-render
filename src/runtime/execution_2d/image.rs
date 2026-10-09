@@ -37,7 +37,7 @@ fn narrow(value: f64, root_index: usize) -> Result<f32, Render2dExecutionError> 
 /// This is a disposable private physical approximation of immutable F1
 /// destination patches, not a source-authority image-alpha mask. Group effects
 /// and item clips consume the patches at a later F3F lowering boundary.
-#[allow(dead_code, reason = "F3F neutral image support awaits unified group-effect lowering")]
+#[allow(dead_code, reason = "awaiting F3F group lowering")]
 pub(super) fn neutral_support(
     item: &Render2dItem,
     image: &Render2dImagePrimitive,
@@ -57,12 +57,19 @@ pub(super) fn neutral_support(
         return Ok(None);
     }
     let mut triangles = Vec::new();
-    let mut bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
     for patch in image.patches() {
         let dest = patch.destination();
         let src = patch.source();
-        if dest.width() == 0.0 || dest.height() == 0.0 ||
-            src.width() == 0.0 || src.height() == 0.0
+        if dest.width() == 0.0
+            || dest.height() == 0.0
+            || src.width() == 0.0
+            || src.height() == 0.0
         {
             continue;
         }
@@ -76,16 +83,18 @@ pub(super) fn neutral_support(
         for (index, [x, y]) in points.into_iter().enumerate() {
             let px = a.mul_add(x, c.mul_add(y, tx)) * raster_scale;
             let py = b.mul_add(x, d.mul_add(y, ty)) * raster_scale;
-            if !px.is_finite() || !py.is_finite() ||
-                px.abs().max(py.abs()) * f64::EPSILON >= 1.0 / 4096.0
+            if !px.is_finite()
+                || !py.is_finite()
+                || px.abs().max(py.abs()) * f64::EPSILON >= 1.0 / 4096.0
             {
                 return Err(failure(root_index, Render2dImageError::PrecisionLimit));
             }
             physical[index] = [px, py];
         }
-        let count = triangles.len().checked_add(6).ok_or_else(|| {
-            failure(root_index, Render2dImageError::ResourceLimit)
-        })?;
+        let count = triangles
+            .len()
+            .checked_add(6)
+            .ok_or_else(|| failure(root_index, Render2dImageError::ResourceLimit))?;
         let bytes = u64::try_from(count)
             .ok()
             .and_then(|n| n.checked_mul(crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE))
@@ -93,8 +102,14 @@ pub(super) fn neutral_support(
         if bytes > max_buffer_bytes {
             return Err(failure(root_index, Render2dImageError::ResourceLimit));
         }
-        for point in [physical[0], physical[1], physical[2],
-                      physical[0], physical[2], physical[3]] {
+        for point in [
+            physical[0],
+            physical[1],
+            physical[2],
+            physical[0],
+            physical[2],
+            physical[3],
+        ] {
             bounds[0] = bounds[0].min(point[0]);
             bounds[1] = bounds[1].min(point[1]);
             bounds[2] = bounds[2].max(point[0]);
@@ -262,7 +277,7 @@ pub(super) fn realize(
 mod neutral_tests {
     use super::*;
     use crate::composition_2d::{
-        Render2dAffineTransform, Render2dColorRgba8, Render2dImagePatch,
+        Render2dAffineTransform, Render2dImagePatch,
         Render2dImageSourceRect, Render2dOpacity, Render2dPixelExtent, Render2dResourceId,
     };
 
@@ -294,7 +309,6 @@ mod neutral_tests {
                 kind: Render2dImageError::ResourceLimit
             }
         ));
-        let _ = Render2dColorRgba8::TRANSPARENT;
     }
 
     #[test]

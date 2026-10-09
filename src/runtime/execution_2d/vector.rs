@@ -146,13 +146,9 @@ pub(super) fn realize(
     let geometry = tessellate_shape(shape, stroke, root_index, stretch)?;
     let mut triangles = Vec::new();
     for indices in geometry.indices.as_chunks::<3>().0 {
-        let Some(triangle) = transformed_triangle(
-            &geometry,
-            indices,
-            [a, b, c, d, tx, ty],
-            scale,
-            root_index,
-        )? else {
+        let Some(triangle) =
+            transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
+        else {
             continue;
         };
         let mut polygon = Vec::from(triangle);
@@ -244,7 +240,7 @@ fn transformed_triangle(
 /// This private geometry retains the same bounded tessellation and precision
 /// admission as visible vectors. Shadow-specific morphology, clips, halo, and
 /// group support are derived by the F3F composition compiler, not by this leaf.
-#[allow(dead_code, reason = "F3F neutral geometry is consumed by the pending unified-shadow lowering")]
+#[allow(dead_code, reason = "awaiting F3F group lowering")]
 pub(super) fn neutral_support(
     item: &Render2dItem,
     root_index: usize,
@@ -266,16 +262,22 @@ pub(super) fn neutral_support(
     }
     let geometry = tessellate_shape(shape, stroke, root_index, stretch)?;
     let mut triangles = Vec::new();
-    let mut bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
     for indices in geometry.indices.as_chunks::<3>().0 {
         let Some(triangle) =
             transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
         else {
             continue;
         };
-        let count = triangles.len().checked_add(3).ok_or_else(|| {
-            error(root_index, Render2dVectorError::ResourceLimit)
-        })?;
+        let count = triangles
+            .len()
+            .checked_add(3)
+            .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
         let bytes = u64::try_from(count)
             .ok()
             .and_then(|n| n.checked_mul(crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE))
@@ -537,21 +539,22 @@ impl StrokeGeometryBuilder for BoundedGeometry {
 mod tests {
     use super::*;
 
-
     #[test]
     fn neutral_support_preserves_transparent_offscreen_fill_and_signed_bounds() {
         let source = Render2dItem::new(
             Render2dPrimitive::Fill {
-                shape: Render2dShape::rect(
-                    Render2dRect::new(-10.0, -2.0, 9.0, 4.0).unwrap(),
-                ),
+                shape: Render2dShape::rect(Render2dRect::new(-10.0, -2.0, 9.0, 4.0).unwrap()),
                 brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
             },
             Render2dAffineTransform::IDENTITY,
             vec![],
             Render2dOpacity::TRANSPARENT,
         );
-        assert!(realize(&source, 3, 1.0, [16.0, 16.0], 4096).unwrap().is_none());
+        assert!(
+            realize(&source, 3, 1.0, [16.0, 16.0], 4096)
+                .unwrap()
+                .is_none()
+        );
         let support = neutral_support(&source, 3, 1.0, 4096)
             .unwrap()
             .expect("transparent offscreen source has semantic geometry");
@@ -563,9 +566,7 @@ mod tests {
     fn neutral_support_applies_local_to_parent_before_parent_frame_effects() {
         let item = Render2dItem::new(
             Render2dPrimitive::Fill {
-                shape: Render2dShape::rect(
-                    Render2dRect::new(0.0, 0.0, 1.0, 1.0).unwrap(),
-                ),
+                shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 1.0, 1.0).unwrap()),
                 brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
             },
             Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 4.0, 0.0).unwrap(),
@@ -588,22 +589,23 @@ mod tests {
     fn neutral_support_preserves_transparent_stroke_and_singular_empty_geometry() {
         let stroke = Render2dItem::new(
             Render2dPrimitive::Stroke {
-                shape: Render2dShape::rect(
-                    Render2dRect::new(-2.0, -2.0, 4.0, 4.0).unwrap(),
-                ),
+                shape: Render2dShape::rect(Render2dRect::new(-2.0, -2.0, 4.0, 4.0).unwrap()),
                 brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
                 style: Render2dStrokeStyle::new(
                     2.0,
                     Render2dStrokeCap::Round,
                     Render2dStrokeJoin::Round,
                     4.0,
-                ).unwrap(),
+                )
+                .unwrap(),
             },
             Render2dAffineTransform::IDENTITY,
             vec![],
             Render2dOpacity::TRANSPARENT,
         );
-        let support = neutral_support(&stroke, 0, 1.0, 1_048_576).unwrap().unwrap();
+        let support = neutral_support(&stroke, 0, 1.0, 1_048_576)
+            .unwrap()
+            .unwrap();
         assert!(support.bounds[0] < -2.0 && support.bounds[2] > 2.0);
         let collapsed = Render2dItem::new(
             stroke.primitive().clone(),
@@ -611,7 +613,11 @@ mod tests {
             vec![],
             Render2dOpacity::OPAQUE,
         );
-        assert!(neutral_support(&collapsed, 0, 1.0, 1_048_576).unwrap().is_none());
+        assert!(
+            neutral_support(&collapsed, 0, 1.0, 1_048_576)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! an MSDF/image sampled footprint, or a second scene representation.
 
 #[derive(Debug)]
-#[allow(dead_code, reason = "F3F prepared neutral support awaits group-effect lowering")]
+#[allow(dead_code, reason = "awaiting F3F group lowering")]
 pub(super) struct NeutralMesh {
     pub(super) triangles: Vec<[f64; 2]>,
     pub(super) bounds: [f64; 4],
