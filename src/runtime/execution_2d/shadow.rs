@@ -73,21 +73,31 @@ struct SourceFrame<'a> {
     child_source: NeutralMesh,
 }
 
+/// Immutable F2 glyph-field quality and F3F disposable geometric sample
+/// density are distinct: a 4x correlated mask must not remint the font cache.
+#[derive(Clone, Copy)]
+pub(super) struct NeutralPreparationScale {
+    pub(super) field_raster_scale: f64,
+    pub(super) geometry_sample_scale: f64,
+}
+
 fn neutral_item(
     item: &Render2dItem,
     path: &[usize],
     bindings: &Render2dResourceBindings,
     field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
-    resolution: f64,
+    scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
 ) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
     let root_index = path[0];
     let result = match item.primitive() {
         Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => {
-            vector::neutral_support(item, root_index, resolution, max_buffer_bytes)?
+            vector::neutral_support(item, root_index, scales.geometry_sample_scale, max_buffer_bytes)?
         }
         Render2dPrimitive::Image(primitive) => {
-            image::neutral_support(item, primitive, root_index, resolution, max_buffer_bytes)?
+            image::neutral_support(
+                item, primitive, root_index, scales.geometry_sample_scale, max_buffer_bytes,
+            )?
         }
         Render2dPrimitive::ShapedText(primitive) => {
             let value = bindings
@@ -96,7 +106,7 @@ fn neutral_item(
             let Render2dResourceValue::ShapedText(resource) = value else {
                 return Err(precision(path, "shaped-text binding kind changed"));
             };
-            let quality = QualityTier::select(resource.font_size(), resolution)
+            let quality = QualityTier::select(resource.font_size(), scales.field_raster_scale)
                 .ok_or_else(|| precision(path, "shaped-text quality is not representable"))?;
             let key = FieldSetKey::new(primitive.resource_id(), quality);
             let fields = field_sets
@@ -120,7 +130,9 @@ fn neutral_item(
                     to_parent: item.local_to_parent(),
                 };
                 if let Some(mesh) =
-                    vector::neutral_shaped_glyph(instance, path, resolution, max_buffer_bytes)?
+                    vector::neutral_shaped_glyph(
+                        instance, path, scales.geometry_sample_scale, max_buffer_bytes,
+                    )?
                 {
                     append(&mut result, &mesh, Render2dAffineTransform::IDENTITY, path)?;
                 }
@@ -136,7 +148,7 @@ fn neutral_item(
         item.clips(),
         root_index,
         path,
-        resolution,
+        scales.geometry_sample_scale,
         max_buffer_bytes,
     )?;
     Ok((!clipped.triangles.is_empty()).then_some(clipped))
@@ -154,7 +166,7 @@ pub(super) fn group_child_sources(
     plan: &scene::Plan<'_>,
     bindings: &Render2dResourceBindings,
     field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
-    resolution: f64,
+    scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
 ) -> Result<BTreeMap<usize, NeutralMesh>, Render2dExecutionError> {
     let mut active = Vec::<SourceFrame<'_>>::new();
@@ -179,7 +191,7 @@ pub(super) fn group_child_sources(
                     path,
                     bindings,
                     field_sets,
-                    resolution,
+                    scales,
                     max_buffer_bytes,
                 )? {
                     charge_vertices(&mut retained_vertices, mesh.triangles.len(), path)?;
@@ -224,7 +236,7 @@ pub(super) fn group_child_sources(
                     frame.group.clips(),
                     frame.path[0],
                     &frame.path,
-                    resolution,
+                    scales.geometry_sample_scale,
                     max_buffer_bytes,
                 )?;
                 if let Some(parent) = active.last_mut() {
@@ -665,7 +677,17 @@ mod tests {
         let composition = Render2dComposition::new(vec![Render2dEntry::group(root)]).unwrap();
         let plan = scene::analyze(&composition).unwrap();
         let empty = Render2dResourceBindings::new(Vec::new()).unwrap();
-        let sources = group_child_sources(&plan, &empty, &BTreeMap::new(), 4.0, 1_048_576).unwrap();
+        let sources = group_child_sources(
+            &plan,
+            &empty,
+            &BTreeMap::new(),
+            NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            1_048_576,
+        )
+        .unwrap();
         assert_eq!(sources.len(), 1);
         let caster = sources.get(&0).unwrap();
         for (actual, expected) in caster.bounds.iter().zip([0.5, 0.0, 2.0, 1.0]) {
@@ -675,6 +697,75 @@ mod tests {
             shadow_envelope(caster, effect, &[0]).unwrap().unwrap(),
             [-0.5, -1.0, 3.0, 2.0]
         );
+    }
+
+    #[test]
+    fn outlined_text_uses_f2_cached_field_tier_independent_of_4x_shadow_density() {
+        use crate::composition_2d::{
+            Render2dComposition, Render2dEntry, Render2dFontBinding, Render2dGlyph,
+            Render2dGroup, Render2dPoint, Render2dResourceBinding, Render2dResourceId,
+            Render2dShapedTextPrimitive, Render2dShapedTextResource,
+        };
+        const FONT: &[u8] = include_bytes!("../../../tests/fixtures/f2_outline.ttf");
+        let id = Render2dResourceId::new(91).unwrap();
+        let resource = Render2dShapedTextResource::new(
+            Render2dFontBinding::new(FONT.to_vec(), 0, Vec::new(), false, None).unwrap(),
+            24.0,
+            vec![Render2dGlyph::new(2, 0.0, 0.0, 24.0).unwrap()],
+        )
+        .unwrap();
+        let tier = QualityTier::select(24.0, 1.0).unwrap();
+        assert_ne!(tier, QualityTier::select(24.0, 4.0).unwrap());
+        let fields = super::super::field::realize(
+            id,
+            &resource,
+            tier,
+            4096,
+            &mut super::super::field::FieldBudget::default(),
+        )
+        .unwrap();
+        let mut cached = BTreeMap::new();
+        cached.insert(FieldSetKey::new(id, tier), Arc::new(fields));
+        let bindings = Render2dResourceBindings::new(vec![Render2dResourceBinding::new(
+            id,
+            Render2dResourceValue::ShapedText(resource),
+        )])
+        .unwrap();
+        let glyph = Render2dItem::new(
+            Render2dPrimitive::ShapedText(Render2dShapedTextPrimitive::new(
+                id,
+                Render2dPoint::new(1.0, 2.0).unwrap(),
+                Render2dColorRgba8::TRANSPARENT,
+            )),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let shadow = Render2dDropShadow::new(
+            0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT,
+        )
+        .unwrap();
+        let group = Render2dGroup::new(
+            vec![Render2dEntry::item(glyph)],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            vec![shadow],
+        );
+        let composition = Render2dComposition::new(vec![Render2dEntry::group(group)]).unwrap();
+        let plan = scene::analyze(&composition).unwrap();
+        let sources = group_child_sources(
+            &plan, &bindings, &cached,
+            NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            1_048_576,
+        )
+        .unwrap();
+        let mesh = sources.get(&0).unwrap();
+        assert!(!mesh.triangles.is_empty());
+        assert!(mesh.bounds[0].is_finite() && mesh.bounds[2] > mesh.bounds[0]);
     }
 
     #[test]
@@ -703,7 +794,10 @@ mod tests {
                 &plan,
                 &Render2dResourceBindings::default(),
                 &BTreeMap::new(),
-                4.0,
+                NeutralPreparationScale {
+                    field_raster_scale: 1.0,
+                    geometry_sample_scale: 4.0,
+                },
                 1_048_576,
             ),
             Err(Render2dExecutionError::UnsupportedEntry {
