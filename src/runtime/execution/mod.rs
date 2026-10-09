@@ -40,8 +40,6 @@ use crate::request::{
 };
 use crate::scene::RenderObjectId;
 #[cfg(test)]
-use crate::scene::RenderSceneRevision;
-#[cfg(test)]
 use crate::surface_input::RenderSurfaceSemanticInputBinding;
 use crate::surface_input::RenderSurfaceSemanticInputGeneration;
 #[cfg(test)]

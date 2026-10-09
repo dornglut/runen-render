@@ -685,7 +685,7 @@ fn camera_compatibility_key_retains_every_non_pose_dependency() {
     update.insert(object);
     store.commit(update).expect("advance test scene revision");
     let mut changed_scene = baseline.clone();
-    changed_scene.scene_revision = store.snapshot().revision();
+    changed_scene.scene = store.snapshot();
     assert_ne!(changed_scene, baseline);
 }
 

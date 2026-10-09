@@ -1421,11 +1421,12 @@ fn gpu_current_fallback_uses_actual_illumination_not_only_identical_depth() {
 #[test]
 fn equal_numeric_scene_revisions_do_not_certify_different_illumination_histories() {
     let Some(context) = context() else { return };
-    let first_fixture =
-        fixture_with_directional_illumination((8, 8), [0.0, 0.0, 1.0]);
-    let second_fixture =
-        fixture_with_directional_illumination((8, 8), [0.0, 0.0, -1.0]);
-    assert_eq!(first_fixture.scene.revision(), second_fixture.scene.revision());
+    let first_fixture = fixture_with_directional_illumination((8, 8), [0.0, 0.0, 1.0]);
+    let second_fixture = fixture_with_directional_illumination((8, 8), [0.0, 0.0, -1.0]);
+    assert_eq!(
+        first_fixture.scene.revision(),
+        second_fixture.scene.revision()
+    );
     assert_ne!(first_fixture.scene, second_fixture.scene);
     let mut cache = DeterministicResourceCache::default();
     let first = super::prepare_deterministic_render_with_cache_and_evaluation(
@@ -1434,7 +1435,8 @@ fn equal_numeric_scene_revisions_do_not_certify_different_illumination_histories
         &mut cache,
         Some((0, (4, 4))),
         false,
-    ).unwrap();
+    )
+    .unwrap();
     let previous = first
         .radiance_output(0)
         .unwrap()
@@ -1442,7 +1444,11 @@ fn equal_numeric_scene_revisions_do_not_certify_different_illumination_histories
         .unwrap()
         .clone();
     let availability = cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
-    let result = observe(&context, first.work_set().fragments().to_vec(), &[availability]);
+    let result = observe(
+        &context,
+        first.work_set().fragments().to_vec(),
+        &[availability],
+    );
     assert!(result[0].iter().any(|word| *word == 2));
     cache.reconcile_temporal_outputs(true);
     let second = super::prepare_deterministic_render_with_cache_and_evaluation(
@@ -1451,13 +1457,17 @@ fn equal_numeric_scene_revisions_do_not_certify_different_illumination_histories
         &mut cache,
         Some((0, (4, 4))),
         false,
-    ).unwrap();
+    )
+    .unwrap();
     let current = second
         .radiance_output(0)
         .unwrap()
         .temporal_execution_evidence()
         .unwrap();
-    assert!(current.history_reset, "distinct emitter facts reject same-revision history");
+    assert!(
+        current.history_reset,
+        "distinct emitter facts reject same-revision history"
+    );
     assert_eq!(current.phase, 0);
     assert_eq!(current.history_age, 0);
     assert_ne!(current.history_generation, previous.history_generation);
