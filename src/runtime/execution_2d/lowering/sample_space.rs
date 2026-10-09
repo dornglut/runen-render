@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 const MAX_PRIVATE_SCRATCH_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_IMAGE_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_PATCH_PARAMETER_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_TEXT_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
+
 const MAX_TILE_SIDE: u32 = 256;
 const MAX_TILES: u64 = 16384;
 const MAX_OPERATIONS: usize = 1_048_576;
@@ -873,7 +873,6 @@ pub(in crate::runtime::execution_2d) fn lower(
     // Reuse F2's already-realized immutable fields. No reshaping, font fallback,
     // alternate text cache or per-tile reupload is introduced here.
     let mut text_views = BTreeMap::<super::FieldTextureKey, GpuTextureViewHandle>::new();
-    let mut text_upload_bytes = 0_u64;
     for item in items.iter().flatten() {
         let PreparedItem::Text(glyphs) = item else {
             continue;
@@ -886,16 +885,8 @@ pub(in crate::runtime::execution_2d) fn lower(
             if text_views.contains_key(&key) {
                 continue;
             }
-            let bytes = u64::try_from(glyph.occurrence.field.rgba8().len())
-                .map_err(|_| failure("text field upload size overflow"))?;
-            text_upload_bytes = text_upload_bytes
-                .checked_add(bytes)
-                .ok_or_else(|| failure("aggregate text field upload overflow"))?;
-            if text_upload_bytes > MAX_TEXT_UPLOAD_BYTES {
-                return Err(failure(
-                    "aggregate text field upload exceeds bounded admission",
-                ));
-            }
+            // The invocation-wide field budget was already enforced before
+            // generating any CPU MSDF bitmap or borrowing cached fields.
             let view = super::create_field_view(&mut resources, key, &glyph.occurrence.field)?;
             text_views.insert(key, view);
         }

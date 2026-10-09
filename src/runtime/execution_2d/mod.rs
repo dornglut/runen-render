@@ -66,6 +66,7 @@ impl Render2dExecutionState {
         }
 
         let mut observed_updates = Vec::new();
+        let mut field_budget = field::FieldBudget::default();
         let mut field_updates = Vec::new();
         let mut resolved_fields = BTreeMap::<FieldSetKey, Arc<ResourceFields>>::new();
 
@@ -92,6 +93,9 @@ impl Render2dExecutionState {
                 existing
                     .validate_texture_limit(resource_id, admitted_target.max_texture_dimension_2d())
                     .map_err(crate::execution_2d::Render2dExecutionError::ShapedText)?;
+                existing
+                    .charge_cached(resource_id, &mut field_budget)
+                    .map_err(crate::execution_2d::Render2dExecutionError::ShapedText)?;
                 resolved_fields.insert(key, Arc::clone(existing));
                 continue;
             }
@@ -101,6 +105,7 @@ impl Render2dExecutionState {
                 resource,
                 quality,
                 admitted_target.max_texture_dimension_2d(),
+                &mut field_budget,
             )?);
             resolved_fields.insert(key, Arc::clone(&realized));
             field_updates.push((key, realized));
