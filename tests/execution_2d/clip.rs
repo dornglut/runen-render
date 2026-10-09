@@ -431,7 +431,10 @@ fn affine_parent_space_clip_with_double_raster_scale_is_not_transformed_twice() 
     let owner = Render2dAffineTransform::translation(2.0, 0.0).unwrap();
     let entry = painted(
         Render2dBrush::solid(Render2dColorRgba8::WHITE),
-        vec![Render2dClip::new(Render2dShape::rect(r(0.0, 0.0, 8.0, 8.0)), affine)],
+        vec![Render2dClip::new(
+            Render2dShape::rect(r(0.0, 0.0, 8.0, 8.0)),
+            affine,
+        )],
         owner,
         1.0,
     );
