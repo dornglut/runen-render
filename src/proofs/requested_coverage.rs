@@ -1929,7 +1929,6 @@ fn phase_fallback_gpu_context_reconstruction_resets_current_evidence() {
     cache.reconcile_temporal_outputs(true);
 }
 
-
 #[test]
 fn oversized_fallback_is_rejected_before_retained_gpu_identity_allocation() {
     let Some(context) = context() else {
