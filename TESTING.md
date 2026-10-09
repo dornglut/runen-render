@@ -156,4 +156,5 @@ fractional intersections that differ from products
 of pixel-averaged clip alphas, typed unadmitted-format failure, empty intersection
 no-work and no leakage across unclipped siblings. CPU mask triangle-sample
 work is bounded across the complete prepared contribution rather than resetting
-at each item; no native-GPU performance claim or persistent GPU mask cache follows.
+at each item. Retained tessellated clip geometry is independently bounded per item;
+no native-GPU performance claim or persistent GPU mask cache follows.

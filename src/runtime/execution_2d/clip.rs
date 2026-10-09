@@ -12,6 +12,7 @@ use crate::execution_2d::{Render2dClipError, Render2dExecutionError, Render2dVec
 const AXIS_SAMPLES: u32 = 4;
 const MAX_MASK_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TRIANGLE_SAMPLES: u64 = 1_000_000_000;
+const MAX_RETAINED_TRIANGLE_VERTICES: usize = 1_048_576;
 
 #[derive(Debug)]
 pub(super) struct ClipMask {
@@ -38,6 +39,21 @@ fn vector_failure(root_index: usize, err: Render2dExecutionError) -> Render2dExe
         _ => Render2dClipError::TessellationFailed,
     };
     failure(root_index, kind)
+}
+
+fn charge_geometry(
+    used: &mut usize,
+    vertices: usize,
+    root_index: usize,
+) -> Result<(), Render2dExecutionError> {
+    let next = used
+        .checked_add(vertices)
+        .ok_or_else(|| failure(root_index, Render2dClipError::ResourceLimit))?;
+    if next > MAX_RETAINED_TRIANGLE_VERTICES {
+        return Err(failure(root_index, Render2dClipError::ResourceLimit));
+    }
+    *used = next;
+    Ok(())
 }
 
 // Physical bounds as [left, top, right, bottom]. All source operations have
@@ -188,7 +204,9 @@ pub(super) fn prepare(
     let Some(mut bounds) = content_bounds(ordered, target, root_index)? else {
         return Ok(None);
     };
-    let mut geometries = Vec::with_capacity(item.clips().len());
+    // Retaining every authored clip mesh must remain bounded independently of mask size.
+    let mut geometries = Vec::new();
+    let mut retained_vertices = 0usize;
     for clip in item.clips() {
         let primitive = Render2dPrimitive::Fill {
             shape: clip.shape().clone(),
@@ -219,6 +237,7 @@ pub(super) fn prepare(
             return Ok(None);
         };
         bounds = region;
+        charge_geometry(&mut retained_vertices, mesh.triangles.len(), root_index)?;
         geometries.push(mesh);
     }
     let width_u32 = bounds[2] - bounds[0];
@@ -283,6 +302,22 @@ pub(super) fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_clip_geometry_is_bounded_before_another_mesh_is_kept() {
+        let mut retained_vertices = MAX_RETAINED_TRIANGLE_VERTICES - 3;
+        charge_geometry(&mut retained_vertices, 3, 1)
+            .expect("final geometry fits the per-item budget");
+        assert_eq!(retained_vertices, MAX_RETAINED_TRIANGLE_VERTICES);
+        assert!(matches!(
+            charge_geometry(&mut retained_vertices, 1, 2),
+            Err(Render2dExecutionError::Clip {
+                root_index: 2,
+                kind: Render2dClipError::ResourceLimit,
+            })
+        ));
+        assert_eq!(retained_vertices, MAX_RETAINED_TRIANGLE_VERTICES);
+    }
 
     #[test]
     fn raster_work_budget_is_cumulative_and_rejects_before_mutating_coverage() {

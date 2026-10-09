@@ -224,15 +224,13 @@ impl Render2dExecutionState {
                 ordered.push(lowering::OrderedItem::Vector(mesh));
             }
             if !item.clips().is_empty() {
-                if let Some(mask) =
-                    clip::prepare(
-                        item,
-                        &ordered[root_start..],
-                        root_index,
-                        &admitted_target,
-                        &mut clip_raster_work,
-                    )?
-                {
+                if let Some(mask) = clip::prepare(
+                    item,
+                    &ordered[root_start..],
+                    root_index,
+                    &admitted_target,
+                    &mut clip_raster_work,
+                )? {
                     clip_bytes = clip_bytes
                         .checked_add(u64::try_from(mask.rgba.len()).map_err(|_| {
                             clip::failure(
