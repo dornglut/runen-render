@@ -490,7 +490,10 @@ pub(in crate::runtime::execution_2d) fn admits_sample_plane(context: &GpuContext
         .format_roles()
         .collect::<BTreeSet<_>>();
     [
-        (GpuTextureFormat::Rgba16Float, GpuFormatRole::ColorAttachment),
+        (
+            GpuTextureFormat::Rgba16Float,
+            GpuFormatRole::ColorAttachment,
+        ),
         (GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable),
         (GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled),
         (FIELD_FORMAT, GpuFormatRole::ColorAttachment),

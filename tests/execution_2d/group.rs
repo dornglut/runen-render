@@ -466,7 +466,6 @@ fn multi_tile_image_item_and_group_clips_retain_absolute_sample_phase() {
     }
 }
 
-
 #[test]
 fn direct_root_and_identity_group_share_disjoint_4x4_source_over_law() {
     let Some(ctx) = context() else {
@@ -511,11 +510,8 @@ fn direct_root_image_item_opacity_matches_identity_group_r1() {
     let id = Render2dResourceId::new(779).unwrap();
     let source = image_binding(id, [255, 0, 0, 128]);
     let direct = Render2dComposition::new(vec![repeated_image_patches(id, 0.5)]).unwrap();
-    let grouped = Render2dComposition::new(vec![group(
-        vec![repeated_image_patches(id, 0.5)],
-        1.0,
-    )])
-    .unwrap();
+    let grouped =
+        Render2dComposition::new(vec![group(vec![repeated_image_patches(id, 0.5)], 1.0)]).unwrap();
     let direct_image = execute(
         &ctx,
         &mut Render2dExecutor::new(),
@@ -532,7 +528,12 @@ fn direct_root_image_item_opacity_matches_identity_group_r1() {
     );
     let straight_alpha = f64::from(128_u8) / 255.0;
     let item_alpha = (1.0 - (1.0 - straight_alpha).powi(2)) * 0.5;
-    let expected = [encode_linear(item_alpha), 0, 0, (item_alpha * 255.0).round() as u8];
+    let expected = [
+        encode_linear(item_alpha),
+        0,
+        0,
+        (item_alpha * 255.0).round() as u8,
+    ];
     for result in [&direct_image, &identity_image] {
         pixel_close(pixel(result, 20, 20), expected);
     }
