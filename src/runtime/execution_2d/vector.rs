@@ -204,6 +204,64 @@ pub(super) fn realize(
     }))
 }
 
+/// Retained shaped-glyph geometry in the owning item's immediate-parent frame.
+///
+/// The same unhinted, variation-resolved font outline used for F2 MSDF
+/// generation is re-tessellated by the F3 vector authority. MSDF pixels,
+/// foreground alpha, field overscan and final-target clipping never define
+/// neutral glyph support. An ancestor affine is deliberately absent: effects
+/// using this support operate in their group's parent frame first.
+#[allow(dead_code, reason = "F3F group support integration in progress")]
+pub(super) fn neutral_shaped_glyph(
+    field: &super::field::GlyphField,
+    resource_id: Render2dResourceId,
+    glyph_origin: [f64; 2],
+    font_size: f64,
+    glyph_to_parent: Render2dAffineTransform,
+    path: &[usize],
+    samples_per_parent_logical_unit: f64,
+    max_buffer_bytes: u64,
+) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
+    let precision = || Render2dExecutionError::SampleSpace {
+        kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+        path: Some(path.to_vec()),
+        detail: "unrepresentable shaped-glyph parent-frame support".to_owned(),
+    };
+    if !font_size.is_finite()
+        || font_size <= 0.0
+        || !samples_per_parent_logical_unit.is_finite()
+        || samples_per_parent_logical_unit <= 0.0
+        || !glyph_origin.iter().all(|component| component.is_finite())
+    {
+        return Err(precision());
+    }
+    let [a, b, c, d, tx, ty] = glyph_to_parent.components();
+    let transform = Render2dAffineTransform::new(
+        a * font_size,
+        b * font_size,
+        c * font_size,
+        d * font_size,
+        a.mul_add(glyph_origin[0], c.mul_add(glyph_origin[1], tx)),
+        b.mul_add(glyph_origin[0], d.mul_add(glyph_origin[1], ty)),
+    )
+    .map_err(|_| precision())?;
+    let item = Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: field.neutral_shape(resource_id)?,
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        transform,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    );
+    neutral_support(
+        &item,
+        path[0],
+        samples_per_parent_logical_unit,
+        max_buffer_bytes,
+    )
+}
+
 /// A source-neutral vector's tessellated physical support before paint/canvas culling.
 ///
 /// Triangles are disposable physical approximations of the accepted semantic geometry;
