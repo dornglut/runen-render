@@ -42,12 +42,11 @@ pub(super) fn gaussian_kernel(
         path: Some(path.to_vec()),
         detail: detail.to_owned(),
     };
-    if !sigma.is_finite()
-        || sigma < 0.0
-        || !sample_scale.is_finite()
-        || sample_scale <= 0.0
-    {
-        return Err(fail(Render2dSampleSpaceError::PrecisionLimit, "unrepresentable group-parent shadow kernel"));
+    if !sigma.is_finite() || sigma < 0.0 || !sample_scale.is_finite() || sample_scale <= 0.0 {
+        return Err(fail(
+            Render2dSampleSpaceError::PrecisionLimit,
+            "unrepresentable group-parent shadow kernel",
+        ));
     }
     if sigma == 0.0 {
         return Ok(GaussianKernel {
@@ -58,16 +57,29 @@ pub(super) fn gaussian_kernel(
     let physical_sigma = sigma * sample_scale;
     let cutoff = physical_sigma * 3.0;
     if !cutoff.is_finite() || physical_sigma <= 0.0 {
-        return Err(fail(Render2dSampleSpaceError::PrecisionLimit, "shadow blur sample scale is not representable"));
+        return Err(fail(
+            Render2dSampleSpaceError::PrecisionLimit,
+            "shadow blur sample scale is not representable",
+        ));
     }
     if cutoff.ceil() > f64::from(MAX_GAUSSIAN_RADIUS_SAMPLES) {
-        return Err(fail(Render2dSampleSpaceError::ResourceLimit, "shadow blur radius exceeds bounded sample kernel"));
+        return Err(fail(
+            Render2dSampleSpaceError::ResourceLimit,
+            "shadow blur radius exceeds bounded sample kernel",
+        ));
     }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "finite nonnegative radius was bounded to 512 samples")]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "finite nonnegative radius was bounded to 512 samples"
+    )]
     let radius = cutoff.ceil() as usize;
     let mut weights = Vec::new();
     weights.try_reserve_exact(radius + 1).map_err(|_| {
-        fail(Render2dSampleSpaceError::ResourceLimit, "shadow blur kernel allocation failed")
+        fail(
+            Render2dSampleSpaceError::ResourceLimit,
+            "shadow blur kernel allocation failed",
+        )
     })?;
     for offset in 0..=radius {
         let distance = f64::from(u32::try_from(offset).expect("bounded blur sample radius"));
@@ -80,7 +92,10 @@ pub(super) fn gaussian_kernel(
     }
     let normalizer = weights[0] + 2.0 * weights.iter().skip(1).sum::<f64>();
     if !normalizer.is_finite() || normalizer <= 0.0 {
-        return Err(fail(Render2dSampleSpaceError::PrecisionLimit, "shadow blur kernel normalization failed"));
+        return Err(fail(
+            Render2dSampleSpaceError::PrecisionLimit,
+            "shadow blur kernel normalization failed",
+        ));
     }
     for weight in &mut weights {
         *weight /= normalizer;
@@ -100,7 +115,12 @@ mod tests {
         let sum = kernel.weights[0] + 2.0 * kernel.weights.iter().skip(1).sum::<f64>();
         assert!((sum - 1.0).abs() <= 1.0e-12);
         assert!(kernel.weights.windows(2).all(|pair| pair[0] >= pair[1]));
-        assert!(kernel.weights.iter().all(|value| value.is_finite() && *value >= 0.0));
+        assert!(
+            kernel
+                .weights
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.0)
+        );
         let fractional = gaussian_kernel(0.26, 1.0, &[4]).unwrap();
         assert_eq!(fractional.radius, 1);
         assert_eq!(fractional.weights[1], 0.0);
