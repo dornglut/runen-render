@@ -99,6 +99,79 @@ composed in isolated sample-space color before group clips and group opacity
 apply exactly once. Ordinary shadows/effects and native presentation remain
 outside the admitted realization and reject or stay downstream-owned respectively.
 
+### Ordinary group-shadow semantic law (F3F)
+
+The immutable F1 group-shadow contract is source-neutral and independent of
+the physical shadow renderer. This paragraph defines admitted *meaning*; until
+F3F implementation acceptance, `execution_2d` continues to reject nonempty
+shadow lists with a typed unsupported-content outcome.
+
+For an attached group's **immediate-parent logical coordinate system**, let
+`C` be the union of its direct children's neutral effect-support sets after
+mapping them into that parent frame. An item's set is its transformed fill
+geometry (respecting fill rule), centered stroke geometry (including caps and
+joins), resolved image **destination** patch rectangles, or positioned shaped
+glyph **outline** geometry, intersected with that item's conjunctive
+immediate-parent-space clips. A child group's set includes its own child and
+shadow supports after its own clips. These neutral sets are independent of
+brush and foreground alpha, image texel alpha, item and group opacity, shadow
+color alpha, atlas/MSDF sampling, and device/cache state. Intrinsic or physical
+classes that cannot be represented remain typed capability failures, not
+alpha-mask approximations. Empty or rank-degenerate filled geometry has empty
+support, but transparent *color* never erases geometric support.
+
+Each shadow in the ordered list independently consumes **the same**
+pre-shadow set `C`; shadows do not derive geometry from previous shadows.
+For signed finite spread `s`, its exact spread set is the Euclidean
+Minkowski dilation `C ⊕ disk(s)` if `s > 0`, unchanged `C` if `s = 0`,
+or the Euclidean disk erosion `C ⊖ disk(-s)` if `s < 0`.
+Complete erosion has empty support. Apply the shadow's finite
+`(offset_x, offset_y)` translation **in the group's immediate-parent
+logical frame** after spread. For `sigma > 0`, the finite separable
+Gaussian-style coverage blur has no support beyond three sigma per logical
+axis; the **neutral support envelope** is the translated spread set
+Minkowski-summed with the closed axis-aligned square
+`[-3*sigma, 3*sigma] × [-3*sigma, 3*sigma]`. For `sigma = 0`,
+blur is the identity. For `sigma > 0`, the reference alpha coverage is
+the convolution of the translated spread set's indicator function with
+separable, unit-integral one-dimensional kernels proportional to
+`exp(-t*t/(2*sigma*sigma))` inside `[-3*sigma, 3*sigma]` and zero
+outside. Normalization keeps fully covered interiors at unit coverage.
+The square defines the cutoff/envelope, **not** the signed Euclidean
+spread kernel. Bounded, deterministic physical blur weights inside that
+cutoff may approximate this reference within independently established
+quality/tolerance bounds; cached alpha is never propagated as the
+neutral support envelope.
+
+Effects are in the **immediate-parent** logical frame, *not* the
+attached group's own local geometry frame. First map the children through
+`group.local_to_parent` and then apply the parent-frame effect offset,
+spread and blur. The group's clips also use that parent frame. An
+**ancestor** affine subsequently maps the finished group color and neutral
+support into its own frame, so transformed ancestor effects can become
+non-axis-aligned in root space. For example, group-local `x=[0,1]`,
+local-to-parent horizontal scale `2`, spread `+1`, and zero blur/
+offset yield parent-space `x=[-1,3]`, **not** `[-2,4]`.
+
+Paint shadow colors in their stable authored list order, with each later
+shadow source-over the earlier translucent shadows in linear-premultiplied
+space. Then compose the already-ordered child color **over** the completed
+shadow colors; apply the group's conjunctive parent-space clips, then
+its opacity **exactly once**, then source-over the entire atomic group
+into its parent. Neutral output support propagated to an ancestor is the
+union of `C` and every independently derived shadow envelope, intersected
+with group clips and independent of group opacity and shadow color alpha.
+
+Neutral support and complete finite effect extent MUST be derived **before**
+early final-target culling. An invisible or fully offscreen primitive can
+still affect the visible target through offset/spread/blur or through a
+nested ancestor shadow. Private F3F implementations must preflight
+geometry/precision, morphology, halo tiles, memory, GPU work and nested
+intermediates before modifying caller-owned target content, retaining F3E's
+single correlated 4×4 premultiplied composition and RunenGPU work evidence.
+The implementation may choose disposable tessellation, masks, caches and
+bounded approximations only where they preserve this semantic law.
+
 The reusable semantic root is one lifetime-neutral immutable 2D composition
 value. It represents resolved renderer meaning such as:
 

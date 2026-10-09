@@ -265,8 +265,12 @@ impl Render2dBrush {
 
 /// Ordinary source-neutral drop shadow.
 ///
-/// Shadow support derives from neutral semantic child geometry, not cached sampled alpha.
-/// Offset and signed spread are logical semantic values; sigma is finite and non-negative.
+/// A group's shadows share one neutral child-geometry support source, independent of paint alpha
+/// and prior shadows. Effects act after the group local-to-parent transform, in the group's
+/// immediate-parent logical frame (the same frame as its structural clips). Signed spread is
+/// Euclidean dilation/erosion; offset follows spread, and finite blur support is bounded by
+/// three sigma per logical axis. The shadows paint in authored order behind group children,
+/// before once-only group clips and opacity. See `ARCHITECTURE.md` for the full F1 law.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Render2dDropShadow {
     offset_x: f64,
