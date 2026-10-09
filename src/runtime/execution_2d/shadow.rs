@@ -696,8 +696,7 @@ mod tests {
             Render2dOpacity::OPAQUE,
             vec![effect],
         );
-        let composition =
-            Render2dComposition::new(vec![Render2dEntry::group(parent)]).unwrap();
+        let composition = Render2dComposition::new(vec![Render2dEntry::group(parent)]).unwrap();
         let plan = scene::analyze(&composition).unwrap();
         assert!(matches!(
             group_child_sources(
