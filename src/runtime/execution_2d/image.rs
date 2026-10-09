@@ -66,10 +66,7 @@ pub(super) fn neutral_support(
     for patch in image.patches() {
         let dest = patch.destination();
         let src = patch.source();
-        if dest.width() == 0.0
-            || dest.height() == 0.0
-            || src.width() == 0.0
-            || src.height() == 0.0
+        if dest.width() == 0.0 || dest.height() == 0.0 || src.width() == 0.0 || src.height() == 0.0
         {
             continue;
         }
@@ -277,8 +274,8 @@ pub(super) fn realize(
 mod neutral_tests {
     use super::*;
     use crate::composition_2d::{
-        Render2dAffineTransform, Render2dImagePatch,
-        Render2dImageSourceRect, Render2dOpacity, Render2dPixelExtent, Render2dResourceId,
+        Render2dAffineTransform, Render2dImagePatch, Render2dImageSourceRect, Render2dOpacity,
+        Render2dPixelExtent, Render2dResourceId,
     };
 
     #[test]
@@ -291,7 +288,8 @@ mod neutral_tests {
                 Render2dImageSourceRect::new(0.0, 0.0, 2.0, 2.0).unwrap(),
                 Render2dRect::new(-8.0, -3.0, 4.0, 2.0).unwrap(),
             )],
-        ).unwrap();
+        )
+        .unwrap();
         let item = Render2dItem::new(
             crate::composition_2d::Render2dPrimitive::Image(image.clone()),
             Render2dAffineTransform::IDENTITY,
@@ -299,11 +297,13 @@ mod neutral_tests {
             Render2dOpacity::TRANSPARENT,
         );
         let support = neutral_support(&item, &image, 0, 1.0, 4096)
-            .unwrap().expect("opacity and offscreen canvas cannot erase neutral support");
+            .unwrap()
+            .expect("opacity and offscreen canvas cannot erase neutral support");
         assert_eq!(support.bounds, [-8.0, -3.0, -4.0, -1.0]);
         assert_eq!(support.triangles.len(), 6);
         let error = neutral_support(&item, &image, 0, 1.0, 32).unwrap_err();
-        assert!(matches!(error,
+        assert!(matches!(
+            error,
             Render2dExecutionError::Image {
                 root_index: 0,
                 kind: Render2dImageError::ResourceLimit
@@ -315,7 +315,8 @@ mod neutral_tests {
     fn image_neutral_support_preserves_affine_geometry_and_empty_source() {
         let extent = Render2dPixelExtent::new(4, 4).unwrap();
         let image = Render2dImagePrimitive::new(
-            Render2dResourceId::new(1).unwrap(), extent,
+            Render2dResourceId::new(1).unwrap(),
+            extent,
             vec![
                 Render2dImagePatch::new(
                     Render2dImageSourceRect::new(0.0, 0.0, 1.0, 1.0).unwrap(),
@@ -324,17 +325,20 @@ mod neutral_tests {
                 Render2dImagePatch::new(
                     Render2dImageSourceRect::new(0.0, 0.0, 0.0, 1.0).unwrap(),
                     Render2dRect::new(6.0, 0.0, 2.0, 2.0).unwrap(),
-                )
-            ]
-        ).unwrap();
-        let transform = Render2dAffineTransform::new(
-            2.0, 0.0, 0.0, 3.0, 5.0, -2.0
-        ).unwrap();
+                ),
+            ],
+        )
+        .unwrap();
+        let transform = Render2dAffineTransform::new(2.0, 0.0, 0.0, 3.0, 5.0, -2.0).unwrap();
         let item = Render2dItem::new(
             crate::composition_2d::Render2dPrimitive::Image(image.clone()),
-            transform, vec![], Render2dOpacity::TRANSPARENT
+            transform,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
         );
-        let support = neutral_support(&item, &image, 0, 1.0, 4096).unwrap().unwrap();
+        let support = neutral_support(&item, &image, 0, 1.0, 4096)
+            .unwrap()
+            .unwrap();
         assert_eq!(support.bounds, [5.0, -2.0, 7.0, 4.0]);
         assert_eq!(support.triangles.len(), 6);
     }

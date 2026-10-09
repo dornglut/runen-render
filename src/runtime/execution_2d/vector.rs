@@ -1,8 +1,8 @@
 //! Bounded private tessellation. Stroke geometry stays local until after expansion;
 //! affine transforms therefore preserve centered widths under non-uniform scale.
 
-use crate::composition_2d::*;
 use super::support::NeutralMesh;
+use crate::composition_2d::*;
 use crate::execution_2d::{Render2dExecutionError, Render2dVectorError};
 use lyon_tessellation::{
     FillOptions, FillRule, FillTessellator, FillVertex, LineCap, LineJoin, StrokeOptions,
