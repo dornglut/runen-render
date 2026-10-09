@@ -37,8 +37,7 @@ fn transparent_child_and_group_keep_ordered_signed_shadow_facts() {
         Vec::new(),
         Render2dOpacity::TRANSPARENT,
     ));
-    let transform =
-        Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).expect("scale");
+    let transform = Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).expect("scale");
     let group = Render2dGroup::new(
         vec![child],
         transform,
@@ -64,13 +63,7 @@ fn transparent_child_and_group_keep_ordered_signed_shadow_facts() {
 #[test]
 fn negative_sigma_is_not_a_valid_shadow_blur() {
     assert_eq!(
-        Render2dDropShadow::new(
-            0.0,
-            0.0,
-            -0.5,
-            0.0,
-            Render2dColorRgba8::BLACK,
-        ),
+        Render2dDropShadow::new(0.0, 0.0, -0.5, 0.0, Render2dColorRgba8::BLACK),
         Err(Render2dPaintError::NegativeShadowSigma),
     );
 }
