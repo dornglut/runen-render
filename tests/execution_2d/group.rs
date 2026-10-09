@@ -416,7 +416,6 @@ fn image_binding_identity_survives_group_execution_and_cache_independence() {
     ));
 }
 
-
 #[test]
 fn multi_tile_image_item_and_group_clips_retain_absolute_sample_phase() {
     let Some(ctx) = context() else {
@@ -433,15 +432,9 @@ fn multi_tile_image_item_and_group_clips_retain_absolute_sample_phase() {
         Render2dOpacity::OPAQUE,
         Vec::new(),
     );
-    let distant_group = group(
-        vec![repeated_image_patches_at(id, 510.0, 4.0, 0.25)],
-        1.0,
-    );
-    let composition = Render2dComposition::new(vec![
-        Render2dEntry::group(left_group),
-        distant_group,
-    ])
-    .unwrap();
+    let distant_group = group(vec![repeated_image_patches_at(id, 510.0, 4.0, 0.25)], 1.0);
+    let composition =
+        Render2dComposition::new(vec![Render2dEntry::group(left_group), distant_group]).unwrap();
     let result = super::execute_sized(
         &ctx,
         &mut Render2dExecutor::new(),
@@ -455,12 +448,7 @@ fn multi_tile_image_item_and_group_clips_retain_absolute_sample_phase() {
     let two_patch_alpha = 1.0 - (1.0 - source_alpha).powi(2);
     let expected_at_seam = two_patch_alpha * 0.5 * (3.0 / 4.0);
     let expected_distant = two_patch_alpha * 0.25;
-    let encoded = |alpha: f64| [
-        encode_linear(alpha),
-        0,
-        0,
-        (alpha * 255.0).round() as u8,
-    ];
+    let encoded = |alpha: f64| [encode_linear(alpha), 0, 0, (alpha * 255.0).round() as u8];
     for x in [255, 256] {
         pixel_close(
             super::pixel_sized(&result, 576, x, 20),
@@ -476,4 +464,77 @@ fn multi_tile_image_item_and_group_clips_retain_absolute_sample_phase() {
     for x in [254, 257, 514, 575] {
         pixel_close(super::pixel_sized(&result, 576, x, 20), [0, 0, 0, 0]);
     }
+}
+
+
+#[test]
+fn direct_root_and_identity_group_share_disjoint_4x4_source_over_law() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let painter = || {
+        vec![
+            solid(Render2dColorRgba8::new(255, 0, 0, 255), 10.0, 0.5),
+            solid(Render2dColorRgba8::new(0, 0, 255, 255), 10.5, 0.5),
+        ]
+    };
+    let direct = Render2dComposition::new(painter()).unwrap();
+    let identity = Render2dComposition::new(vec![group(painter(), 1.0)]).unwrap();
+    let ungrouped = execute(
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &direct,
+        &Render2dResourceBindings::default(),
+        "F3E direct-root correlated sibling paints",
+    );
+    let grouped = execute(
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &identity,
+        &Render2dResourceBindings::default(),
+        "F3E identity-group correlated sibling paints",
+    );
+    // Opaque disjoint half-pixel rectangles cover every physical sample.
+    // Legacy separately resolved per-item source-over incorrectly had alpha .75.
+    for result in [&ungrouped, &grouped] {
+        pixel_close(pixel(result, 10, 20), [188, 0, 188, 255]);
+        pixel_close(pixel(result, 11, 20), [0, 0, 0, 0]);
+    }
+    assert_eq!(pixel(&ungrouped, 10, 20), pixel(&grouped, 10, 20));
+}
+
+#[test]
+fn direct_root_image_item_opacity_matches_identity_group_r1() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let id = Render2dResourceId::new(779).unwrap();
+    let source = image_binding(id, [255, 0, 0, 128]);
+    let direct = Render2dComposition::new(vec![repeated_image_patches(id, 0.5)]).unwrap();
+    let grouped = Render2dComposition::new(vec![group(
+        vec![repeated_image_patches(id, 0.5)],
+        1.0,
+    )])
+    .unwrap();
+    let direct_image = execute(
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &direct,
+        &source,
+        "F3E direct-root once-only image opacity",
+    );
+    let identity_image = execute(
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &grouped,
+        &source,
+        "F3E grouped once-only image opacity",
+    );
+    let straight_alpha = f64::from(128_u8) / 255.0;
+    let item_alpha = (1.0 - (1.0 - straight_alpha).powi(2)) * 0.5;
+    let expected = [encode_linear(item_alpha), 0, 0, (item_alpha * 255.0).round() as u8];
+    for result in [&direct_image, &identity_image] {
+        pixel_close(pixel(result, 20, 20), expected);
+    }
+    assert_eq!(pixel(&direct_image, 20, 20), pixel(&identity_image, 20, 20));
 }

@@ -480,6 +480,26 @@ fn inspect(
 /// globally-phased sample plane. This is an admitted *staging subset* of the
 /// same future mixed-content F3E compiler, not a second persistent renderer.
 /// All nonadmitted semantics reject before an external target is modified.
+/// A root-only scene may opt into the coherent compositor when the caller's
+/// explicit GPU admission already covers the private physical sample plane.
+/// Older baseline-only contexts preserve the accepted direct-root path.
+pub(in crate::runtime::execution_2d) fn admits_sample_plane(context: &GpuContext) -> bool {
+    let admitted = context
+        .device_facts()
+        .admission_contract()
+        .format_roles()
+        .collect::<BTreeSet<_>>();
+    [
+        (GpuTextureFormat::Rgba16Float, GpuFormatRole::ColorAttachment),
+        (GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable),
+        (GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled),
+        (FIELD_FORMAT, GpuFormatRole::ColorAttachment),
+        (FIELD_FORMAT, GpuFormatRole::Sampled),
+    ]
+    .into_iter()
+    .all(|role| admitted.contains(&role))
+}
+
 pub(in crate::runtime::execution_2d) fn lower(
     context: &GpuContext,
     target: &AdmittedTarget,

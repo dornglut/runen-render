@@ -46,13 +46,26 @@ impl Render2dExecutionState {
     ) -> Result<Render2dPreparedContribution, Render2dExecutionError> {
         composition.validate_bindings(bindings)?;
         let plan = scene::analyze(composition)?;
-        // F3E's admitted vector-only tree uses one correlated physical 4x4
-        // sample plane for roots AND isolated nested groups. Other grouped
-        // semantic classes are rejected before any external target mutation.
-        if plan
+        // Coherent item/group/source-over must use one physical law whenever
+        // all authored content fits the admitted sample-plane subset. Keep the
+        // accepted F2/MSDF direct-root path and older limited GPU admissions
+        // intact until F3E's full mixed-content cutover is validated.
+        let has_group = plan
             .events
             .iter()
-            .any(|event| matches!(event, scene::Event::BeginGroup { .. }))
+            .any(|event| matches!(event, scene::Event::BeginGroup { .. }));
+        let direct_sample_subset = !plan.events.is_empty()
+            && plan.events.iter().all(|event| match event {
+                scene::Event::Item { item, .. } => matches!(
+                    item.primitive(),
+                    Render2dPrimitive::Fill { .. }
+                        | Render2dPrimitive::Stroke { .. }
+                        | Render2dPrimitive::Image(_)
+                ),
+                scene::Event::BeginGroup { .. } | scene::Event::EndGroup => true,
+            });
+        if has_group
+            || (direct_sample_subset && lowering::sample_space::admits_sample_plane(context))
         {
             let admitted_target = lowering::admit_target(context, target, false)?;
             // Image identity observation remains a transaction on the

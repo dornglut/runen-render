@@ -551,7 +551,15 @@ fn execute(
     bindings: &Render2dResourceBindings,
     label: &str,
 ) -> GpuReadbackBytes {
-    execute_sized(context, executor, composition, bindings, label, WIDTH, HEIGHT)
+    execute_sized(
+        context,
+        executor,
+        composition,
+        bindings,
+        label,
+        WIDTH,
+        HEIGHT,
+    )
 }
 
 /// Bounded canvas-size override for independent F3E multi-tile public oracles.
