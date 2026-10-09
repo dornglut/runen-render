@@ -3,10 +3,9 @@
 //! These pixels are computed independently from straight-alpha source facts.
 use super::*;
 use runen_render::composition_2d::{
-    Render2dBrush, Render2dClip, Render2dGradientStop, Render2dGradientStops,
-    Render2dImagePatch, Render2dImagePrimitive, Render2dImageResource,
-    Render2dImageSourceRect, Render2dLinearGradient, Render2dPixelExtent, Render2dRect,
-    Render2dShape,
+    Render2dBrush, Render2dClip, Render2dGradientStop, Render2dGradientStops, Render2dImagePatch,
+    Render2dImagePrimitive, Render2dImageResource, Render2dImageSourceRect, Render2dLinearGradient,
+    Render2dPixelExtent, Render2dRect, Render2dShape,
 };
 
 fn context() -> Option<GpuContext> {
@@ -24,7 +23,10 @@ fn context() -> Option<GpuContext> {
         (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource),
         (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Sampled),
         (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Filterable),
-        (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopyDestination),
+        (
+            GpuTextureFormat::Rgba8UnormSrgb,
+            GpuFormatRole::CopyDestination,
+        ),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::CopyDestination),
@@ -321,7 +323,6 @@ fn fractional_group_clip_and_gradient_source_share_exact_samples() {
     pixel_close(pixel(&result, 11, 20), [0, 0, 0, 0]);
 }
 
-
 fn repeated_image_patches(id: Render2dResourceId, item_opacity: f64) -> Render2dEntry {
     let patch = Render2dImagePatch::new(
         Render2dImageSourceRect::new(0.0, 0.0, 1.0, 1.0).unwrap(),
@@ -358,11 +359,8 @@ fn overlapping_image_patches_apply_item_opacity_once_after_ordered_source_over()
         return;
     };
     let id = Render2dResourceId::new(776).unwrap();
-    let composition = Render2dComposition::new(vec![group(
-        vec![repeated_image_patches(id, 0.5)],
-        1.0,
-    )])
-    .unwrap();
+    let composition =
+        Render2dComposition::new(vec![group(vec![repeated_image_patches(id, 0.5)], 1.0)]).unwrap();
     let bytes = execute(
         &ctx,
         &mut Render2dExecutor::new(),
@@ -388,11 +386,8 @@ fn image_binding_identity_survives_group_execution_and_cache_independence() {
         return;
     };
     let id = Render2dResourceId::new(777).unwrap();
-    let composition = Render2dComposition::new(vec![group(
-        vec![repeated_image_patches(id, 0.75)],
-        1.0,
-    )])
-    .unwrap();
+    let composition =
+        Render2dComposition::new(vec![group(vec![repeated_image_patches(id, 0.75)], 1.0)]).unwrap();
     let mut executor = Render2dExecutor::new();
     let binding = image_binding(id, [255, 0, 0, 128]);
     let _ = execute(

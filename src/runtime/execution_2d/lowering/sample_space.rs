@@ -935,7 +935,11 @@ pub(in crate::runtime::execution_2d) fn lower(
                                         origin_sample,
                                     );
                                     draws.push(image_draw(
-                                        &image_pipeline, patch, &vertices, physical, &mut resources,
+                                        &image_pipeline,
+                                        patch,
+                                        &vertices,
+                                        physical,
+                                        &mut resources,
                                     )?);
                                 }
                                 if !draws.is_empty() {

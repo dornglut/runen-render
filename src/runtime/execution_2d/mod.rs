@@ -80,7 +80,8 @@ impl Render2dExecutionState {
                     updates.push((id, value.clone()));
                 }
             }
-            let lowered = lowering::sample_space::lower(context, &admitted_target, &plan, bindings)?;
+            let lowered =
+                lowering::sample_space::lower(context, &admitted_target, &plan, bindings)?;
             self.observed.extend(updates);
             return Ok(Render2dPreparedContribution::new(
                 lowered,
