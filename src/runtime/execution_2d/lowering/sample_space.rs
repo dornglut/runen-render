@@ -385,8 +385,25 @@ fn text_quad(glyph: &PreparedGlyph, origin: [u32; 2], end: [u32; 2], dimension: 
 /// An indexed physical realization only, aligned with the ONE F1 painter plan.
 struct Inspected {
     items: Vec<Option<PreparedItem>>,
+    group_bounds: Vec<Option<[u32; 4]>>,
     bounds: [u32; 4],
     peak_group_depth: usize,
+}
+
+/// Pure, conservative physical bounds; only semantic clips decide exact
+/// correlated-sample coverage after this non-authoritative culling step.
+fn intersection(a: [u32; 4], b: [u32; 4]) -> Option<[u32; 4]> {
+    let bounds = [
+        a[0].max(b[0]),
+        a[1].max(b[1]),
+        a[2].min(b[2]),
+        a[3].min(b[3]),
+    ];
+    (bounds[0] < bounds[2] && bounds[1] < bounds[3]).then_some(bounds)
+}
+
+fn union(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
 }
 
 fn charge_vector_geometry(
@@ -435,6 +452,8 @@ fn admit_tile_work(
 struct GroupFrame<'a> {
     group: &'a Render2dGroup,
     visible: bool,
+    painted: bool,
+    begin_operations: usize,
     clip: Option<super::clip::ClipGpu>,
 }
 
@@ -502,6 +521,8 @@ fn inspect(
     glyphs_by_event: &BTreeMap<usize, Vec<super::GlyphOccurrence>>,
 ) -> Result<Inspected, Render2dExecutionError> {
     let mut items = Vec::with_capacity(plan.events.len());
+    let mut group_bounds = Vec::with_capacity(plan.events.len());
+    let mut active_groups = Vec::new();
     let mut bounds = [u32::MAX, u32::MAX, 0, 0];
     let mut depth = 0usize;
     let mut peak = 0usize;
@@ -517,11 +538,15 @@ fn inspect(
                 }
                 depth += 1;
                 peak = peak.max(depth);
+                active_groups.push(items.len());
                 items.push(None);
+                group_bounds.push(None);
             }
             scene::Event::EndGroup => {
                 depth -= 1;
+                active_groups.pop().expect("balanced accepted group plan");
                 items.push(None);
+                group_bounds.push(None);
             }
             scene::Event::Item {
                 item,
@@ -601,18 +626,22 @@ fn inspect(
                 }
                 if let Some(ref content) = realized {
                     let b = content.bounds();
-                    bounds[0] = bounds[0].min(b[0]);
-                    bounds[1] = bounds[1].min(b[1]);
-                    bounds[2] = bounds[2].max(b[2]);
-                    bounds[3] = bounds[3].max(b[3]);
+                    bounds = union(bounds, b);
+                    for group_index in &active_groups {
+                        let entry = &mut group_bounds[*group_index];
+                        *entry = Some(entry.map_or(b, |previous| union(previous, b)));
+                    }
                 }
                 items.push(realized);
+                group_bounds.push(None);
             }
         }
     }
     debug_assert_eq!(depth, 0);
+    debug_assert!(active_groups.is_empty());
     Ok(Inspected {
         items,
+        group_bounds,
         bounds,
         peak_group_depth: peak,
     })
@@ -653,6 +682,7 @@ pub(in crate::runtime::execution_2d) fn lower(
 ) -> Result<Vec<GpuRenderOperation>, Render2dExecutionError> {
     let Inspected {
         items,
+        group_bounds,
         bounds,
         peak_group_depth: peak,
     } = inspect(plan, target, bindings, glyphs_by_event)?;
@@ -920,6 +950,8 @@ pub(in crate::runtime::execution_2d) fn lower(
             if !has_content {
                 continue;
             }
+            let tile_operations_start = operations.len();
+            let mut tile_painted = false;
             append(&mut operations, operation(&layers[0], true, Vec::new())?)?;
             let mut depth = 0usize;
             let mut group_stack = Vec::<GroupFrame<'_>>::new();
@@ -933,7 +965,12 @@ pub(in crate::runtime::execution_2d) fn lower(
                     } => {
                         depth += 1;
                         let parent_visible = group_stack.last().is_none_or(|f| f.visible);
-                        let clip = if !parent_visible || group.clips().is_empty() {
+                        let group_tile = group_bounds[index]
+                            .and_then(|bounds| intersection(bounds, tile_bounds));
+                        let viable = parent_visible
+                            && group.opacity().get() > 0.0
+                            && group_tile.is_some();
+                        let clip = if !viable || group.clips().is_empty() {
                             None
                         } else {
                             prepare_clip(
@@ -942,17 +979,19 @@ pub(in crate::runtime::execution_2d) fn lower(
                                     parent_to_root: *parent_to_root,
                                     root_index: path[0],
                                 },
-                                tile_bounds,
+                                group_tile.expect("viable group has visible bounds"),
                                 target,
                                 &mut clip_budget,
                                 &mut resources,
                             )?
                         };
-                        let visible =
-                            parent_visible && (group.clips().is_empty() || clip.is_some());
+                        let visible = viable && (group.clips().is_empty() || clip.is_some());
+                        let begin_operations = operations.len();
                         group_stack.push(GroupFrame {
                             group,
                             visible,
+                            painted: false,
+                            begin_operations,
                             clip,
                         });
                         if visible {
@@ -964,7 +1003,7 @@ pub(in crate::runtime::execution_2d) fn lower(
                     }
                     scene::Event::EndGroup => {
                         let frame = group_stack.pop().expect("balanced F1 group plan");
-                        if frame.visible {
+                        if frame.visible && frame.painted {
                             let mut vertices = Vec::new();
                             let origin_sample = [
                                 f64::from(origin[0]) * f64::from(SAMPLES),
@@ -995,6 +1034,13 @@ pub(in crate::runtime::execution_2d) fn lower(
                                 &mut operations,
                                 operation(&layers[depth - 1], false, vec![merged])?,
                             )?;
+                            if let Some(parent) = group_stack.last_mut() {
+                                parent.painted = true;
+                            }
+                        } else {
+                            // Never author an empty group clear/merge simply because
+                            // structurally valid content was fully clipped away.
+                            operations.truncate(frame.begin_operations);
                         }
                         depth -= 1;
                     }
@@ -1004,20 +1050,17 @@ pub(in crate::runtime::execution_2d) fn lower(
                         parent_to_root,
                         ..
                     } => {
-                        if group_stack.last().is_some_and(|frame| !frame.visible) {
+                        if group_stack.last().is_some_and(|frame| !frame.visible)
+                            || item.opacity().get() == 0.0
+                        {
                             continue;
                         }
                         let Some(content) = &items[index] else {
                             continue;
                         };
-                        let b = content.bounds();
-                        if b[0] >= end[0]
-                            || b[2] <= origin[0]
-                            || b[1] >= end[1]
-                            || b[3] <= origin[1]
-                        {
+                        let Some(item_tile) = intersection(content.bounds(), tile_bounds) else {
                             continue;
-                        }
+                        };
                         let item_clip = if item.clips().is_empty() {
                             None
                         } else {
@@ -1027,7 +1070,7 @@ pub(in crate::runtime::execution_2d) fn lower(
                                     parent_to_root: *parent_to_root,
                                     root_index: path[0],
                                 },
-                                tile_bounds,
+                                item_tile,
                                 target,
                                 &mut clip_budget,
                                 &mut resources,
@@ -1115,6 +1158,10 @@ pub(in crate::runtime::execution_2d) fn lower(
                                     &mut operations,
                                     operation(&layers[depth], false, vec![color_draw])?,
                                 )?;
+                                tile_painted = true;
+                                if let Some(group) = group_stack.last_mut() {
+                                    group.painted = true;
+                                }
                             }
                             PreparedItem::Image(_) | PreparedItem::Text(_) => {
                                 let layer = item_layer
@@ -1202,6 +1249,10 @@ pub(in crate::runtime::execution_2d) fn lower(
                                     }
                                 }
                                 if !draws.is_empty() {
+                                    tile_painted = true;
+                                    if let Some(group) = group_stack.last_mut() {
+                                        group.painted = true;
+                                    }
                                     // Glyphs and image patches composite at original
                                     // alpha. Item opacity and clip apply only after
                                     // their completed isolated item contribution.
@@ -1237,6 +1288,10 @@ pub(in crate::runtime::execution_2d) fn lower(
                         }
                     }
                 }
+            }
+            if !tile_painted {
+                operations.truncate(tile_operations_start);
+                continue;
             }
             let mut resolve_vertices = Vec::new();
             rectangle(
