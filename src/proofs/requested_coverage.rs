@@ -1776,17 +1776,22 @@ fn phase_fallback_unmodified_gpu_work_exports_radiance_and_availability_together
     let fragments = prepared.work_set().fragments().to_vec();
     assert_eq!(fragments.len(), 1);
     let outputs = fragments[0].outputs();
-    assert_eq!(outputs.len(), 2, "texture and dense availability must share one work fragment");
-    assert!(outputs.iter().any(|output| {
-        output.relationship() == radiance_export
-    }));
-    assert!(outputs.iter().any(|output| {
-        output.relationship() == availability_export
-    }));
+    assert_eq!(
+        outputs.len(),
+        2,
+        "texture and dense availability must share one work fragment"
+    );
+    let exported_keys = outputs
+        .iter()
+        .map(|output| output.relationship().export_key())
+        .collect::<Vec<_>>();
+    assert!(exported_keys.contains(&radiance_export.export_key()));
+    assert!(exported_keys.contains(&availability_export.export_key()));
     assert!(
-        fragments.iter().flat_map(|fragment| fragment.nodes()).all(|node| {
-            node.kind() != GpuWorkNodeKind::Readback
-        }),
+        fragments
+            .iter()
+            .flat_map(|fragment| fragment.nodes())
+            .all(|node| node.kind() != GpuWorkNodeKind::Readback),
         "ordinary work must not read back availability to certify it"
     );
     let submission = pollster::block_on(context.submit_work(
@@ -1815,7 +1820,11 @@ fn phase_fallback_unmodified_gpu_work_exports_radiance_and_availability_together
         false,
     )
     .unwrap();
-    let evidence = next.radiance_output(0).unwrap().temporal_execution_evidence().unwrap();
+    let evidence = next
+        .radiance_output(0)
+        .unwrap()
+        .temporal_execution_evidence()
+        .unwrap();
     assert_eq!(evidence.phase, 1);
     assert_eq!(evidence.history_age, 1);
     assert!(!evidence.history_reset);
