@@ -461,8 +461,12 @@ pub(in crate::runtime::execution_2d) fn lower(
     let gradient_buffers = meshes
         .iter()
         .map(|maybe_mesh| {
-            let Some(mesh) = maybe_mesh else { return Ok(None) };
-            let Some(words) = vector::gradient_payload(mesh)? else { return Ok(None) };
+            let Some(mesh) = maybe_mesh else {
+                return Ok(None);
+            };
+            let Some(words) = vector::gradient_payload(mesh)? else {
+                return Ok(None);
+            };
             let bytes = u64::try_from(words.len())
                 .ok()
                 .and_then(|length| length.checked_mul(4))
