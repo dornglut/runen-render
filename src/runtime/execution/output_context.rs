@@ -3,6 +3,7 @@ use super::super::program::{
     abi::{camera, temporal},
 };
 use super::errors::RenderDeterministicLoweringError;
+use super::layout::temporal_fallback_layout;
 use super::packing::OutputTemporalPackingFacts;
 use super::state::{
     DeterministicOutputExecutionSelection, DeterministicResourceCache,
@@ -207,6 +208,17 @@ pub(super) fn prepare_temporal_state(
         }
     }
     let camera_capable = evaluation_extent == requested_extent;
+    if !camera_capable {
+        // Rejection must precede retained-history and scratch identity allocation:
+        // an oversized request cannot leave a new temporal generation behind.
+        temporal_fallback_layout(
+            resolved.output_index,
+            requested_extent,
+            alignment,
+            resolved.max_storage_buffer_binding_size,
+            resolved.max_buffer_size,
+        )?;
+    }
     let signature = DeterministicTemporalSignature {
         // The full structurally shared snapshot distinguishes independent scene
         // stores that happen to have the same numeric revision but different

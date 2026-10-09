@@ -1,6 +1,6 @@
 use super::super::program::{
     CAMERA_REPROJECTION_REVISION,
-    abi::{WORKGROUP_SIZE, camera, header, temporal, temporal_fallback},
+    abi::{WORKGROUP_SIZE, camera, header, temporal},
     retained_camera_reprojection_source, retained_maintained_evaluator_source,
     retained_temporal_fallback_source, retained_temporal_reconstruction_source,
 };
@@ -9,6 +9,7 @@ use super::errors::{
     RenderDeterministicLoweringError, gpu_program_contract, gpu_resource_descriptor,
     gpu_transfer_preparation, gpu_work_operation, map_maintained_program_build_error,
 };
+use super::layout::temporal_fallback_layout;
 use super::output_context::{PreparedTemporalState, ResolvedOutputContext};
 use super::packing::{PackedOutput, pack_matrix3, pack_vec3, positive_f32_bits};
 use super::state::{
@@ -67,54 +68,23 @@ fn prepare_static_fallback(
 ) -> Result<PreparedStaticFallback, RenderDeterministicLoweringError> {
     let width = packed.input_words[header::REQUESTED_WIDTH];
     let height = packed.input_words[header::REQUESTED_HEIGHT];
-    let count =
-        width
-            .checked_mul(height)
-            .ok_or(RenderDeterministicLoweringError::SizeOverflow {
-                field: "temporal fallback requested cell count",
-            })?;
-    let availability_bytes = u64::from(count).checked_mul(WORD_BYTES).ok_or(
-        RenderDeterministicLoweringError::SizeOverflow {
-            field: "temporal fallback cell state",
-        },
+    let layout = temporal_fallback_layout(
+        resolved.output_index,
+        (width, height),
+        resolved
+            .bytes_per_row_alignment
+            .ok_or(RenderDeterministicLoweringError::MissingBytesPerRowAlignment)?,
+        resolved.max_storage_buffer_binding_size,
+        resolved.max_buffer_size,
     )?;
-    let resolved_bytes = history.descriptor().size_bytes();
-    let peak_scratch_bytes = resolved_bytes
-        .checked_add(availability_bytes)
-        .and_then(|bytes| bytes.checked_add(availability_bytes))
-        .ok_or(RenderDeterministicLoweringError::SizeOverflow {
-            field: "temporal fallback aggregate scratch",
-        })?;
-    if peak_scratch_bytes > temporal_fallback::MAX_PER_OUTPUT_SCRATCH_BYTES {
-        return Err(
-            RenderDeterministicLoweringError::TemporalFallbackScratchBudgetExceeded {
-                output_index: resolved.output_index,
-                required_bytes: peak_scratch_bytes,
-                budget_bytes: temporal_fallback::MAX_PER_OUTPUT_SCRATCH_BYTES,
-            },
-        );
+    if history.descriptor().size_bytes() != layout.resolved_bytes {
+        return Err(RenderDeterministicLoweringError::OutputCorrelationChanged {
+            output_index: resolved.output_index,
+        });
     }
-    // Resource and storage-binding limits are checked on the actual admitted
-    // RunenGPU device/workload profile before allocating or dispatching.
-    for (carrier, bytes) in [
-        ("resolved radiance", resolved_bytes),
-        ("phase presence", availability_bytes),
-        ("cell availability", availability_bytes),
-    ] {
-        let limit_bytes = resolved
-            .max_storage_buffer_binding_size
-            .min(resolved.max_buffer_size);
-        if bytes > limit_bytes {
-            return Err(
-                RenderDeterministicLoweringError::TemporalFallbackGpuLimitExceeded {
-                    output_index: resolved.output_index,
-                    carrier,
-                    required_bytes: bytes,
-                    limit_bytes,
-                },
-            );
-        }
-    }
+    let count = layout.cell_count;
+    let resolved_bytes = layout.resolved_bytes;
+    let availability_bytes = layout.availability_bytes;
     // Reuse continuity-local logical identities, not per-frame GPU handles.
     // The retained history buffers remain disjoint from all three scratch carriers.
     let descriptions = [
