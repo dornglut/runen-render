@@ -132,11 +132,16 @@ Gaussian-style coverage blur has no support beyond three sigma per logical
 axis; the **neutral support envelope** is the translated spread set
 Minkowski-summed with the closed axis-aligned square
 `[-3*sigma, 3*sigma] × [-3*sigma, 3*sigma]`. For `sigma = 0`,
-blur is the identity. The square defines the cutoff/envelope, **not**
-the signed Euclidean spread kernel. Bounded, deterministic physical blur
-weights inside that cutoff may approximate Gaussian coverage subject to
-independent quality/tolerance conformance; cached alpha is never propagated
-as the neutral support envelope.
+blur is the identity. For `sigma > 0`, the reference alpha coverage is
+the convolution of the translated spread set's indicator function with
+separable, unit-integral one-dimensional kernels proportional to
+`exp(-t*t/(2*sigma*sigma))` inside `[-3*sigma, 3*sigma]` and zero
+outside. Normalization keeps fully covered interiors at unit coverage.
+The square defines the cutoff/envelope, **not** the signed Euclidean
+spread kernel. Bounded, deterministic physical blur weights inside that
+cutoff may approximate this reference within independently established
+quality/tolerance bounds; cached alpha is never propagated as the
+neutral support envelope.
 
 Effects are in the **immediate-parent** logical frame, *not* the
 attached group's own local geometry frame. First map the children through
