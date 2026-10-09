@@ -1750,3 +1750,73 @@ fn gpu_phase_fallback_preserves_hard_shadow_radiance_with_same_primary_geometry(
         "GPU fixture must actually produce differing hard shadows at identical primary depth"
     );
 }
+
+
+/// Submit the *unmodified* ordinary producer, including both authored exports.
+/// Readback oracles may legally replace a buffer's final access and therefore
+/// cannot establish that the original GPU graph's availability export works.
+#[test]
+fn phase_fallback_unmodified_gpu_work_exports_radiance_and_availability_together() {
+    let Some(context) = context() else { return };
+    let fixture = fixture((8, 8), 0.0, 0.0, 31);
+    let mut cache = DeterministicResourceCache::default();
+    let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&fixture, &context),
+        &context,
+        &mut cache,
+        Some((0, (4, 4))),
+        false,
+    )
+    .unwrap();
+    let first = prepared.radiance_output(0).unwrap();
+    assert_eq!(first.temporal_execution_evidence().unwrap().phase, 0);
+    let radiance_export = first.export_relationship();
+    let availability_export = first.availability_export_relationship().unwrap();
+    assert_ne!(radiance_export.export_key(), availability_export.export_key());
+    let fragments = prepared.work_set().fragments().to_vec();
+    assert_eq!(fragments.len(), 1);
+    let outputs = fragments[0].outputs();
+    assert_eq!(outputs.len(), 2, "texture and dense availability must share one work fragment");
+    assert!(outputs.iter().any(|output| {
+        output.relationship() == radiance_export
+    }));
+    assert!(outputs.iter().any(|output| {
+        output.relationship() == availability_export
+    }));
+    assert!(
+        fragments.iter().flat_map(|fragment| fragment.nodes()).all(|node| {
+            node.kind() != GpuWorkNodeKind::Readback
+        }),
+        "ordinary work must not read back availability to certify it"
+    );
+    let submission = pollster::block_on(context.submit_work(
+        "ordinary current radiance and availability outputs",
+        fragments,
+    ))
+    .expect("production graph with both exports must submit");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        context.progress();
+        if matches!(submission.status(), GpuSubmissionStatus::Completed) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "unmodified dual-export GPU submission did not complete"
+        );
+        std::thread::yield_now();
+    }
+    cache.reconcile_temporal_outputs(true);
+    let next = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&fixture, &context),
+        &context,
+        &mut cache,
+        Some((0, (4, 4))),
+        false,
+    )
+    .unwrap();
+    let evidence = next.radiance_output(0).unwrap().temporal_execution_evidence().unwrap();
+    assert_eq!(evidence.phase, 1);
+    assert_eq!(evidence.history_age, 1);
+    assert!(!evidence.history_reset);
+}
