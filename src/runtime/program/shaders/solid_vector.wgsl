@@ -244,3 +244,24 @@ fn clip_hit(pixel: vec2<i32>, sx: i32, sy: i32) -> f32 {
     }
     return sum * (inverse_x.w / f32(COVERAGE_AXIS_SAMPLES * COVERAGE_AXIS_SAMPLES));
 }
+
+
+// F3E GPU proof and future physical cutover: composited colors remain in
+// one linear-premultiplied 4x4 sample space until the *single* root resolve.
+// The sample texture is private derived work, not a source representation.
+@fragment fn fs_sample_fill(input: VertexOutput) -> @location(0) vec4<f32> {
+    let alpha = input.color.a;
+    return vec4<f32>(input.color.rgb * alpha, alpha);
+}
+
+@group(0) @binding(6) var sample_layer: texture_2d<f32>;
+@fragment fn fs_sample_resolve(input: VertexOutput) -> @location(0) vec4<f32> {
+    let base = vec2<i32>(floor(input.position.xy)) * COVERAGE_AXIS_SAMPLES;
+    var sum = vec4<f32>(0.0);
+    for (var y = 0; y < COVERAGE_AXIS_SAMPLES; y += 1) {
+        for (var x = 0; x < COVERAGE_AXIS_SAMPLES; x += 1) {
+            sum += textureLoad(sample_layer, base + vec2<i32>(x, y), 0);
+        }
+    }
+    return sum / f32(COVERAGE_AXIS_SAMPLES * COVERAGE_AXIS_SAMPLES);
+}
