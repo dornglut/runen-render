@@ -224,10 +224,18 @@ fn tile_side(target: &AdmittedTarget, depth: usize) -> Result<u32, Render2dExecu
     Err(failure("no feasible bounded correlated-sample tile"))
 }
 
+/// One derived, preflight-only solid-vector snapshot. Its fields are not
+/// authored semantic state; the immutable F1 plan remains the only authority.
+struct Inspected {
+    meshes: Vec<Option<geometry::VectorMesh>>,
+    bounds: [u32; 4],
+    peak_group_depth: usize,
+}
+
 fn inspect(
     plan: &scene::Plan<'_>,
     target: &AdmittedTarget,
-) -> Result<(Vec<Option<geometry::VectorMesh>>, [u32; 4], usize), Render2dExecutionError> {
+) -> Result<Inspected, Render2dExecutionError> {
     let mut meshes = Vec::with_capacity(plan.events.len());
     let mut bounds = [u32::MAX, u32::MAX, 0, 0];
     let mut depth = 0usize;
@@ -300,7 +308,11 @@ fn inspect(
         }
     }
     debug_assert_eq!(depth, 0);
-    Ok((meshes, bounds, peak))
+    Ok(Inspected {
+        meshes,
+        bounds,
+        peak_group_depth: peak,
+    })
 }
 
 /// Compiles a real (currently solid-vector-only) F1 group tree through one
@@ -333,7 +345,11 @@ pub(in crate::runtime::execution_2d) fn lower(
             )));
         }
     }
-    let (meshes, bounds, peak) = inspect(plan, target)?;
+    let Inspected {
+        meshes,
+        bounds,
+        peak_group_depth: peak,
+    } = inspect(plan, target)?;
     if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
         return Ok(Vec::new());
     }
