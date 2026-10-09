@@ -1,24 +1,25 @@
 //! F3E private correlated-sample group color compilation.
 //!
-//! Initial admitted realization: solid/gradient vector fills and strokes,
-//! conjunctive item/group clips, and nested atomic groups. Shaped text, images,
-//! effects and unsupported semantic classes fail closed until this same
-//! compiler can realize them. No second public renderer or semantic display
-//! list is introduced. Root and child colors share one correlated 4x4 sample
-//! lattice and one final pixel resolve to the caller-owned target.
+//! Initial admitted realization: solid/gradient vectors, immutable RGBA8
+//! image patches, conjunctive item/group clips, and nested atomic groups.
+//! Shaped text and effects remain fail-closed until the same physical compiler
+//! supports them. Source color always accumulates on the correlated 4x4 lattice
+//! with one final resolve into the caller-owned target.
 use super::*;
 use crate::composition_2d::{
     Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dGroup, Render2dItem,
-    Render2dPrimitive,
+    Render2dPrimitive, Render2dResourceBindings, Render2dResourceId, Render2dResourceValue,
 };
 use crate::execution_2d::Render2dUnsupportedContent;
-use crate::runtime::execution_2d::{clip as clip_geometry, scene, vector as geometry};
+use crate::runtime::execution_2d::{clip as clip_geometry, image as image_semantics, scene, vector as geometry};
 use crate::runtime::program::retained_vector_source;
 
 // At RGBA16F each 4x4 sample tile occupies 128 bytes per logical pixel/layer.
 // The 4x4 union mask consumes a further 64 bytes/logical pixel. The common
 // scratch layers are deliberately REUSED over all sequential tiles and siblings.
 const MAX_PRIVATE_SCRATCH_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_IMAGE_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_PATCH_PARAMETER_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TILE_SIDE: u32 = 256;
 const MAX_TILES: u64 = 16384;
 const MAX_OPERATIONS: usize = 1_048_576;
@@ -50,7 +51,11 @@ fn pipeline(
                 .map(|key| {
                     vec![
                         GpuBindingLayoutRefinement::new(key)
-                            .with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable),
+                            .with_texture_sample_class(if entry == "fs_sample_image" {
+                                GpuTextureSampleClass::FloatFilterable
+                            } else {
+                                GpuTextureSampleClass::FloatUnfilterable
+                            }),
                     ]
                 })
                 .map_err(|e| gpu("F3E source texture layout key", e))
@@ -225,6 +230,22 @@ fn draw(
     vector::vector_draw(pipeline.clone(), bindings, vertices, extent, resources)
 }
 
+fn image_draw(
+    pipeline: &GpuRenderPipelineDescriptor,
+    patch: &PreparedPatch,
+    vertices: &[f32],
+    extent: [u32; 2],
+    resources: &mut GpuResourceScope,
+) -> Result<GpuRenderDraw, Render2dExecutionError> {
+    let bindings = pipeline
+        .runtime_bindings([
+            texture_binding(2, &patch.image)?,
+            GpuRuntimeBindingValue::whole_buffer(0, 3, &patch.parameters),
+        ])
+        .map_err(|e| gpu("F3E sampled image source bindings", e))?;
+    vector::vector_draw(pipeline.clone(), bindings, vertices, extent, resources)
+}
+
 fn tile_side(target: &AdmittedTarget, depth: usize) -> Result<u32, Render2dExecutionError> {
     let depth = u64::try_from(depth).map_err(|_| failure("sample-depth overflow"))?;
     let bytes_per_pixel = (depth + 1)
@@ -247,8 +268,36 @@ fn tile_side(target: &AdmittedTarget, depth: usize) -> Result<u32, Render2dExecu
 
 /// One derived, preflight-only solid-vector snapshot. Its fields are not
 /// authored semantic state; the immutable F1 plan remains the only authority.
+enum PreparedItem {
+    Vector(geometry::VectorMesh),
+    Image(Vec<image_semantics::ImagePatchWork>),
+}
+
+impl PreparedItem {
+    /// Physical pixel extent, derived from the same validated F1 item.
+    fn bounds(&self) -> [u32; 4] {
+        match self {
+            Self::Vector(mesh) => {
+                let [left, top, width, height] = mesh.bounds;
+                [left, top, left.saturating_add(width), top.saturating_add(height)]
+            }
+            Self::Image(patches) => {
+                let mut bounds = [u32::MAX, u32::MAX, 0, 0];
+                for patch in patches {
+                    bounds[0] = bounds[0].min(patch.bounds[0]);
+                    bounds[1] = bounds[1].min(patch.bounds[1]);
+                    bounds[2] = bounds[2].max(patch.bounds[2]);
+                    bounds[3] = bounds[3].max(patch.bounds[3]);
+                }
+                bounds
+            }
+        }
+    }
+}
+
+/// An indexed physical realization only, aligned with the ONE F1 painter plan.
 struct Inspected {
-    meshes: Vec<Option<geometry::VectorMesh>>,
+    items: Vec<Option<PreparedItem>>,
     bounds: [u32; 4],
     peak_group_depth: usize,
 }
@@ -257,6 +306,13 @@ struct GroupFrame<'a> {
     group: &'a Render2dGroup,
     visible: bool,
     clip: Option<super::clip::ClipGpu>,
+}
+
+/// One immutable image patch's source-backed upload, retained across tiles.
+struct PreparedPatch {
+    bounds: [u32; 4],
+    image: GpuTextureViewHandle,
+    parameters: GpuBufferHandle,
 }
 
 /// The clip owner and its immediate-parent coordinate frame travel together.
@@ -312,8 +368,9 @@ fn prepare_clip(
 fn inspect(
     plan: &scene::Plan<'_>,
     target: &AdmittedTarget,
+    bindings: &Render2dResourceBindings,
 ) -> Result<Inspected, Render2dExecutionError> {
-    let mut meshes = Vec::with_capacity(plan.events.len());
+    let mut items = Vec::with_capacity(plan.events.len());
     let mut bounds = [u32::MAX, u32::MAX, 0, 0];
     let mut depth = 0usize;
     let mut peak = 0usize;
@@ -328,11 +385,11 @@ fn inspect(
                 }
                 depth += 1;
                 peak = peak.max(depth);
-                meshes.push(None);
+                items.push(None);
             }
             scene::Event::EndGroup => {
                 depth -= 1;
-                meshes.push(None);
+                items.push(None);
             }
             scene::Event::Item {
                 item,
@@ -340,15 +397,6 @@ fn inspect(
                 to_root,
                 ..
             } => {
-                if !matches!(
-                    item.primitive(),
-                    Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. }
-                ) {
-                    return Err(Render2dUnsupportedContent::Group {
-                        root_index: path[0],
-                    }
-                    .into());
-                }
                 let [a, b, c, d, tx, ty] = to_root.coefficients();
                 let transform = Render2dAffineTransform::new(a, b, c, d, tx, ty).map_err(|_| {
                     failure(format!("entry path {path:?}: unrepresentable transform"))
@@ -359,33 +407,66 @@ fn inspect(
                     Vec::new(),
                     item.opacity(),
                 );
-                let realized = geometry::realize(
-                    &derived,
-                    path[0],
-                    target.raster_scale(),
-                    target.canvas(),
-                    target.max_buffer_bytes(),
-                )?;
-                if let Some(ref mesh) = realized {
-                    let [left, top, width, height] = mesh.bounds;
-                    bounds[0] = bounds[0].min(left);
-                    bounds[1] = bounds[1].min(top);
-                    bounds[2] = bounds[2].max(left.saturating_add(width));
-                    bounds[3] = bounds[3].max(top.saturating_add(height));
+                let realized = match item.primitive() {
+                    Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } =>
+                        geometry::realize(
+                            &derived,
+                            path[0],
+                            target.raster_scale(),
+                            target.canvas(),
+                            target.max_buffer_bytes(),
+                        )?.map(PreparedItem::Vector),
+                    Render2dPrimitive::Image(image) => {
+                        if !target.image_format {
+                            return Err(image_semantics::failure(
+                                path[0],
+                                crate::execution_2d::Render2dImageError::FormatUnsupported,
+                            ));
+                        }
+                        let value = bindings
+                            .get(image.resource_id())
+                            .expect("the composition already validated immutable image resource bindings");
+                        let Render2dResourceValue::ImageRgba8Srgb(source) = value else {
+                            unreachable!("validated source-neutral F1 image binding kind");
+                        };
+                        let patches = image_semantics::realize(
+                            &derived,
+                            image,
+                            source,
+                            path[0],
+                            target.raster_scale(),
+                            target.canvas(),
+                            target.max_texture_dimension_2d(),
+                        )?;
+                        (!patches.is_empty()).then_some(PreparedItem::Image(patches))
+                    }
+                    _ => {
+                        return Err(Render2dUnsupportedContent::Group {
+                            root_index: path[0],
+                        }
+                        .into());
+                    }
+                };
+                if let Some(ref content) = realized {
+                    let b = content.bounds();
+                    bounds[0] = bounds[0].min(b[0]);
+                    bounds[1] = bounds[1].min(b[1]);
+                    bounds[2] = bounds[2].max(b[2]);
+                    bounds[3] = bounds[3].max(b[3]);
                 }
-                meshes.push(realized);
+                items.push(realized);
             }
         }
     }
     debug_assert_eq!(depth, 0);
     Ok(Inspected {
-        meshes,
+        items,
         bounds,
         peak_group_depth: peak,
     })
 }
 
-/// Compiles a real (currently solid-vector-only) F1 group tree through one
+/// Compiles a real F1 group tree through one
 /// globally-phased sample plane. This is an admitted *staging subset* of the
 /// same future mixed-content F3E compiler, not a second persistent renderer.
 /// All nonadmitted semantics reject before an external target is modified.
@@ -393,6 +474,7 @@ pub(in crate::runtime::execution_2d) fn lower(
     context: &GpuContext,
     target: &AdmittedTarget,
     plan: &scene::Plan<'_>,
+    bindings: &Render2dResourceBindings,
 ) -> Result<Vec<GpuRenderOperation>, Render2dExecutionError> {
     let roles = context
         .device_facts()
@@ -416,14 +498,16 @@ pub(in crate::runtime::execution_2d) fn lower(
         }
     }
     let Inspected {
-        meshes,
+        items,
         bounds,
         peak_group_depth: peak,
-    } = inspect(plan, target)?;
+    } = inspect(plan, target, bindings)?;
     if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
         return Ok(Vec::new());
     }
-    let side = tile_side(target, peak)?;
+    let has_images = items.iter().any(|item| matches!(item, Some(PreparedItem::Image(_))));
+    let extra_layer = if has_images { 1 } else { 0 };
+    let side = tile_side(target, peak + extra_layer)?;
     let x0 = bounds[0] / side * side;
     let y0 = bounds[1] / side * side;
     let x_end = bounds[2].min(target.physical_width);
@@ -453,15 +537,90 @@ pub(in crate::runtime::execution_2d) fn lower(
         dimension,
         FIELD_FORMAT,
     )?;
+    let image_layer = if has_images {
+        Some(scratch(
+            &mut resources,
+            "F3E isolated image item sample plane",
+            dimension,
+            GpuTextureFormat::Rgba16Float,
+        )?)
+    } else {
+        None
+    };
+    // One semantic binding -> one immutable sampled GPU source across all
+    // occurrences and output tiles. Patch mapping buffers are per occurrence.
+    let mut image_views = BTreeMap::<Render2dResourceId, GpuTextureViewHandle>::new();
+    let mut total_source_bytes = 0u64;
+    let mut total_patch_bytes = 0u64;
+    let prepared_images = items
+        .iter()
+        .map(|item| {
+            let Some(PreparedItem::Image(patches)) = item else {
+                return Ok(None);
+            };
+            let mut prepared = Vec::with_capacity(patches.len());
+            for patch in patches {
+                let image = if let Some(cached) = image_views.get(&patch.resource_id) {
+                    cached.clone()
+                } else {
+                    let fail = || image_semantics::failure(
+                        patch.root_index,
+                        crate::execution_2d::Render2dImageError::ResourceLimit,
+                    );
+                    let size = u64::try_from(patch.source.rgba8_srgb().len()).map_err(|_| fail())?;
+                    total_source_bytes = total_source_bytes.checked_add(size).ok_or_else(fail)?;
+                    if total_source_bytes > MAX_IMAGE_UPLOAD_BYTES {
+                        return Err(fail());
+                    }
+                    let view = super::image::upload(target, patch, &mut resources)?;
+                    image_views.insert(patch.resource_id, view.clone());
+                    view
+                };
+                let payload = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
+                    "runen-render F3E immutable image patch",
+                    &patch.payload,
+                )
+                .map_err(|e| gpu("F3E image patch parameters", e))?;
+                let bytes = payload.layout().byte_len();
+                let fail = || image_semantics::failure(
+                    patch.root_index,
+                    crate::execution_2d::Render2dImageError::ResourceLimit,
+                );
+                total_patch_bytes = total_patch_bytes.checked_add(bytes).ok_or_else(fail)?;
+                if bytes > target.max_buffer_bytes() || total_patch_bytes > MAX_PATCH_PARAMETER_BYTES {
+                    return Err(fail());
+                }
+                let parameters = resources.buffer(
+                    GpuBufferDescriptor::ordinary_owned(
+                        "runen-render F3E source image patch mapping",
+                        GpuResourceLifetime::Transient,
+                        GpuReconstruction::SourceBacked,
+                        bytes,
+                        [GpuBufferUsage::Storage, GpuBufferUsage::CopyDestination],
+                        GpuBufferInitialization::Prepared(payload),
+                    )
+                    .map_err(|e| gpu("F3E image patch descriptor", e))?,
+                )
+                .map_err(|e| gpu("F3E image patch buffer", e))?;
+                prepared.push(PreparedPatch {
+                    bounds: patch.bounds,
+                    image,
+                    parameters,
+                });
+            }
+            Ok(Some(prepared))
+        })
+        .collect::<Result<Vec<_>, Render2dExecutionError>>()?;
+
     // The same immutable F3B stop payload is uploaded once per authored
     // vector occurrence. Tiles reuse its source-backed RunenGPU handle;
     // previously a large scene could upload the same payload per tile.
     const MAX_GRADIENT_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
     let mut allocated_gradient_bytes = 0_u64;
-    let gradient_buffers = meshes
+    let gradient_buffers = items
         .iter()
-        .map(|maybe_mesh| {
-            let Some(mesh) = maybe_mesh else {
+        .map(|maybe_item| {
+            let Some(PreparedItem::Vector(mesh)) = maybe_item else {
                 return Ok(None);
             };
             let Some(words) = vector::gradient_payload(mesh)? else {
@@ -523,6 +682,11 @@ pub(in crate::runtime::execution_2d) fn lower(
         "fs_sample_gradient_clipped",
         Some(0),
     )?;
+    let image_pipeline = pipeline(
+        GpuTextureFormat::Rgba16Float,
+        "fs_sample_image",
+        Some(2),
+    )?;
     let resolve_pipeline = pipeline(target.format, "fs_sample_resolve", Some(6))?;
 
     let mut operations = Vec::new();
@@ -540,19 +704,12 @@ pub(in crate::runtime::execution_2d) fn lower(
             if origin[0] >= end[0] || origin[1] >= end[1] {
                 continue;
             }
-            let mut any_mesh = false;
-            for mesh in meshes.iter().flatten() {
-                let b = mesh.bounds;
-                if b[0] < end[0]
-                    && b[0].saturating_add(b[2]) > origin[0]
-                    && b[1] < end[1]
-                    && b[1].saturating_add(b[3]) > origin[1]
-                {
-                    any_mesh = true;
-                    break;
-                }
-            }
-            if !any_mesh {
+            let has_content = items.iter().flatten().any(|item| {
+                let b = item.bounds();
+                b[0] < end[0] && b[2] > origin[0]
+                    && b[1] < end[1] && b[3] > origin[1]
+            });
+            if !has_content {
                 continue;
             }
             append(&mut operations, operation(&layers[0], true, Vec::new())?)?;
@@ -642,12 +799,10 @@ pub(in crate::runtime::execution_2d) fn lower(
                         if group_stack.last().is_some_and(|frame| !frame.visible) {
                             continue;
                         }
-                        let Some(mesh) = &meshes[index] else { continue };
-                        let [left, top, width, height] = mesh.bounds;
-                        if left >= end[0]
-                            || left.saturating_add(width) <= origin[0]
-                            || top >= end[1]
-                            || top.saturating_add(height) <= origin[1]
+                        let Some(content) = &items[index] else { continue };
+                        let b = content.bounds();
+                        if b[0] >= end[0] || b[2] <= origin[0]
+                            || b[1] >= end[1] || b[3] <= origin[1]
                         {
                             continue;
                         }
@@ -670,6 +825,8 @@ pub(in crate::runtime::execution_2d) fn lower(
                             };
                             Some(mask)
                         };
+                        match content {
+                            PreparedItem::Vector(mesh) => {
                         let mut coverage_vertices = Vec::with_capacity(mesh.triangles.len() * 8);
                         for &[x, y] in &mesh.triangles {
                             let x = (x - f64::from(origin[0])) * f64::from(SAMPLES);
@@ -745,6 +902,75 @@ pub(in crate::runtime::execution_2d) fn lower(
                             &mut operations,
                             operation(&layers[depth], false, vec![color_draw])?,
                         )?;
+                            }
+                            PreparedItem::Image(_) => {
+                                let layer = image_layer.as_ref().expect("image item has one shared isolated scratch");
+                                let patches = prepared_images[index].as_ref()
+                                    .expect("every admitted F1 image occurrence has prepared patch resources");
+                                let mut draws = Vec::new();
+                                let origin_sample = [
+                                    f64::from(origin[0]) * f64::from(SAMPLES),
+                                    f64::from(origin[1]) * f64::from(SAMPLES),
+                                ];
+                                for patch in patches {
+                                    let b = patch.bounds;
+                                    let left = b[0].max(origin[0]);
+                                    let top = b[1].max(origin[1]);
+                                    let right = b[2].min(end[0]);
+                                    let bottom = b[3].min(end[1]);
+                                    if left >= right || top >= bottom {
+                                        continue;
+                                    }
+                                    let mut vertices = Vec::new();
+                                    rectangle(
+                                        &mut vertices,
+                                        [
+                                            f64::from(left - origin[0]) * f64::from(SAMPLES),
+                                            f64::from(top - origin[1]) * f64::from(SAMPLES),
+                                            f64::from(right - origin[0]) * f64::from(SAMPLES),
+                                            f64::from(bottom - origin[1]) * f64::from(SAMPLES),
+                                        ],
+                                        physical,
+                                        [1.0; 4],
+                                        origin_sample,
+                                    );
+                                    draws.push(image_draw(
+                                        &image_pipeline, patch, &vertices, physical, &mut resources,
+                                    )?);
+                                }
+                                if !draws.is_empty() {
+                                    // Patches are source-over at their full source alpha,
+                                    // with no item opacity/clip attenuation yet.
+                                    append(&mut operations, operation(layer, true, draws)?)?;
+                                    let mut merged_quad = Vec::new();
+                                    rectangle(
+                                        &mut merged_quad,
+                                        [0.0, 0.0, f64::from(dimension), f64::from(dimension)],
+                                        physical,
+                                        [1.0, 1.0, 1.0, f32_from_f64(item.opacity().get())],
+                                        origin_sample,
+                                    );
+                                    let pipeline = if item_clip.is_some() {
+                                        &merge_clipped_pipeline
+                                    } else {
+                                        &merge_pipeline
+                                    };
+                                    let merged = draw(
+                                        pipeline,
+                                        Some((6, layer)),
+                                        item_clip.as_ref(),
+                                        None,
+                                        &merged_quad,
+                                        physical,
+                                        &mut resources,
+                                    )?;
+                                    append(
+                                        &mut operations,
+                                        operation(&layers[depth], false, vec![merged])?,
+                                    )?;
+                                }
+                            }
+                        }
                     }
                 }
             }

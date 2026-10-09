@@ -55,7 +55,33 @@ impl Render2dExecutionState {
             .any(|event| matches!(event, scene::Event::BeginGroup { .. }))
         {
             let admitted_target = lowering::admit_target(context, target, false)?;
-            let lowered = lowering::sample_space::lower(context, &admitted_target, &plan)?;
+            // Image identity observation remains a transaction on the
+            // canonical F1 binding set, even for nested, empty, or fully
+            // transparent image occurrences. Never observe before successful
+            // preparation, and never tie identity to disposable GPU textures.
+            let mut updates = Vec::new();
+            let image_ids = composition
+                .resource_requirements()
+                .iter()
+                .filter_map(|requirement| match *requirement {
+                    Render2dResourceRequirement::ImageRgba8Srgb { id, .. } => Some(id),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
+            for id in image_ids {
+                let value = bindings.get(id).expect("F1 bindings were validated");
+                if let Some(previous) = self.observed.get(&id) {
+                    if previous != value {
+                        return Err(Render2dExecutionError::ResourceIdentityRebound {
+                            resource_id: id,
+                        });
+                    }
+                } else {
+                    updates.push((id, value.clone()));
+                }
+            }
+            let lowered = lowering::sample_space::lower(context, &admitted_target, &plan, bindings)?;
+            self.observed.extend(updates);
             return Ok(Render2dPreparedContribution::new(
                 lowered,
                 target.view().clone(),

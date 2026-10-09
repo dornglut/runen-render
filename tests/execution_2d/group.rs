@@ -4,7 +4,9 @@
 use super::*;
 use runen_render::composition_2d::{
     Render2dBrush, Render2dClip, Render2dGradientStop, Render2dGradientStops,
-    Render2dLinearGradient, Render2dRect, Render2dShape,
+    Render2dImagePatch, Render2dImagePrimitive, Render2dImageResource,
+    Render2dImageSourceRect, Render2dLinearGradient, Render2dPixelExtent, Render2dRect,
+    Render2dShape,
 };
 
 fn context() -> Option<GpuContext> {
@@ -20,6 +22,9 @@ fn context() -> Option<GpuContext> {
         ),
         (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Blendable),
         (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource),
+        (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Sampled),
+        (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Filterable),
+        (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopyDestination),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::CopyDestination),
@@ -314,4 +319,95 @@ fn fractional_group_clip_and_gradient_source_share_exact_samples() {
         expected_gradient_pixel(10, 10.0, 11.0, |x| x < 10.5, 0.5),
     );
     pixel_close(pixel(&result, 11, 20), [0, 0, 0, 0]);
+}
+
+
+fn repeated_image_patches(id: Render2dResourceId, item_opacity: f64) -> Render2dEntry {
+    let patch = Render2dImagePatch::new(
+        Render2dImageSourceRect::new(0.0, 0.0, 1.0, 1.0).unwrap(),
+        Render2dRect::new(0.0, 0.0, 64.0, 64.0).unwrap(),
+    );
+    let image = Render2dImagePrimitive::new(
+        id,
+        Render2dPixelExtent::new(1, 1).unwrap(),
+        vec![patch.clone(), patch],
+    )
+    .unwrap();
+    Render2dEntry::item(Render2dItem::new(
+        Render2dPrimitive::Image(image),
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::new(item_opacity).unwrap(),
+    ))
+}
+
+fn image_binding(id: Render2dResourceId, source: [u8; 4]) -> Render2dResourceBindings {
+    Render2dResourceBindings::new(vec![Render2dResourceBinding::new(
+        id,
+        Render2dResourceValue::ImageRgba8Srgb(
+            Render2dImageResource::new(Render2dPixelExtent::new(1, 1).unwrap(), source.to_vec())
+                .unwrap(),
+        ),
+    )])
+    .unwrap()
+}
+
+#[test]
+fn overlapping_image_patches_apply_item_opacity_once_after_ordered_source_over() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let id = Render2dResourceId::new(776).unwrap();
+    let composition = Render2dComposition::new(vec![group(
+        vec![repeated_image_patches(id, 0.5)],
+        1.0,
+    )])
+    .unwrap();
+    let bytes = execute(
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &image_binding(id, [255, 0, 0, 128]),
+        "F3E-R1 image patch isolation public oracle",
+    );
+    let alpha = f64::from(128_u8) / 255.0;
+    let covered = 1.0 - (1.0 - alpha).powi(2);
+    let item_alpha = covered * 0.5;
+    let expected = [
+        encode_linear(item_alpha),
+        0,
+        0,
+        (255.0 * item_alpha).round() as u8,
+    ];
+    pixel_close(pixel(&bytes, 20, 20), expected);
+}
+
+#[test]
+fn image_binding_identity_survives_group_execution_and_cache_independence() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let id = Render2dResourceId::new(777).unwrap();
+    let composition = Render2dComposition::new(vec![group(
+        vec![repeated_image_patches(id, 0.75)],
+        1.0,
+    )])
+    .unwrap();
+    let mut executor = Render2dExecutor::new();
+    let binding = image_binding(id, [255, 0, 0, 128]);
+    let _ = execute(
+        &ctx,
+        &mut executor,
+        &composition,
+        &binding,
+        "F3E retained grouped image binding",
+    );
+    executor.discard_cache();
+    let (_, target) = super::target("F3E rebound image target");
+    let rebound = image_binding(id, [0, 255, 0, 128]);
+    assert!(matches!(
+        executor.prepare(&ctx, &composition, &rebound, &target),
+        Err(Render2dExecutionError::ResourceIdentityRebound { resource_id })
+            if resource_id == id
+    ));
 }

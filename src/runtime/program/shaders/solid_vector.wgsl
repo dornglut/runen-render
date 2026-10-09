@@ -345,3 +345,40 @@ fn clip_hit(pixel: vec2<i32>, sx: i32, sy: i32) -> f32 {
     let painted = gradient_sample(global_pixel);
     return painted * (membership * visible * gradient.header[1].w);
 }
+
+
+// F3E immutable RGBA8 image patch at ONE correlated 4x4 sample. Every
+// patch composites at its full source alpha into a private item layer; the
+// image ITEM opacity and item/group clips are applied ONCE when that
+// completed layer is merged into the parent sample plane.
+@fragment fn fs_sample_image(input: VertexOutput) -> @location(0) vec4<f32> {
+    let physical = (floor(input.mask_pixel) + vec2<f32>(0.5)) /
+        f32(COVERAGE_AXIS_SAMPLES);
+    if (any(physical >= image_params.header[4].xy)) {
+        return vec4<f32>(0.0);
+    }
+    let inverse_x = image_params.header[0];
+    let inverse_y = image_params.header[1];
+    let src = image_params.header[2];
+    let dst = image_params.header[3];
+    let local = vec2<f32>(
+        dot(inverse_x.xyz, vec3<f32>(physical, 1.0)),
+        dot(inverse_y.xyz, vec3<f32>(physical, 1.0))
+    );
+    let relative = (local - dst.xy) / dst.zw;
+    if (any(relative < vec2<f32>(0.0)) || any(relative >= vec2<f32>(1.0))) {
+        return vec4<f32>(0.0);
+    }
+    let image_size = vec2<i32>(textureDimensions(image_texture));
+    let sample_min = clamp(vec2<i32>(floor(src.xy)),
+        vec2<i32>(0), image_size - vec2<i32>(1));
+    let sample_max = clamp(vec2<i32>(ceil(src.xy + src.zw)) - vec2<i32>(1),
+        sample_min, image_size - vec2<i32>(1));
+    let source = src.xy + relative * src.zw;
+    let texel = clamp(vec2<i32>(floor(source)), sample_min, sample_max);
+    let straight_linear = textureLoad(image_texture, texel, 0);
+    return vec4<f32>(
+        straight_linear.rgb * straight_linear.a,
+        straight_linear.a
+    );
+}
