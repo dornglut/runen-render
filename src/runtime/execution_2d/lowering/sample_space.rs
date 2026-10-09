@@ -30,7 +30,7 @@ const MAX_OPERATIONS: usize = 1_048_576;
 // Bound aggregate CPU replay separately from emitted GPU operations.
 const MAX_TILE_WORK_UNITS: u64 = 16_777_216;
 const MAX_RETAINED_VECTOR_VERTICES: usize = 1_048_576;
-const SAMPLES: u32 = 4;
+const SAMPLES: u32 = crate::runtime::program::abi::CORRELATED_SAMPLE_AXIS;
 const COLOR_BYTES_PER_PIXEL: u64 = 128;
 const MASK_BYTES_PER_PIXEL: u64 = 64;
 
