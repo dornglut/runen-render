@@ -1,6 +1,6 @@
 //! Public exact-fragment-order and completion proof for composable F2.
 use super::*;
-use runen_gpu::GpuWorkNodeId;
+use runen_gpu::{GpuGraphExplicitOrder, GpuWorkNodeId};
 use runen_render::composition_2d::{Render2dBrush, Render2dRect, Render2dShape};
 
 /// Unlike the text-only admission context, mixed F2 vector masks require
