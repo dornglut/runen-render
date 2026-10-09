@@ -145,16 +145,14 @@ fn prepare_static_fallback(
         .iter()
         .map(|handle| {
             GpuClearOperation::buffer_zero(
-                GpuBufferRegion::whole(handle).map_err(|error| {
-                    gpu_work_operation("temporal fallback clear region", error)
-                })?,
+                GpuBufferRegion::whole(handle)
+                    .map_err(|error| gpu_work_operation("temporal fallback clear region", error))?,
             )
             .map_err(|error| gpu_work_operation("temporal fallback clear", error))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let source =
-        retained_temporal_fallback_source().map_err(map_maintained_program_build_error)?;
+    let source = retained_temporal_fallback_source().map_err(map_maintained_program_build_error)?;
     let pipeline = GpuComputePipelineDescriptor::ordinary(source, "main")
         .map_err(|error| gpu_program_contract("temporal fallback pipeline", error))?;
     let bindings = pipeline
@@ -167,13 +165,10 @@ fn prepare_static_fallback(
             GpuRuntimeBindingValue::whole_buffer(0, 5, &handles[2]),
         ])
         .map_err(|error| gpu_program_contract("temporal fallback bindings", error))?;
-    let dispatch = deterministic_dispatch_size(count, resolved.max_compute_workgroups_per_dimension)?;
-    let compute = GpuComputeOperation::new(
-        pipeline,
-        bindings,
-        GpuDispatchIntent::direct(dispatch),
-    )
-    .map_err(|error| gpu_work_operation("temporal fallback compute", error))?;
+    let dispatch =
+        deterministic_dispatch_size(count, resolved.max_compute_workgroups_per_dimension)?;
+    let compute = GpuComputeOperation::new(pipeline, bindings, GpuDispatchIntent::direct(dispatch))
+        .map_err(|error| gpu_work_operation("temporal fallback compute", error))?;
     Ok(PreparedStaticFallback {
         resolved: handles[0].clone(),
         phase_presence: handles[1].clone(),
@@ -393,8 +388,14 @@ pub(super) fn prepare_temporal_pass(
             sample_counts,
             ..
         } => {
-            let fallback =
-                prepare_static_fallback(packed, resolved, primary, handle, sample_counts, resources)?;
+            let fallback = prepare_static_fallback(
+                packed,
+                resolved,
+                primary,
+                handle,
+                sample_counts,
+                resources,
+            )?;
             let source = retained_temporal_reconstruction_source()
                 .map_err(map_maintained_program_build_error)?;
             let pipeline = GpuComputePipelineDescriptor::ordinary(source, "main")

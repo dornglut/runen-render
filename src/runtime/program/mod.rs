@@ -600,7 +600,10 @@ mod tests {
         let _ = programs.shaped_text();
         let _ = programs.temporal_fallback();
         assert_eq!(
-            programs.temporal_fallback_artifact().canonical_wgsl().as_bytes(),
+            programs
+                .temporal_fallback_artifact()
+                .canonical_wgsl()
+                .as_bytes(),
             TEMPORAL_FALLBACK_WGSL.as_bytes()
         );
         assert_eq!(

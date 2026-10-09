@@ -251,7 +251,7 @@ fn prepare_destination(
                             .map_err(|error| {
                                 gpu_resource_descriptor("radiance availability export key", error)
                             })?,
-                            GpuResourceAccessIntent::Write,
+                            GpuResourceAccessIntent::ReadWrite,
                             GpuResourceProvenance::new(
                                 fallback.availability.descriptor().common().label().clone(),
                                 None,

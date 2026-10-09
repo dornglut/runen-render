@@ -1527,11 +1527,26 @@ fn temporal_phase_scatter_injectivity_proves_the_real_f32_mapping_and_rejects_al
     // The finite requested evaluator does not use ideal rational coordinates.
     // A near-native large f32 lattice can map two primary invocations to the
     // same requested cell; admission must fail rather than race two writes.
-    assert!(!temporal_phase_mapping_is_injective((18_646, 1), (18_645, 1)));
-    assert!(!temporal_phase_mapping_is_injective((65_537, 1), (32_769, 1)));
-    assert!(temporal_phase_mapping_is_injective((1920, 1080), (1440, 810)));
-    assert!(temporal_phase_mapping_is_injective((1920, 1080), (1280, 720)));
-    assert!(temporal_phase_mapping_is_injective((1920, 1080), (960, 540)));
+    assert!(!temporal_phase_mapping_is_injective(
+        (18_646, 1),
+        (18_645, 1)
+    ));
+    assert!(!temporal_phase_mapping_is_injective(
+        (65_537, 1),
+        (32_769, 1)
+    ));
+    assert!(temporal_phase_mapping_is_injective(
+        (1920, 1080),
+        (1440, 810)
+    ));
+    assert!(temporal_phase_mapping_is_injective(
+        (1920, 1080),
+        (1280, 720)
+    ));
+    assert!(temporal_phase_mapping_is_injective(
+        (1920, 1080),
+        (960, 540)
+    ));
     for width in 1..=17_u32 {
         for height in 1..=13_u32 {
             for ew in width.div_ceil(2)..=width {
@@ -1550,12 +1565,10 @@ fn temporal_phase_scatter_injectivity_proves_the_real_f32_mapping_and_rejects_al
                         let mut mapped = std::collections::BTreeSet::new();
                         for y in 0..eh {
                             for x in 0..ew {
-                                let rx = ((((x as f32 + offset_x) * width as f32)
-                                    / ew as f32)
+                                let rx = ((((x as f32 + offset_x) * width as f32) / ew as f32)
                                     .floor() as u32)
                                     .min(width - 1);
-                                let ry = ((((y as f32 + offset_y) * height as f32)
-                                    / eh as f32)
+                                let ry = ((((y as f32 + offset_y) * height as f32) / eh as f32)
                                     .floor() as u32)
                                     .min(height - 1);
                                 assert!(mapped.insert((rx, ry)), "phase scatter aliases");
@@ -1563,8 +1576,7 @@ fn temporal_phase_scatter_injectivity_proves_the_real_f32_mapping_and_rejects_al
                         }
                         assert_eq!(
                             (width as usize * height as usize) - mapped.len(),
-                            (width as usize * height as usize)
-                                - (ew as usize * eh as usize),
+                            (width as usize * height as usize) - (ew as usize * eh as usize),
                             "N-M is a bound only after the actual phase mapping injects"
                         );
                     }

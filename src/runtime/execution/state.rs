@@ -376,7 +376,7 @@ impl DeterministicResourceCache {
                     GpuResourceLifetime::Retained,
                     GpuReconstruction::SourceBacked,
                     byte_len,
-                    [GpuBufferUsage::Storage],
+                    [GpuBufferUsage::Storage, GpuBufferUsage::CopySource],
                     GpuBufferInitialization::Zeroed,
                 )
                 .map_err(|error| {
@@ -500,8 +500,7 @@ pub(super) fn temporal_phase_mapping_is_injective(
         for offset in [0.25_f32, 0.75_f32] {
             let mut prior = None;
             for index in 0..evaluation {
-                let mapped = (((index as f32 + offset) * requested as f32)
-                    / evaluation as f32)
+                let mapped = (((index as f32 + offset) * requested as f32) / evaluation as f32)
                     .floor() as u32;
                 let mapped = mapped.min(requested - 1);
                 if prior.is_some_and(|prior| mapped <= prior) {
@@ -512,8 +511,7 @@ pub(super) fn temporal_phase_mapping_is_injective(
         }
         true
     }
-    axis(requested_extent.0, evaluation_extent.0)
-        && axis(requested_extent.1, evaluation_extent.1)
+    axis(requested_extent.0, evaluation_extent.0) && axis(requested_extent.1, evaluation_extent.1)
 }
 
 pub(super) fn temporal_observation_compatibility(
