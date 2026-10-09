@@ -60,7 +60,7 @@ pub(super) fn append(
     if source.triangles.is_empty() {
         return Ok(());
     }
-    if source.triangles.len() % 3 != 0
+    if !source.triangles.len().is_multiple_of(3)
         || !source.units_per_parent_logical_unit.is_finite()
         || source.units_per_parent_logical_unit <= 0.0
     {
@@ -105,7 +105,7 @@ pub(super) fn append(
         .triangles
         .try_reserve(prepared.len())
         .map_err(|_| resource(path, "neutral destination geometry allocation failed"))?;
-    for triangle in prepared.chunks_exact(3) {
+    for triangle in prepared.as_chunks::<3>().0 {
         if orient(triangle[0], triangle[1], triangle[2]) == 0.0 {
             continue;
         }
@@ -240,8 +240,8 @@ pub(super) fn intersect_clips(
                 "neutral clip triangle intersection work exceeds admission",
             ));
         }
-        for source in current.triangles.chunks_exact(3) {
-            for clipping in clip_local.triangles.chunks_exact(3) {
+        for source in current.triangles.as_chunks::<3>().0 {
+            for clipping in clip_local.triangles.as_chunks::<3>().0 {
                 let polygon = triangle_intersection(
                     [source[0], source[1], source[2]],
                     [clipping[0], clipping[1], clipping[2]],
