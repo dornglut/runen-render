@@ -1,16 +1,16 @@
 //! F3E private correlated-sample group color compilation.
 //!
-//! Initial admitted realization: solid/gradient vectors, immutable RGBA8
-//! image patches, conjunctive item/group clips, and nested atomic groups.
-//! Shaped text and effects remain fail-closed until the same physical compiler
-//! supports them. Source color always accumulates on the correlated 4x4 lattice
-//! with one final resolve into the caller-owned target.
+//! The single admitted F1 color path covers root and nested vectors, image
+//! patches and retained F2 text with conjunctive clips and atomic opacity.
+//! Effects remain fail-closed until their separately owned F3F delivery.
+//! Source colors share one correlated 4x4 plane and resolve only at the
+//! caller-owned target boundary.
 use super::*;
 use crate::composition_2d::{
     Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dGroup, Render2dItem,
     Render2dPrimitive, Render2dResourceBindings, Render2dResourceId, Render2dResourceValue,
 };
-use crate::execution_2d::Render2dUnsupportedContent;
+use crate::execution_2d::{Render2dTargetAdmissionError, Render2dUnsupportedContent};
 use crate::runtime::execution_2d::{
     clip as clip_geometry, image as image_semantics, scene, vector as geometry,
 };
@@ -621,9 +621,8 @@ fn inspect(
 /// globally-phased sample plane. This is an admitted *staging subset* of the
 /// same future mixed-content F3E compiler, not a second persistent renderer.
 /// All nonadmitted semantics reject before an external target is modified.
-/// A root-only scene may opt into the coherent compositor when the caller's
-/// explicit GPU admission already covers the private physical sample plane.
-/// Older baseline-only contexts preserve the accepted direct-root path.
+/// All painting scenes use this one compositor. Missing private physical roles
+/// are a typed admission failure rather than a second pixel-formation law.
 pub(in crate::runtime::execution_2d) fn admits_sample_plane(context: &GpuContext) -> bool {
     let admitted = context
         .device_facts()
@@ -651,34 +650,17 @@ pub(in crate::runtime::execution_2d) fn lower(
     bindings: &Render2dResourceBindings,
     glyphs_by_event: &BTreeMap<usize, Vec<super::GlyphOccurrence>>,
 ) -> Result<Vec<GpuRenderOperation>, Render2dExecutionError> {
-    let roles = context
-        .device_facts()
-        .admission_contract()
-        .format_roles()
-        .collect::<BTreeSet<_>>();
-    for (format, role) in [
-        (
-            GpuTextureFormat::Rgba16Float,
-            GpuFormatRole::ColorAttachment,
-        ),
-        (GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable),
-        (GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled),
-        (FIELD_FORMAT, GpuFormatRole::ColorAttachment),
-        (FIELD_FORMAT, GpuFormatRole::Sampled),
-    ] {
-        if !roles.contains(&(format, role)) {
-            return Err(failure(format!(
-                "sample target requires admitted {format:?} {role:?}"
-            )));
-        }
-    }
     let Inspected {
         items,
         bounds,
         peak_group_depth: peak,
     } = inspect(plan, target, bindings, glyphs_by_event)?;
     if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
+        // Valid no-paint scene does not require transient sample-plane roles.
         return Ok(Vec::new());
+    }
+    if !admits_sample_plane(context) {
+        return Err(Render2dTargetAdmissionError::SamplePlaneFormatUnsupported.into());
     }
     let has_images = items
         .iter()
@@ -886,7 +868,7 @@ pub(in crate::runtime::execution_2d) fn lower(
         .then(|| super::create_sampler(&mut resources))
         .transpose()?;
     let text_pipeline = has_text
-        .then(|| super::shaped_text_pipeline(GpuTextureFormat::Rgba16Float, false, true))
+        .then(|| super::shaped_text_pipeline())
         .transpose()?;
 
     let coverage_pipeline = pipeline(FIELD_FORMAT, "fs_coverage", None)?;
