@@ -1586,12 +1586,13 @@ fn phase_fallback_gpu_isolates_views_and_resets_incompatible_sources_and_cameras
     }
 }
 
-
 /// A shadow blocker is never on the camera's primary center rays, but lies on
 /// the sphere's positive-cosine directional-light ray. Consequently the
 /// primary depth stays identical while the evaluated surface radiance changes.
 fn directional_shadow_fixture(extent: (u32, u32)) -> MaintainedExecutionFixture {
-    use crate::admission::{RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState};
+    use crate::admission::{
+        RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState,
+    };
     use crate::appearance::RenderDiffuseMaterial;
     use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
     use crate::representation::{
