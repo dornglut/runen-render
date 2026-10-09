@@ -97,6 +97,20 @@ fn main(
         return;
     }
 
+    // The current reconstruction can seed count=1 in this very submission.
+    // That value is a current physical sample, not previously completed
+    // compatible history. Multi-phase means (count>=2) remain retained
+    // static estimator output when the current primary also contributes.
+    if visited == 2u && (count == 1u || count == INVALID_HISTORY_SAMPLE_COUNT) {
+        let current = bitcast<f32>(resolved_words[physical]);
+        if finite_f32(current) {
+            availability_words[cell] = 2u; // Provisional current-phase sample.
+        } else {
+            unresolved(physical, cell);
+        }
+        return;
+    }
+
     if count != 0u && count != INVALID_HISTORY_SAMPLE_COUNT {
         let retained = bitcast<f32>(history_words[physical]);
         if finite_f32(retained) {

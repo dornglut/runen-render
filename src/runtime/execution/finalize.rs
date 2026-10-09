@@ -21,11 +21,10 @@ use super::state::DeterministicTemporalHistoryUseStorage;
 use crate::admission::{AdmittedRenderPlan, RenderOutputDestination};
 use crate::request::RenderOutputValue;
 use runen_gpu::{
-    GpuBufferCoverage, GpuBufferRegion, GpuBufferTextureLayout,
-    GpuCopyOperation, GpuExportKey, GpuExportRelationship,
-    GpuInitialCoverage, GpuReadbackOperation, GpuResourceAccessIntent, GpuResourceProvenance,
-    GpuResourceRef, GpuTextureAccessResource, GpuTextureCopyRegion, GpuTextureFormat,
-    GpuWorkFragment, GpuWorkOutput,
+    GpuBufferCoverage, GpuBufferRegion, GpuBufferTextureLayout, GpuCopyOperation, GpuExportKey,
+    GpuExportRelationship, GpuInitialCoverage, GpuReadbackOperation, GpuResourceAccessIntent,
+    GpuResourceProvenance, GpuResourceRef, GpuTextureAccessResource, GpuTextureCopyRegion,
+    GpuTextureFormat, GpuWorkFragment, GpuWorkOutput,
 };
 
 pub(super) struct LoweredDeterministicOutput {
@@ -261,9 +260,11 @@ fn prepare_destination(
                         let coverage = GpuInitialCoverage::buffer(
                             &fallback.availability,
                             [GpuBufferCoverage::dense(
-                                GpuBufferRegion::whole(&fallback.availability).map_err(|error| {
-                                    gpu_work_operation("availability buffer range", error)
-                                })?.range(),
+                                GpuBufferRegion::whole(&fallback.availability)
+                                    .map_err(|error| {
+                                        gpu_work_operation("availability buffer range", error)
+                                    })?
+                                    .range(),
                             )],
                         )
                         .map_err(|error| {
