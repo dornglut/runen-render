@@ -242,7 +242,8 @@ fn prepare_destination(
                 .map_err(|error| gpu_work_authoring("radiance output coverage", error))?;
                 let output = GpuWorkOutput::new(relationship.clone(), coverage)
                     .map_err(|error| gpu_work_authoring("radiance output relationship", error))?;
-                let availability = temporal_pass
+                let availability = sources
+                    .temporal
                     .static_fallback
                     .as_ref()
                     .map(|fallback| {
