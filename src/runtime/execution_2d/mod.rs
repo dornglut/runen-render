@@ -293,8 +293,8 @@ mod tests {
     use super::*;
     use crate::composition_2d::{
         Render2dAffineTransform, Render2dColorRgba8, Render2dEntry, Render2dFontBinding,
-        Render2dGroup,
-        Render2dGlyph, Render2dItem, Render2dOpacity, Render2dPoint, Render2dResourceBinding,
+        Render2dGlyph, Render2dGroup, Render2dItem, Render2dOpacity, Render2dPoint,
+        Render2dResourceBinding,
         Render2dShapedTextPrimitive, Render2dShapedTextResource,
     };
 
