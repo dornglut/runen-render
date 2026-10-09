@@ -5,6 +5,7 @@ mod field;
 mod image;
 mod intrinsic;
 mod lowering;
+mod scene;
 mod vector;
 
 use self::field::{FieldSetKey, QualityTier, ResourceFields};
@@ -43,7 +44,8 @@ impl Render2dExecutionState {
         target: &Render2dTarget,
     ) -> Result<Render2dPreparedContribution, Render2dExecutionError> {
         composition.validate_bindings(bindings)?;
-        let runs = admit_runs(composition)?;
+        let plan = scene::analyze(composition)?;
+        let runs = admit_runs(&plan)?;
         let admitted_target = lowering::admit_target(context, target, !runs.is_empty())?;
         let unique_resources = runs
             .iter()
@@ -291,41 +293,35 @@ struct AdmittedRun {
     translate_y: f64,
 }
 
-/// Determines whether a recursively nested group has no paint or effects.
-///
-/// This structural proof is deliberately iterative: arbitrarily deep immutable
-/// F1 group trees must not consume the Rust call stack during admission.
-/// Opaque resource-bearing items, even when visually empty, are not elided here
-/// because they still require immutable resource observation.
-fn group_is_structurally_empty(group: &crate::composition_2d::Render2dGroup) -> bool {
-    let mut pending = vec![group];
-    while let Some(current) = pending.pop() {
-        if !current.shadows().is_empty() {
-            return false;
-        }
-        for entry in current.entries() {
-            match entry {
-                Render2dEntry::Item(_) => return false,
-                Render2dEntry::Group(child) => pending.push(child),
+fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecutionError> {
+    let mut runs = Vec::new();
+    for event in &plan.events {
+        let (root_index, item, to_root) = match event {
+            scene::Event::Item {
+                path,
+                item,
+                to_root,
+            } => {
+                let root_index = path[0];
+                // The existing direct-root compiler remains fail-closed until
+                // the complete F3E sample-space group lowering is available.
+                if path.len() != 1 {
+                    return Err(Render2dUnsupportedContent::Group { root_index }.into());
+                }
+                (root_index, *item, *to_root)
             }
-        }
-    }
-    true
-}
-
-fn admit_runs(
-    composition: &Render2dComposition,
-) -> Result<Vec<AdmittedRun>, Render2dExecutionError> {
-    let mut runs = Vec::with_capacity(composition.root_entries().len());
-    for (root_index, entry) in composition.root_entries().iter().enumerate() {
-        let Render2dEntry::Item(item) = entry else {
-            let Render2dEntry::Group(group) = entry else {
-                unreachable!("F1 entries are items or groups");
-            };
-            if group_is_structurally_empty(group) {
+            scene::Event::BeginGroup { path, has_shadows } => {
+                if *has_shadows {
+                    return Err(
+                        Render2dUnsupportedContent::Group {
+                            root_index: path[0],
+                        }
+                        .into(),
+                    );
+                }
                 continue;
             }
-            return Err(Render2dUnsupportedContent::Group { root_index }.into());
+            scene::Event::EndGroup => continue,
         };
         match item.primitive() {
             Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => continue,
@@ -335,7 +331,7 @@ fn admit_runs(
         if item.opacity() != Render2dOpacity::OPAQUE {
             return Err(Render2dUnsupportedContent::Opacity { root_index }.into());
         }
-        let [m11, m12, m21, m22, translate_x, translate_y] = item.local_to_parent().components();
+        let [m11, m12, m21, m22, translate_x, translate_y] = to_root.coefficients();
         if m11 != 1.0 || m12 != 0.0 || m21 != 0.0 || m22 != 1.0 {
             return Err(Render2dUnsupportedContent::Transform { root_index }.into());
         }
