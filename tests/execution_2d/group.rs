@@ -124,7 +124,6 @@ fn nested_groups_preserve_disjoint_sample_coverage_and_parent_order() {
     pixel_close(pixel(&image, 11, 20), [0, 0, 0, 0]);
 }
 
-
 fn clip(left: f64, width: f64) -> Render2dClip {
     Render2dClip::new(
         Render2dShape::rect(Render2dRect::new(left, 0.0, width, 64.0).unwrap()),

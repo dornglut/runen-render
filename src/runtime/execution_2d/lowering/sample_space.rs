@@ -56,7 +56,10 @@ fn pipeline(
         })
         .transpose()?
         .unwrap_or_default();
-    if matches!(entry, "fs_sample_mask_fill_clipped" | "fs_sample_merge_clipped") {
+    if matches!(
+        entry,
+        "fs_sample_mask_fill_clipped" | "fs_sample_merge_clipped"
+    ) {
         let key = GpuBindingKey::try_new(0, 4)
             .map_err(|e| gpu("F3E structural clip binding layout", e))?;
         refinements.push(
@@ -271,13 +274,16 @@ fn prepare_clip(
         target,
         *reserved_bytes,
         sample_work,
-    )? else {
+    )?
+    else {
         return Ok(None);
     };
-    let exceeded = || clip_geometry::failure(
-        root_index,
-        crate::execution_2d::Render2dClipError::ResourceLimit,
-    );
+    let exceeded = || {
+        clip_geometry::failure(
+            root_index,
+            crate::execution_2d::Render2dClipError::ResourceLimit,
+        )
+    };
     let bytes = u64::try_from(mask.rgba.len()).map_err(|_| exceeded())?;
     *reserved_bytes = reserved_bytes.checked_add(bytes).ok_or_else(exceeded)?;
     super::clip::upload(target, &mask, resources).map(Some)
@@ -315,16 +321,15 @@ fn inspect(
                 ..
             } => {
                 if !matches!(
-                        item.primitive(),
-                        Render2dPrimitive::Fill {
-                            brush: Render2dBrush::Solid(_),
-                            ..
-                        } | Render2dPrimitive::Stroke {
-                            brush: Render2dBrush::Solid(_),
-                            ..
-                        }
-                    )
-                {
+                    item.primitive(),
+                    Render2dPrimitive::Fill {
+                        brush: Render2dBrush::Solid(_),
+                        ..
+                    } | Render2dPrimitive::Stroke {
+                        brush: Render2dBrush::Solid(_),
+                        ..
+                    }
+                ) {
                     return Err(Render2dUnsupportedContent::Group {
                         root_index: path[0],
                     }
@@ -511,7 +516,8 @@ pub(in crate::runtime::execution_2d) fn lower(
                                 &mut resources,
                             )?
                         };
-                        let visible = parent_visible && (group.clips().is_empty() || clip.is_some());
+                        let visible =
+                            parent_visible && (group.clips().is_empty() || clip.is_some());
                         group_stack.push(GroupFrame {
                             group,
                             visible,
@@ -589,7 +595,8 @@ pub(in crate::runtime::execution_2d) fn lower(
                                 &mut reserved_clip_bytes,
                                 &mut clip_sample_work,
                                 &mut resources,
-                            )? else {
+                            )?
+                            else {
                                 continue;
                             };
                             Some(mask)
