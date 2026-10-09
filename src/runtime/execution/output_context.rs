@@ -9,6 +9,7 @@ use super::state::{
     DeterministicTemporalHistorySelection, DeterministicTemporalHistoryUse,
     DeterministicTemporalHistoryUseStorage, DeterministicTemporalSignature,
     temporal_evaluation_extent_supported, temporal_observation_compatibility,
+    temporal_phase_mapping_is_injective,
 };
 use crate::admission::AdmittedRenderPlan;
 use crate::request::{RenderObservationSpec, RenderOutputValue};
@@ -26,6 +27,8 @@ pub(super) struct ResolvedOutputContext<'a> {
     pub(super) produce_requested_coverage: bool,
     pub(super) bytes_per_row_alignment: Option<u64>,
     pub(super) max_compute_workgroups_per_dimension: u32,
+    pub(super) max_storage_buffer_binding_size: u64,
+    pub(super) max_buffer_size: u64,
 }
 
 pub(super) struct PreparedTemporalState {
@@ -101,6 +104,18 @@ pub(super) fn resolve_output_context<'a>(
             .workload_budget()
             .limits()
             .max_compute_workgroups_per_dimension(),
+        max_storage_buffer_binding_size: context
+            .device_facts()
+            .workload_budget()
+            .limits()
+            .max_storage_buffer_binding_size()
+            .min(context.device_facts().device_limits().values().max_storage_buffer_binding_size()),
+        max_buffer_size: context
+            .device_facts()
+            .workload_budget()
+            .limits()
+            .max_buffer_size()
+            .min(context.device_facts().device_limits().values().max_buffer_size()),
     })
 }
 
@@ -143,6 +158,16 @@ pub(super) fn prepare_temporal_state(
                 evaluation_extent,
             },
         );
+    }
+    if requested_extent != evaluation_extent
+        && (!temporal_phase_mapping_is_injective(requested_extent, evaluation_extent)
+            || !temporal_phase_mapping_is_injective(requested_extent, requested_extent))
+    {
+        return Err(RenderDeterministicLoweringError::NonInjectiveTemporalPhaseMapping {
+            output_index: resolved.output_index,
+            requested_extent,
+            evaluation_extent,
+        });
     }
     let alignment = resolved
         .bytes_per_row_alignment

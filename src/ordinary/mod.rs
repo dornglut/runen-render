@@ -21,7 +21,9 @@ use super::runtime::capture::{
     RenderCapturedDeterministicRadiance, RenderDeterministicRadianceCaptureError,
     RenderDeterministicRadianceCaptureRequest, RenderDeterministicRadianceCaptureRequestError,
 };
-pub use super::runtime::execution::RenderObjectIdentityDecoder;
+pub use super::runtime::execution::{
+    RenderObjectIdentityDecoder, RenderRadianceCellAvailability,
+};
 use super::runtime::execution::{
     AssociatedDeterministicRender, DeterministicResourceCache, PreparedDeterministicRadianceOutput,
     PreparedDeterministicRender, RenderDeterministicExecutionError,

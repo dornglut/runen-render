@@ -26,11 +26,14 @@ const SHAPED_TEXT_MODULE_ID: u64 = 4;
 const SHAPED_TEXT_SOURCE_UNIT_ID: u64 = 4;
 const VECTOR_MODULE_ID: u64 = 5;
 const VECTOR_SOURCE_UNIT_ID: u64 = 5;
+const TEMPORAL_FALLBACK_MODULE_ID: u64 = 6;
+const TEMPORAL_FALLBACK_SOURCE_UNIT_ID: u64 = 6;
 const VECTOR_REVISION: u64 = 4;
 const VECTOR_WGSL: &str = include_str!("shaders/solid_vector.wgsl");
 
 pub(crate) const MAINTAINED_EVALUATOR_REVISION: u64 = 3;
-pub(crate) const TEMPORAL_RECONSTRUCTION_REVISION: u32 = 2;
+pub(crate) const TEMPORAL_RECONSTRUCTION_REVISION: u32 = 3;
+pub(crate) const TEMPORAL_FALLBACK_REVISION: u64 = 1;
 pub(crate) const CAMERA_REPROJECTION_REVISION: u32 = 3;
 pub(crate) const SHAPED_TEXT_REVISION: u64 = 2;
 
@@ -43,6 +46,12 @@ pub(crate) static EVALUATOR_WGSL: LazyLock<String> = LazyLock::new(|| {
 });
 pub(crate) const TEMPORAL_RECONSTRUCTION_WGSL: &str =
     include_str!("shaders/temporal_reconstruction.wgsl");
+pub(crate) static TEMPORAL_FALLBACK_WGSL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{SCENE_QUERY_WGSL}\n{}",
+        include_str!("shaders/temporal_fallback.wgsl")
+    )
+});
 pub(crate) static CAMERA_REPROJECTION_WGSL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "{SCENE_QUERY_WGSL}\n{}",
@@ -53,6 +62,7 @@ pub(crate) const SHAPED_TEXT_WGSL: &str = include_str!("shaders/shaped_text.wgsl
 
 static EVALUATOR_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
 static TEMPORAL_RECONSTRUCTION_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
+static TEMPORAL_FALLBACK_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
 static CAMERA_REPROJECTION_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
 static SHAPED_TEXT_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
 
@@ -60,6 +70,7 @@ static SHAPED_TEXT_PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();
 enum MaintainedShaderProgram {
     Evaluator,
     TemporalReconstruction,
+    TemporalFallback,
     CameraReprojection,
     ShapedText,
     Vector,
@@ -70,6 +81,7 @@ impl MaintainedShaderProgram {
         match self {
             Self::Evaluator => "maintained evaluator",
             Self::TemporalReconstruction => "temporal reconstruction",
+            Self::TemporalFallback => "temporal current radiance fallback",
             Self::CameraReprojection => "camera reprojection",
             Self::ShapedText => "2D shaped text",
             Self::Vector => "2D solid vector coverage",
@@ -80,6 +92,7 @@ impl MaintainedShaderProgram {
         match self {
             Self::Evaluator => "runenrender.maintained.deterministic",
             Self::TemporalReconstruction => "runenrender.maintained.temporal_reconstruction",
+            Self::TemporalFallback => "runenrender.maintained.temporal_fallback",
             Self::CameraReprojection => "runenrender.maintained.camera_reprojection",
             Self::ShapedText => "runenrender.maintained.shaped_text",
             Self::Vector => "runenrender.maintained.solid_vector",
@@ -90,6 +103,7 @@ impl MaintainedShaderProgram {
         match self {
             Self::Evaluator => EVALUATOR_MODULE_ID,
             Self::TemporalReconstruction => TEMPORAL_MODULE_ID,
+            Self::TemporalFallback => TEMPORAL_FALLBACK_MODULE_ID,
             Self::CameraReprojection => CAMERA_MODULE_ID,
             Self::ShapedText => SHAPED_TEXT_MODULE_ID,
             Self::Vector => VECTOR_MODULE_ID,
@@ -100,6 +114,7 @@ impl MaintainedShaderProgram {
         match self {
             Self::Evaluator => EVALUATOR_SOURCE_UNIT_ID,
             Self::TemporalReconstruction => TEMPORAL_SOURCE_UNIT_ID,
+            Self::TemporalFallback => TEMPORAL_FALLBACK_SOURCE_UNIT_ID,
             Self::CameraReprojection => CAMERA_SOURCE_UNIT_ID,
             Self::ShapedText => SHAPED_TEXT_SOURCE_UNIT_ID,
             Self::Vector => VECTOR_SOURCE_UNIT_ID,
@@ -225,6 +240,7 @@ impl RenderMaintainedProgram {
 pub(crate) struct RenderMaintainedProgramSources {
     evaluator: RenderMaintainedProgram,
     temporal_reconstruction: RenderMaintainedProgram,
+    temporal_fallback: RenderMaintainedProgram,
     camera_reprojection: RenderMaintainedProgram,
     shaped_text: RenderMaintainedProgram,
 }
@@ -237,6 +253,10 @@ impl RenderMaintainedProgramSources {
 
     pub(crate) fn temporal_reconstruction(&self) -> &GpuAdmittedProgramSource {
         self.temporal_reconstruction.admitted()
+    }
+
+    pub(crate) fn temporal_fallback(&self) -> &GpuAdmittedProgramSource {
+        self.temporal_fallback.admitted()
     }
 
     pub(crate) fn camera_reprojection(&self) -> &GpuAdmittedProgramSource {
@@ -253,6 +273,10 @@ impl RenderMaintainedProgramSources {
 
     pub(crate) fn temporal_reconstruction_artifact(&self) -> &ShaderArtifact {
         self.temporal_reconstruction.artifact()
+    }
+
+    pub(crate) fn temporal_fallback_artifact(&self) -> &ShaderArtifact {
+        self.temporal_fallback.artifact()
     }
 
     pub(crate) fn camera_reprojection_artifact(&self) -> &ShaderArtifact {
@@ -290,6 +314,18 @@ pub(crate) fn build_temporal_reconstruction_program(
 ) -> Result<RenderMaintainedProgram, RenderMaintainedProgramBuildError> {
     build_maintained_program(MaintainedShaderSpec {
         program: MaintainedShaderProgram::TemporalReconstruction,
+        revision,
+        wgsl,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn build_temporal_fallback_program(
+    revision: u64,
+    wgsl: &str,
+) -> Result<RenderMaintainedProgram, RenderMaintainedProgramBuildError> {
+    build_maintained_program(MaintainedShaderSpec {
+        program: MaintainedShaderProgram::TemporalFallback,
         revision,
         wgsl,
     })
@@ -339,6 +375,18 @@ pub(crate) fn retained_temporal_reconstruction_source()
             program: MaintainedShaderProgram::TemporalReconstruction,
             revision: u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
             wgsl: TEMPORAL_RECONSTRUCTION_WGSL,
+        },
+    )
+}
+
+pub(crate) fn retained_temporal_fallback_source()
+-> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
+    retained_program_source(
+        &TEMPORAL_FALLBACK_PROGRAM,
+        MaintainedShaderSpec {
+            program: MaintainedShaderProgram::TemporalFallback,
+            revision: TEMPORAL_FALLBACK_REVISION,
+            wgsl: TEMPORAL_FALLBACK_WGSL.as_str(),
         },
     )
 }
@@ -433,6 +481,10 @@ pub(crate) fn build_maintained_program_sources()
         temporal_reconstruction: build_temporal_reconstruction_program(
             u64::from(TEMPORAL_RECONSTRUCTION_REVISION),
             TEMPORAL_RECONSTRUCTION_WGSL,
+        )?,
+        temporal_fallback: build_temporal_fallback_program(
+            TEMPORAL_FALLBACK_REVISION,
+            TEMPORAL_FALLBACK_WGSL.as_str(),
         )?,
         camera_reprojection: build_camera_reprojection_program(
             u64::from(CAMERA_REPROJECTION_REVISION),
@@ -546,6 +598,11 @@ mod tests {
         let programs = build_maintained_program_sources()
             .expect("all maintained RunenRender programs must compile and admit");
         let _ = programs.shaped_text();
+        let _ = programs.temporal_fallback();
+        assert_eq!(
+            programs.temporal_fallback_artifact().canonical_wgsl().as_bytes(),
+            TEMPORAL_FALLBACK_WGSL.as_bytes()
+        );
         assert_eq!(
             programs.shaped_text_artifact().canonical_wgsl().as_bytes(),
             SHAPED_TEXT_WGSL.as_bytes()

@@ -312,7 +312,24 @@ impl PreparedRadianceOutput<'_> {
             .map(RenderTemporalExecutionEvidence::from_deterministic)
     }
 
-    /// Form a public RunenGPU import of this renderer-authored output.
+    /// Renderer-authored dense u32 availability export for sub-native static
+    /// temporal outputs. Its cells are row-major, unpadded, and use the
+    /// `RenderRadianceCellAvailability` encoding. Both exported carriers
+    /// belong to one exact submitted output and must complete together.
+    pub fn availability_export_relationship(&self) -> Option<&GpuExportRelationship> {
+        self.inner.availability_export_relationship()
+    }
+
+    /// Import the cell mask alongside a sub-native radiance texture. A zero
+    /// cell means unresolved, never black; compatibility and provisional
+    /// current-only evaluation remain distinguishable.
+    pub fn availability_import(&self, provenance: GpuResourceProvenance) -> Option<GpuWorkImport> {
+        self.inner.availability_import(provenance)
+    }
+
+    /// Form a physical RunenGPU texture import. On sub-native outputs, this
+    /// MUST NOT be used as all-defined radiance evidence without the separate
+    /// availability carrier; unresolved physical cells contain NaN, not zero.
     pub fn import(&self, provenance: GpuResourceProvenance) -> GpuWorkImport {
         self.inner.import(provenance)
     }

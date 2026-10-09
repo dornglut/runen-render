@@ -117,6 +117,22 @@ pub(crate) enum RenderDeterministicLoweringError {
         requested_extent: (u32, u32),
         evaluation_extent: (u32, u32),
     },
+    NonInjectiveTemporalPhaseMapping {
+        output_index: usize,
+        requested_extent: (u32, u32),
+        evaluation_extent: (u32, u32),
+    },
+    TemporalFallbackScratchBudgetExceeded {
+        output_index: usize,
+        required_bytes: u64,
+        budget_bytes: u64,
+    },
+    TemporalFallbackGpuLimitExceeded {
+        output_index: usize,
+        carrier: &'static str,
+        required_bytes: u64,
+        limit_bytes: u64,
+    },
     NonInvertibleObjectTransform {
         output_index: usize,
         object_id: RenderObjectId,
@@ -212,6 +228,32 @@ impl fmt::Display for RenderDeterministicLoweringError {
                 formatter,
                 "output {output_index} temporal evaluation extent {}x{} cannot cover requested lattice {}x{} with the maintained four-phase footprint sequence",
                 evaluation_extent.0, evaluation_extent.1, requested_extent.0, requested_extent.1
+            ),
+            Self::NonInjectiveTemporalPhaseMapping {
+                output_index,
+                requested_extent,
+                evaluation_extent,
+            } => write!(
+                formatter,
+                "output {output_index} cannot safely scatter {}x{} f32 phase samples into the requested {}x{} lattice without aliasing",
+                evaluation_extent.0, evaluation_extent.1, requested_extent.0, requested_extent.1
+            ),
+            Self::TemporalFallbackScratchBudgetExceeded {
+                output_index,
+                required_bytes,
+                budget_bytes,
+            } => write!(
+                formatter,
+                "output {output_index} temporal fallback requires {required_bytes} private scratch bytes; admitted per-output budget is {budget_bytes}"
+            ),
+            Self::TemporalFallbackGpuLimitExceeded {
+                output_index,
+                carrier,
+                required_bytes,
+                limit_bytes,
+            } => write!(
+                formatter,
+                "output {output_index} temporal fallback {carrier} needs {required_bytes} storage bytes, exceeding the admitted GPU limit {limit_bytes}"
             ),
             Self::NonInvertibleObjectTransform {
                 output_index,

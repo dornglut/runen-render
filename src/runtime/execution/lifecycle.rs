@@ -115,6 +115,30 @@ pub struct RenderTemporalExecutionEvidence {
     pub depth_policy_revision: Option<u32>,
 }
 
+/// Renderer-owned physical availability for one exact sub-native output cell.
+///
+/// The R32Float payload is not itself evidence of availability. These are the
+/// only admitted words of the renderer-owned dense u32 availability buffer.
+/// A current-phase sample is provisional, not a full footprint integral.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum RenderRadianceCellAvailability {
+    Unresolved = 0,
+    CompatibleStaticHistory = 1,
+    ProvisionalCurrentPhase = 2,
+}
+
+impl RenderRadianceCellAvailability {
+    pub const fn from_word(word: u32) -> Option<Self> {
+        match word {
+            0 => Some(Self::Unresolved),
+            1 => Some(Self::CompatibleStaticHistory),
+            2 => Some(Self::ProvisionalCurrentPhase),
+            _ => None,
+        }
+    }
+}
+
 /// Renderer-owned correlation for one ordinary composable radiance output.
 ///
 /// The correlation carries the exact admitted destination and typed RunenGPU export relationship.
@@ -124,6 +148,7 @@ pub struct RenderTemporalExecutionEvidence {
 pub struct PreparedDeterministicRadianceOutput {
     pub(super) output_index: usize,
     pub(super) relationship: GpuExportRelationship,
+    pub(super) availability_relationship: Option<GpuExportRelationship>,
     pub(super) temporal_evidence: Option<RenderTemporalExecutionEvidence>,
 }
 
@@ -147,10 +172,35 @@ impl PreparedDeterministicRadianceOutput {
         &self.relationship
     }
 
+    /// Exact same-fragment producer export for the dense u32 cell availability
+    /// carrier, when sub-native static temporal output is prepared. This remains
+    /// provisional until the exact containing RunenGPU submission completes.
+    pub fn availability_export_relationship(&self) -> Option<&GpuExportRelationship> {
+        self.availability_relationship.as_ref()
+    }
+
+    /// An availability carrier is required to interpret sub-native radiance.
+    /// Importing the texture alone is only a physical dependency, never evidence
+    /// that every R32Float payload contains defined current radiance.
+    pub fn availability_import(&self, provenance: GpuResourceProvenance) -> Option<GpuWorkImport> {
+        self.availability_relationship.as_ref().map(|relationship| {
+            GpuWorkImport::new(
+                relationship.resource().clone(),
+                relationship.export_key().clone(),
+                GpuResourceAccessIntent::Read,
+                provenance,
+            )
+        })
+    }
+
     pub fn temporal_execution_evidence(&self) -> Option<&RenderTemporalExecutionEvidence> {
         self.temporal_evidence.as_ref()
     }
 
+    /// Import the physical radiance texture. A sub-native consumer MUST also
+    /// import and honor the associated cell availability carrier, or treat
+    /// nonfinite unresolved payloads as unavailable; this import alone does
+    /// not certify a finite/current physical sample.
     pub fn import(&self, provenance: GpuResourceProvenance) -> GpuWorkImport {
         GpuWorkImport::new(
             self.relationship.resource().clone(),
