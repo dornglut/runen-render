@@ -1,10 +1,11 @@
 //! F3E private correlated-sample group color compilation.
 //!
-//! Initial admitted realization: vector solid fills/strokes and atomic groups
-//! without structural clips. Every other F1 class fails closed until the same
-//! physical sample compiler realizes it; no separate public group renderer or
-//! semantic display list is introduced. Root and child colors share one exact
-//! 4x4 sample lattice, with one final pixel resolve to the caller target.
+//! Initial admitted realization: solid/gradient vector fills and strokes,
+//! conjunctive item/group clips, and nested atomic groups. Shaped text, images,
+//! effects and unsupported semantic classes fail closed until this same
+//! compiler can realize them. No second public renderer or semantic display
+//! list is introduced. Root and child colors share one correlated 4x4 sample
+//! lattice and one final pixel resolve to the caller-owned target.
 use super::*;
 use crate::composition_2d::{
     Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dGroup, Render2dItem,
@@ -58,7 +59,7 @@ fn pipeline(
         .unwrap_or_default();
     if matches!(
         entry,
-        "fs_sample_mask_fill_clipped" | "fs_sample_merge_clipped"
+        "fs_sample_mask_fill_clipped" | "fs_sample_merge_clipped" | "fs_sample_gradient_clipped"
     ) {
         let key = GpuBindingKey::try_new(0, 4)
             .map_err(|e| gpu("F3E structural clip binding layout", e))?;
@@ -202,6 +203,7 @@ fn draw(
     pipeline: &GpuRenderPipelineDescriptor,
     sampled: Option<(u32, &GpuTextureViewHandle)>,
     clipped: Option<&super::clip::ClipGpu>,
+    gradient: Option<&GpuBufferHandle>,
     vertices: &[f32],
     extent: [u32; 2],
     resources: &mut GpuResourceScope,
@@ -213,6 +215,9 @@ fn draw(
         .collect::<Vec<_>>();
     if let Some(clipped) = clipped {
         values.extend(super::clip::bindings(clipped, 4, 5)?);
+    }
+    if let Some(buffer) = gradient {
+        values.push(GpuRuntimeBindingValue::whole_buffer(0, 1, buffer));
     }
     let bindings = pipeline
         .runtime_bindings(values)
@@ -334,13 +339,7 @@ fn inspect(
             } => {
                 if !matches!(
                     item.primitive(),
-                    Render2dPrimitive::Fill {
-                        brush: Render2dBrush::Solid(_),
-                        ..
-                    } | Render2dPrimitive::Stroke {
-                        brush: Render2dBrush::Solid(_),
-                        ..
-                    }
+                    Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. }
                 ) {
                     return Err(Render2dUnsupportedContent::Group {
                         root_index: path[0],
@@ -468,6 +467,16 @@ pub(in crate::runtime::execution_2d) fn lower(
         "fs_sample_mask_fill_clipped",
         Some(0),
     )?;
+    let gradient_pipeline = pipeline(
+        GpuTextureFormat::Rgba16Float,
+        "fs_sample_gradient",
+        Some(0),
+    )?;
+    let gradient_clipped_pipeline = pipeline(
+        GpuTextureFormat::Rgba16Float,
+        "fs_sample_gradient_clipped",
+        Some(0),
+    )?;
     let resolve_pipeline = pipeline(target.format, "fs_sample_resolve", Some(6))?;
 
     let mut operations = Vec::new();
@@ -566,6 +575,7 @@ pub(in crate::runtime::execution_2d) fn lower(
                                 pipeline,
                                 Some((6, &layers[depth])),
                                 frame.clip.as_ref(),
+                                None,
                                 &vertices,
                                 physical,
                                 &mut resources,
@@ -633,6 +643,7 @@ pub(in crate::runtime::execution_2d) fn lower(
                             &coverage_pipeline,
                             None,
                             None,
+                            None,
                             &coverage_vertices,
                             physical,
                             &mut resources,
@@ -641,11 +652,50 @@ pub(in crate::runtime::execution_2d) fn lower(
                             &mut operations,
                             operation(&mask, true, vec![coverage_draw])?,
                         )?;
-                        let Render2dBrush::Solid(color) = &mesh.brush else {
-                            unreachable!("solid brush preflight")
+                        // F3B's single gradient payload authority supplies exact
+                        // premultiplied linear authored stops and inverse brush mapping.
+                        let mut gradient_buffer = None;
+                        let (paint_pipeline, vertex_color) = match &mesh.brush {
+                            Render2dBrush::Solid(color) => {
+                                let mut rgba = linear_color(*color);
+                                rgba[3] *= f32_from_f64(mesh.opacity);
+                                let pipeline = if item_clip.is_some() {
+                                    &fill_clipped_pipeline
+                                } else {
+                                    &fill_pipeline
+                                };
+                                (pipeline, rgba)
+                            }
+                            Render2dBrush::Linear(_) | Render2dBrush::Radial(_) => {
+                                let words = vector::gradient_payload(mesh)?
+                                    .expect("shared F3B non-solid gradient payload");
+                                let data = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
+                                    "runen-render F3E gradient stops",
+                                    &words,
+                                )
+                                .map_err(|e| gpu("F3E gradient payload", e))?;
+                                let buffer = resources
+                                    .buffer(
+                                        GpuBufferDescriptor::ordinary_owned(
+                                            "runen-render F3E gradient stops",
+                                            GpuResourceLifetime::Transient,
+                                            GpuReconstruction::SourceBacked,
+                                            data.layout().byte_len(),
+                                            [GpuBufferUsage::Storage, GpuBufferUsage::CopyDestination],
+                                            GpuBufferInitialization::Prepared(data),
+                                        )
+                                        .map_err(|e| gpu("F3E gradient buffer descriptor", e))?,
+                                    )
+                                    .map_err(|e| gpu("F3E gradient buffer", e))?;
+                                gradient_buffer = Some(buffer);
+                                let pipeline = if item_clip.is_some() {
+                                    &gradient_clipped_pipeline
+                                } else {
+                                    &gradient_pipeline
+                                };
+                                (pipeline, [1.0; 4])
+                            }
                         };
-                        let mut rgba = linear_color(*color);
-                        rgba[3] *= f32_from_f64(mesh.opacity);
                         let mut full_quad = Vec::new();
                         let origin_sample = [
                             f64::from(origin[0]) * f64::from(SAMPLES),
@@ -655,18 +705,14 @@ pub(in crate::runtime::execution_2d) fn lower(
                             &mut full_quad,
                             [0.0, 0.0, f64::from(dimension), f64::from(dimension)],
                             physical,
-                            rgba,
+                            vertex_color,
                             origin_sample,
                         );
-                        let pipeline = if item_clip.is_some() {
-                            &fill_clipped_pipeline
-                        } else {
-                            &fill_pipeline
-                        };
                         let color_draw = draw(
-                            pipeline,
+                            paint_pipeline,
                             Some((0, &mask)),
                             item_clip.as_ref(),
+                            gradient_buffer.as_ref(),
                             &full_quad,
                             physical,
                             &mut resources,
@@ -694,6 +740,7 @@ pub(in crate::runtime::execution_2d) fn lower(
             let resolve_draw = draw(
                 &resolve_pipeline,
                 Some((6, &layers[0])),
+                None,
                 None,
                 &resolve_vertices,
                 [target.physical_width, target.physical_height],

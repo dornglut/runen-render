@@ -2,7 +2,10 @@
 //! -> RunenGPU work/evidence -> unmodified caller-owned RGBA8-sRGB readback.
 //! These pixels are computed independently from straight-alpha source facts.
 use super::*;
-use runen_render::composition_2d::{Render2dBrush, Render2dClip, Render2dRect, Render2dShape};
+use runen_render::composition_2d::{
+    Render2dBrush, Render2dClip, Render2dGradientStop, Render2dGradientStops,
+    Render2dLinearGradient, Render2dRect, Render2dShape,
+};
 
 fn context() -> Option<GpuContext> {
     let mut descriptor =
@@ -193,4 +196,123 @@ fn group_item_clip_uses_its_own_parent_space_after_group_transform() {
     );
     pixel_close(pixel(&image, 10, 20), [188, 0, 0, 128]);
     pixel_close(pixel(&image, 11, 20), [0, 0, 0, 0]);
+}
+
+
+fn linear_gradient_item(start: f64, end: f64, left: f64, width: f64) -> Render2dEntry {
+    let stops = Render2dGradientStops::new(vec![
+        Render2dGradientStop::new(0.0, Render2dColorRgba8::new(255, 0, 0, 255)).unwrap(),
+        Render2dGradientStop::new(1.0, Render2dColorRgba8::new(0, 0, 255, 255)).unwrap(),
+    ])
+    .unwrap();
+    let brush = Render2dBrush::Linear(
+        Render2dLinearGradient::new(
+            Render2dPoint::new(start, 0.0).unwrap(),
+            Render2dPoint::new(end, 0.0).unwrap(),
+            stops,
+        )
+        .unwrap(),
+    );
+    Render2dEntry::item(Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::rect(Render2dRect::new(left, 0.0, width, 64.0).unwrap()),
+            brush,
+        },
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+    ))
+}
+
+fn encode_linear(value: f64) -> u8 {
+    let encoded = if value <= 0.0031308 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Independent F1 oracle: physical centers on fixed 4x4 lattice, straight
+/// red/blue stops, followed by group opacity once and a final linear resolve.
+fn expected_gradient_pixel(
+    pixel_x: u32,
+    start: f64,
+    end: f64,
+    coverage: impl Fn(f64) -> bool,
+    opacity: f64,
+) -> [u8; 4] {
+    let mut red = 0.0;
+    let mut blue = 0.0;
+    let mut alpha = 0.0;
+    for sy in 0..4 {
+        for sx in 0..4 {
+            let _sample_y = (f64::from(sy) + 0.5) / 4.0;
+            let x = f64::from(pixel_x) + (f64::from(sx) + 0.5) / 4.0;
+            if coverage(x) {
+                let t = ((x - start) / (end - start)).clamp(0.0, 1.0);
+                red += (1.0 - t) * opacity / 16.0;
+                blue += t * opacity / 16.0;
+                alpha += opacity / 16.0;
+            }
+        }
+    }
+    [
+        encode_linear(red),
+        0,
+        encode_linear(blue),
+        (alpha * 255.0).round() as u8,
+    ]
+}
+
+#[test]
+fn nested_linear_gradient_matches_independent_per_sample_oracle() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let root = Render2dComposition::new(vec![group(
+        vec![group(vec![linear_gradient_item(0.0, 64.0, 0.0, 64.0)], 0.5)],
+        1.0,
+    )])
+    .unwrap();
+    let result = execute(
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &root,
+        &Render2dResourceBindings::default(),
+        "F3E nested sampled linear gradient",
+    );
+    for x in [0, 16, 32, 48, 63] {
+        pixel_close(
+            pixel(&result, x, 20),
+            expected_gradient_pixel(x, 0.0, 64.0, |_| true, 0.5),
+        );
+    }
+}
+
+#[test]
+fn fractional_group_clip_and_gradient_source_share_exact_samples() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let parent = Render2dGroup::new(
+        vec![linear_gradient_item(10.0, 11.0, 10.0, 0.5)],
+        Render2dAffineTransform::IDENTITY,
+        vec![clip(10.0, 0.5)],
+        Render2dOpacity::new(0.5).unwrap(),
+        Vec::new(),
+    );
+    let root = Render2dComposition::new(vec![Render2dEntry::group(parent)]).unwrap();
+    let result = execute(
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &root,
+        &Render2dResourceBindings::default(),
+        "F3E fractional gradient clip and opacity",
+    );
+    pixel_close(
+        pixel(&result, 10, 20),
+        expected_gradient_pixel(10, 10.0, 11.0, |x| x < 10.5, 0.5),
+    );
+    pixel_close(pixel(&result, 11, 20), [0, 0, 0, 0]);
 }

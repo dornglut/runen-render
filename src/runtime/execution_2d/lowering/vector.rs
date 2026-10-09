@@ -282,7 +282,7 @@ pub(super) fn lower(
 // Four 16-byte header rows followed by stable authored stop pairs. Every stop is
 // (offset, unused, unused, unused) and premultiplied linear RGBA, with no sorting
 // or deduplication. This is private GPU representation, not an authoring format.
-fn gradient_payload(
+pub(super) fn gradient_payload(
     mesh: &crate::runtime::execution_2d::vector::VectorMesh,
 ) -> Result<Option<Vec<f32>>, Render2dExecutionError> {
     let (kind, geometry, stops) = match &mesh.brush {

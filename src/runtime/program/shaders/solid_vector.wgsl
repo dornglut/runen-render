@@ -319,3 +319,29 @@ fn clip_hit(pixel: vec2<i32>, sx: i32, sy: i32) -> f32 {
     let alpha = input.color.a * membership * visible;
     return vec4<f32>(input.color.rgb * alpha, alpha);
 }
+
+
+// F3E gradients sample the same F1 brush-space interpolation once at each
+// actual 4x4 physical sample. GPU payload stops are already premultiplied
+// linear RGBA, so group isolation and source-over need no color reinterpretation.
+@fragment fn fs_sample_gradient(input: VertexOutput) -> @location(0) vec4<f32> {
+    let local_sample = vec2<i32>(floor(input.position.xy));
+    let physical_sample = floor(input.mask_pixel);
+    let global_pixel = (physical_sample + vec2<f32>(0.5)) / f32(COVERAGE_AXIS_SAMPLES);
+    let membership = textureLoad(coverage_mask, local_sample, 0).r;
+    let painted = gradient_sample(global_pixel);
+    return painted * (membership * gradient.header[1].w);
+}
+
+@fragment fn fs_sample_gradient_clipped(input: VertexOutput) -> @location(0) vec4<f32> {
+    let local_sample = vec2<i32>(floor(input.position.xy));
+    let physical_sample = floor(input.mask_pixel);
+    let global_pixel = (physical_sample + vec2<f32>(0.5)) / f32(COVERAGE_AXIS_SAMPLES);
+    let global_sample = vec2<i32>(physical_sample);
+    let logical = global_sample / COVERAGE_AXIS_SAMPLES;
+    let offset = global_sample % COVERAGE_AXIS_SAMPLES;
+    let membership = textureLoad(coverage_mask, local_sample, 0).r;
+    let visible = clip_hit(logical, offset.x, offset.y);
+    let painted = gradient_sample(global_pixel);
+    return painted * (membership * visible * gradient.header[1].w);
+}
