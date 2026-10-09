@@ -21,6 +21,40 @@ use std::{
 
 const FIELD_RANGE: f64 = 4.0;
 const FIELD_BORDER: f64 = 4.0;
+// The 4-byte retained RGBA field is preceded by a 3-channel f32 MSDF
+// generation bitmap. Bound aggregate field area before either allocation.
+pub(super) const MAX_TEXT_FIELD_BYTES: u64 = 32 * 1024 * 1024;
+
+#[derive(Debug, Default)]
+pub(super) struct FieldBudget {
+    bytes: u64,
+}
+
+impl FieldBudget {
+    fn charge(
+        &mut self,
+        resource_id: Render2dResourceId,
+        glyph_id: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), Render2dShapedTextError> {
+        let fail = || Render2dShapedTextError::FieldBudgetExceeded {
+            resource_id,
+            glyph_id,
+            maximum_bytes: MAX_TEXT_FIELD_BYTES,
+        };
+        let bytes = u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(fail)?;
+        let next = self.bytes.checked_add(bytes).ok_or_else(fail)?;
+        if next > MAX_TEXT_FIELD_BYTES {
+            return Err(fail());
+        }
+        self.bytes = next;
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) enum QualityTier {
@@ -116,6 +150,17 @@ pub(super) struct ResourceFields {
 impl ResourceFields {
     pub(super) fn glyph(&self, glyph_id: u32) -> Option<&Arc<GlyphField>> {
         self.by_glyph.get(&glyph_id).and_then(Option::as_ref)
+    }
+
+    pub(super) fn charge_cached(
+        &self,
+        resource_id: Render2dResourceId,
+        budget: &mut FieldBudget,
+    ) -> Result<(), Render2dShapedTextError> {
+        for field in self.by_glyph.values().flatten() {
+            budget.charge(resource_id, field.glyph_id(), field.width(), field.height())?;
+        }
+        Ok(())
     }
 
     pub(super) fn validate_texture_limit(
@@ -299,6 +344,7 @@ pub(super) fn realize(
     resource: &Render2dShapedTextResource,
     quality: QualityTier,
     max_texture_dimension_2d: u32,
+    budget: &mut FieldBudget,
 ) -> Result<ResourceFields, Render2dExecutionError> {
     if resource.font().faux_bold() {
         return Err(Render2dShapedTextError::UnsupportedGlyph {
@@ -390,6 +436,7 @@ pub(super) fn realize(
                     &outline,
                     quality,
                     max_texture_dimension_2d,
+                    budget,
                 )
                 .map(Arc::new)
             })
@@ -512,6 +559,7 @@ fn generate_field(
     outline: &GlyphOutline,
     quality: QualityTier,
     max_texture_dimension_2d: u32,
+    budget: &mut FieldBudget,
 ) -> Result<GlyphField, Render2dExecutionError> {
     let mut shape = msdf_shape(outline).map_err(|()| Render2dShapedTextError::InvalidOutline {
         resource_id,
@@ -589,6 +637,10 @@ fn generate_field(
             maximum: max_texture_dimension_2d,
         })?;
 
+    // Reject aggregate work before MSDF's temporary 3xf32 bitmap is created.
+    // This is the same per-invocation accounting used for preexisting cache entries.
+    budget.charge(resource_id, glyph_id, width, height)?;
+
     let projection = Projection::new(Vector2::splat(scale), Vector2::new(-origin_x, -origin_y));
     let mapping = DistanceMapping::from_range(Range::symmetric(FIELD_RANGE / scale));
     let transformation = SdfTransformation::new(projection, mapping);
@@ -662,7 +714,43 @@ mod tests {
             &resource(bytes, glyph_id),
             QualityTier::P24,
             4096,
+            &mut FieldBudget::default(),
         )
+    }
+
+    #[test]
+    fn cumulative_msdf_budget_accounts_cached_and_new_fields_transactionally() {
+        let id = Render2dResourceId::new(920).unwrap();
+        let mut budget = FieldBudget::default();
+        budget.charge(id, 1, 2048, 2048).expect("first sixteen MiB field");
+        budget.charge(id, 2, 2048, 2048).expect("second sixteen MiB field");
+        assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
+        assert!(matches!(
+            budget.charge(id, 3, 1, 1),
+            Err(Render2dShapedTextError::FieldBudgetExceeded {
+                resource_id,
+                glyph_id: 3,
+                maximum_bytes: MAX_TEXT_FIELD_BYTES,
+            }) if resource_id == id
+        ));
+        assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
+        assert!(budget.charge(id, 4, u32::MAX, u32::MAX).is_err());
+        assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
+        let mut cached = BTreeMap::new();
+        cached.insert(5, Some(Arc::new(GlyphField {
+            glyph_id: 5,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            width: 2,
+            height: 2,
+            rgba8: Arc::from([0_u8; 16]),
+        })));
+        let fields = ResourceFields { by_glyph: cached };
+        assert!(matches!(
+            fields.charge_cached(id, &mut budget),
+            Err(Render2dShapedTextError::FieldBudgetExceeded { glyph_id: 5, .. })
+        ));
+        assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
     }
 
     #[test]
@@ -696,7 +784,8 @@ mod tests {
                 Render2dResourceId::new(1).unwrap(),
                 &resource,
                 QualityTier::P24,
-                4096
+                4096,
+                &mut FieldBudget::default()
             ),
             Err(Render2dExecutionError::ShapedText(
                 Render2dShapedTextError::InvalidFont { .. }
