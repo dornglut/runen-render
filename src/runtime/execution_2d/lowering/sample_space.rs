@@ -848,6 +848,45 @@ pub(in crate::runtime::execution_2d) fn lower(
             Ok(Some(buffer))
         })
         .collect::<Result<Vec<_>, Render2dExecutionError>>()?;
+    // Reuse F2's already-realized immutable fields. No reshaping, font fallback,
+    // alternate text cache or per-tile reupload is introduced here.
+    let mut text_views = BTreeMap::<super::FieldTextureKey, GpuTextureViewHandle>::new();
+    let mut text_upload_bytes = 0_u64;
+    for item in items.iter().flatten() {
+        let PreparedItem::Text(glyphs) = item else {
+            continue;
+        };
+        for glyph in glyphs {
+            let key = super::FieldTextureKey::new(
+                glyph.occurrence.resource_id,
+                glyph.occurrence.field.glyph_id(),
+            );
+            if text_views.contains_key(&key) {
+                continue;
+            }
+            let bytes = u64::try_from(glyph.occurrence.field.rgba8().len())
+                .map_err(|_| failure("text field upload size overflow"))?;
+            text_upload_bytes = text_upload_bytes
+                .checked_add(bytes)
+                .ok_or_else(|| failure("aggregate text field upload overflow"))?;
+            if text_upload_bytes > MAX_TEXT_UPLOAD_BYTES {
+                return Err(failure("aggregate text field upload exceeds bounded admission"));
+            }
+            let view = super::create_field_view(
+                &mut resources,
+                key,
+                &glyph.occurrence.field,
+            )?;
+            text_views.insert(key, view);
+        }
+    }
+    let text_sampler = has_text
+        .then(|| super::create_sampler(&mut resources))
+        .transpose()?;
+    let text_pipeline = has_text
+        .then(|| super::shaped_text_pipeline(GpuTextureFormat::Rgba16Float, false, true))
+        .transpose()?;
+
     let coverage_pipeline = pipeline(FIELD_FORMAT, "fs_coverage", None)?;
     let fill_pipeline = pipeline(
         GpuTextureFormat::Rgba16Float,
