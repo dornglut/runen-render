@@ -7,7 +7,9 @@
 
 use super::{
     field::{FieldSetKey, QualityTier, ResourceFields},
-    image, scene, support::NeutralMesh, vector,
+    image, scene,
+    support::NeutralMesh,
+    vector,
 };
 use crate::composition_2d::{
     Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dColorRgba8, Render2dDropShadow,
@@ -54,7 +56,10 @@ fn charge_vertices(
         .checked_add(count)
         .ok_or_else(|| resource(path, "neutral source graph vertex count overflow"))?;
     if next > MAX_NEUTRAL_VERTICES {
-        return Err(resource(path, "neutral source graph exceeds aggregate geometry budget"));
+        return Err(resource(
+            path,
+            "neutral source graph exceeds aggregate geometry budget",
+        ));
     }
     *used = next;
     Ok(())
@@ -114,9 +119,9 @@ fn neutral_item(
                     font_size: resource.font_size(),
                     to_parent: item.local_to_parent(),
                 };
-                if let Some(mesh) = vector::neutral_shaped_glyph(
-                    instance, path, resolution, max_buffer_bytes,
-                )? {
+                if let Some(mesh) =
+                    vector::neutral_shaped_glyph(instance, path, resolution, max_buffer_bytes)?
+                {
                     append(&mut result, &mesh, Render2dAffineTransform::IDENTITY, path)?;
                 }
             }
@@ -127,7 +132,12 @@ fn neutral_item(
         return Ok(None);
     };
     let clipped = intersect_clips(
-        &mesh, item.clips(), root_index, path, resolution, max_buffer_bytes,
+        &mesh,
+        item.clips(),
+        root_index,
+        path,
+        resolution,
+        max_buffer_bytes,
     )?;
     Ok((!clipped.triangles.is_empty()).then_some(clipped))
 }
@@ -165,7 +175,12 @@ pub(super) fn group_child_sources(
                     continue;
                 }
                 if let Some(mesh) = neutral_item(
-                    item, path, bindings, field_sets, resolution, max_buffer_bytes,
+                    item,
+                    path,
+                    bindings,
+                    field_sets,
+                    resolution,
+                    max_buffer_bytes,
                 )? {
                     charge_vertices(&mut retained_vertices, mesh.triangles.len(), path)?;
                     append(
@@ -213,11 +228,7 @@ pub(super) fn group_child_sources(
                     max_buffer_bytes,
                 )?;
                 if let Some(parent) = active.last_mut() {
-                    charge_vertices(
-                        &mut retained_vertices,
-                        clipped.triangles.len(),
-                        &frame.path,
-                    )?;
+                    charge_vertices(&mut retained_vertices, clipped.triangles.len(), &frame.path)?;
                     append(
                         &mut parent.child_source,
                         &clipped,
@@ -618,21 +629,16 @@ mod tests {
     #[test]
     fn nested_group_source_is_in_the_immediate_parent_frame_and_pre_group_clip() {
         use crate::composition_2d::{
-            Render2dComposition, Render2dEntry, Render2dGroup, Render2dRect,
-            Render2dShape,
+            Render2dComposition, Render2dEntry, Render2dGroup, Render2dRect, Render2dShape,
         };
         let item = Render2dItem::new(
             Render2dPrimitive::Fill {
-                shape: Render2dShape::rect(
-                    Render2dRect::new(0.0, 0.0, 1.0, 1.0).unwrap(),
-                ),
+                shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 1.0, 1.0).unwrap()),
                 brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
             },
             Render2dAffineTransform::IDENTITY,
             vec![Render2dClip::new(
-                Render2dShape::rect(
-                    Render2dRect::new(0.25, 0.0, 1.0, 1.0).unwrap(),
-                ),
+                Render2dShape::rect(Render2dRect::new(0.25, 0.0, 1.0, 1.0).unwrap()),
                 Render2dAffineTransform::IDENTITY,
             )],
             Render2dOpacity::TRANSPARENT,
@@ -644,29 +650,22 @@ mod tests {
             Render2dOpacity::TRANSPARENT,
             Vec::new(),
         );
-        let effect = Render2dDropShadow::new(
-            0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT,
-        ).unwrap();
+        let effect =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let root = Render2dGroup::new(
             vec![Render2dEntry::group(inner)],
             Render2dAffineTransform::IDENTITY,
             vec![Render2dClip::new(
-                Render2dShape::rect(
-                    Render2dRect::new(1.5, 0.0, 1.0, 1.0).unwrap(),
-                ),
+                Render2dShape::rect(Render2dRect::new(1.5, 0.0, 1.0, 1.0).unwrap()),
                 Render2dAffineTransform::IDENTITY,
             )],
             Render2dOpacity::TRANSPARENT,
             vec![effect],
         );
-        let composition = Render2dComposition::new(
-            vec![Render2dEntry::group(root)],
-        ).unwrap();
+        let composition = Render2dComposition::new(vec![Render2dEntry::group(root)]).unwrap();
         let plan = scene::analyze(&composition).unwrap();
         let empty = Render2dResourceBindings::new(Vec::new()).unwrap();
-        let sources = group_child_sources(
-            &plan, &empty, &BTreeMap::new(), 4.0, 1_048_576,
-        ).unwrap();
+        let sources = group_child_sources(&plan, &empty, &BTreeMap::new(), 4.0, 1_048_576).unwrap();
         assert_eq!(sources.len(), 1);
         let caster = sources.get(&0).unwrap();
         for (actual, expected) in caster.bounds.iter().zip([0.5, 0.0, 2.0, 1.0]) {
