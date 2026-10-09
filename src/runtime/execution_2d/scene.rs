@@ -59,14 +59,11 @@ pub(super) enum Event<'a> {
     Item {
         path: Vec<usize>,
         item: &'a Render2dItem,
-        parent_to_root: Affine,
         to_root: Affine,
     },
     BeginGroup {
         path: Vec<usize>,
         group: &'a Render2dGroup,
-        parent_to_root: Affine,
-        to_root: Affine,
     },
     EndGroup,
 }
@@ -190,10 +187,8 @@ pub(super) fn analyze(
                     .expect("balanced group events emitted by one compiler");
                 let contributes = descendants || !group.shadows().is_empty();
                 active[index] = contributes;
-                if contributes {
-                    if let Some(parent) = group_activity.last_mut() {
-                        *parent = true;
-                    }
+                if contributes && let Some(parent) = group_activity.last_mut() {
+                    *parent = true;
                 }
             }
         }
@@ -215,7 +210,6 @@ pub(super) fn analyze(
                 events.push(Event::Item {
                     path,
                     item,
-                    parent_to_root,
                     to_root,
                 });
             }
@@ -227,12 +221,7 @@ pub(super) fn analyze(
                     validate_clips(group.clips(), parent_to_root, &path)?;
                     let to_root = parent_to_root
                         .compose(Affine::from_source(group.local_to_parent()), &path)?;
-                    events.push(Event::BeginGroup {
-                        path,
-                        group,
-                        parent_to_root,
-                        to_root,
-                    });
+                    events.push(Event::BeginGroup { path, group });
                     frames.push(to_root);
                 } else {
                     // Its children contain no items/effects. Keep balanced
@@ -407,17 +396,11 @@ mod tests {
         assert!(matches!(
             plan.events.as_slice(),
             [
-                Event::BeginGroup {
-                    group,
-                    path,
-                    parent_to_root,
-                    to_root,
-                },
-                Event::Item { .. },
+                Event::BeginGroup { group, path },
+                Event::Item { to_root, .. },
                 Event::EndGroup
             ] if group.opacity() == Render2dOpacity::OPAQUE
                 && path == &[0]
-                && *parent_to_root == Affine::IDENTITY
                 && to_root.coefficients() == [2.0, 0.0, 0.0, 1.0, 4.0, 0.0]
         ));
     }
