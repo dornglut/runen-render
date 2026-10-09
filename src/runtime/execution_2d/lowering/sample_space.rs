@@ -23,7 +23,6 @@ use std::collections::BTreeMap;
 const MAX_PRIVATE_SCRATCH_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_IMAGE_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_PATCH_PARAMETER_BYTES: u64 = 64 * 1024 * 1024;
-
 const MAX_TILE_SIDE: u32 = 256;
 const MAX_TILES: u64 = 16384;
 const MAX_OPERATIONS: usize = 1_048_576;
