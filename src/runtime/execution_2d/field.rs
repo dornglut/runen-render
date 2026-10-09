@@ -857,6 +857,60 @@ mod tests {
     }
 
     #[test]
+    fn shaped_glyph_neutral_mesh_preserves_outline_and_parent_affine() {
+        let glyphs = realize_fixture(OUTLINE, 2).unwrap();
+        let field = glyphs.glyph(2).expect("fixture glyph has an outline");
+        let id = Render2dResourceId::new(1).unwrap();
+        let path = [4, 1];
+        let source = super::super::vector::neutral_shaped_glyph(
+            field,
+            id,
+            [2.0, 3.0],
+            24.0,
+            crate::composition_2d::Render2dAffineTransform::IDENTITY,
+            &path,
+            1.0,
+            1_048_576,
+        )
+        .unwrap()
+        .expect("nonempty actual outline tessellates");
+        let affine = crate::composition_2d::Render2dAffineTransform::new(
+            2.0, 0.0, 0.0, 0.5, 7.0, -3.0,
+        )
+        .unwrap();
+        let changed = super::super::vector::neutral_shaped_glyph(
+            field, id, [2.0, 3.0], 24.0, affine, &path, 1.0, 1_048_576,
+        )
+        .unwrap()
+        .expect("parent affine retains neutral glyph support");
+        let expected = [
+            source.bounds[0] * 2.0 + 7.0,
+            source.bounds[1] * 0.5 - 3.0,
+            source.bounds[2] * 2.0 + 7.0,
+            source.bounds[3] * 0.5 - 3.0,
+        ];
+        for (&actual, &oracle) in changed.bounds.iter().zip(&expected) {
+            assert!((actual - oracle).abs() < 1.0e-6);
+        }
+        let mut transparent_field = (**field).clone();
+        transparent_field.rgba8 = vec![0; field.rgba8.len()].into();
+        let transparent = super::super::vector::neutral_shaped_glyph(
+            &transparent_field,
+            id,
+            [2.0, 3.0],
+            24.0,
+            crate::composition_2d::Render2dAffineTransform::IDENTITY,
+            &path,
+            1.0,
+            1_048_576,
+        )
+        .unwrap()
+        .expect("MSDF zero-alpha bytes are not geometry");
+        assert_eq!(source.bounds, transparent.bounds);
+        assert_eq!(source.triangles, transparent.triangles);
+    }
+
+    #[test]
     fn cached_field_budget_includes_retained_outline_work() {
         let id = Render2dResourceId::new(1).unwrap();
         let fields = realize_fixture(OUTLINE, 2).unwrap();
