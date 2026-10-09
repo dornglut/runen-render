@@ -212,6 +212,7 @@ pub(super) fn realize(
 /// Triangles are disposable physical approximations of the accepted semantic geometry;
 /// neither their boundaries nor these bounds define a second semantic support authority.
 #[derive(Debug)]
+#[allow(dead_code, reason = "F3F neutral support is consumed by the pending group-effect lowering")]
 pub(super) struct NeutralVectorSupport {
     pub(super) triangles: Vec<[f64; 2]>,
     pub(super) bounds: [f64; 4],
