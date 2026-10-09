@@ -1449,7 +1449,7 @@ fn equal_numeric_scene_revisions_do_not_certify_different_illumination_histories
         first.work_set().fragments().to_vec(),
         &[availability],
     );
-    assert!(result[0].iter().any(|word| *word == 2));
+    assert!(result[0].contains(&2));
     cache.reconcile_temporal_outputs(true);
     let second = super::prepare_deterministic_render_with_cache_and_evaluation(
         admit(&second_fixture, &context),

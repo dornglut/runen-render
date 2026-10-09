@@ -81,9 +81,16 @@ pub(crate) mod temporal {
 
 pub(crate) mod temporal_fallback {
     pub(crate) const REVISION: u64 = 1;
+    // Rust tests independently check the exact shader/provisional ABI. The
+    // production classification is the public RenderRadianceCellAvailability
+    // enum; avoid a second active numeric authority in release builds.
+    #[cfg(test)]
     pub(crate) const UNRESOLVED_RADIANCE_BITS: u32 = 0x7fc0_0000;
+    #[cfg(test)]
     pub(crate) const UNRESOLVED: u32 = 0;
+    #[cfg(test)]
     pub(crate) const COMPATIBLE_HISTORY: u32 = 1;
+    #[cfg(test)]
     pub(crate) const CURRENT_PHASE: u32 = 2;
     // Combined provisional output, per-phase presence and per-cell availability.
     // This explicit policy is not a public renderer quality control.

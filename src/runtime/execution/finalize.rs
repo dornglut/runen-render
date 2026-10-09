@@ -142,20 +142,25 @@ fn temporal_execution_evidence(
     })
 }
 
+/// Correlated physical producer inputs for one finalized output occurrence.
+struct PreparedDestinationSources<'a> {
+    primary: &'a PreparedPrimaryPass,
+    temporal: &'a PreparedTemporalPass,
+}
+
 fn prepare_destination(
     admitted: &AdmittedRenderPlan,
     resolved: ResolvedOutputContext<'_>,
     packed: &PackedOutput,
     temporal_state: &PreparedTemporalState,
     requested_coverage: Option<&PreparedRequestedCoverage>,
-    primary: &PreparedPrimaryPass,
-    temporal_pass: &PreparedTemporalPass,
+    sources: PreparedDestinationSources<'_>,
     intent: DeterministicObservationIntent,
 ) -> Result<PreparedDestination, RenderDeterministicLoweringError> {
     match resolved.admitted_output.binding().destination() {
         RenderOutputDestination::ScalarBuffer(destination) => {
             let copy = GpuCopyOperation::buffer_to_buffer(
-                GpuBufferRegion::whole(&primary.canonical_output)
+                GpuBufferRegion::whole(&sources.primary.canonical_output)
                     .map_err(|error| gpu_work_operation("scalar source region", error))?,
                 GpuBufferRegion::whole(destination)
                     .map_err(|error| gpu_work_operation("scalar destination region", error))?,
@@ -174,7 +179,7 @@ fn prepare_destination(
                     DeterministicTemporalHistoryUseStorage::Static {
                         row_stride_words, ..
                     } => {
-                        let fallback = temporal_pass.static_fallback.as_ref().ok_or(
+                        let fallback = sources.temporal.static_fallback.as_ref().ok_or(
                             RenderDeterministicLoweringError::OutputCorrelationChanged {
                                 output_index: resolved.output_index,
                             },
@@ -192,7 +197,7 @@ fn prepare_destination(
                                 output_index: resolved.output_index,
                             },
                         )?;
-                        (&primary.canonical_output, row_bytes)
+                        (&sources.primary.canonical_output, row_bytes)
                     }
                 }
             } else {
@@ -201,7 +206,7 @@ fn prepare_destination(
                         output_index: resolved.output_index,
                     },
                 )?;
-                (&primary.canonical_output, row_bytes)
+                (&sources.primary.canonical_output, row_bytes)
             };
             let source = GpuBufferTextureLayout::new(copy_source, 0, row_bytes, 0)
                 .map_err(|error| gpu_work_operation("lattice source layout", error))?;
@@ -451,8 +456,10 @@ pub(super) fn finalize_output(
         packed,
         temporal_state,
         requested_coverage.as_ref(),
-        &primary,
-        &temporal,
+        PreparedDestinationSources {
+            primary: &primary,
+            temporal: &temporal,
+        },
         intent,
     )?;
     let verification = prepare_verification_readbacks(intent, resolved.output_index, &primary)?;
