@@ -1,7 +1,7 @@
 //! Renderer-private exact-lattice conjunctive clips: structural tessellation is
 //! disposable, and each physical pixel packs its sixteen binary coverage samples.
 use super::{
-    lowering::{AdmittedTarget, OrderedItem},
+    lowering::AdmittedTarget,
     scene, vector,
 };
 use crate::composition_2d::{
@@ -70,69 +70,6 @@ fn check_mask_budget(
         return Err(failure(root_index, Render2dClipError::ResourceLimit));
     }
     Ok(())
-}
-
-// Physical bounds as [left, top, right, bottom]. All source operations have
-// already passed their ordinary renderer admission and typed representability.
-fn content_bounds(
-    ordered: &[OrderedItem],
-    target: &AdmittedTarget,
-    root_index: usize,
-) -> Result<Option<[u32; 4]>, Render2dExecutionError> {
-    let mut result: Option<[u32; 4]> = None;
-    for operation in ordered {
-        let candidate = match operation {
-            OrderedItem::Vector(mesh) => [
-                mesh.bounds[0],
-                mesh.bounds[1],
-                mesh.bounds[0].saturating_add(mesh.bounds[2]),
-                mesh.bounds[1].saturating_add(mesh.bounds[3]),
-            ],
-            OrderedItem::Image(patch) => patch.bounds,
-            OrderedItem::Glyph(glyph) => {
-                let scale = target.raster_scale();
-                let left = glyph.logical_x * scale;
-                let top = glyph.logical_y * scale;
-                let right = (glyph.logical_x + glyph.logical_width) * scale;
-                let bottom = (glyph.logical_y + glyph.logical_height) * scale;
-                let [cw, ch] = target.canvas();
-                if ![left, top, right, bottom].into_iter().all(f64::is_finite) {
-                    return Err(failure(root_index, Render2dClipError::PrecisionLimit));
-                }
-                if right <= 0.0 || bottom <= 0.0 || left >= cw || top >= ch {
-                    continue;
-                }
-                let bounded = [
-                    left.max(0.0).floor(),
-                    top.max(0.0).floor(),
-                    right.min(cw).ceil(),
-                    bottom.min(ch).ceil(),
-                ];
-                if bounded[2] <= bounded[0] || bounded[3] <= bounded[1] {
-                    continue;
-                }
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                {
-                    [
-                        bounded[0] as u32,
-                        bounded[1] as u32,
-                        bounded[2] as u32,
-                        bounded[3] as u32,
-                    ]
-                }
-            }
-        };
-        result = Some(match result {
-            None => candidate,
-            Some([x0, y0, x1, y1]) => [
-                x0.min(candidate[0]),
-                y0.min(candidate[1]),
-                x1.max(candidate[2]),
-                y1.max(candidate[3]),
-            ],
-        });
-    }
-    Ok(result)
 }
 
 fn intersect(a: [u32; 4], b: [u32; 4]) -> Option<[u32; 4]> {
@@ -205,31 +142,6 @@ fn raster_triangle(
         }
     }
     Ok(())
-}
-
-pub(super) fn prepare(
-    item: &Render2dItem,
-    ordered: &[OrderedItem],
-    root_index: usize,
-    target: &AdmittedTarget,
-    previously_reserved_mask_bytes: u64,
-    contribution_work: &mut u64,
-) -> Result<Option<ClipMask>, Render2dExecutionError> {
-    if item.clips().is_empty() {
-        return Ok(None);
-    }
-    let Some(bounds) = content_bounds(ordered, target, root_index)? else {
-        return Ok(None);
-    };
-    prepare_bounded(
-        item.clips(),
-        bounds,
-        scene::Affine::IDENTITY,
-        root_index,
-        target,
-        previously_reserved_mask_bytes,
-        contribution_work,
-    )
 }
 
 /// Rasterizes one owner's conjunctive clips over already-admitted physical

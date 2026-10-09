@@ -15,6 +15,7 @@ use crate::runtime::execution_2d::{
     clip as clip_geometry, image as image_semantics, scene, vector as geometry,
 };
 use crate::runtime::program::retained_vector_source;
+use std::collections::BTreeMap;
 
 // At RGBA16F each 4x4 sample tile occupies 128 bytes per logical pixel/layer.
 // The 4x4 union mask consumes a further 64 bytes/logical pixel. The common
