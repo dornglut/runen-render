@@ -592,10 +592,7 @@ fn clipped_overlapping_image_patches_preserve_translucent_source_over() {
     };
     let id = Render2dResourceId::new(611).unwrap();
     let extent = Render2dPixelExtent::new(2, 2).unwrap();
-    let pixels = vec![
-        255, 0, 0, 255, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 255, 128,
-    ];
+    let pixels = vec![255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 128];
     let source = Render2dImageResource::new(extent, pixels).unwrap();
     let patch = |sx, sy| {
         Render2dImagePatch::new(
@@ -603,12 +600,8 @@ fn clipped_overlapping_image_patches_preserve_translucent_source_over() {
             r(0.0, 0.0, 64.0, 64.0),
         )
     };
-    let primitive = Render2dImagePrimitive::new(
-        id,
-        extent,
-        vec![patch(0.0, 0.0), patch(1.0, 1.0)],
-    )
-    .unwrap();
+    let primitive =
+        Render2dImagePrimitive::new(id, extent, vec![patch(0.0, 0.0), patch(1.0, 1.0)]).unwrap();
     let image = Render2dEntry::item(Render2dItem::new(
         Render2dPrimitive::Image(primitive),
         Render2dAffineTransform::IDENTITY,
