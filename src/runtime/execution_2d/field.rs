@@ -883,11 +883,13 @@ mod tests {
         let id = Render2dResourceId::new(1).unwrap();
         let path = [4, 1];
         let source = super::super::vector::neutral_shaped_glyph(
-            field,
-            id,
-            [2.0, 3.0],
-            24.0,
-            crate::composition_2d::Render2dAffineTransform::IDENTITY,
+            super::super::vector::NeutralGlyphInstance {
+                field,
+                resource_id: id,
+                origin: [2.0, 3.0],
+                font_size: 24.0,
+                to_parent: crate::composition_2d::Render2dAffineTransform::IDENTITY,
+            },
             &path,
             1.0,
             1_048_576,
@@ -898,11 +900,13 @@ mod tests {
             crate::composition_2d::Render2dAffineTransform::new(2.0, 0.0, 0.0, 0.5, 7.0, -3.0)
                 .unwrap();
         let changed = super::super::vector::neutral_shaped_glyph(
-            field,
-            id,
-            [2.0, 3.0],
-            24.0,
-            affine,
+            super::super::vector::NeutralGlyphInstance {
+                field,
+                resource_id: id,
+                origin: [2.0, 3.0],
+                font_size: 24.0,
+                to_parent: affine,
+            },
             &path,
             1.0,
             1_048_576,
@@ -921,11 +925,13 @@ mod tests {
         let mut transparent_field = (**field).clone();
         transparent_field.rgba8 = vec![0; field.rgba8.len()].into();
         let transparent = super::super::vector::neutral_shaped_glyph(
-            &transparent_field,
-            id,
-            [2.0, 3.0],
-            24.0,
-            crate::composition_2d::Render2dAffineTransform::IDENTITY,
+            super::super::vector::NeutralGlyphInstance {
+                field: &transparent_field,
+                resource_id: id,
+                origin: [2.0, 3.0],
+                font_size: 24.0,
+                to_parent: crate::composition_2d::Render2dAffineTransform::IDENTITY,
+            },
             &path,
             1.0,
             1_048_576,

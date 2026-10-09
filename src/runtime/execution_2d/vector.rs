@@ -212,16 +212,28 @@ pub(super) fn realize(
 /// neutral glyph support. An ancestor affine is deliberately absent: effects
 /// using this support operate in their group's parent frame first.
 #[allow(dead_code, reason = "F3F group support integration in progress")]
+pub(super) struct NeutralGlyphInstance<'a> {
+    pub(super) field: &'a super::field::GlyphField,
+    pub(super) resource_id: Render2dResourceId,
+    pub(super) origin: [f64; 2],
+    pub(super) font_size: f64,
+    pub(super) to_parent: Render2dAffineTransform,
+}
+
+#[allow(dead_code, reason = "F3F group support integration in progress")]
 pub(super) fn neutral_shaped_glyph(
-    field: &super::field::GlyphField,
-    resource_id: Render2dResourceId,
-    glyph_origin: [f64; 2],
-    font_size: f64,
-    glyph_to_parent: Render2dAffineTransform,
+    glyph: NeutralGlyphInstance<'_>,
     path: &[usize],
     samples_per_parent_logical_unit: f64,
     max_buffer_bytes: u64,
 ) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
+    let NeutralGlyphInstance {
+        field,
+        resource_id,
+        origin: glyph_origin,
+        font_size,
+        to_parent: glyph_to_parent,
+    } = glyph;
     let precision = || Render2dExecutionError::SampleSpace {
         kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
         path: Some(path.to_vec()),
