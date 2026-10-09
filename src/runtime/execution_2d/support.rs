@@ -289,14 +289,15 @@ fn rasterize_mesh_with_positive_spread(
     if !samples_per_logical_unit.is_finite() || samples_per_logical_unit <= 0.0 {
         return Err(precision("neutral sample spacing is invalid"));
     }
-    if !mesh.units_per_parent_logical_unit.is_finite()
-        || mesh.units_per_parent_logical_unit <= 0.0
+    if !mesh.units_per_parent_logical_unit.is_finite() || mesh.units_per_parent_logical_unit <= 0.0
     {
         return Err(precision("neutral mesh frame scale is invalid"));
     }
     let mesh_to_samples = samples_per_logical_unit / mesh.units_per_parent_logical_unit;
     if !mesh_to_samples.is_finite() || mesh_to_samples <= 0.0 {
-        return Err(precision("neutral mesh conversion to sample frame is not finite"));
+        return Err(precision(
+            "neutral mesh conversion to sample frame is not finite",
+        ));
     }
     if !positive_spread.is_finite() || positive_spread < 0.0 {
         return Err(precision("positive geometric spread is invalid"));
