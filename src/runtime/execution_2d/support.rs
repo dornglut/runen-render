@@ -835,9 +835,7 @@ pub(super) fn prepare_untranslated_shadow_coverage(
         let smallest_extent = (mesh.bounds[2] - mesh.bounds[0])
             .min(mesh.bounds[3] - mesh.bounds[1])
             / mesh.units_per_parent_logical_unit;
-        if smallest_extent.is_finite()
-            && smallest_extent >= 0.0
-            && -spread >= smallest_extent / 2.0
+        if smallest_extent.is_finite() && smallest_extent >= 0.0 && -spread >= smallest_extent / 2.0
         {
             return Ok(None);
         }
@@ -1215,8 +1213,12 @@ mod tests {
         let mesh = NeutralMesh {
             units_per_parent_logical_unit: 1.0,
             triangles: vec![
-                [0.01, 0.01], [0.02, 0.01], [0.02, 0.02],
-                [0.01, 0.01], [0.02, 0.02], [0.01, 0.02],
+                [0.01, 0.01],
+                [0.02, 0.01],
+                [0.02, 0.02],
+                [0.01, 0.01],
+                [0.02, 0.02],
+                [0.01, 0.02],
             ],
             bounds: [0.01, 0.01, 0.02, 0.02],
         };

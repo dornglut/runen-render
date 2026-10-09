@@ -678,6 +678,68 @@ mod tests {
     }
 
     #[test]
+    fn nested_effect_support_is_not_silently_replaced_with_child_geometry() {
+        use crate::composition_2d::{Render2dComposition, Render2dEntry, Render2dGroup};
+        let effect =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
+        let nested = Render2dGroup::new(
+            Vec::new(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            vec![effect],
+        );
+        let parent = Render2dGroup::new(
+            vec![Render2dEntry::group(nested)],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![effect],
+        );
+        let composition =
+            Render2dComposition::new(vec![Render2dEntry::group(parent)]).unwrap();
+        let plan = scene::analyze(&composition).unwrap();
+        assert!(matches!(
+            group_child_sources(
+                &plan,
+                &Render2dResourceBindings::default(),
+                &BTreeMap::new(),
+                4.0,
+                1_048_576,
+            ),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Shadows { root_index: 0 },
+            }) if path == [0, 0]
+        ));
+    }
+
+    #[test]
+    fn offscreen_parent_geometry_can_reenter_canvas_after_ancestor_translation() {
+        let triangle = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            bounds: [0.0, 0.0, 1.0, 1.0],
+        };
+        let mut translated = empty_mesh();
+        append(
+            &mut translated,
+            &triangle,
+            Render2dAffineTransform::translation(1.0e10, 0.0).unwrap(),
+            &[3],
+        )
+        .unwrap();
+        assert_eq!(translated.bounds, [1.0e10, 0.0, 1.0e10 + 1.0, 1.0]);
+        let root = transform_envelope(
+            translated.bounds,
+            Render2dAffineTransform::translation(-1.0e10, 0.0).unwrap(),
+            &[3],
+        )
+        .unwrap();
+        assert_eq!(root, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
     fn convex_polygon_intersection_obeys_actual_geometry_not_bbox() {
         let clip = [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]];
         let disjoint_corner = [[1.6, 1.6], [2.2, 1.6], [1.6, 2.2]];
