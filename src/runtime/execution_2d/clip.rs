@@ -2,10 +2,11 @@
 //! disposable, and each physical pixel packs its sixteen binary coverage samples.
 use super::{
     lowering::{AdmittedTarget, OrderedItem},
-    vector,
+    scene, vector,
 };
 use crate::composition_2d::{
-    Render2dBrush, Render2dColorRgba8, Render2dItem, Render2dOpacity, Render2dPrimitive,
+    Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dColorRgba8, Render2dItem,
+    Render2dOpacity, Render2dPrimitive,
 };
 use crate::execution_2d::{Render2dClipError, Render2dExecutionError, Render2dVectorError};
 
@@ -217,20 +218,58 @@ pub(super) fn prepare(
     if item.clips().is_empty() {
         return Ok(None);
     }
-    let Some(mut bounds) = content_bounds(ordered, target, root_index)? else {
+    let Some(bounds) = content_bounds(ordered, target, root_index)? else {
         return Ok(None);
     };
+    prepare_bounded(
+        item.clips(),
+        bounds,
+        scene::Affine::IDENTITY,
+        root_index,
+        target,
+        previously_reserved_mask_bytes,
+        contribution_work,
+    )
+}
+
+/// Rasterizes one owner's conjunctive clips over already-admitted physical
+/// content bounds. The owner's parent-to-root affine applies to each clip,
+/// but the owner's local-to-parent affine deliberately does not.
+pub(super) fn prepare_bounded(
+    clips: &[Render2dClip],
+    mut bounds: [u32; 4],
+    parent_to_root: scene::Affine,
+    root_index: usize,
+    target: &AdmittedTarget,
+    previously_reserved_mask_bytes: u64,
+    contribution_work: &mut u64,
+) -> Result<Option<ClipMask>, Render2dExecutionError> {
+    if clips.is_empty() {
+        return Ok(None);
+    }
+    if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
+        return Ok(None);
+    }
     // Retaining every authored clip mesh must remain bounded independently of mask size.
     let mut geometries = Vec::new();
     let mut retained_vertices = 0usize;
-    for clip in item.clips() {
+    for clip in clips {
         let primitive = Render2dPrimitive::Fill {
             shape: clip.shape().clone(),
             brush: Render2dBrush::Solid(Render2dColorRgba8::WHITE),
         };
+        let clip_to_root = parent_to_root
+            .compose(
+                scene::Affine::from_source(clip.clip_to_parent()),
+                &[root_index],
+            )
+            .map_err(|_| failure(root_index, Render2dClipError::PrecisionLimit))?;
+        let [m11, m12, m21, m22, tx, ty] = clip_to_root.coefficients();
+        let transform = Render2dAffineTransform::new(m11, m12, m21, m22, tx, ty)
+            .expect("composed F3E clip affine was checked finite");
         let support = Render2dItem::new(
             primitive,
-            clip.clip_to_parent(),
+            transform,
             vec![],
             Render2dOpacity::OPAQUE,
         );

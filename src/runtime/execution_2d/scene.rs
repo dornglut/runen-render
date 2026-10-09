@@ -20,11 +20,11 @@ pub(super) struct Affine([f64; 6]);
 impl Affine {
     pub(super) const IDENTITY: Self = Self([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
 
-    fn from_source(value: Render2dAffineTransform) -> Self {
+    pub(super) fn from_source(value: Render2dAffineTransform) -> Self {
         Self(value.components())
     }
 
-    fn compose(self, child: Self, path: &[usize]) -> Result<Self, Render2dExecutionError> {
+    pub(super) fn compose(self, child: Self, path: &[usize]) -> Result<Self, Render2dExecutionError> {
         let [a, b, c, d, x, y] = self.0;
         let [e, f, g, h, u, v] = child.0;
         let product = [

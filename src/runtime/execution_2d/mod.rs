@@ -392,7 +392,8 @@ mod tests {
         let (composition, _) = shaped_composition(
             Render2dAffineTransform::translation(4.0, -2.0).expect("translation"),
         );
-        let runs = admit_runs(&composition).expect("translation is inside F2");
+        let runs = admit_runs(&scene::analyze(&composition).expect("finite source tree"))
+            .expect("translation is inside F2");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].translate_x, 4.0);
         assert_eq!(runs[0].translate_y, -2.0);
@@ -401,7 +402,7 @@ mod tests {
             Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).expect("finite transform"),
         );
         assert!(matches!(
-            admit_runs(&composition),
+            admit_runs(&scene::analyze(&composition).expect("finite source tree")),
             Err(Render2dExecutionError::UnsupportedContent(
                 Render2dUnsupportedContent::Transform { root_index: 0 }
             ))
