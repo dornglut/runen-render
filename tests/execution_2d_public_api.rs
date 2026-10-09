@@ -22,7 +22,7 @@ use runen_render::composition_2d::{
 use runen_render::execution_2d::{
     Render2dContributionEvidence, Render2dContributionEvidenceError, Render2dContributionToken,
     Render2dExecutionError, Render2dExecutor, Render2dPreparedContribution,
-    Render2dShapedTextError, Render2dTarget, Render2dTargetError, Render2dUnsupportedContent,
+    Render2dShapedTextError, Render2dTarget, Render2dTargetError,
     Render2dUnsupportedGlyphKind, Render2dWorkBinding,
 };
 use std::time::{Duration, Instant};
