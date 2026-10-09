@@ -529,7 +529,7 @@ impl fmt::Display for Render2dExecutionError {
             Self::UnsupportedContent(error) => error.fmt(formatter),
             Self::UnsupportedEntry { path, kind } => {
                 write!(formatter, "2D entry path {path:?}: {kind}")
-            },
+            }
             Self::ResourceIdentityRebound { resource_id } => write!(
                 formatter,
                 "2D semantic resource {} was rebound to different immutable content",

@@ -220,10 +220,7 @@ struct AdmittedRun {
     translate_y: f64,
 }
 
-fn unsupported_at(
-    path: &[usize],
-    kind: Render2dUnsupportedContent,
-) -> Render2dExecutionError {
+fn unsupported_at(path: &[usize], kind: Render2dUnsupportedContent) -> Render2dExecutionError {
     if path.len() <= 1 {
         Render2dExecutionError::UnsupportedContent(kind)
     } else {
@@ -294,8 +291,7 @@ mod tests {
     use crate::composition_2d::{
         Render2dAffineTransform, Render2dColorRgba8, Render2dEntry, Render2dFontBinding,
         Render2dGlyph, Render2dGroup, Render2dItem, Render2dOpacity, Render2dPoint,
-        Render2dResourceBinding,
-        Render2dShapedTextPrimitive, Render2dShapedTextResource,
+        Render2dResourceBinding, Render2dShapedTextPrimitive, Render2dShapedTextResource,
     };
 
     fn shaped_composition(
@@ -329,26 +325,19 @@ mod tests {
 
     #[test]
     fn nested_nontranslation_text_reports_exact_authored_path() {
-        let (inner, bindings) = shaped_composition(
-            Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap(),
-        );
+        let (inner, bindings) =
+            shaped_composition(Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap());
         let child = inner.root_entries()[0].clone();
-        let nested = Render2dComposition::new(vec![Render2dEntry::group(
-            Render2dGroup::new(
-                vec![Render2dEntry::group(Render2dGroup::new(
-                    vec![child],
-                    Render2dAffineTransform::IDENTITY,
-                    Vec::new(),
-                    Render2dOpacity::OPAQUE,
-                    Vec::new(),
-                ))],
+        let wrap = |entry| {
+            Render2dEntry::group(Render2dGroup::new(
+                vec![entry],
                 Render2dAffineTransform::IDENTITY,
                 Vec::new(),
                 Render2dOpacity::OPAQUE,
                 Vec::new(),
-            ),
-        )])
-        .unwrap();
+            ))
+        };
+        let nested = Render2dComposition::new(vec![wrap(wrap(child))]).unwrap();
         nested.validate_bindings(&bindings).unwrap();
         let plan = scene::analyze(&nested).unwrap();
         assert!(matches!(
