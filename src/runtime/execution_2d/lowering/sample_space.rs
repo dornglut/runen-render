@@ -1131,51 +1131,89 @@ pub(in crate::runtime::execution_2d) fn lower(
                                     operation(&layers[depth], false, vec![color_draw])?,
                                 )?;
                             }
-                            PreparedItem::Image(_) => {
-                                let layer = image_layer
+                            PreparedItem::Image(_) | PreparedItem::Text(_) => {
+                                let layer = item_layer
                                     .as_ref()
-                                    .expect("image item has one shared isolated scratch");
-                                let patches = prepared_images[index]
-                                    .as_ref()
-                                    .expect("every admitted F1 image occurrence has prepared patch resources");
+                                    .expect("image/text item has isolated shared scratch");
                                 let mut draws = Vec::new();
                                 let origin_sample = [
                                     f64::from(origin[0]) * f64::from(SAMPLES),
                                     f64::from(origin[1]) * f64::from(SAMPLES),
                                 ];
-                                for patch in patches {
-                                    let b = patch.bounds;
-                                    let left = b[0].max(origin[0]);
-                                    let top = b[1].max(origin[1]);
-                                    let right = b[2].min(end[0]);
-                                    let bottom = b[3].min(end[1]);
-                                    if left >= right || top >= bottom {
-                                        continue;
+                                match content {
+                                    PreparedItem::Image(_) => {
+                                        let patches = prepared_images[index]
+                                            .as_ref()
+                                            .expect("every image occurrence has patch resources");
+                                        for patch in patches {
+                                            let b = patch.bounds;
+                                            let left = b[0].max(origin[0]);
+                                            let top = b[1].max(origin[1]);
+                                            let right = b[2].min(end[0]);
+                                            let bottom = b[3].min(end[1]);
+                                            if left >= right || top >= bottom {
+                                                continue;
+                                            }
+                                            let mut vertices = Vec::new();
+                                            rectangle(
+                                                &mut vertices,
+                                                [
+                                                    f64::from(left - origin[0]) * f64::from(SAMPLES),
+                                                    f64::from(top - origin[1]) * f64::from(SAMPLES),
+                                                    f64::from(right - origin[0]) * f64::from(SAMPLES),
+                                                    f64::from(bottom - origin[1]) * f64::from(SAMPLES),
+                                                ],
+                                                physical,
+                                                [1.0; 4],
+                                                origin_sample,
+                                            );
+                                            draws.push(image_draw(
+                                                &image_pipeline,
+                                                patch,
+                                                &vertices,
+                                                physical,
+                                                &mut resources,
+                                            )?);
+                                        }
                                     }
-                                    let mut vertices = Vec::new();
-                                    rectangle(
-                                        &mut vertices,
-                                        [
-                                            f64::from(left - origin[0]) * f64::from(SAMPLES),
-                                            f64::from(top - origin[1]) * f64::from(SAMPLES),
-                                            f64::from(right - origin[0]) * f64::from(SAMPLES),
-                                            f64::from(bottom - origin[1]) * f64::from(SAMPLES),
-                                        ],
-                                        physical,
-                                        [1.0; 4],
-                                        origin_sample,
-                                    );
-                                    draws.push(image_draw(
-                                        &image_pipeline,
-                                        patch,
-                                        &vertices,
-                                        physical,
-                                        &mut resources,
-                                    )?);
+                                    PreparedItem::Text(glyphs) => {
+                                        let pipeline = text_pipeline.as_ref().expect("text pipeline");
+                                        let sampler = text_sampler.as_ref().expect("field sampler");
+                                        for glyph in glyphs {
+                                            let vertices = text_quad(glyph, origin, end, dimension);
+                                            if vertices.is_empty() {
+                                                continue;
+                                            }
+                                            let key = super::FieldTextureKey::new(
+                                                glyph.occurrence.resource_id,
+                                                glyph.occurrence.field.glyph_id(),
+                                            );
+                                            let view = text_views
+                                                .get(&key)
+                                                .expect("unique retained field upload");
+                                            let bindings = pipeline
+                                                .runtime_bindings([
+                                                    texture_binding(0, view)?,
+                                                    super::sampler_binding(1, sampler)?,
+                                                ])
+                                                .map_err(|e| gpu("F3E retained text bindings", e))?;
+                                            draws.push(vector::vector_draw(
+                                                pipeline.clone(),
+                                                bindings,
+                                                &vertices,
+                                                physical,
+                                                &mut resources,
+                                            )?);
+                                        }
+                                    }
+                                    PreparedItem::Vector(_) => {
+                                        unreachable!("isolated item is image or text")
+                                    }
                                 }
                                 if !draws.is_empty() {
-                                    // Patches are source-over at their full source alpha,
-                                    // with no item opacity/clip attenuation yet.
+                                    // Glyphs and image patches composite at original
+                                    // alpha. Item opacity and clip apply only after
+                                    // their completed isolated item contribution.
                                     append(&mut operations, operation(layer, true, draws)?)?;
                                     let mut merged_quad = Vec::new();
                                     rectangle(
