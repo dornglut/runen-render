@@ -8,7 +8,10 @@ use runen_render::composition_2d::{Render2dBrush, Render2dRect, Render2dShape};
 fn mixed_f2_context() -> Option<GpuContext> {
     let descriptor =
         GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
-            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::ColorAttachment)
+            .require_format_role(
+                GpuTextureFormat::Rgba8UnormSrgb,
+                GpuFormatRole::ColorAttachment,
+            )
             .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Blendable)
             .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource)
             .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment)
@@ -78,7 +81,9 @@ fn vector_item(x: f64) -> Render2dEntry {
 
 #[test]
 fn independent_predecessor_and_successor_bracket_every_authored_f2_node() {
-    let Some(context) = mixed_f2_context() else { return };
+    let Some(context) = mixed_f2_context() else {
+        return;
+    };
     let id = Render2dResourceId::new(923).expect("test id");
     let composition = Render2dComposition::new(vec![
         vector_item(0.0),
