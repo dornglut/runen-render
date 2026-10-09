@@ -252,7 +252,6 @@ fn squared_distance_2d(
     Ok(output)
 }
 
-
 /// Rasterizes disposable neutral triangles in one explicitly chosen
 /// **group-parent** continuous coordinate frame, not final-target RGBA.
 ///
@@ -260,7 +259,10 @@ fn squared_distance_2d(
 /// coverage shifts. Caller MUST provide triangles in this frame *before*
 /// applying ancestor transforms, spread or blur; do not pass preclipped
 /// final-output geometry or infer this support from paint alpha.
-#[allow(dead_code, reason = "awaiting F3F group support and compositor integration")]
+#[allow(
+    dead_code,
+    reason = "awaiting F3F group support and compositor integration"
+)]
 pub(super) fn rasterize_neutral_mesh(
     mesh: &NeutralMesh,
     samples_per_logical_unit: f64,
@@ -279,7 +281,11 @@ pub(super) fn rasterize_neutral_mesh(
         return Ok(None);
     }
     if !mesh.bounds.iter().all(|value| value.is_finite())
-        || !mesh.triangles.iter().flatten().all(|value| value.is_finite())
+        || !mesh
+            .triangles
+            .iter()
+            .flatten()
+            .all(|value| value.is_finite())
     {
         return Err(precision("neutral triangle bounds are not finite"));
     }
@@ -292,9 +298,13 @@ pub(super) fn rasterize_neutral_mesh(
     if !scaled.iter().all(|value| value.is_finite())
         || scaled[0] >= scaled[2]
         || scaled[1] >= scaled[3]
-        || scaled.iter().any(|value| value.abs() > f64::from(i32::MAX) / 2.0)
+        || scaled
+            .iter()
+            .any(|value| value.abs() > f64::from(i32::MAX) / 2.0)
     {
-        return Err(precision("neutral sample lattice extent is not representable"));
+        return Err(precision(
+            "neutral sample lattice extent is not representable",
+        ));
     }
     #[allow(
         clippy::cast_possible_truncation,
@@ -311,23 +321,28 @@ pub(super) fn rasterize_neutral_mesh(
         .map_err(|_| resource("neutral sample width overflow"))?;
     let height = usize::try_from(i64::from(edges[3]) - i64::from(edges[1]))
         .map_err(|_| resource("neutral sample height overflow"))?;
-    let cells = width.checked_mul(height)
+    let cells = width
+        .checked_mul(height)
         .ok_or_else(|| resource("neutral sample area overflow"))?;
     if cells == 0 || cells > MAX_NEUTRAL_MASK_SAMPLES {
-        return Err(resource("neutral geometry sample grid exceeds bounded area"));
+        return Err(resource(
+            "neutral geometry sample grid exceeds bounded area",
+        ));
     }
     let triangles = mesh.triangles.len() / 3;
-    let work = cells.checked_mul(triangles)
+    let work = cells
+        .checked_mul(triangles)
         .ok_or_else(|| resource("neutral triangle/sample work overflow"))?;
     if work > 16_777_216 {
-        return Err(resource("neutral triangle/sample work exceeds the bounded budget"));
+        return Err(resource(
+            "neutral triangle/sample work exceeds the bounded budget",
+        ));
     }
     let mut samples = filled(cells, 0_u8, path)?;
     for y in 0..height {
         let sample_y = (f64::from(edges[1]) + as_f64(y) + 0.5) / samples_per_logical_unit;
         for x in 0..width {
-            let sample_x = (f64::from(edges[0]) + as_f64(x) + 0.5)
-                / samples_per_logical_unit;
+            let sample_x = (f64::from(edges[0]) + as_f64(x) + 0.5) / samples_per_logical_unit;
             let p = [sample_x, sample_y];
             for tri in mesh.triangles.chunks_exact(3) {
                 let ab = orient(tri[0], tri[1], p);
@@ -670,8 +685,12 @@ mod tests {
     fn rasterized_neutral_rect_is_phase_aligned_and_not_alpha_dependent() {
         let mesh = NeutralMesh {
             triangles: vec![
-                [-1.0, -1.0], [1.0, -1.0], [1.0, 1.0],
-                [-1.0, -1.0], [1.0, 1.0], [-1.0, 1.0],
+                [-1.0, -1.0],
+                [1.0, -1.0],
+                [1.0, 1.0],
+                [-1.0, -1.0],
+                [1.0, 1.0],
+                [-1.0, 1.0],
             ],
             bounds: [-1.0, -1.0, 1.0, 1.0],
         };
@@ -692,9 +711,7 @@ mod tests {
     #[test]
     fn neutral_rasterization_rejects_preallocation_work_excess_with_exact_path() {
         let mesh = NeutralMesh {
-            triangles: vec![
-                [0.0, 0.0], [1024.0, 0.0], [0.0, 1024.0],
-            ],
+            triangles: vec![[0.0, 0.0], [1024.0, 0.0], [0.0, 1024.0]],
             bounds: [0.0, 0.0, 1024.0, 1024.0],
         };
         assert!(matches!(
