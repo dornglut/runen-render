@@ -25,6 +25,10 @@ const MAX_PATCH_PARAMETER_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TILE_SIDE: u32 = 256;
 const MAX_TILES: u64 = 16384;
 const MAX_OPERATIONS: usize = 1_048_576;
+// Every tile visits the lexical plan, vector triangles and image patches.
+// Bound aggregate CPU replay separately from emitted GPU operations.
+const MAX_TILE_WORK_UNITS: u64 = 16_777_216;
+const MAX_RETAINED_VECTOR_VERTICES: usize = 1_048_576;
 const SAMPLES: u32 = 4;
 const COLOR_BYTES_PER_PIXEL: u64 = 128;
 const MASK_BYTES_PER_PIXEL: u64 = 64;
@@ -310,6 +314,49 @@ struct Inspected {
     peak_group_depth: usize,
 }
 
+fn charge_vector_geometry(
+    retained: &mut usize,
+    vertices: usize,
+) -> Result<(), Render2dExecutionError> {
+    let next = retained
+        .checked_add(vertices)
+        .ok_or_else(|| failure("aggregate vector geometry size overflow"))?;
+    if next > MAX_RETAINED_VECTOR_VERTICES {
+        return Err(failure(
+            "aggregate retained vector geometry exceeds bounded admission",
+        ));
+    }
+    *retained = next;
+    Ok(())
+}
+
+fn admit_tile_work(
+    plan_events: usize,
+    items: &[Option<PreparedItem>],
+    tiles: u64,
+) -> Result<(), Render2dExecutionError> {
+    let mut units =
+        u64::try_from(plan_events).map_err(|_| failure("tile event count overflow"))?;
+    for item in items.iter().flatten() {
+        let count = match item {
+            PreparedItem::Vector(mesh) => mesh.triangles.len(),
+            PreparedItem::Image(patches) => patches.len(),
+        };
+        units = units
+            .checked_add(u64::try_from(count).map_err(|_| failure("tile work count overflow"))?)
+            .ok_or_else(|| failure("tile work count overflow"))?;
+    }
+    let total = units
+        .checked_mul(tiles)
+        .ok_or_else(|| failure("aggregate tile work count overflow"))?;
+    if total > MAX_TILE_WORK_UNITS {
+        return Err(failure(
+            "aggregate tile preparation work exceeds bounded admission",
+        ));
+    }
+    Ok(())
+}
+
 struct GroupFrame<'a> {
     group: &'a Render2dGroup,
     visible: bool,
@@ -382,6 +429,7 @@ fn inspect(
     let mut bounds = [u32::MAX, u32::MAX, 0, 0];
     let mut depth = 0usize;
     let mut peak = 0usize;
+    let mut retained_vector_vertices = 0usize;
     for event in &plan.events {
         match event {
             scene::Event::BeginGroup { group, path, .. } => {
@@ -457,6 +505,9 @@ fn inspect(
                         .into());
                     }
                 };
+                if let Some(PreparedItem::Vector(mesh)) = realized.as_ref() {
+                    charge_vector_geometry(&mut retained_vector_vertices, mesh.triangles.len())?;
+                }
                 if let Some(ref content) = realized {
                     let b = content.bounds();
                     bounds[0] = bounds[0].min(b[0]);
@@ -549,9 +600,13 @@ pub(in crate::runtime::execution_2d) fn lower(
     let y_end = bounds[3].min(target.physical_height);
     let cols = u64::from((x_end - x0).div_ceil(side));
     let rows = u64::from((y_end - y0).div_ceil(side));
-    if cols.checked_mul(rows).is_none_or(|count| count > MAX_TILES) {
+    let tile_count = cols
+        .checked_mul(rows)
+        .ok_or_else(|| failure("sample-space tile count overflow"))?;
+    if tile_count > MAX_TILES {
         return Err(failure("sample-space tile count exceeds bounded budget"));
     }
+    admit_tile_work(plan.events.len(), &items, tile_count)?;
 
     let dimension = side * SAMPLES;
     let physical = [dimension, dimension];
@@ -1053,4 +1108,31 @@ pub(in crate::runtime::execution_2d) fn lower(
         }
     }
     Ok(operations)
+}
+
+#[cfg(test)]
+mod tile_budget_tests {
+    use super::*;
+
+    #[test]
+    fn cumulative_tile_replay_is_bounded_before_resource_preparation() {
+        assert!(admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024).is_ok());
+        assert!(matches!(
+            admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024 + 1),
+            Err(Render2dExecutionError::Gpu {
+                stage: "F3E correlated sample lowering",
+                ..
+            })
+        ));
+        assert!(admit_tile_work(usize::MAX, &[], u64::MAX).is_err());
+    }
+
+    #[test]
+    fn retained_vector_vertices_are_charged_across_items() {
+        let mut used = MAX_RETAINED_VECTOR_VERTICES - 3;
+        charge_vector_geometry(&mut used, 3).expect("last admissible vertices");
+        assert_eq!(used, MAX_RETAINED_VECTOR_VERTICES);
+        assert!(charge_vector_geometry(&mut used, 1).is_err());
+        assert_eq!(used, MAX_RETAINED_VECTOR_VERTICES);
+    }
 }
