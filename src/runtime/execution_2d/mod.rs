@@ -6,6 +6,8 @@ mod image;
 mod intrinsic;
 mod lowering;
 mod scene;
+#[allow(dead_code, reason = "F3F geometry preflight wiring into group compositor")]
+mod shadow;
 mod support;
 mod vector;
 
