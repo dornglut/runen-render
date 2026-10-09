@@ -365,9 +365,8 @@ fn rasterize_mesh_with_positive_spread(
             let sample_x = f64::from(edges[0]) + as_f64(x) + 0.5;
             let p = [sample_x, sample_y];
             for tri in mesh.triangles.as_chunks::<3>().0 {
-                let t = tri.map(|[x, y]| {
-                    [x * samples_per_logical_unit, y * samples_per_logical_unit]
-                });
+                let t =
+                    tri.map(|[x, y]| [x * samples_per_logical_unit, y * samples_per_logical_unit]);
                 let ab = orient(t[0], t[1], p);
                 let bc = orient(t[1], t[2], p);
                 let ca = orient(t[2], t[0], p);
@@ -375,8 +374,8 @@ fn rasterize_mesh_with_positive_spread(
                 if area == 0.0 {
                     continue;
                 }
-                let inside = (ab >= 0.0 && bc >= 0.0 && ca >= 0.0)
-                    || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0);
+                let inside =
+                    (ab >= 0.0 && bc >= 0.0 && ca >= 0.0) || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0);
                 if inside
                     || (positive_spread > 0.0
                         && (distance_squared_to_segment(p, t[0], t[1]) <= radius_squared
@@ -408,8 +407,7 @@ fn distance_squared_to_segment(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     let delta = [b[0] - a[0], b[1] - a[1]];
     let squared_length = delta[0].mul_add(delta[0], delta[1] * delta[1]);
     let t = if squared_length > 0.0 {
-        ((p[0] - a[0]).mul_add(delta[0], (p[1] - a[1]) * delta[1]) / squared_length)
-            .clamp(0.0, 1.0)
+        ((p[0] - a[0]).mul_add(delta[0], (p[1] - a[1]) * delta[1]) / squared_length).clamp(0.0, 1.0)
     } else {
         0.0
     };
@@ -588,12 +586,9 @@ pub(super) fn prepare_untranslated_shadow_coverage(
     // Positive spread evaluates distance from the original geometry at each
     // sample. Seed-then-dilate would falsely erase thin off-phase casters.
     // Negative spread retains the bounded binary distance-transform path.
-    let Some(source) = rasterize_mesh_with_positive_spread(
-        mesh,
-        samples_per_logical_unit,
-        spread.max(0.0),
-        path,
-    )? else {
+    let Some(source) =
+        rasterize_mesh_with_positive_spread(mesh, samples_per_logical_unit, spread.max(0.0), path)?
+    else {
         return Ok(None);
     };
     let spread_mask = if spread > 0.0 {
