@@ -67,7 +67,8 @@ impl Render2dExecutionState {
 
         let mut observed_updates = Vec::new();
         let mut field_budget = field::FieldBudget::default();
-        let mut field_updates = Vec::new();
+        // One bounded active working set; evict fields no longer referenced by
+        // this successful composition instead of retaining unlimited past fonts.
         let mut resolved_fields = BTreeMap::<FieldSetKey, Arc<ResourceFields>>::new();
 
         for resource_id in unique_resources {
@@ -107,8 +108,7 @@ impl Render2dExecutionState {
                 admitted_target.max_texture_dimension_2d(),
                 &mut field_budget,
             )?);
-            resolved_fields.insert(key, Arc::clone(&realized));
-            field_updates.push((key, realized));
+            resolved_fields.insert(key, realized);
         }
 
         // Resource identity is observed transactionally for admitted image items too,
@@ -198,10 +198,10 @@ impl Render2dExecutionState {
             let previous = self.observed.insert(resource_id, value);
             debug_assert!(previous.is_none());
         }
-        for (key, fields) in field_updates {
-            let previous = self.fields.insert(key, fields);
-            debug_assert!(previous.is_none());
-        }
+        // Commit only after all semantic admission and GPU lowering succeeds.
+        // Existing observed resource identities are immutable; derived MSDF
+        // residency may change and is bounded by this invocation's field budget.
+        self.fields = resolved_fields;
         Ok(Render2dPreparedContribution::new(
             lowered,
             target.view().clone(),
