@@ -8,7 +8,7 @@
 use super::{support::NeutralMesh, vector};
 use crate::composition_2d::{
     Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dColorRgba8, Render2dItem,
-    Render2dOpacity, Render2dPrimitive,
+    Render2dDropShadow, Render2dOpacity, Render2dPrimitive,
 };
 use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 
@@ -90,8 +90,7 @@ pub(super) fn append(
             a.mul_add(x, c.mul_add(y, tx)),
             b.mul_add(x, d.mul_add(y, ty)),
         ];
-        if !transformed.iter().all(|v| v.is_finite()) || transformed.iter().any(|v| v.abs() > 1.0e9)
-        {
+        if !transformed.iter().all(|v| v.is_finite()) {
             return Err(precision(
                 path,
                 "neutral parent-space transform lost precision",
@@ -122,6 +121,63 @@ pub(super) fn append(
 
 fn orient(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
     (b[0] - a[0]).mul_add(p[1] - a[1], -(b[1] - a[1]) * (p[0] - a[0]))
+}
+
+/// A *conservative extent*, never geometric shadow membership. It bounds
+/// positive Euclidean spread and finite 3-sigma blur before ancestor affines.
+/// Negative erosion may empty the support; its source extent is retained only
+/// as a safe overestimate for tile/work admission.
+pub(super) fn shadow_envelope(
+    source: &NeutralMesh,
+    effect: Render2dDropShadow,
+    path: &[usize],
+) -> Result<Option<[f64; 4]>, Render2dExecutionError> {
+    if source.triangles.is_empty() {
+        return Ok(None);
+    }
+    let scale = source.units_per_parent_logical_unit;
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(precision(path, "invalid neutral geometry frame scale"));
+    }
+    let padding = effect.spread().max(0.0) + 3.0 * effect.sigma();
+    let bounds = [
+        source.bounds[0] / scale + effect.offset_x() - padding,
+        source.bounds[1] / scale + effect.offset_y() - padding,
+        source.bounds[2] / scale + effect.offset_x() + padding,
+        source.bounds[3] / scale + effect.offset_y() + padding,
+    ];
+    if !padding.is_finite()
+        || !bounds.iter().all(|v| v.is_finite())
+        || bounds[0] > bounds[2]
+        || bounds[1] > bounds[3]
+    {
+        return Err(precision(path, "shadow parent-frame envelope is not representable"));
+    }
+    Ok(Some(bounds))
+}
+
+/// Project a previously completed effect's bounding extent through an
+/// ancestor affine. Never apply effect kernels to this projected AABB.
+pub(super) fn transform_envelope(
+    bounds: [f64; 4],
+    ancestor: Render2dAffineTransform,
+    path: &[usize],
+) -> Result<[f64; 4], Render2dExecutionError> {
+    let [a, b, c, d, tx, ty] = ancestor.components();
+    let mut result = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for x in [bounds[0], bounds[2]] {
+        for y in [bounds[1], bounds[3]] {
+            let point = [a.mul_add(x, c.mul_add(y, tx)), b.mul_add(x, d.mul_add(y, ty))];
+            if !point.iter().all(|v| v.is_finite()) {
+                return Err(precision(path, "ancestor shadow envelope is not representable"));
+            }
+            result[0] = result[0].min(point[0]);
+            result[1] = result[1].min(point[1]);
+            result[2] = result[2].max(point[0]);
+            result[3] = result[3].max(point[1]);
+        }
+    }
+    Ok(result)
 }
 
 /// The intersection of two *convex triangles*, without a rectangular/alpha
@@ -294,6 +350,60 @@ mod tests {
         assert_eq!(union.triangles, vec![[-3.0, 5.0], [-1.0, 5.0], [-3.0, 6.0]]);
         append(&mut union, &source, parent, &[1, 4]).unwrap();
         assert_eq!(union.triangles.len(), 6);
+    }
+
+    #[test]
+    fn parent_effect_precedes_ancestor_affine_even_under_shear_and_anisotropy() {
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            bounds: [0.0, 0.0, 1.0, 1.0],
+        };
+        let mut parent = empty_mesh();
+        append(
+            &mut parent, &source,
+            Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap(),
+            &[2, 0],
+        ).unwrap();
+        let effect = Render2dDropShadow::new(
+            0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT,
+        ).unwrap();
+        let envelope = shadow_envelope(&parent, effect, &[2]).unwrap().unwrap();
+        assert_eq!(envelope, [-1.0, -1.0, 3.0, 2.0]);
+        let ancestor = Render2dAffineTransform::new(
+            2.0, 0.0, 1.0, 1.0, 0.0, 0.0,
+        ).unwrap();
+        assert_eq!(
+            transform_envelope(envelope, ancestor, &[2]).unwrap(),
+            [-3.0, -1.0, 8.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn negative_spread_envelope_remains_conservative_and_overflow_is_typed() {
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 4.0,
+            triangles: vec![[0.0, 0.0], [4.0, 0.0], [0.0, 4.0]],
+            bounds: [0.0, 0.0, 4.0, 4.0],
+        };
+        let effect = Render2dDropShadow::new(
+            2.0, -3.0, 0.5, -5.0, Render2dColorRgba8::TRANSPARENT,
+        ).unwrap();
+        assert_eq!(
+            shadow_envelope(&source, effect, &[0]).unwrap().unwrap(),
+            [0.5, -4.5, 4.5, -0.5]
+        );
+        let extreme = Render2dDropShadow::new(
+            0.0, 0.0, f64::MAX, 0.0, Render2dColorRgba8::TRANSPARENT,
+        ).unwrap();
+        assert!(matches!(
+            shadow_envelope(&source, extreme, &[0, 7]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [0, 7]
+        ));
     }
 
     #[test]
