@@ -825,6 +825,23 @@ pub(super) fn prepare_untranslated_shadow_coverage(
             "shadow spread or blur sigma is not representable",
         ));
     }
+    // The caster lies inside its measured semantic-geometry bounding box.
+    // No Euclidean disk whose radius is at least half the box's smallest
+    // positive width can fit inside it. Certify complete erosion before any
+    // sample-mask/radius work, including radii beyond the physical halo cap.
+    // This is a sufficient empty-set proof, never a substitute for nonempty
+    // continuous morphology.
+    if spread < 0.0 && !mesh.triangles.is_empty() {
+        let smallest_extent = (mesh.bounds[2] - mesh.bounds[0])
+            .min(mesh.bounds[3] - mesh.bounds[1])
+            / mesh.units_per_parent_logical_unit;
+        if smallest_extent.is_finite()
+            && smallest_extent >= 0.0
+            && -spread >= smallest_extent / 2.0
+        {
+            return Ok(None);
+        }
+    }
     // Integrate the continuous geometric union even for sigma == 0:
     // a real caster must not vanish merely because its area misses all
     // correlated lattice centers. Gaussian convolution preserves that mass.
@@ -935,7 +952,14 @@ pub(super) fn prepare_untranslated_shadow_coverage(
         return blur_neutral_coverage(&coverage, &kernel, path).map(Some);
     }
     if spread_mask.samples.iter().all(|sample| *sample == 0) {
-        return Ok(None);
+        // Empty center samples alone are insufficient evidence that the
+        // continuous eroded source is empty. The independently certifiable
+        // complete erosion case has already returned before mask allocation.
+        return Err(mask_failure(
+            path,
+            Render2dSampleSpaceError::PrecisionLimit,
+            "continuous negative-spread support cannot be disproven by empty center samples",
+        ));
     }
     let kernel = gaussian_kernel(sigma, samples_per_logical_unit, path)?;
     blur_neutral_mask(&spread_mask, &kernel, path).map(Some)
@@ -1184,6 +1208,38 @@ mod tests {
             .unwrap()
             .expect("sigma-zero caster retains its exact integrated area");
         assert!((exact_identity.values.iter().sum::<f64>() - 0.0016).abs() < 1.0e-10);
+    }
+
+    #[test]
+    fn negative_subsample_erosion_cannot_disappear_without_geometric_proof() {
+        let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [0.01, 0.01], [0.02, 0.01], [0.02, 0.02],
+                [0.01, 0.01], [0.02, 0.02], [0.01, 0.02],
+            ],
+            bounds: [0.01, 0.01, 0.02, 0.02],
+        };
+        assert!(matches!(
+            prepare_untranslated_shadow_coverage(&mesh, -0.001, 0.5, 4.0, &[5, 1]),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [5, 1]
+        ));
+        assert!(
+            prepare_untranslated_shadow_coverage(&mesh, -0.006, 0.5, 4.0, &[5, 2])
+                .unwrap()
+                .is_none(),
+            "a disk larger than the caster's smallest enclosing half-width cannot fit"
+        );
+        assert!(
+            prepare_untranslated_shadow_coverage(&mesh, -1000.0, 0.5, 4.0, &[5, 3])
+                .unwrap()
+                .is_none(),
+            "complete erosion is proven geometrically before admitting any 4x halo"
+        );
     }
 
     #[test]
