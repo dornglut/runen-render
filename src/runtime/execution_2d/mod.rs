@@ -6,6 +6,7 @@ mod image;
 mod intrinsic;
 mod lowering;
 mod scene;
+mod support;
 mod vector;
 
 use self::field::{FieldSetKey, QualityTier, ResourceFields};

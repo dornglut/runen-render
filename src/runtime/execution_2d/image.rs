@@ -1,4 +1,5 @@
 //! Private bounded image mapping into independent ordered painter patches.
+use super::support::NeutralMesh;
 use crate::composition_2d::{
     Render2dImagePrimitive, Render2dImageResource, Render2dItem, Render2dRect, Render2dResourceId,
 };
@@ -17,6 +18,8 @@ pub(super) fn failure(root_index: usize, kind: Render2dImageError) -> Render2dEx
     Render2dExecutionError::Image { root_index, kind }
 }
 
+const MAX_IMAGE_PATCHES: usize = 65_536;
+
 fn narrow(value: f64, root_index: usize) -> Result<f32, Render2dExecutionError> {
     let result = value as f32;
     if !result.is_finite()
@@ -26,6 +29,80 @@ fn narrow(value: f64, root_index: usize) -> Result<f32, Render2dExecutionError> 
     } else {
         Ok(result)
     }
+}
+
+/// Derives signed, off-canvas neutral image-patch geometry before visible-paint
+/// opacity, source-texel sampling and final-target clipping.
+///
+/// This is a disposable private physical approximation of immutable F1
+/// destination patches, not a source-authority image-alpha mask. Group effects
+/// and item clips consume the patches at a later F3F lowering boundary.
+#[allow(dead_code, reason = "F3F neutral image support awaits unified group-effect lowering")]
+pub(super) fn neutral_support(
+    item: &Render2dItem,
+    image: &Render2dImagePrimitive,
+    root_index: usize,
+    raster_scale: f64,
+    max_buffer_bytes: u64,
+) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
+    if image.patches().len() > MAX_IMAGE_PATCHES {
+        return Err(failure(root_index, Render2dImageError::ResourceLimit));
+    }
+    let [a, b, c, d, tx, ty] = item.local_to_parent().components();
+    let det = a.mul_add(d, -(b * c));
+    if !det.is_finite() || !raster_scale.is_finite() || raster_scale <= 0.0 {
+        return Err(failure(root_index, Render2dImageError::PrecisionLimit));
+    }
+    if det == 0.0 {
+        return Ok(None);
+    }
+    let mut triangles = Vec::new();
+    let mut bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for patch in image.patches() {
+        let dest = patch.destination();
+        let src = patch.source();
+        if dest.width() == 0.0 || dest.height() == 0.0 ||
+            src.width() == 0.0 || src.height() == 0.0
+        {
+            continue;
+        }
+        let points = [
+            [dest.x(), dest.y()],
+            [dest.x() + dest.width(), dest.y()],
+            [dest.x() + dest.width(), dest.y() + dest.height()],
+            [dest.x(), dest.y() + dest.height()],
+        ];
+        let mut physical = [[0.0; 2]; 4];
+        for (index, [x, y]) in points.into_iter().enumerate() {
+            let px = a.mul_add(x, c.mul_add(y, tx)) * raster_scale;
+            let py = b.mul_add(x, d.mul_add(y, ty)) * raster_scale;
+            if !px.is_finite() || !py.is_finite() ||
+                px.abs().max(py.abs()) * f64::EPSILON >= 1.0 / 4096.0
+            {
+                return Err(failure(root_index, Render2dImageError::PrecisionLimit));
+            }
+            physical[index] = [px, py];
+        }
+        let count = triangles.len().checked_add(6).ok_or_else(|| {
+            failure(root_index, Render2dImageError::ResourceLimit)
+        })?;
+        let bytes = u64::try_from(count)
+            .ok()
+            .and_then(|n| n.checked_mul(crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE))
+            .ok_or_else(|| failure(root_index, Render2dImageError::ResourceLimit))?;
+        if bytes > max_buffer_bytes {
+            return Err(failure(root_index, Render2dImageError::ResourceLimit));
+        }
+        for point in [physical[0], physical[1], physical[2],
+                      physical[0], physical[2], physical[3]] {
+            bounds[0] = bounds[0].min(point[0]);
+            bounds[1] = bounds[1].min(point[1]);
+            bounds[2] = bounds[2].max(point[0]);
+            bounds[3] = bounds[3].max(point[1]);
+            triangles.push(point);
+        }
+    }
+    Ok((!triangles.is_empty()).then_some(NeutralMesh { triangles, bounds }))
 }
 
 pub(super) fn realize(
@@ -45,7 +122,7 @@ pub(super) fn realize(
     if extent.width() > texture_limit
         || extent.height() > texture_limit
         || byte_len > 64 * 1024 * 1024
-        || image.patches().len() > 65_536
+        || image.patches().len() > MAX_IMAGE_PATCHES
     {
         return Err(failure(root_index, Render2dImageError::ResourceLimit));
     }
@@ -179,4 +256,72 @@ pub(super) fn realize(
         });
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod neutral_tests {
+    use super::*;
+    use crate::composition_2d::{
+        Render2dAffineTransform, Render2dColorRgba8, Render2dImagePatch,
+        Render2dImageSourceRect, Render2dOpacity, Render2dPixelExtent, Render2dResourceId,
+    };
+
+    #[test]
+    fn completely_transparent_offscreen_image_retains_destination_support() {
+        let extent = Render2dPixelExtent::new(2, 2).unwrap();
+        let image = Render2dImagePrimitive::new(
+            Render2dResourceId::new(7).unwrap(),
+            extent,
+            vec![Render2dImagePatch::new(
+                Render2dImageSourceRect::new(0.0, 0.0, 2.0, 2.0).unwrap(),
+                Render2dRect::new(-8.0, -3.0, 4.0, 2.0).unwrap(),
+            )],
+        ).unwrap();
+        let item = Render2dItem::new(
+            crate::composition_2d::Render2dPrimitive::Image(image.clone()),
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let support = neutral_support(&item, &image, 0, 1.0, 4096)
+            .unwrap().expect("opacity and offscreen canvas cannot erase neutral support");
+        assert_eq!(support.bounds, [-8.0, -3.0, -4.0, -1.0]);
+        assert_eq!(support.triangles.len(), 6);
+        let error = neutral_support(&item, &image, 0, 1.0, 32).unwrap_err();
+        assert!(matches!(error,
+            Render2dExecutionError::Image {
+                root_index: 0,
+                kind: Render2dImageError::ResourceLimit
+            }
+        ));
+        let _ = Render2dColorRgba8::TRANSPARENT;
+    }
+
+    #[test]
+    fn image_neutral_support_preserves_affine_geometry_and_empty_source() {
+        let extent = Render2dPixelExtent::new(4, 4).unwrap();
+        let image = Render2dImagePrimitive::new(
+            Render2dResourceId::new(1).unwrap(), extent,
+            vec![
+                Render2dImagePatch::new(
+                    Render2dImageSourceRect::new(0.0, 0.0, 1.0, 1.0).unwrap(),
+                    Render2dRect::new(0.0, 0.0, 1.0, 2.0).unwrap(),
+                ),
+                Render2dImagePatch::new(
+                    Render2dImageSourceRect::new(0.0, 0.0, 0.0, 1.0).unwrap(),
+                    Render2dRect::new(6.0, 0.0, 2.0, 2.0).unwrap(),
+                )
+            ]
+        ).unwrap();
+        let transform = Render2dAffineTransform::new(
+            2.0, 0.0, 0.0, 3.0, 5.0, -2.0
+        ).unwrap();
+        let item = Render2dItem::new(
+            crate::composition_2d::Render2dPrimitive::Image(image.clone()),
+            transform, vec![], Render2dOpacity::TRANSPARENT
+        );
+        let support = neutral_support(&item, &image, 0, 1.0, 4096).unwrap().unwrap();
+        assert_eq!(support.bounds, [5.0, -2.0, 7.0, 4.0]);
+        assert_eq!(support.triangles.len(), 6);
+    }
 }

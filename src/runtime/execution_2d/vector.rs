@@ -2,6 +2,7 @@
 //! affine transforms therefore preserve centered widths under non-uniform scale.
 
 use crate::composition_2d::*;
+use super::support::NeutralMesh;
 use crate::execution_2d::{Render2dExecutionError, Render2dVectorError};
 use lyon_tessellation::{
     FillOptions, FillRule, FillTessellator, FillVertex, LineCap, LineJoin, StrokeOptions,
@@ -211,13 +212,6 @@ pub(super) fn realize(
 ///
 /// Triangles are disposable physical approximations of the accepted semantic geometry;
 /// neither their boundaries nor these bounds define a second semantic support authority.
-#[derive(Debug)]
-#[allow(dead_code, reason = "F3F neutral support is consumed by the pending group-effect lowering")]
-pub(super) struct NeutralVectorSupport {
-    pub(super) triangles: Vec<[f64; 2]>,
-    pub(super) bounds: [f64; 4],
-}
-
 fn transformed_triangle(
     geometry: &BoundedGeometry,
     indices: &[u32; 3],
@@ -256,7 +250,7 @@ pub(super) fn neutral_support(
     root_index: usize,
     scale: f64,
     max_buffer_bytes: u64,
-) -> Result<Option<NeutralVectorSupport>, Render2dExecutionError> {
+) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
     let (shape, stroke) = match item.primitive() {
         Render2dPrimitive::Fill { shape, .. } => (shape, None),
         Render2dPrimitive::Stroke { shape, style, .. } => (shape, Some(*style)),
@@ -297,7 +291,7 @@ pub(super) fn neutral_support(
             triangles.push([x, y]);
         }
     }
-    Ok((!triangles.is_empty()).then_some(NeutralVectorSupport { triangles, bounds }))
+    Ok((!triangles.is_empty()).then_some(NeutralMesh { triangles, bounds }))
 }
 
 fn narrow(value: f64, tolerance: f64) -> Result<f32, Render2dVectorError> {
