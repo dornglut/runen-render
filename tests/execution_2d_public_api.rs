@@ -807,12 +807,36 @@ fn f2_separate_fragment_imports_prior_target_contents_instead_of_array_order() {
     let (fragment, token) = contribution
         .into_fragment(&work_binding("after prior").after(prior_key))
         .unwrap();
+    let prior_clear = prior.nodes()[0].id().clone();
+    let final_target_resolve = token
+        .as_ref()
+        .expect("painting 2D contribution has a token")
+        .authored_nodes()
+        .last()
+        .expect("at least one authored target-resolve node")
+        .clone();
     let graph = GpuPreparedWorkGraph::prepare(
         GpuResourceLabel::new("reversed fragment inventory").unwrap(),
         [fragment, prior],
     )
     .unwrap();
-    assert_eq!(graph.topological_order()[0].fragment_ordinal(), 1);
+    // Private sample-plane work is independent and may execute before the
+    // caller's prior producer. Only the final target-writing resolve MUST
+    // follow the imported producer, irrespective of fragment array order.
+    let position = |authored: &runen_gpu::GpuWorkNodeId| {
+        let prepared = graph
+            .nodes()
+            .iter()
+            .find(|node| node.node().id() == authored)
+            .expect("authored node is in prepared graph")
+            .id();
+        graph
+            .topological_order()
+            .iter()
+            .position(|node| *node == prepared)
+            .expect("authored node is scheduled")
+    };
+    assert!(position(&prior_clear) < position(&final_target_resolve));
     let prepared = pollster::block_on(context.prepare_submission(graph)).unwrap();
     let submission = context.submit_prepared(prepared).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
