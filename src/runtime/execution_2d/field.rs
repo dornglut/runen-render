@@ -28,12 +28,16 @@ const FIELD_BORDER: f64 = 4.0;
 // generation bitmap. Bound aggregate field area before either allocation.
 pub(super) const MAX_TEXT_FIELD_BYTES: u64 = 32 * 1024 * 1024;
 // The same immutable glyph outlines must be retained for F3F neutral geometry.
-// They count against the existing aggregate shaped-text preparation budget.
-const MAX_OUTLINE_VERBS: usize = 1_048_576;
+// Retain a separate bounded outline budget so previously accepted F2 field
+// byte admission remains exactly unchanged by F3F's geometric source.
+const MAX_TEXT_OUTLINE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_OUTLINE_VERBS: usize =
+    MAX_TEXT_OUTLINE_BYTES as usize / std::mem::size_of::<OutlineVerb>();
 
 #[derive(Debug, Default)]
 pub(super) struct FieldBudget {
     bytes: u64,
+    outline_bytes: u64,
 }
 
 impl FieldBudget {
@@ -53,18 +57,34 @@ impl FieldBudget {
         let bytes = u64::from(width)
             .checked_mul(u64::from(height))
             .and_then(|pixels| pixels.checked_mul(4))
-            .and_then(|pixels| {
-                u64::try_from(outline_verbs)
-                    .ok()
-                    .and_then(|verbs| verbs.checked_mul(std::mem::size_of::<OutlineVerb>() as u64))
-                    .and_then(|outline_bytes| pixels.checked_add(outline_bytes))
-            })
             .ok_or_else(fail)?;
         let next = self.bytes.checked_add(bytes).ok_or_else(fail)?;
         if next > MAX_TEXT_FIELD_BYTES {
             return Err(fail());
         }
+        let outline_fail = || Render2dShapedTextError::FieldBudgetExceeded {
+            resource_id,
+            glyph_id,
+            maximum_bytes: MAX_TEXT_OUTLINE_BYTES,
+        };
+        let outline_bytes = u64::try_from(outline_verbs)
+            .ok()
+            .and_then(|count| {
+                count.checked_mul(
+                    u64::try_from(std::mem::size_of::<OutlineVerb>())
+                        .expect("fixed outline layout fits u64"),
+                )
+            })
+            .ok_or_else(outline_fail)?;
+        let next_outline = self
+            .outline_bytes
+            .checked_add(outline_bytes)
+            .ok_or_else(outline_fail)?;
+        if next_outline > MAX_TEXT_OUTLINE_BYTES {
+            return Err(outline_fail());
+        }
         self.bytes = next;
+        self.outline_bytes = next_outline;
         Ok(())
     }
 }
@@ -874,12 +894,18 @@ mod tests {
         )
         .unwrap()
         .expect("nonempty actual outline tessellates");
-        let affine = crate::composition_2d::Render2dAffineTransform::new(
-            2.0, 0.0, 0.0, 0.5, 7.0, -3.0,
-        )
-        .unwrap();
+        let affine =
+            crate::composition_2d::Render2dAffineTransform::new(2.0, 0.0, 0.0, 0.5, 7.0, -3.0)
+                .unwrap();
         let changed = super::super::vector::neutral_shaped_glyph(
-            field, id, [2.0, 3.0], 24.0, affine, &path, 1.0, 1_048_576,
+            field,
+            id,
+            [2.0, 3.0],
+            24.0,
+            affine,
+            &path,
+            1.0,
+            1_048_576,
         )
         .unwrap()
         .expect("parent affine retains neutral glyph support");
@@ -920,8 +946,26 @@ mod tests {
         assert_eq!(
             budget.bytes,
             u64::from(field.width()) * u64::from(field.height()) * 4
-                + (field.outline.len() * std::mem::size_of::<OutlineVerb>()) as u64
         );
+        assert_eq!(
+            budget.outline_bytes,
+            u64::try_from(field.outline.len() * std::mem::size_of::<OutlineVerb>()).unwrap()
+        );
+    }
+
+    #[test]
+    fn outline_admission_rejects_over_budget_without_changing_prior_field_reservations() {
+        let id = Render2dResourceId::new(72).unwrap();
+        let mut budget = FieldBudget::default();
+        assert!(matches!(
+            budget.charge(id, 3, 1, 1, MAX_OUTLINE_VERBS + 1),
+            Err(Render2dShapedTextError::FieldBudgetExceeded {
+                maximum_bytes: MAX_TEXT_OUTLINE_BYTES,
+                ..
+            })
+        ));
+        assert_eq!(budget.bytes, 0);
+        assert_eq!(budget.outline_bytes, 0);
     }
 
     #[test]
