@@ -254,38 +254,50 @@ struct GroupFrame<'a> {
     clip: Option<super::clip::ClipGpu>,
 }
 
+/// The clip owner and its immediate-parent coordinate frame travel together.
+#[derive(Clone, Copy)]
+struct ClipOwner {
+    parent_to_root: scene::Affine,
+    root_index: usize,
+}
+
+/// One aggregate admission budget across all owner clips and output tiles.
+#[derive(Default)]
+struct ClipBudget {
+    reserved_bytes: u64,
+    sample_work: u64,
+}
+
 /// A clip remains in the owner's immediate-parent coordinate frame. The
 /// existing F3D mask/RunenGPU upload is reused; no second clip semantics.
 fn prepare_clip(
     clips: &[Render2dClip],
-    parent_to_root: scene::Affine,
+    owner: ClipOwner,
     tile: [u32; 4],
-    root_index: usize,
     target: &AdmittedTarget,
-    reserved_bytes: &mut u64,
-    sample_work: &mut u64,
+    budget: &mut ClipBudget,
     resources: &mut GpuResourceScope,
 ) -> Result<Option<super::clip::ClipGpu>, Render2dExecutionError> {
     let Some(mask) = clip_geometry::prepare_bounded(
         clips,
         tile,
-        parent_to_root,
-        root_index,
+        owner.parent_to_root,
+        owner.root_index,
         target,
-        *reserved_bytes,
-        sample_work,
+        budget.reserved_bytes,
+        &mut budget.sample_work,
     )?
     else {
         return Ok(None);
     };
     let exceeded = || {
         clip_geometry::failure(
-            root_index,
+            owner.root_index,
             crate::execution_2d::Render2dClipError::ResourceLimit,
         )
     };
     let bytes = u64::try_from(mask.rgba.len()).map_err(|_| exceeded())?;
-    *reserved_bytes = reserved_bytes.checked_add(bytes).ok_or_else(exceeded)?;
+    budget.reserved_bytes = budget.reserved_bytes.checked_add(bytes).ok_or_else(exceeded)?;
     super::clip::upload(target, &mask, resources).map(Some)
 }
 
@@ -459,8 +471,7 @@ pub(in crate::runtime::execution_2d) fn lower(
     let resolve_pipeline = pipeline(target.format, "fs_sample_resolve", Some(6))?;
 
     let mut operations = Vec::new();
-    let mut reserved_clip_bytes = 0u64;
-    let mut clip_sample_work = 0u64;
+    let mut clip_budget = ClipBudget::default();
     for row in 0..rows {
         for col in 0..cols {
             let origin = [
@@ -507,12 +518,13 @@ pub(in crate::runtime::execution_2d) fn lower(
                         } else {
                             prepare_clip(
                                 group.clips(),
-                                *parent_to_root,
+                                ClipOwner {
+                                    parent_to_root: *parent_to_root,
+                                    root_index: path[0],
+                                },
                                 tile_bounds,
-                                path[0],
                                 target,
-                                &mut reserved_clip_bytes,
-                                &mut clip_sample_work,
+                                &mut clip_budget,
                                 &mut resources,
                             )?
                         };
@@ -588,12 +600,13 @@ pub(in crate::runtime::execution_2d) fn lower(
                         } else {
                             let Some(mask) = prepare_clip(
                                 item.clips(),
-                                *parent_to_root,
+                                ClipOwner {
+                                    parent_to_root: *parent_to_root,
+                                    root_index: path[0],
+                                },
                                 tile_bounds,
-                                path[0],
                                 target,
-                                &mut reserved_clip_bytes,
-                                &mut clip_sample_work,
+                                &mut clip_budget,
                                 &mut resources,
                             )?
                             else {
