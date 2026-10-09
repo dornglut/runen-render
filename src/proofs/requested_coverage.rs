@@ -1836,3 +1836,81 @@ fn phase_fallback_unmodified_gpu_work_exports_radiance_and_availability_together
     assert_eq!(evidence.history_age, 1);
     assert!(!evidence.history_reset);
 }
+
+
+/// A fresh Vulkan context must not certify any old GPU-context history or
+/// reuse a formerly submitted phase as a current sample on the new device.
+#[test]
+fn phase_fallback_gpu_context_reconstruction_resets_current_evidence() {
+    use crate::runtime::program::abi::temporal_fallback;
+    let Some(first_context) = context() else { return };
+    let fixture = fixture((8, 8), 0.0, 0.0, 41);
+    let mut cache = DeterministicResourceCache::default();
+    let mut previous_generation = None;
+    for phase in 0..2 {
+        let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+            admit(&fixture, &first_context),
+            &first_context,
+            &mut cache,
+            Some((0, (4, 4))),
+            false,
+        )
+        .unwrap();
+        let evidence = prepared.radiance_output(0).unwrap().temporal_execution_evidence().unwrap();
+        assert_eq!(evidence.phase, phase);
+        previous_generation = Some(evidence.history_generation);
+        let availability =
+            cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
+        let result = observe(
+            &first_context,
+            prepared.work_set().fragments().to_vec(),
+            &[availability],
+        );
+        assert!(result[0].contains(&temporal_fallback::CURRENT_PHASE));
+        cache.reconcile_temporal_outputs(true);
+    }
+    drop(first_context);
+    cache.reset_for_context_change();
+    let Some(second_context) = context() else { return };
+    let native = evaluate(
+        &second_context,
+        packed(
+            &fixture,
+            &second_context,
+            0,
+            MaintainedExecutionKind::Semantic(fixture.request.outputs()[0].spec().value()),
+        ),
+    );
+    let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&fixture, &second_context),
+        &second_context,
+        &mut cache,
+        Some((0, (4, 4))),
+        false,
+    )
+    .unwrap();
+    let evidence = prepared.radiance_output(0).unwrap().temporal_execution_evidence().unwrap();
+    assert_eq!(evidence.phase, 0);
+    assert_eq!(evidence.history_age, 0);
+    assert!(evidence.history_reset);
+    assert!(evidence.history_generation > previous_generation.unwrap());
+    let resolved = cache.buffers[&(0, DeterministicBufferKind::TemporalProvisional)].clone();
+    let availability = cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
+    let observed = observe(
+        &second_context,
+        prepared.work_set().fragments().to_vec(),
+        &[resolved, availability],
+    );
+    let stride = observed[0].len() / 8;
+    for cell in 0..64 {
+        let physical = cell / 8 * stride + cell % 8;
+        if native[1][cell] == 0 {
+            assert_eq!(observed[1][cell], temporal_fallback::UNRESOLVED);
+            assert_eq!(observed[0][physical], temporal_fallback::UNRESOLVED_RADIANCE_BITS);
+        } else {
+            assert_eq!(observed[1][cell], temporal_fallback::CURRENT_PHASE);
+            assert_eq!(observed[0][physical], native[0][physical]);
+        }
+    }
+    cache.reconcile_temporal_outputs(true);
+}
