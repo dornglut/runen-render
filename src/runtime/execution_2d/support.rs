@@ -605,7 +605,7 @@ pub(super) fn prepare_untranslated_shadow_coverage(
         signed_euclidean_spread(&source, physical_spread, path)?
     };
     if spread_mask.samples.iter().all(|sample| *sample == 0) {
-        if spread == 0.0 && sigma > 0.0 {
+        if spread >= 0.0 && sigma > 0.0 {
             // A nonempty, entirely off-phase source has a nonzero continuous
             // Gaussian integral. Do not misreport absent neutral geometry as
             // a valid zero-radiance effect until area-aware sampling exists.
@@ -781,6 +781,14 @@ mod tests {
                 path: Some(path),
                 ..
             }) if path == [6, 7]
+        ));
+        assert!(matches!(
+            prepare_untranslated_shadow_coverage(&mesh, 0.001, 0.5, 4.0, &[6, 8]),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [6, 8]
         ));
     }
 
