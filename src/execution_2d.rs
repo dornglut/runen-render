@@ -434,7 +434,16 @@ impl fmt::Display for Render2dShapedTextError {
 
 impl Error for Render2dShapedTextError {}
 
-/// Failure to prepare one bounded F2 contribution.
+/// Machine-actionable admission failure for the one correlated 4x4 sample compiler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Render2dSampleSpaceError {
+    /// Aggregate geometry, scratch, tile replay, storage or work-node budget exceeded.
+    ResourceLimit,
+    /// An authored affine cannot preserve its required physical precision.
+    PrecisionLimit,
+}
+
+/// Failure to prepare one bounded F1/F2/F3 2D contribution.
 #[derive(Debug)]
 pub enum Render2dExecutionError {
     /// A vector item cannot be realized within current precision or resource limits.
@@ -478,6 +487,15 @@ pub enum Render2dExecutionError {
         /// Underlying diagnostic text.
         detail: String,
     },
+    /// Correlated-sample preparation rejects unavailable resources or precision before mutation.
+    SampleSpace {
+        /// Stable admission failure class.
+        kind: Render2dSampleSpaceError,
+        /// Exact nested entry path when attributable to one authored entry.
+        path: Option<Vec<usize>>,
+        /// Renderer-owned diagnostic for the failed preflight budget or projection.
+        detail: String,
+    },
     /// RunenGPU lowering failed at an owner-oriented stage.
     Gpu {
         /// Lowering stage.
@@ -513,6 +531,13 @@ impl fmt::Display for Render2dExecutionError {
                     formatter,
                     "2D maintained program failure during {stage}: {detail}"
                 )
+            }
+            Self::SampleSpace { kind, path, detail } => {
+                write!(formatter, "2D correlated sample {kind:?}")?;
+                if let Some(path) = path {
+                    write!(formatter, " at entry path {path:?}")?;
+                }
+                write!(formatter, ": {detail}")
             }
             Self::Gpu { stage, detail } => {
                 write!(
