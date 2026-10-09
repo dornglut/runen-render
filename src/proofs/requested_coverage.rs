@@ -1756,7 +1756,6 @@ fn gpu_phase_fallback_preserves_hard_shadow_radiance_with_same_primary_geometry(
     );
 }
 
-
 /// Submit the *unmodified* ordinary producer, including both authored exports.
 /// Readback oracles may legally replace a buffer's final access and therefore
 /// cannot establish that the original GPU graph's availability export works.
@@ -1777,7 +1776,10 @@ fn phase_fallback_unmodified_gpu_work_exports_radiance_and_availability_together
     assert_eq!(first.temporal_execution_evidence().unwrap().phase, 0);
     let radiance_export = first.export_relationship();
     let availability_export = first.availability_export_relationship().unwrap();
-    assert_ne!(radiance_export.export_key(), availability_export.export_key());
+    assert_ne!(
+        radiance_export.export_key(),
+        availability_export.export_key()
+    );
     let fragments = prepared.work_set().fragments().to_vec();
     assert_eq!(fragments.len(), 1);
     let outputs = fragments[0].outputs();
