@@ -1,6 +1,9 @@
 //! Private deterministic shaped-outline and MSDF field realization.
 
-use crate::composition_2d::{Render2dResourceId, Render2dShapedTextResource};
+use crate::composition_2d::{
+    Render2dFillRule, Render2dPath, Render2dPathCommand, Render2dPoint, Render2dResourceId,
+    Render2dShape, Render2dShapedTextResource,
+};
 use crate::execution_2d::{
     Render2dExecutionError, Render2dShapedTextError, Render2dUnsupportedGlyphKind,
 };
@@ -24,6 +27,9 @@ const FIELD_BORDER: f64 = 4.0;
 // The 4-byte retained RGBA field is preceded by a 3-channel f32 MSDF
 // generation bitmap. Bound aggregate field area before either allocation.
 pub(super) const MAX_TEXT_FIELD_BYTES: u64 = 32 * 1024 * 1024;
+// The same immutable glyph outlines must be retained for F3F neutral geometry.
+// They count against the existing aggregate shaped-text preparation budget.
+const MAX_OUTLINE_VERBS: usize = 1_048_576;
 
 #[derive(Debug, Default)]
 pub(super) struct FieldBudget {
@@ -37,6 +43,7 @@ impl FieldBudget {
         glyph_id: u32,
         width: u32,
         height: u32,
+        outline_verbs: usize,
     ) -> Result<(), Render2dShapedTextError> {
         let fail = || Render2dShapedTextError::FieldBudgetExceeded {
             resource_id,
@@ -46,6 +53,12 @@ impl FieldBudget {
         let bytes = u64::from(width)
             .checked_mul(u64::from(height))
             .and_then(|pixels| pixels.checked_mul(4))
+            .and_then(|pixels| {
+                u64::try_from(outline_verbs)
+                    .ok()
+                    .and_then(|verbs| verbs.checked_mul(std::mem::size_of::<OutlineVerb>() as u64))
+                    .and_then(|outline_bytes| pixels.checked_add(outline_bytes))
+            })
             .ok_or_else(fail)?;
         let next = self.bytes.checked_add(bytes).ok_or_else(fail)?;
         if next > MAX_TEXT_FIELD_BYTES {
@@ -114,6 +127,9 @@ pub(super) struct GlyphField {
     width: u32,
     height: u32,
     rgba8: Arc<[u8]>,
+    /// Unhinted, variation/synthesis-resolved immutable outline, never an
+    /// approximate MSDF or a text foreground-alpha footprint.
+    outline: Arc<[OutlineVerb]>,
 }
 
 impl GlyphField {
@@ -140,6 +156,48 @@ impl GlyphField {
     pub(super) fn rgba8(&self) -> &[u8] {
         &self.rgba8
     }
+
+    /// Reuses the exact F2 retained outline authority for F3F neutral path
+    /// tessellation. Coordinates are normalized em units; glyph placement and
+    /// font-size/parent transforms belong to the receiving F1 item.
+    #[allow(dead_code, reason = "F3F neutral shaped-text support awaiting group lowering")]
+    pub(super) fn neutral_shape(
+        &self,
+        resource_id: Render2dResourceId,
+    ) -> Result<Render2dShape, Render2dExecutionError> {
+        let invalid = || Render2dShapedTextError::InvalidOutline {
+            resource_id,
+            glyph_id: self.glyph_id,
+        };
+        let mut commands = Vec::new();
+        commands
+            .try_reserve_exact(self.outline.len())
+            .map_err(|_| invalid())?;
+        let point = |p: OutlinePoint| Render2dPoint::new(p.x, p.y).map_err(|_| invalid());
+        for verb in self.outline.iter().copied() {
+            commands.push(match verb {
+                OutlineVerb::MoveTo(to) => Render2dPathCommand::MoveTo(point(to)?),
+                OutlineVerb::LineTo(to) => Render2dPathCommand::LineTo(point(to)?),
+                OutlineVerb::QuadraticTo { control, to } => Render2dPathCommand::QuadraticTo {
+                    control: point(control)?,
+                    to: point(to)?,
+                },
+                OutlineVerb::CubicTo {
+                    control1,
+                    control2,
+                    to,
+                } => Render2dPathCommand::CubicTo {
+                    control1: point(control1)?,
+                    control2: point(control2)?,
+                    to: point(to)?,
+                },
+                OutlineVerb::Close => Render2dPathCommand::Close,
+            });
+        }
+        let path = Render2dPath::new(Render2dFillRule::NonZero, commands)
+            .map_err(|_| invalid())?;
+        Ok(Render2dShape::path(path))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -158,7 +216,13 @@ impl ResourceFields {
         budget: &mut FieldBudget,
     ) -> Result<(), Render2dShapedTextError> {
         for field in self.by_glyph.values().flatten() {
-            budget.charge(resource_id, field.glyph_id(), field.width(), field.height())?;
+            budget.charge(
+                resource_id,
+                field.glyph_id(),
+                field.width(),
+                field.height(),
+                field.outline.len(),
+            )?;
         }
         Ok(())
     }
@@ -253,9 +317,17 @@ impl OutlinePathPen {
         Some(OutlinePoint { x, y })
     }
 
+    fn push_verb(&mut self, verb: OutlineVerb) {
+        if self.verbs.len() >= MAX_OUTLINE_VERBS {
+            self.invalid = true;
+        } else {
+            self.verbs.push(verb);
+        }
+    }
+
     fn finish_contour(&mut self) {
         if matches!(self.contour, ContourState::OpenSegmentBearing) {
-            self.verbs.push(OutlineVerb::Close);
+            self.push_verb(OutlineVerb::Close);
         }
         self.contour = ContourState::Closed;
     }
@@ -280,7 +352,7 @@ impl OutlinePen for OutlinePathPen {
     fn move_to(&mut self, x: f32, y: f32) {
         self.finish_contour();
         if let Some(point) = self.point(x, y) {
-            self.verbs.push(OutlineVerb::MoveTo(point));
+            self.push_verb(OutlineVerb::MoveTo(point));
             self.contour = ContourState::OpenMoveOnly;
         }
     }
@@ -293,7 +365,7 @@ impl OutlinePen for OutlinePathPen {
             self.invalid = true;
             return;
         }
-        self.verbs.push(OutlineVerb::LineTo(to));
+        self.push_verb(OutlineVerb::LineTo(to));
         self.mark_segment();
     }
 
@@ -308,7 +380,7 @@ impl OutlinePen for OutlinePathPen {
             self.invalid = true;
             return;
         }
-        self.verbs.push(OutlineVerb::QuadraticTo { control, to });
+        self.push_verb(OutlineVerb::QuadraticTo { control, to });
         self.mark_segment();
     }
 
@@ -326,7 +398,7 @@ impl OutlinePen for OutlinePathPen {
             self.invalid = true;
             return;
         }
-        self.verbs.push(OutlineVerb::CubicTo {
+        self.push_verb(OutlineVerb::CubicTo {
             control1,
             control2,
             to,
@@ -639,7 +711,7 @@ fn generate_field(
 
     // Reject aggregate work before MSDF's temporary 3xf32 bitmap is created.
     // This is the same per-invocation accounting used for preexisting cache entries.
-    budget.charge(resource_id, glyph_id, width, height)?;
+    budget.charge(resource_id, glyph_id, width, height, outline.verbs.len())?;
 
     let projection = Projection::new(Vector2::splat(scale), Vector2::new(-origin_x, -origin_y));
     let mapping = DistanceMapping::from_range(Range::symmetric(FIELD_RANGE / scale));
@@ -686,6 +758,7 @@ fn generate_field(
         width,
         height,
         rgba8: rgba8.into(),
+        outline: Arc::clone(&outline.verbs),
     })
 }
 
@@ -723,14 +796,14 @@ mod tests {
         let id = Render2dResourceId::new(920).unwrap();
         let mut budget = FieldBudget::default();
         budget
-            .charge(id, 1, 2048, 2048)
+            .charge(id, 1, 2048, 2048, 0)
             .expect("first sixteen MiB field");
         budget
-            .charge(id, 2, 2048, 2048)
+            .charge(id, 2, 2048, 2048, 0)
             .expect("second sixteen MiB field");
         assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
         assert!(matches!(
-            budget.charge(id, 3, 1, 1),
+            budget.charge(id, 3, 1, 1, 0),
             Err(Render2dShapedTextError::FieldBudgetExceeded {
                 resource_id,
                 glyph_id: 3,
@@ -738,7 +811,7 @@ mod tests {
             }) if resource_id == id
         ));
         assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
-        assert!(budget.charge(id, 4, u32::MAX, u32::MAX).is_err());
+        assert!(budget.charge(id, 4, u32::MAX, u32::MAX, 0).is_err());
         assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
         let mut cached = BTreeMap::new();
         cached.insert(
@@ -750,6 +823,7 @@ mod tests {
                 width: 2,
                 height: 2,
                 rgba8: Arc::from([0_u8; 16]),
+                outline: Arc::from([]),
             })),
         );
         let fields = ResourceFields { by_glyph: cached };
@@ -758,6 +832,36 @@ mod tests {
             Err(Render2dShapedTextError::FieldBudgetExceeded { glyph_id: 5, .. })
         ));
         assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
+    }
+
+    #[test]
+    fn neutral_text_shape_comes_from_immutable_outline_independently_of_msdf() {
+        let source = realize_fixture(OUTLINE, 2).unwrap();
+        let reproduced = realize_fixture(OUTLINE, 2).unwrap();
+        let field = source.glyph(2).expect("fixture glyph has an outline");
+        let again = reproduced.glyph(2).expect("recreated outline exists");
+        assert!(!field.outline.is_empty());
+        let id = Render2dResourceId::new(1).unwrap();
+        let a = field.neutral_shape(id).unwrap();
+        let b = again.neutral_shape(id).unwrap();
+        assert_eq!(a, b);
+        let path = a.as_path().unwrap();
+        assert_eq!(path.fill_rule(), Render2dFillRule::NonZero);
+        assert!(path.commands().iter().any(|v| matches!(v, Render2dPathCommand::Close)));
+    }
+
+    #[test]
+    fn cached_field_budget_includes_retained_outline_work() {
+        let id = Render2dResourceId::new(1).unwrap();
+        let fields = realize_fixture(OUTLINE, 2).unwrap();
+        let field = fields.glyph(2).unwrap();
+        let mut budget = FieldBudget::default();
+        fields.charge_cached(id, &mut budget).unwrap();
+        assert_eq!(
+            budget.bytes,
+            u64::from(field.width()) * u64::from(field.height()) * 4
+                + (field.outline.len() * std::mem::size_of::<OutlineVerb>()) as u64
+        );
     }
 
     #[test]
