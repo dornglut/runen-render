@@ -210,7 +210,7 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
     let manifest = read_file(root, "Cargo.toml")?;
     for required in [
         "bymsdfgen-core = { version = \"=0.1.1\", default-features = false }",
-        "runen-gpu = { git = \"https://github.com/dornglut/runen-gpu\", rev = \"7a833e750bc92b28f05b2c8507e326660f100a1e\" }",
+        "runen-gpu = { git = \"https://github.com/dornglut/runen-gpu\", rev = \"b11c5c665ee4e9d13adc20cb6b0b03a8467800ea\" }",
         "runen-shader = { git = \"https://github.com/dornglut/runen-shader\", rev = \"406f8165da92caa2d296b3a2f774ba534279870d\" }",
         "lyon_tessellation = { version = \"=1.0.22\", default-features = false, features = [\"std\"] }",
         "skrifa = { version = \"=0.44.0\", default-features = false, features = [\"std\"] }",

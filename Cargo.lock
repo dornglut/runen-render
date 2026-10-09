@@ -1013,7 +1013,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 [[package]]
 name = "runen-gpu"
 version = "0.1.0"
-source = "git+https://github.com/dornglut/runen-gpu?rev=7a833e750bc92b28f05b2c8507e326660f100a1e#7a833e750bc92b28f05b2c8507e326660f100a1e"
+source = "git+https://github.com/dornglut/runen-gpu?rev=b11c5c665ee4e9d13adc20cb6b0b03a8467800ea#b11c5c665ee4e9d13adc20cb6b0b03a8467800ea"
 dependencies = [
  "bytemuck",
  "naga",
