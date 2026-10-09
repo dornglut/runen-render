@@ -357,6 +357,131 @@ fn orient(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
     (b[0] - a[0]).mul_add(p[1] - a[1], -((b[1] - a[1]) * (p[0] - a[0])))
 }
 
+
+/// Private linear alpha coverage from one sampled neutral shadow support.
+/// All values are finite, normalized, and independent of authored paint alpha.
+#[derive(Debug)]
+#[allow(dead_code, reason = "awaiting unified F3F painter integration")]
+pub(super) struct NeutralCoverage {
+    pub(super) origin_x: i64,
+    pub(super) origin_y: i64,
+    pub(super) width: usize,
+    pub(super) height: usize,
+    pub(super) values: Vec<f64>,
+}
+
+/// Separable finite 3σ Gaussian-style convolution over the spread mask.
+/// The kernel is the normalized discrete approximation of the accepted F1
+/// continuous truncated reference, with an explicit finite, complete halo.
+/// Every allocation and worst-case sample tap is admitted before execution.
+#[allow(dead_code, reason = "awaiting unified F3F painter integration")]
+pub(super) fn blur_neutral_mask(
+    input: &NeutralMask,
+    kernel: &GaussianKernel,
+    path: &[usize],
+) -> Result<NeutralCoverage, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+    let source_count = input.width.checked_mul(input.height)
+        .ok_or_else(|| resource("neutral blur source extent overflow"))?;
+    if source_count == 0
+        || source_count > MAX_NEUTRAL_MASK_SAMPLES
+        || input.samples.len() != source_count
+    {
+        return Err(resource("neutral blur source mask exceeds bounds"));
+    }
+    if kernel.radius > usize::try_from(MAX_GAUSSIAN_RADIUS_SAMPLES)
+        .expect("fixed Gaussian maximum fits usize")
+        || kernel.weights.len() != kernel.radius + 1
+        || !kernel.weights.iter().all(|value| value.is_finite() && *value >= 0.0)
+    {
+        return Err(precision("neutral blur kernel is malformed"));
+    }
+    let weight_sum = kernel.weights[0] + 2.0 * kernel.weights.iter().skip(1).sum::<f64>();
+    if !weight_sum.is_finite() || (weight_sum - 1.0).abs() > 1.0e-9 {
+        return Err(precision("neutral blur kernel is not normalized"));
+    }
+    let pad = kernel.radius;
+    let width = input.width.checked_add(pad.checked_mul(2)
+        .ok_or_else(|| resource("neutral blur padding overflow"))?)
+        .ok_or_else(|| resource("neutral blur width overflow"))?;
+    let height = input.height.checked_add(pad.checked_mul(2)
+        .ok_or_else(|| resource("neutral blur padding overflow"))?)
+        .ok_or_else(|| resource("neutral blur height overflow"))?;
+    let area = width.checked_mul(height)
+        .ok_or_else(|| resource("neutral blur sample area overflow"))?;
+    if area > MAX_NEUTRAL_MASK_SAMPLES {
+        return Err(resource("neutral blur halo exceeds bounded sample area"));
+    }
+    let taps = pad.checked_mul(2)
+        .and_then(|v| v.checked_add(1))
+        .ok_or_else(|| resource("neutral blur tap count overflow"))?;
+    let work = area.checked_mul(taps)
+        .and_then(|v| v.checked_mul(2))
+        .ok_or_else(|| resource("neutral blur work count overflow"))?;
+    if work > 16_777_216 {
+        return Err(resource("neutral blur exceeds bounded sample-tap work"));
+    }
+    let pad_i64 = i64::try_from(pad)
+        .map_err(|_| resource("neutral blur origin padding overflow"))?;
+    let origin_x = input.origin_x.checked_sub(pad_i64)
+        .ok_or_else(|| precision("neutral blur x origin overflow"))?;
+    let origin_y = input.origin_y.checked_sub(pad_i64)
+        .ok_or_else(|| precision("neutral blur y origin overflow"))?;
+
+    let mut source = filled(area, 0.0_f64, path)?;
+    for y in 0..input.height {
+        for x in 0..input.width {
+            source[(y + pad) * width + x + pad] =
+                f64::from(input.samples[y * input.width + x]) / f64::from(u8::MAX);
+        }
+    }
+    let mut horizontal = filled(area, 0.0_f64, path)?;
+    let mut values = filled(area, 0.0_f64, path)?;
+    for y in 0..height {
+        for x in 0..width {
+            let mut coverage = kernel.weights[0] * source[y * width + x];
+            for offset in 1..=pad {
+                let weight = kernel.weights[offset];
+                if let Some(left) = x.checked_sub(offset) {
+                    coverage = weight.mul_add(source[y * width + left], coverage);
+                }
+                if let Some(right) = x.checked_add(offset)
+                    && right < width
+                {
+                    coverage = weight.mul_add(source[y * width + right], coverage);
+                }
+            }
+            horizontal[y * width + x] = coverage;
+        }
+    }
+    for y in 0..height {
+        for x in 0..width {
+            let mut coverage = kernel.weights[0] * horizontal[y * width + x];
+            for offset in 1..=pad {
+                let weight = kernel.weights[offset];
+                if let Some(top) = y.checked_sub(offset) {
+                    coverage = weight.mul_add(horizontal[top * width + x], coverage);
+                }
+                if let Some(bottom) = y.checked_add(offset)
+                    && bottom < height
+                {
+                    coverage = weight.mul_add(horizontal[bottom * width + x], coverage);
+                }
+            }
+            values[y * width + x] = coverage.clamp(0.0, 1.0);
+        }
+    }
+    Ok(NeutralCoverage {
+        origin_x,
+        origin_y,
+        width,
+        height,
+        values,
+    })
+}
+
 /// Signed Euclidean disk morphology on a *disposable* aligned binary grid.
 /// Positive radii dilate; negative radii erode. The padded exterior is empty,
 /// so narrow support can erode away completely. Dilation retains offscreen
@@ -479,6 +604,67 @@ pub(super) fn signed_euclidean_spread(
 mod tests {
     use super::*;
 
+
+
+    #[test]
+    fn gaussian_neutral_coverage_is_normalized_and_has_finite_halo() {
+        let source = NeutralMask {
+            origin_x: -3,
+            origin_y: 6,
+            width: 1,
+            height: 1,
+            samples: vec![u8::MAX],
+        };
+        let kernel = gaussian_kernel(1.0, 1.0, &[0, 3]).unwrap();
+        let blurred = blur_neutral_mask(&source, &kernel, &[0, 3]).unwrap();
+        assert_eq!((blurred.origin_x, blurred.origin_y), (-6, 3));
+        assert_eq!((blurred.width, blurred.height), (7, 7));
+        let sum = blurred.values.iter().sum::<f64>();
+        assert!((sum - 1.0).abs() < 1.0e-10);
+        let center = blurred.values[3 * 7 + 3];
+        assert!((center - kernel.weights[0].powi(2)).abs() < 1.0e-10);
+        assert!((blurred.values[2 * 7 + 3] - blurred.values[4 * 7 + 3]).abs() < 1.0e-12);
+        assert!((blurred.values[3 * 7 + 2] - blurred.values[3 * 7 + 4]).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn gaussian_opaque_interior_and_identity_are_preserved() {
+        let source = NeutralMask {
+            origin_x: -1,
+            origin_y: -1,
+            width: 9,
+            height: 9,
+            samples: vec![u8::MAX; 81],
+        };
+        let kernel = gaussian_kernel(1.0, 1.0, &[0]).unwrap();
+        let blurred = blur_neutral_mask(&source, &kernel, &[0]).unwrap();
+        assert!((blurred.values[7 * blurred.width + 7] - 1.0).abs() < 1.0e-10);
+        let identity = gaussian_kernel(0.0, 1.0, &[0]).unwrap();
+        let unchanged = blur_neutral_mask(&source, &identity, &[0]).unwrap();
+        assert_eq!((unchanged.origin_x, unchanged.origin_y), (-1, -1));
+        assert_eq!((unchanged.width, unchanged.height), (9, 9));
+        assert!(unchanged.values.iter().all(|v| *v == 1.0));
+    }
+
+    #[test]
+    fn gaussian_workspace_limit_rejects_before_allocation_with_path() {
+        let source = NeutralMask {
+            origin_x: 0,
+            origin_y: 0,
+            width: 1024,
+            height: 1024,
+            samples: vec![u8::MAX; 1024 * 1024],
+        };
+        let kernel = gaussian_kernel(1.0, 1.0, &[7, 8]).unwrap();
+        assert!(matches!(
+            blur_neutral_mask(&source, &kernel, &[7, 8]),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [7, 8]
+        ));
+    }
 
     #[test]
     fn rasterized_neutral_rect_is_phase_aligned_and_not_alpha_dependent() {
