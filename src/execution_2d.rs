@@ -255,8 +255,8 @@ impl Error for Render2dTargetAdmissionError {}
 /// Bounded semantic class rejected by the Counter-critical F2 admission gate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Render2dUnsupportedContent {
-    /// Nested groups are outside this slice.
-    Group {
+    /// Ordinary group shadows are not admitted before F3F.
+    Shadows {
         /// Root painter-order index.
         root_index: usize,
     },
@@ -290,8 +290,8 @@ pub enum Render2dUnsupportedContent {
 impl fmt::Display for Render2dUnsupportedContent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Group { root_index } => {
-                write!(formatter, "2D F2 root entry {root_index} is a group")
+            Self::Shadows { root_index } => {
+                write!(formatter, "2D root entry {root_index} carries unsupported group shadows")
             }
             Self::Primitive { root_index } => write!(
                 formatter,

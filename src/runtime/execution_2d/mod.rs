@@ -246,7 +246,7 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
             }
             scene::Event::BeginGroup { path, group, .. } => {
                 if !group.shadows().is_empty() {
-                    let kind = Render2dUnsupportedContent::Group {
+                    let kind = Render2dUnsupportedContent::Shadows {
                         root_index: path[0],
                     };
                     return Err(unsupported_at(path, kind));
@@ -290,7 +290,8 @@ mod tests {
     use super::*;
     use crate::composition_2d::{
         Render2dAffineTransform, Render2dColorRgba8, Render2dEntry, Render2dFontBinding,
-        Render2dGlyph, Render2dGroup, Render2dItem, Render2dOpacity, Render2dPoint,
+        Render2dDropShadow, Render2dGlyph, Render2dGroup, Render2dItem, Render2dOpacity,
+        Render2dPoint,
         Render2dResourceBinding, Render2dShapedTextPrimitive, Render2dShapedTextResource,
     };
 
@@ -321,6 +322,43 @@ mod tests {
         ))])
         .expect("composition");
         (composition, bindings)
+    }
+
+    #[test]
+    fn empty_nested_shadow_group_reports_exact_unsupported_effect_path() {
+        let shadow = Render2dDropShadow::new(
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::WHITE,
+        )
+        .unwrap();
+        let shadow_only = Render2dEntry::group(Render2dGroup::new(
+            Vec::new(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![shadow],
+        ));
+        let tree = Render2dComposition::new(vec![Render2dEntry::group(
+            Render2dGroup::new(
+                vec![shadow_only],
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::OPAQUE,
+                Vec::new(),
+            ),
+        )])
+        .unwrap();
+        let plan = scene::analyze(&tree).unwrap();
+        assert!(matches!(
+            admit_runs(&plan),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Shadows { root_index: 0 },
+            }) if path == [0, 0]
+        ));
     }
 
     #[test]

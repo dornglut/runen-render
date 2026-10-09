@@ -546,7 +546,7 @@ fn inspect(
         match event {
             scene::Event::BeginGroup { group, path, .. } => {
                 if !group.shadows().is_empty() {
-                    let kind = Render2dUnsupportedContent::Group {
+                    let kind = Render2dUnsupportedContent::Shadows {
                         root_index: path[0],
                     };
                     return Err(super::super::unsupported_at(path, kind));
