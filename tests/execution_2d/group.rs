@@ -29,6 +29,7 @@ fn context() -> Option<GpuContext> {
         ),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled),
+        (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Filterable),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::CopyDestination),
         (
             GpuTextureFormat::Rgba16Float,
@@ -538,4 +539,94 @@ fn direct_root_image_item_opacity_matches_identity_group_r1() {
         pixel_close(pixel(result, 20, 20), expected);
     }
     assert_eq!(pixel(&direct_image, 20, 20), pixel(&identity_image, 20, 20));
+}
+
+#[test]
+fn grouped_f2_text_keeps_pixel_center_coverage_and_linear_source_over() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let id = Render2dResourceId::new(780).unwrap();
+    let source = bindings(id, shaped_resource(OUTLINE_FONT, false, BOX_GLYPH, 24.0));
+    let painter = || {
+        vec![
+            solid(Render2dColorRgba8::new(255, 0, 0, 128), 0.0, 64.0),
+            shaped_entry(id, [8.0, 32.0], Render2dColorRgba8::new(0, 0, 255, 128)),
+        ]
+    };
+    let direct = Render2dComposition::new(painter()).unwrap();
+    let isolated = Render2dComposition::new(vec![group(painter(), 1.0)]).unwrap();
+    let direct_pixels = execute(
+        &ctx, &mut Render2dExecutor::new(), &direct, &source,
+        "F3E mixed direct-root vector and F2 text",
+    );
+    let isolated_pixels = execute(
+        &ctx, &mut Render2dExecutor::new(), &isolated, &source,
+        "F3E mixed identity-group vector and F2 text",
+    );
+    for (x, y) in [(20, 20), (8, 32), (0, 0), (40, 40)] {
+        let actual = pixel(&isolated_pixels, x, y);
+        pixel_close(actual, pixel(&direct_pixels, x, y));
+    }
+    // At the fixture box's interior the retained glyph is fully opaque
+    // before its authored half-alpha, painted over half-alpha red.
+    pixel_close(pixel(&isolated_pixels, 20, 20), [137, 0, 188, 192]);
+}
+
+#[test]
+fn nested_f2_text_group_clip_and_opacity_apply_at_correlated_samples() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let id = Render2dResourceId::new(781).unwrap();
+    let source = bindings(id, shaped_resource(OUTLINE_FONT, false, BOX_GLYPH, 24.0));
+    let nested = group(
+        vec![shaped_entry(id, [8.0, 32.0], Render2dColorRgba8::new(0, 0, 255, 255))],
+        1.0,
+    );
+    let clipped = Render2dGroup::new(
+        vec![nested],
+        Render2dAffineTransform::IDENTITY,
+        vec![clip(20.0, 0.5)],
+        Render2dOpacity::new(0.5).unwrap(),
+        Vec::new(),
+    );
+    let composition = Render2dComposition::new(vec![Render2dEntry::group(clipped)]).unwrap();
+    let result = execute(
+        &ctx, &mut Render2dExecutor::new(), &composition, &source,
+        "F3E retained glyph with group sample clip and group alpha",
+    );
+    pixel_close(pixel(&result, 20, 20), [0, 0, 137, 64]);
+    pixel_close(pixel(&result, 19, 20), [0, 0, 0, 0]);
+    pixel_close(pixel(&result, 21, 20), [0, 0, 0, 0]);
+}
+
+#[test]
+fn grouped_text_unsupported_intrinsic_fails_without_observing_identity() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let id = Render2dResourceId::new(782).unwrap();
+    let composition = Render2dComposition::new(vec![group(
+        vec![shaped_entry(id, [8.0, 32.0], Render2dColorRgba8::WHITE)],
+        1.0,
+    )]).unwrap();
+    let rejected = bindings(id, shaped_resource(COLR_V0_FONT, false, BOX_GLYPH, 24.0));
+    let replacement = bindings(id, shaped_resource(OUTLINE_FONT, false, BOX_GLYPH, 24.0));
+    let (_, target) = super::target("F3E unsupported text atomicity");
+    let mut executor = Render2dExecutor::new();
+    assert!(matches!(
+        executor.prepare(&ctx, &composition, &rejected, &target),
+        Err(Render2dExecutionError::ShapedText(
+            Render2dShapedTextError::UnsupportedGlyph {
+                resource_id,
+                kind: Render2dUnsupportedGlyphKind::ColrV0,
+                ..
+            }
+        )) if resource_id == id
+    ));
+    assert!(executor
+        .prepare(&ctx, &composition, &replacement, &target)
+        .expect("failed group preparation must not observe rejected semantic identity")
+        .has_render_work());
 }
