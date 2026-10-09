@@ -863,7 +863,8 @@ pub(super) fn prepare_untranslated_shadow_coverage(
         // radius smaller than half a sample interval. Union by maximum:
         // overlapping triangles and a coincident distance hit cannot inflate
         // sample coverage above one.
-        let Some(source_area) = rasterize_area_coverage(mesh, samples_per_logical_unit, path)? else {
+        let Some(source_area) = rasterize_area_coverage(mesh, samples_per_logical_unit, path)?
+        else {
             return Ok(None);
         };
         let mut values = filled(spread_mask.samples.len(), 0.0_f64, path)?;
@@ -879,7 +880,8 @@ pub(super) fn prepare_untranslated_shadow_coverage(
         };
         for y in 0..source_area.height {
             for x in 0..source_area.width {
-                let physical_x = source_area.origin_x
+                let physical_x = source_area
+                    .origin_x
                     .checked_add(i64::try_from(x).expect("bounded area column"))
                     .ok_or_else(|| {
                         mask_failure(
@@ -888,7 +890,8 @@ pub(super) fn prepare_untranslated_shadow_coverage(
                             "neutral support x sample phase overflow",
                         )
                     })?;
-                let physical_y = source_area.origin_y
+                let physical_y = source_area
+                    .origin_y
                     .checked_add(i64::try_from(y).expect("bounded area row"))
                     .ok_or_else(|| {
                         mask_failure(
@@ -1174,13 +1177,12 @@ mod tests {
         assert!((total - 0.0016).abs() < 1.0e-10);
         let off_phase_spread =
             prepare_untranslated_shadow_coverage(&mesh, 0.001, 0.5, 4.0, &[6, 8])
-        .unwrap()
-        .expect("tiny positive disk and Gaussian retain a continuous caster");
+                .unwrap()
+                .expect("tiny positive disk and Gaussian retain a continuous caster");
         assert!(off_phase_spread.values.iter().sum::<f64>() >= 0.0016 - 1.0e-10);
-        let exact_identity =
-            prepare_untranslated_shadow_coverage(&mesh, 0.0, 0.0, 4.0, &[6, 9])
-        .unwrap()
-        .expect("sigma-zero caster retains its exact integrated area");
+        let exact_identity = prepare_untranslated_shadow_coverage(&mesh, 0.0, 0.0, 4.0, &[6, 9])
+            .unwrap()
+            .expect("sigma-zero caster retains its exact integrated area");
         assert!((exact_identity.values.iter().sum::<f64>() - 0.0016).abs() < 1.0e-10);
     }
 

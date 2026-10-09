@@ -118,7 +118,8 @@ fn triangle_intersection(
         let a = clip[i];
         let b = clip[(i + 1) % 3];
         let mut result = Vec::new();
-        result.try_reserve_exact(9)
+        result
+            .try_reserve_exact(9)
             .map_err(|_| resource(path, "neutral polygon intersection allocation failed"))?;
         for j in 0..polygon.len() {
             let p = polygon[j];
@@ -130,7 +131,10 @@ fn triangle_intersection(
             if inside_p != inside_q {
                 let denominator = d0 - d1;
                 if denominator == 0.0 {
-                    return Err(precision(path, "neutral clip edge intersection is singular"));
+                    return Err(precision(
+                        path,
+                        "neutral clip edge intersection is singular",
+                    ));
                 }
                 let t = d0 / denominator;
                 let intersection = [
@@ -171,7 +175,12 @@ pub(super) fn intersect_clips(
         return Ok(result);
     }
     let mut current = empty_mesh();
-    append(&mut current, source, Render2dAffineTransform::IDENTITY, path)?;
+    append(
+        &mut current,
+        source,
+        Render2dAffineTransform::IDENTITY,
+        path,
+    )?;
     let mut work = 0_usize;
     for clip in clips {
         let item = Render2dItem::new(
@@ -189,15 +198,24 @@ pub(super) fn intersect_clips(
             return Ok(empty_mesh());
         };
         let mut clip_local = empty_mesh();
-        append(&mut clip_local, &clip_mesh, Render2dAffineTransform::IDENTITY, path)?;
+        append(
+            &mut clip_local,
+            &clip_mesh,
+            Render2dAffineTransform::IDENTITY,
+            path,
+        )?;
         let mut next = empty_mesh();
         let cost = (current.triangles.len() / 3)
             .checked_mul(clip_local.triangles.len() / 3)
             .ok_or_else(|| resource(path, "neutral conjunctive clip work overflow"))?;
-        work = work.checked_add(cost)
+        work = work
+            .checked_add(cost)
             .ok_or_else(|| resource(path, "neutral clip accumulation overflow"))?;
         if work > MAX_NEUTRAL_CLIP_WORK {
-            return Err(resource(path, "neutral clip triangle intersection work exceeds admission"));
+            return Err(resource(
+                path,
+                "neutral clip triangle intersection work exceeds admission",
+            ));
         }
         for source in current.triangles.chunks_exact(3) {
             for clipping in clip_local.triangles.chunks_exact(3) {
@@ -259,7 +277,12 @@ mod tests {
     fn convex_polygon_intersection_obeys_actual_geometry_not_bbox() {
         let clip = [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]];
         let disjoint_corner = [[1.6, 1.6], [2.2, 1.6], [1.6, 2.2]];
-        assert!(triangle_intersection(disjoint_corner, clip, &[1]).unwrap().len() < 3);
+        assert!(
+            triangle_intersection(disjoint_corner, clip, &[1])
+                .unwrap()
+                .len()
+                < 3
+        );
         let crossing = [[0.8, 0.8], [1.6, 0.8], [0.8, 1.6]];
         let clipped = triangle_intersection(crossing, clip, &[1]).unwrap();
         assert!(clipped.len() >= 3);
@@ -281,17 +304,22 @@ mod tests {
             Render2dOpacity::TRANSPARENT,
         );
         let mesh = vector::neutral_support(&support, 1, 4.0, 1_048_576)
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         let clip = Render2dClip::new(
             Render2dShape::rect(Render2dRect::new(2.0, 1.0, 2.0, 2.0).unwrap()),
             Render2dAffineTransform::IDENTITY,
         );
-        let clipped = intersect_clips(&mesh, &[clip], 1, &[1], 4.0, 1_048_576)
-            .unwrap();
+        let clipped = intersect_clips(&mesh, &[clip], 1, &[1], 4.0, 1_048_576).unwrap();
         let coverage = super::super::support::prepare_untranslated_shadow_coverage(
-            &clipped, 0.0, 0.0, 4.0, &[1],
+            &clipped,
+            0.0,
+            0.0,
+            4.0,
+            &[1],
         )
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
         let total = coverage.values.iter().sum::<f64>();
         assert!((total - 32.0).abs() < 1.0e-7);
     }
