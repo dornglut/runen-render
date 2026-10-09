@@ -13,7 +13,8 @@ use self::lowering::GlyphOccurrence;
 pub(crate) use self::lowering::add_target_boundary;
 use crate::composition_2d::{
     Render2dComposition, Render2dEntry, Render2dOpacity, Render2dPrimitive,
-    Render2dResourceBindings, Render2dResourceId, Render2dResourceValue,
+    Render2dResourceBindings, Render2dResourceId, Render2dResourceRequirement,
+    Render2dResourceValue,
 };
 use crate::execution_2d::{
     Render2dExecutionError, Render2dPreparedContribution, Render2dTarget,
@@ -47,21 +48,21 @@ impl Render2dExecutionState {
         let plan = scene::analyze(composition)?;
         let runs = admit_runs(&plan)?;
         let admitted_target = lowering::admit_target(context, target, !runs.is_empty())?;
-        let unique_resources = runs
-            .iter()
-            .map(|run| run.resource_id)
-            .collect::<BTreeSet<_>>();
-        let image_resources = composition
-            .root_entries()
-            .iter()
-            .filter_map(|entry| match entry {
-                Render2dEntry::Item(item) => match item.primitive() {
-                    Render2dPrimitive::Image(image) => Some(image.resource_id()),
-                    _ => None,
-                },
-                Render2dEntry::Group(_) => None,
-            })
-            .collect::<BTreeSet<_>>();
+        // The immutable F1 composition is the complete resource authority,
+        // including resources nested below groups. Do not infer observation
+        // only from currently emitted root painter operations.
+        let mut unique_resources = BTreeSet::new();
+        let mut image_resources = BTreeSet::new();
+        for requirement in composition.resource_requirements() {
+            match *requirement {
+                Render2dResourceRequirement::ShapedText { id } => {
+                    unique_resources.insert(id);
+                }
+                Render2dResourceRequirement::ImageRgba8Srgb { id, .. } => {
+                    image_resources.insert(id);
+                }
+            }
+        }
 
         let mut observed_updates = Vec::new();
         let mut field_updates = Vec::new();
