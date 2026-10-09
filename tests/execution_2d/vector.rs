@@ -951,8 +951,15 @@ fn large_vector_coverage_is_accepted_with_bounded_tiles() {
     .unwrap();
     assert!(
         Render2dExecutor::new()
-            .prepare(&context, &composition, &Render2dResourceBindings::default(), &target)
-            .expect("large F3E vector uses bounded reusable tiles rather than one full-surface mask")
+            .prepare(
+                &context,
+                &composition,
+                &Render2dResourceBindings::default(),
+                &target
+            )
+            .expect(
+                "large F3E vector uses bounded reusable tiles rather than one full-surface mask"
+            )
             .has_render_work()
     );
 }

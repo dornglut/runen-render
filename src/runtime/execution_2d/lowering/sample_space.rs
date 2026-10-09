@@ -403,7 +403,12 @@ fn intersection(a: [u32; 4], b: [u32; 4]) -> Option<[u32; 4]> {
 }
 
 fn union(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
-    [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
+    [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[2].max(b[2]),
+        a[3].max(b[3]),
+    ]
 }
 
 fn charge_vector_geometry(
@@ -967,9 +972,8 @@ pub(in crate::runtime::execution_2d) fn lower(
                         let parent_visible = group_stack.last().is_none_or(|f| f.visible);
                         let group_tile = group_bounds[index]
                             .and_then(|bounds| intersection(bounds, tile_bounds));
-                        let viable = parent_visible
-                            && group.opacity().get() > 0.0
-                            && group_tile.is_some();
+                        let viable =
+                            parent_visible && group.opacity().get() > 0.0 && group_tile.is_some();
                         let clip = if !viable || group.clips().is_empty() {
                             None
                         } else {

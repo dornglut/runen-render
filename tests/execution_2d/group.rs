@@ -723,16 +723,19 @@ fn opaque_overlapping_ordered_patches_apply_item_opacity_and_quarter_clip_once()
         id,
         Render2dPixelExtent::new(2, 1).unwrap(),
         vec![patch(0.0), patch(1.0)],
-    ).unwrap();
+    )
+    .unwrap();
     let binding = Render2dResourceBindings::new(vec![Render2dResourceBinding::new(
         id,
         Render2dResourceValue::ImageRgba8Srgb(
             Render2dImageResource::new(
                 Render2dPixelExtent::new(2, 1).unwrap(),
                 vec![255, 0, 0, 255, 0, 0, 255, 255],
-            ).unwrap(),
+            )
+            .unwrap(),
         ),
-    )]).unwrap();
+    )])
+    .unwrap();
     let item = |opacity, clips| {
         Render2dEntry::item(Render2dItem::new(
             Render2dPrimitive::Image(image.clone()),
@@ -744,14 +747,23 @@ fn opaque_overlapping_ordered_patches_apply_item_opacity_and_quarter_clip_once()
     let direct = Render2dComposition::new(vec![item(0.5, Vec::new())]).unwrap();
     let nested = Render2dComposition::new(vec![group(vec![item(0.5, Vec::new())], 1.0)]).unwrap();
     for composition in [&direct, &nested] {
-        let bytes = execute(&ctx, &mut Render2dExecutor::new(), composition, &binding, "F3E-R1 opaque patch opacity");
+        let bytes = execute(
+            &ctx,
+            &mut Render2dExecutor::new(),
+            composition,
+            &binding,
+            "F3E-R1 opaque patch opacity",
+        );
         pixel_close(pixel(&bytes, 10, 20), [0, 0, encode_linear(0.5), 128]);
     }
-    let quarter_clip = Render2dComposition::new(vec![group(
-        vec![item(1.0, vec![clip(10.0, 0.25)])], 1.0
-    )]).unwrap();
+    let quarter_clip =
+        Render2dComposition::new(vec![group(vec![item(1.0, vec![clip(10.0, 0.25)])], 1.0)])
+            .unwrap();
     let result = execute(
-        &ctx, &mut Render2dExecutor::new(), &quarter_clip, &binding,
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &quarter_clip,
+        &binding,
         "F3E-R1 opaque ordered image patch quarter-coverage item clip",
     );
     pixel_close(pixel(&result, 10, 20), [0, 0, encode_linear(0.25), 64]);
