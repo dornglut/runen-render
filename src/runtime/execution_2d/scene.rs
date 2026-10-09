@@ -6,7 +6,7 @@
 //! RunenGPU work/evidence boundary.
 
 use crate::composition_2d::{
-    Render2dAffineTransform, Render2dComposition, Render2dEntry, Render2dItem,
+    Render2dAffineTransform, Render2dComposition, Render2dEntry, Render2dGroup, Render2dItem,
 };
 use crate::execution_2d::Render2dExecutionError;
 
@@ -91,6 +91,25 @@ fn limit(path: &[usize], problem: &'static str) -> Render2dExecutionError {
     }
 }
 
+/// A no-paint, no-effect subtree must never be forced through physical
+/// transform/clip admission: mathematically its contribution is transparent.
+/// The walk is iterative so even hostile nesting does not grow the call stack.
+fn is_structurally_empty(group: &Render2dGroup) -> bool {
+    let mut pending = vec![group];
+    while let Some(current) = pending.pop() {
+        if !current.shadows().is_empty() {
+            return false;
+        }
+        for entry in current.entries() {
+            match entry {
+                Render2dEntry::Item(_) => return false,
+                Render2dEntry::Group(child) => pending.push(child),
+            }
+        }
+    }
+    true
+}
+
 fn validate_clips(
     owner_clips: &[crate::composition_2d::Render2dClip],
     parent_to_root: Affine,
@@ -149,6 +168,9 @@ pub(super) fn analyze(
                         });
                     }
                     Render2dEntry::Group(group) => {
+                        if is_structurally_empty(group) {
+                            continue;
+                        }
                         validate_clips(group.clips(), parent_to_root, &path)?;
                         let to_root = parent_to_root
                             .compose(Affine::from_source(group.local_to_parent()), &path)?;
@@ -291,6 +313,18 @@ mod tests {
     }
 
     #[test]
+    fn empty_nested_groups_do_not_require_representable_physical_transforms() {
+        let huge = affine([1.0e308, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        let tree = Render2dComposition::new(vec![group(
+            vec![group(Vec::new(), huge, Vec::new())],
+            huge,
+            Vec::new(),
+        )])
+        .unwrap();
+        assert!(analyze(&tree).unwrap().events.is_empty());
+    }
+
+    #[test]
     fn empty_nested_groups_elide_and_ordinary_groups_remain_ordered() {
         let empty = group(
             vec![group(
@@ -304,10 +338,9 @@ mod tests {
         let painted = item(Render2dAffineTransform::IDENTITY);
         let tree = Render2dComposition::new(vec![empty, painted]).unwrap();
         let plan = analyze(&tree).unwrap();
-        assert_eq!(plan.events.len(), 5);
         assert!(matches!(
-            &plan.events[4],
-            Event::Item { path, .. } if path == &[1]
+            plan.events.as_slice(),
+            [Event::Item { path, .. }] if path == &[1]
         ));
     }
 }
