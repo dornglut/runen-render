@@ -160,7 +160,10 @@ impl GlyphField {
     /// Reuses the exact F2 retained outline authority for F3F neutral path
     /// tessellation. Coordinates are normalized em units; glyph placement and
     /// font-size/parent transforms belong to the receiving F1 item.
-    #[allow(dead_code, reason = "F3F neutral shaped-text support awaiting group lowering")]
+    #[allow(
+        dead_code,
+        reason = "F3F neutral shaped-text support awaiting group lowering"
+    )]
     pub(super) fn neutral_shape(
         &self,
         resource_id: Render2dResourceId,
@@ -194,8 +197,7 @@ impl GlyphField {
                 OutlineVerb::Close => Render2dPathCommand::Close,
             });
         }
-        let path = Render2dPath::new(Render2dFillRule::NonZero, commands)
-            .map_err(|_| invalid())?;
+        let path = Render2dPath::new(Render2dFillRule::NonZero, commands).map_err(|_| invalid())?;
         Ok(Render2dShape::path(path))
     }
 }
@@ -847,7 +849,11 @@ mod tests {
         assert_eq!(a, b);
         let path = a.as_path().unwrap();
         assert_eq!(path.fill_rule(), Render2dFillRule::NonZero);
-        assert!(path.commands().iter().any(|v| matches!(v, Render2dPathCommand::Close)));
+        assert!(
+            path.commands()
+                .iter()
+                .any(|v| matches!(v, Render2dPathCommand::Close))
+        );
     }
 
     #[test]
