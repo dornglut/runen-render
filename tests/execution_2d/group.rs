@@ -557,11 +557,17 @@ fn grouped_f2_text_keeps_pixel_center_coverage_and_linear_source_over() {
     let direct = Render2dComposition::new(painter()).unwrap();
     let isolated = Render2dComposition::new(vec![group(painter(), 1.0)]).unwrap();
     let direct_pixels = execute(
-        &ctx, &mut Render2dExecutor::new(), &direct, &source,
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &direct,
+        &source,
         "F3E mixed direct-root vector and F2 text",
     );
     let isolated_pixels = execute(
-        &ctx, &mut Render2dExecutor::new(), &isolated, &source,
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &isolated,
+        &source,
         "F3E mixed identity-group vector and F2 text",
     );
     for (x, y) in [(20, 20), (8, 32), (0, 0), (40, 40)] {
@@ -581,7 +587,11 @@ fn nested_f2_text_group_clip_and_opacity_apply_at_correlated_samples() {
     let id = Render2dResourceId::new(781).unwrap();
     let source = bindings(id, shaped_resource(OUTLINE_FONT, false, BOX_GLYPH, 24.0));
     let nested = group(
-        vec![shaped_entry(id, [8.0, 32.0], Render2dColorRgba8::new(0, 0, 255, 255))],
+        vec![shaped_entry(
+            id,
+            [8.0, 32.0],
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
         1.0,
     );
     let clipped = Render2dGroup::new(
@@ -593,7 +603,10 @@ fn nested_f2_text_group_clip_and_opacity_apply_at_correlated_samples() {
     );
     let composition = Render2dComposition::new(vec![Render2dEntry::group(clipped)]).unwrap();
     let result = execute(
-        &ctx, &mut Render2dExecutor::new(), &composition, &source,
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &source,
         "F3E retained glyph with group sample clip and group alpha",
     );
     pixel_close(pixel(&result, 20, 20), [0, 0, 137, 64]);
@@ -610,7 +623,8 @@ fn grouped_text_unsupported_intrinsic_fails_without_observing_identity() {
     let composition = Render2dComposition::new(vec![group(
         vec![shaped_entry(id, [8.0, 32.0], Render2dColorRgba8::WHITE)],
         1.0,
-    )]).unwrap();
+    )])
+    .unwrap();
     let rejected = bindings(id, shaped_resource(COLR_V0_FONT, false, BOX_GLYPH, 24.0));
     let replacement = bindings(id, shaped_resource(OUTLINE_FONT, false, BOX_GLYPH, 24.0));
     let (_, target) = super::target("F3E unsupported text atomicity");
@@ -625,8 +639,10 @@ fn grouped_text_unsupported_intrinsic_fails_without_observing_identity() {
             }
         )) if resource_id == id
     ));
-    assert!(executor
-        .prepare(&ctx, &composition, &replacement, &target)
-        .expect("failed group preparation must not observe rejected semantic identity")
-        .has_render_work());
+    assert!(
+        executor
+            .prepare(&ctx, &composition, &replacement, &target)
+            .expect("failed group preparation must not observe rejected semantic identity")
+            .has_render_work()
+    );
 }

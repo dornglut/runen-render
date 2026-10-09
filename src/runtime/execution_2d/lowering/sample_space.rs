@@ -1196,7 +1196,9 @@ pub(in crate::runtime::execution_2d) fn lower(
                                                     texture_binding(0, view)?,
                                                     super::sampler_binding(1, sampler)?,
                                                 ])
-                                                .map_err(|e| gpu("F3E retained text bindings", e))?;
+                                                .map_err(|e| {
+                                                    gpu("F3E retained text bindings", e)
+                                                })?;
                                             draws.push(vector::vector_draw(
                                                 pipeline.clone(),
                                                 bindings,

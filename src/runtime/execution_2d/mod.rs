@@ -12,9 +12,8 @@ use self::field::{FieldSetKey, QualityTier, ResourceFields};
 use self::lowering::GlyphOccurrence;
 pub(crate) use self::lowering::add_target_boundary;
 use crate::composition_2d::{
-    Render2dComposition, Render2dOpacity, Render2dPrimitive,
-    Render2dResourceBindings, Render2dResourceId, Render2dResourceRequirement,
-    Render2dResourceValue,
+    Render2dComposition, Render2dOpacity, Render2dPrimitive, Render2dResourceBindings,
+    Render2dResourceId, Render2dResourceRequirement, Render2dResourceValue,
 };
 use crate::execution_2d::{
     Render2dExecutionError, Render2dPreparedContribution, Render2dTarget,
@@ -432,8 +431,11 @@ mod tests {
         let (composition, _) = shaped_composition(
             Render2dAffineTransform::translation(4.0, -2.0).expect("translation"),
         );
-        let runs = admit_runs(&scene::analyze(&composition).expect("finite source tree"), false)
-            .expect("translation is inside F2");
+        let runs = admit_runs(
+            &scene::analyze(&composition).expect("finite source tree"),
+            false,
+        )
+        .expect("translation is inside F2");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].translate_x, 4.0);
         assert_eq!(runs[0].translate_y, -2.0);
@@ -442,7 +444,10 @@ mod tests {
             Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).expect("finite transform"),
         );
         assert!(matches!(
-            admit_runs(&scene::analyze(&composition).expect("finite source tree"), false),
+            admit_runs(
+                &scene::analyze(&composition).expect("finite source tree"),
+                false
+            ),
             Err(Render2dExecutionError::UnsupportedContent(
                 Render2dUnsupportedContent::Transform { root_index: 0 }
             ))

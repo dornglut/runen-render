@@ -695,16 +695,32 @@ pub(super) fn glyph_placement(
         return Ok(None);
     }
 
-
-    Ok(Some(GlyphPlacement { x0, y0, width, height, left, top, right, bottom }))
+    Ok(Some(GlyphPlacement {
+        x0,
+        y0,
+        width,
+        height,
+        left,
+        top,
+        right,
+        bottom,
+    }))
 }
 
 fn glyph_vertices(
     target: &AdmittedTarget,
     occurrence: &GlyphOccurrence,
 ) -> Result<Option<[[f32; FLOATS_PER_VERTEX]; GLYPH_VERTEX_ARRAY_LEN]>, Render2dExecutionError> {
-    let Some(GlyphPlacement { x0, y0, width, height, left, top, right, bottom }) =
-        glyph_placement(target, occurrence)?
+    let Some(GlyphPlacement {
+        x0,
+        y0,
+        width,
+        height,
+        left,
+        top,
+        right,
+        bottom,
+    }) = glyph_placement(target, occurrence)?
     else {
         return Ok(None);
     };
