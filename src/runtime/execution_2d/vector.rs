@@ -293,7 +293,11 @@ pub(super) fn neutral_support(
             triangles.push([x, y]);
         }
     }
-    Ok((!triangles.is_empty()).then_some(NeutralMesh { triangles, bounds }))
+    Ok((!triangles.is_empty()).then_some(NeutralMesh {
+        units_per_parent_logical_unit: scale,
+        triangles,
+        bounds,
+    }))
 }
 
 fn narrow(value: f64, tolerance: f64) -> Result<f32, Render2dVectorError> {

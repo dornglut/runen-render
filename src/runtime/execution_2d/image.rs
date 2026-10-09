@@ -114,7 +114,11 @@ pub(super) fn neutral_support(
             triangles.push(point);
         }
     }
-    Ok((!triangles.is_empty()).then_some(NeutralMesh { triangles, bounds }))
+    Ok((!triangles.is_empty()).then_some(NeutralMesh {
+        units_per_parent_logical_unit: raster_scale,
+        triangles,
+        bounds,
+    }))
 }
 
 pub(super) fn realize(

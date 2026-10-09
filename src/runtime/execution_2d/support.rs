@@ -7,6 +7,9 @@
 #[derive(Debug)]
 #[allow(dead_code, reason = "awaiting F3F group lowering")]
 pub(super) struct NeutralMesh {
+    /// Scale converting this mesh's original immediate-parent logical
+    /// coordinates into its disposable stored tessellation coordinates.
+    pub(super) units_per_parent_logical_unit: f64,
     pub(super) triangles: Vec<[f64; 2]>,
     pub(super) bounds: [f64; 4],
 }
@@ -286,6 +289,15 @@ fn rasterize_mesh_with_positive_spread(
     if !samples_per_logical_unit.is_finite() || samples_per_logical_unit <= 0.0 {
         return Err(precision("neutral sample spacing is invalid"));
     }
+    if !mesh.units_per_parent_logical_unit.is_finite()
+        || mesh.units_per_parent_logical_unit <= 0.0
+    {
+        return Err(precision("neutral mesh frame scale is invalid"));
+    }
+    let mesh_to_samples = samples_per_logical_unit / mesh.units_per_parent_logical_unit;
+    if !mesh_to_samples.is_finite() || mesh_to_samples <= 0.0 {
+        return Err(precision("neutral mesh conversion to sample frame is not finite"));
+    }
     if !positive_spread.is_finite() || positive_spread < 0.0 {
         return Err(precision("positive geometric spread is invalid"));
     }
@@ -310,10 +322,10 @@ fn rasterize_mesh_with_positive_spread(
         return Err(precision("geometric spread sample radius is not finite"));
     }
     let scaled = [
-        mesh.bounds[0].mul_add(samples_per_logical_unit, -physical_spread),
-        mesh.bounds[1].mul_add(samples_per_logical_unit, -physical_spread),
-        mesh.bounds[2].mul_add(samples_per_logical_unit, physical_spread),
-        mesh.bounds[3].mul_add(samples_per_logical_unit, physical_spread),
+        mesh.bounds[0].mul_add(mesh_to_samples, -physical_spread),
+        mesh.bounds[1].mul_add(mesh_to_samples, -physical_spread),
+        mesh.bounds[2].mul_add(mesh_to_samples, physical_spread),
+        mesh.bounds[3].mul_add(mesh_to_samples, physical_spread),
     ];
     if !scaled.iter().all(|value| value.is_finite())
         || scaled[0] >= scaled[2]
@@ -365,8 +377,7 @@ fn rasterize_mesh_with_positive_spread(
             let sample_x = f64::from(edges[0]) + as_f64(x) + 0.5;
             let p = [sample_x, sample_y];
             for tri in mesh.triangles.as_chunks::<3>().0 {
-                let t =
-                    tri.map(|[x, y]| [x * samples_per_logical_unit, y * samples_per_logical_unit]);
+                let t = tri.map(|[x, y]| [x * mesh_to_samples, y * mesh_to_samples]);
                 let ab = orient(t[0], t[1], p);
                 let bc = orient(t[1], t[2], p);
                 let ca = orient(t[2], t[0], p);
@@ -744,8 +755,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn logically_identical_meshes_at_different_preparation_scales_cast_same_shadow() {
+        use crate::composition_2d::{
+            Render2dAffineTransform, Render2dBrush, Render2dColorRgba8, Render2dItem,
+            Render2dOpacity, Render2dPrimitive, Render2dRect, Render2dShape,
+        };
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 2.0, 1.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let low = super::super::vector::neutral_support(&item, 0, 1.0, 16_384)
+            .unwrap()
+            .unwrap();
+        let high = super::super::vector::neutral_support(&item, 0, 2.0, 16_384)
+            .unwrap()
+            .unwrap();
+        assert_eq!(low.units_per_parent_logical_unit, 1.0);
+        assert_eq!(high.units_per_parent_logical_unit, 2.0);
+        let a = prepare_untranslated_shadow_coverage(&low, 0.5, 0.25, 4.0, &[1, 0])
+            .unwrap()
+            .unwrap();
+        let b = prepare_untranslated_shadow_coverage(&high, 0.5, 0.25, 4.0, &[1, 0])
+            .unwrap()
+            .unwrap();
+        assert_eq!((a.origin_x, a.origin_y), (b.origin_x, b.origin_y));
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        assert_eq!(a.values, b.values);
+    }
+
+    #[test]
     fn off_phase_geometry_still_casts_a_positive_euclidean_spread() {
         let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
             triangles: vec![
                 [0.01, 0.01],
                 [0.02, 0.01],
@@ -831,6 +877,7 @@ mod tests {
     #[test]
     fn signed_spread_can_erode_real_neutral_geometry_completely() {
         let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
             triangles: vec![
                 [0.0, 0.0],
                 [1.0, 0.0],
@@ -915,6 +962,7 @@ mod tests {
     #[test]
     fn rasterized_neutral_rect_is_phase_aligned_and_not_alpha_dependent() {
         let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
             triangles: vec![
                 [-1.0, -1.0],
                 [1.0, -1.0],
@@ -942,6 +990,7 @@ mod tests {
     #[test]
     fn neutral_rasterization_rejects_preallocation_work_excess_with_exact_path() {
         let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
             triangles: vec![[0.0, 0.0], [1024.0, 0.0], [0.0, 1024.0]],
             bounds: [0.0, 0.0, 1024.0, 1024.0],
         };
