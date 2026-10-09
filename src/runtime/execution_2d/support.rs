@@ -826,16 +826,17 @@ pub(super) fn prepare_untranslated_shadow_coverage(
         ));
     }
     // The caster lies inside its measured semantic-geometry bounding box.
-    // No Euclidean disk whose radius is at least half the box's smallest
-    // positive width can fit inside it. Certify complete erosion before any
-    // sample-mask/radius work, including radii beyond the physical halo cap.
+    // A Euclidean disk with radius strictly greater than half the box's
+    // smallest width cannot fit inside it. Equality can leave boundary-only
+    // support, so it is not an emptiness certificate. Certify complete erosion
+    // before bounded halo work, including oversized finite radii.
     // This is a sufficient empty-set proof, never a substitute for nonempty
     // continuous morphology.
     if spread < 0.0 && !mesh.triangles.is_empty() {
         let smallest_extent = (mesh.bounds[2] - mesh.bounds[0])
             .min(mesh.bounds[3] - mesh.bounds[1])
             / mesh.units_per_parent_logical_unit;
-        if smallest_extent.is_finite() && smallest_extent >= 0.0 && -spread >= smallest_extent / 2.0
+        if smallest_extent.is_finite() && smallest_extent >= 0.0 && -spread > smallest_extent / 2.0
         {
             return Ok(None);
         }
