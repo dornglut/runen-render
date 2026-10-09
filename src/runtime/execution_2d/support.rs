@@ -715,9 +715,11 @@ mod tests {
         // Its shift is +48 samples: [-40,-4] -> [8,44], even though the
         // current unshifted source lies entirely off the caller's canvas.
         assert_eq!(prepared.origin_x + 12 * 4, 8);
-        assert!(prepare_untranslated_shadow_coverage(
-            &mesh, -10.0, 0.0, 4.0, &[3, 1],
-        ).is_err());
+        assert!(
+            prepare_untranslated_shadow_coverage(&mesh, -10.0, 0.0, 4.0, &[3, 1])
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
