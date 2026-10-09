@@ -268,11 +268,26 @@ pub(super) fn rasterize_neutral_mesh(
     samples_per_logical_unit: f64,
     path: &[usize],
 ) -> Result<Option<NeutralMask>, crate::execution_2d::Render2dExecutionError> {
+    rasterize_mesh_with_positive_spread(mesh, samples_per_logical_unit, 0.0, path)
+}
+
+/// Tests the true tessellated geometric distance at each parent-frame sample,
+/// rather than dilating only previously occupied sample centers. A geometric
+/// sliver with no original sample-center hit can still cast a spread shadow.
+fn rasterize_mesh_with_positive_spread(
+    mesh: &NeutralMesh,
+    samples_per_logical_unit: f64,
+    positive_spread: f64,
+    path: &[usize],
+) -> Result<Option<NeutralMask>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     if !samples_per_logical_unit.is_finite() || samples_per_logical_unit <= 0.0 {
         return Err(precision("neutral sample spacing is invalid"));
+    }
+    if !positive_spread.is_finite() || positive_spread < 0.0 {
+        return Err(precision("positive geometric spread is invalid"));
     }
     if !mesh.triangles.len().is_multiple_of(3) {
         return Err(precision("neutral mesh triangle payload is incomplete"));
@@ -289,11 +304,16 @@ pub(super) fn rasterize_neutral_mesh(
     {
         return Err(precision("neutral triangle bounds are not finite"));
     }
+    let physical_spread = positive_spread * samples_per_logical_unit;
+    let radius_squared = physical_spread * physical_spread;
+    if !radius_squared.is_finite() {
+        return Err(precision("geometric spread sample radius is not finite"));
+    }
     let scaled = [
-        mesh.bounds[0] * samples_per_logical_unit,
-        mesh.bounds[1] * samples_per_logical_unit,
-        mesh.bounds[2] * samples_per_logical_unit,
-        mesh.bounds[3] * samples_per_logical_unit,
+        mesh.bounds[0].mul_add(samples_per_logical_unit, -physical_spread),
+        mesh.bounds[1].mul_add(samples_per_logical_unit, -physical_spread),
+        mesh.bounds[2].mul_add(samples_per_logical_unit, physical_spread),
+        mesh.bounds[3].mul_add(samples_per_logical_unit, physical_spread),
     ];
     if !scaled.iter().all(|value| value.is_finite())
         || scaled[0] >= scaled[2]
@@ -340,18 +360,28 @@ pub(super) fn rasterize_neutral_mesh(
     }
     let mut samples = filled(cells, 0_u8, path)?;
     for y in 0..height {
-        let sample_y = (f64::from(edges[1]) + as_f64(y) + 0.5) / samples_per_logical_unit;
+        let sample_y = f64::from(edges[1]) + as_f64(y) + 0.5;
         for x in 0..width {
-            let sample_x = (f64::from(edges[0]) + as_f64(x) + 0.5) / samples_per_logical_unit;
+            let sample_x = f64::from(edges[0]) + as_f64(x) + 0.5;
             let p = [sample_x, sample_y];
             for tri in mesh.triangles.as_chunks::<3>().0 {
-                let ab = orient(tri[0], tri[1], p);
-                let bc = orient(tri[1], tri[2], p);
-                let ca = orient(tri[2], tri[0], p);
-                let area = orient(tri[0], tri[1], tri[2]);
-                if area != 0.0
-                    && ((ab >= 0.0 && bc >= 0.0 && ca >= 0.0)
-                        || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0))
+                let t = tri.map(|[x, y]| {
+                    [x * samples_per_logical_unit, y * samples_per_logical_unit]
+                });
+                let ab = orient(t[0], t[1], p);
+                let bc = orient(t[1], t[2], p);
+                let ca = orient(t[2], t[0], p);
+                let area = orient(t[0], t[1], t[2]);
+                if area == 0.0 {
+                    continue;
+                }
+                let inside = (ab >= 0.0 && bc >= 0.0 && ca >= 0.0)
+                    || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0);
+                if inside
+                    || (positive_spread > 0.0
+                        && (distance_squared_to_segment(p, t[0], t[1]) <= radius_squared
+                            || distance_squared_to_segment(p, t[1], t[2]) <= radius_squared
+                            || distance_squared_to_segment(p, t[2], t[0]) <= radius_squared))
                 {
                     samples[y * width + x] = u8::MAX;
                     break;
@@ -370,6 +400,22 @@ pub(super) fn rasterize_neutral_mesh(
 
 fn orient(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
     (b[0] - a[0]).mul_add(p[1] - a[1], -((b[1] - a[1]) * (p[0] - a[0])))
+}
+
+/// Closest-point metric in the same physical sample frame as the triangle.
+/// This is a Euclidean segment metric, not a box distance or cached paint alpha.
+fn distance_squared_to_segment(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let delta = [b[0] - a[0], b[1] - a[1]];
+    let squared_length = delta[0].mul_add(delta[0], delta[1] * delta[1]);
+    let t = if squared_length > 0.0 {
+        ((p[0] - a[0]).mul_add(delta[0], (p[1] - a[1]) * delta[1]) / squared_length)
+            .clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let dx = p[0] - delta[0].mul_add(t, a[0]);
+    let dy = p[1] - delta[1].mul_add(t, a[1]);
+    dx.mul_add(dx, dy * dy)
 }
 
 /// Private linear alpha coverage from one sampled neutral shadow support.
@@ -539,18 +585,30 @@ pub(super) fn prepare_untranslated_shadow_coverage(
             "shadow spread or blur sigma is not representable",
         ));
     }
-    let Some(source) = rasterize_neutral_mesh(mesh, samples_per_logical_unit, path)? else {
+    // Positive spread evaluates distance from the original geometry at each
+    // sample. Seed-then-dilate would falsely erase thin off-phase casters.
+    // Negative spread retains the bounded binary distance-transform path.
+    let Some(source) = rasterize_mesh_with_positive_spread(
+        mesh,
+        samples_per_logical_unit,
+        spread.max(0.0),
+        path,
+    )? else {
         return Ok(None);
     };
-    let physical_spread = spread * samples_per_logical_unit;
-    if !physical_spread.is_finite() {
-        return Err(mask_failure(
-            path,
-            Render2dSampleSpaceError::PrecisionLimit,
-            "shadow spread exceeds finite sample coordinates",
-        ));
-    }
-    let spread_mask = signed_euclidean_spread(&source, physical_spread, path)?;
+    let spread_mask = if spread > 0.0 {
+        source
+    } else {
+        let physical_spread = spread * samples_per_logical_unit;
+        if !physical_spread.is_finite() {
+            return Err(mask_failure(
+                path,
+                Render2dSampleSpaceError::PrecisionLimit,
+                "shadow spread exceeds finite sample coordinates",
+            ));
+        }
+        signed_euclidean_spread(&source, physical_spread, path)?
+    };
     if spread_mask.samples.iter().all(|sample| *sample == 0) {
         return Ok(None);
     }
@@ -679,6 +737,36 @@ pub(super) fn signed_euclidean_spread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn off_phase_geometry_still_casts_a_positive_euclidean_spread() {
+        let mesh = NeutralMesh {
+            triangles: vec![
+                [0.01, 0.01],
+                [0.02, 0.01],
+                [0.02, 0.02],
+                [0.01, 0.01],
+                [0.02, 0.02],
+                [0.01, 0.02],
+            ],
+            bounds: [0.01, 0.01, 0.02, 0.02],
+        };
+        let phase_only = rasterize_neutral_mesh(&mesh, 4.0, &[2, 5])
+            .unwrap()
+            .unwrap();
+        assert!(phase_only.samples.iter().all(|value| *value == 0));
+        let spread = prepare_untranslated_shadow_coverage(&mesh, 0.5, 0.0, 4.0, &[2, 5])
+            .unwrap()
+            .expect("positive Euclidean spread of real geometry cannot disappear");
+        assert!(spread.values.iter().any(|value| *value > 0.0));
+        assert!(spread.origin_x < 0 && spread.origin_y < 0);
+        let index = |x: i64, y: i64| {
+            usize::try_from(y - spread.origin_y).unwrap() * spread.width
+                + usize::try_from(x - spread.origin_x).unwrap()
+        };
+        assert!(spread.values[index(0, 0)] > 0.0);
+        assert_eq!(spread.values[index(-2, -2)], 0.0);
+    }
 
     #[test]
     fn real_transparent_offscreen_fill_flows_through_neutral_shadow_coverage() {
