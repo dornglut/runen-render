@@ -1928,3 +1928,55 @@ fn phase_fallback_gpu_context_reconstruction_resets_current_evidence() {
     }
     cache.reconcile_temporal_outputs(true);
 }
+
+
+#[test]
+fn oversized_fallback_is_rejected_before_retained_gpu_identity_allocation() {
+    let Some(context) = context() else {
+        return;
+    };
+    // A logical 6144-square texture is admitted without submitting or
+    // allocating it physically. Its three fallback carriers together exceed
+    // the documented per-output scratch budget.
+    let oversized = fixture((6144, 6144), 0.0, 0.0, 73);
+    let mut cache = DeterministicResourceCache::default();
+    let error = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&oversized, &context),
+        &context,
+        &mut cache,
+        Some((0, (3072, 3072))),
+        false,
+    )
+    .expect_err("oversized fallback scratch must fail before GPU submission");
+    assert!(matches!(
+        error,
+        RenderDeterministicExecutionError::Lowering(
+            RenderDeterministicLoweringError::TemporalFallbackScratchBudgetExceeded {
+                output_index: 0,
+                required_bytes,
+                budget_bytes,
+            }
+        ) if required_bytes > budget_bytes
+    ));
+    assert!(
+        cache.temporal_histories.is_empty() && cache.buffers.is_empty(),
+        "failed preflight must not allocate retained history or scratch identities"
+    );
+    let admitted = fixture((8, 8), 0.0, 0.0, 74);
+    let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&admitted, &context),
+        &context,
+        &mut cache,
+        Some((0, (4, 4))),
+        false,
+    )
+    .expect("subsequent admitted ordinary work must remain clean");
+    let evidence = prepared
+        .radiance_output(0)
+        .unwrap()
+        .temporal_execution_evidence()
+        .unwrap();
+    assert_eq!(evidence.phase, 0);
+    assert_eq!(evidence.history_age, 0);
+    assert!(evidence.history_reset);
+}
