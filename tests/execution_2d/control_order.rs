@@ -1,6 +1,6 @@
 //! Public exact-fragment-order and completion proof for composable F2.
 use super::*;
-use runen_gpu::{GpuExplicitOrder, GpuWorkNodeId};
+use runen_gpu::GpuWorkNodeId;
 use runen_render::composition_2d::{Render2dBrush, Render2dRect, Render2dShape};
 
 /// Unlike the text-only admission context, mixed F2 vector masks require
@@ -120,29 +120,28 @@ fn independent_predecessor_and_successor_bracket_every_authored_f2_node() {
             f2.authored_nodes().len() >= 2,
             "F2 multi-node token must be complete"
         );
-        work.add_explicit_order(GpuExplicitOrder::new(
-            &predecessor,
-            f2.authored_nodes().first().expect("first"),
-            "independent before first F2",
-        )?)?;
         let successor = work.operation("unrelated after", clear(&after_target, 0.5))?;
-        work.add_explicit_order(GpuExplicitOrder::new(
-            f2.authored_nodes().last().expect("last"),
-            &successor,
-            "last F2 before independent successor",
-        )?)?;
         control = Some((predecessor, f2.authored_nodes().to_vec(), successor));
         token = Some(f2);
         work.operation("terminal readback", readback)?;
         Ok(())
     })
     .expect("fragment-local authoring");
-    let graph = GpuPreparedWorkGraph::prepare(
+    let (before, nodes, after) = control.expect("captured authored identities");
+    // F2 appended once to the *immutable* fragment. Independently discovered
+    // render controls are now admitted at G3 graph composition time.
+    let orders = [
+        GpuGraphExplicitOrder::new(&before, nodes.first().expect("first F2"), "before first F2")
+            .expect("valid exact authored first-node identity"),
+        GpuGraphExplicitOrder::new(nodes.last().expect("last F2"), &after, "after last F2")
+            .expect("valid exact authored last-node identity"),
+    ];
+    let graph = GpuPreparedWorkGraph::prepare_with_orders(
         GpuResourceLabel::new("single graph with independent controls").unwrap(),
         [fragment],
+        orders,
     )
-    .expect("RunenGPU prepares explicit control constraints");
-    let (before, nodes, after) = control.expect("captured authored identities");
+    .expect("RunenGPU admits late controls in the same immutable fragment");
     for node in nodes {
         assert!(
             position(&graph, &before) < position(&graph, &node)
