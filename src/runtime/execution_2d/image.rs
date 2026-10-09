@@ -340,12 +340,20 @@ mod neutral_tests {
             .unwrap()
             .unwrap();
         let first = super::super::support::prepare_untranslated_shadow_coverage(
-            &low, 0.5, 0.25, 4.0, &[1, 2],
+            &low,
+            0.5,
+            0.25,
+            4.0,
+            &[1, 2],
         )
         .unwrap()
         .unwrap();
         let second = super::super::support::prepare_untranslated_shadow_coverage(
-            &high, 0.5, 0.25, 4.0, &[1, 2],
+            &high,
+            0.5,
+            0.25,
+            4.0,
+            &[1, 2],
         )
         .unwrap()
         .unwrap();
