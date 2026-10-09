@@ -197,12 +197,7 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
 
     let mut child_vertices = Vec::new();
     for color in [[1.0, 0.0, 0.0, 0.5], [0.0, 0.0, 1.0, 0.5]] {
-        rectangle(
-            &mut child_vertices,
-            [0.0, 0.0, 4.0, 4.0],
-            [8.0, 8.0],
-            color,
-        );
+        rectangle(&mut child_vertices, [0.0, 0.0, 4.0, 4.0], [8.0, 8.0], color);
     }
     let fill_pipeline = pipeline(GpuTextureFormat::Rgba16Float, "fs_sample_fill", true);
     let fill_draw = vector::vector_draw(
