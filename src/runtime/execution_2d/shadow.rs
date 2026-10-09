@@ -7,8 +7,8 @@
 
 use super::{support::NeutralMesh, vector};
 use crate::composition_2d::{
-    Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dColorRgba8, Render2dItem,
-    Render2dDropShadow, Render2dOpacity, Render2dPrimitive,
+    Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dColorRgba8, Render2dDropShadow,
+    Render2dItem, Render2dOpacity, Render2dPrimitive,
 };
 use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 
@@ -151,7 +151,10 @@ pub(super) fn shadow_envelope(
         || bounds[0] > bounds[2]
         || bounds[1] > bounds[3]
     {
-        return Err(precision(path, "shadow parent-frame envelope is not representable"));
+        return Err(precision(
+            path,
+            "shadow parent-frame envelope is not representable",
+        ));
     }
     Ok(Some(bounds))
 }
@@ -164,12 +167,23 @@ pub(super) fn transform_envelope(
     path: &[usize],
 ) -> Result<[f64; 4], Render2dExecutionError> {
     let [a, b, c, d, tx, ty] = ancestor.components();
-    let mut result = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut result = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
     for x in [bounds[0], bounds[2]] {
         for y in [bounds[1], bounds[3]] {
-            let point = [a.mul_add(x, c.mul_add(y, tx)), b.mul_add(x, d.mul_add(y, ty))];
+            let point = [
+                a.mul_add(x, c.mul_add(y, tx)),
+                b.mul_add(x, d.mul_add(y, ty)),
+            ];
             if !point.iter().all(|v| v.is_finite()) {
-                return Err(precision(path, "ancestor shadow envelope is not representable"));
+                return Err(precision(
+                    path,
+                    "ancestor shadow envelope is not representable",
+                ));
             }
             result[0] = result[0].min(point[0]);
             result[1] = result[1].min(point[1]);
@@ -361,18 +375,17 @@ mod tests {
         };
         let mut parent = empty_mesh();
         append(
-            &mut parent, &source,
+            &mut parent,
+            &source,
             Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap(),
             &[2, 0],
-        ).unwrap();
-        let effect = Render2dDropShadow::new(
-            0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT,
-        ).unwrap();
+        )
+        .unwrap();
+        let effect =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let envelope = shadow_envelope(&parent, effect, &[2]).unwrap().unwrap();
         assert_eq!(envelope, [-1.0, -1.0, 3.0, 2.0]);
-        let ancestor = Render2dAffineTransform::new(
-            2.0, 0.0, 1.0, 1.0, 0.0, 0.0,
-        ).unwrap();
+        let ancestor = Render2dAffineTransform::new(2.0, 0.0, 1.0, 1.0, 0.0, 0.0).unwrap();
         assert_eq!(
             transform_envelope(envelope, ancestor, &[2]).unwrap(),
             [-3.0, -1.0, 8.0, 2.0]
@@ -386,16 +399,15 @@ mod tests {
             triangles: vec![[0.0, 0.0], [4.0, 0.0], [0.0, 4.0]],
             bounds: [0.0, 0.0, 4.0, 4.0],
         };
-        let effect = Render2dDropShadow::new(
-            2.0, -3.0, 0.5, -5.0, Render2dColorRgba8::TRANSPARENT,
-        ).unwrap();
+        let effect =
+            Render2dDropShadow::new(2.0, -3.0, 0.5, -5.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         assert_eq!(
             shadow_envelope(&source, effect, &[0]).unwrap().unwrap(),
             [0.5, -4.5, 4.5, -0.5]
         );
-        let extreme = Render2dDropShadow::new(
-            0.0, 0.0, f64::MAX, 0.0, Render2dColorRgba8::TRANSPARENT,
-        ).unwrap();
+        let extreme =
+            Render2dDropShadow::new(0.0, 0.0, f64::MAX, 0.0, Render2dColorRgba8::TRANSPARENT)
+                .unwrap();
         assert!(matches!(
             shadow_envelope(&source, extreme, &[0, 7]),
             Err(Render2dExecutionError::SampleSpace {
