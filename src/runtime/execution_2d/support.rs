@@ -825,10 +825,10 @@ pub(super) fn prepare_untranslated_shadow_coverage(
             "shadow spread or blur sigma is not representable",
         ));
     }
-    // At zero signed spread, integrate the true triangle UNION over each
-    // parent-frame sample cell before the finite Gaussian convolution.
-    // A sliver between all sample centers must retain its positive measure.
-    if spread == 0.0 && sigma > 0.0 {
+    // Integrate the continuous geometric union even for sigma == 0:
+    // a real caster must not vanish merely because its area misses all
+    // correlated lattice centers. Gaussian convolution preserves that mass.
+    if spread == 0.0 {
         let Some(coverage) = rasterize_area_coverage(mesh, samples_per_logical_unit, path)? else {
             return Ok(None);
         };
@@ -856,17 +856,82 @@ pub(super) fn prepare_untranslated_shadow_coverage(
         }
         signed_euclidean_spread(&source, physical_spread, path)?
     };
-    if spread_mask.samples.iter().all(|sample| *sample == 0) {
-        if spread >= 0.0 && sigma > 0.0 {
-            // A nonempty, entirely off-phase source has a nonzero continuous
-            // Gaussian integral. Do not misreport absent neutral geometry as
-            // a valid zero-radiance effect until area-aware sampling exists.
-            return Err(mask_failure(
-                path,
-                Render2dSampleSpaceError::PrecisionLimit,
-                "subsample geometric support cannot be resolved for Gaussian blur",
-            ));
+    if spread > 0.0 {
+        // Positive disk dilation contains every point of the original
+        // continuous geometry. Combining the true covered area with disk
+        // membership never loses off-phase sub-sample casters, including a
+        // radius smaller than half a sample interval. Union by maximum:
+        // overlapping triangles and a coincident distance hit cannot inflate
+        // sample coverage above one.
+        let Some(source_area) = rasterize_area_coverage(mesh, samples_per_logical_unit, path)? else {
+            return Ok(None);
+        };
+        let mut values = filled(spread_mask.samples.len(), 0.0_f64, path)?;
+        for (dest, sample) in values.iter_mut().zip(&spread_mask.samples) {
+            *dest = f64::from(*sample) / 255.0;
         }
+        let mut coverage = NeutralCoverage {
+            origin_x: spread_mask.origin_x,
+            origin_y: spread_mask.origin_y,
+            width: spread_mask.width,
+            height: spread_mask.height,
+            values,
+        };
+        for y in 0..source_area.height {
+            for x in 0..source_area.width {
+                let physical_x = source_area.origin_x
+                    .checked_add(i64::try_from(x).expect("bounded area column"))
+                    .ok_or_else(|| {
+                        mask_failure(
+                            path,
+                            Render2dSampleSpaceError::PrecisionLimit,
+                            "neutral support x sample phase overflow",
+                        )
+                    })?;
+                let physical_y = source_area.origin_y
+                    .checked_add(i64::try_from(y).expect("bounded area row"))
+                    .ok_or_else(|| {
+                        mask_failure(
+                            path,
+                            Render2dSampleSpaceError::PrecisionLimit,
+                            "neutral support y sample phase overflow",
+                        )
+                    })?;
+                let column = physical_x
+                    .checked_sub(coverage.origin_x)
+                    .and_then(|delta| usize::try_from(delta).ok())
+                    .ok_or_else(|| {
+                        mask_failure(
+                            path,
+                            Render2dSampleSpaceError::PrecisionLimit,
+                            "neutral positive spread lost its source-area x halo",
+                        )
+                    })?;
+                let row = physical_y
+                    .checked_sub(coverage.origin_y)
+                    .and_then(|delta| usize::try_from(delta).ok())
+                    .ok_or_else(|| {
+                        mask_failure(
+                            path,
+                            Render2dSampleSpaceError::PrecisionLimit,
+                            "neutral positive spread lost its source-area y halo",
+                        )
+                    })?;
+                if column >= coverage.width || row >= coverage.height {
+                    return Err(mask_failure(
+                        path,
+                        Render2dSampleSpaceError::PrecisionLimit,
+                        "neutral positive spread cannot contain the source area",
+                    ));
+                }
+                let output = &mut coverage.values[row * coverage.width + column];
+                *output = output.max(source_area.values[y * source_area.width + x]);
+            }
+        }
+        let kernel = gaussian_kernel(sigma, samples_per_logical_unit, path)?;
+        return blur_neutral_coverage(&coverage, &kernel, path).map(Some);
+    }
+    if spread_mask.samples.iter().all(|sample| *sample == 0) {
         return Ok(None);
     }
     let kernel = gaussian_kernel(sigma, samples_per_logical_unit, path)?;
@@ -1107,14 +1172,16 @@ mod tests {
             .unwrap();
         let total = area.values.iter().sum::<f64>();
         assert!((total - 0.0016).abs() < 1.0e-10);
-        assert!(matches!(
-            prepare_untranslated_shadow_coverage(&mesh, 0.001, 0.5, 4.0, &[6, 8]),
-            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
-                kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
-                path: Some(path),
-                ..
-            }) if path == [6, 8]
-        ));
+        let off_phase_spread =
+            prepare_untranslated_shadow_coverage(&mesh, 0.001, 0.5, 4.0, &[6, 8])
+        .unwrap()
+        .expect("tiny positive disk and Gaussian retain a continuous caster");
+        assert!(off_phase_spread.values.iter().sum::<f64>() >= 0.0016 - 1.0e-10);
+        let exact_identity =
+            prepare_untranslated_shadow_coverage(&mesh, 0.0, 0.0, 4.0, &[6, 9])
+        .unwrap()
+        .expect("sigma-zero caster retains its exact integrated area");
+        assert!((exact_identity.values.iter().sum::<f64>() - 0.0016).abs() < 1.0e-10);
     }
 
     #[test]
