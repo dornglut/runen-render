@@ -519,21 +519,9 @@ fn rounded_corner_clip_preserves_radial_gradient_without_corner_leakage() {
             Render2dPoint::new(32.0, 32.0).unwrap(),
             16.0,
             Render2dGradientStops::new(vec![
-                Render2dGradientStop::new(
-                    0.0,
-                    Render2dColorRgba8::new(255, 0, 0, 255),
-                )
-                .unwrap(),
-                Render2dGradientStop::new(
-                    0.5,
-                    Render2dColorRgba8::new(255, 0, 0, 255),
-                )
-                .unwrap(),
-                Render2dGradientStop::new(
-                    1.0,
-                    Render2dColorRgba8::new(0, 0, 255, 255),
-                )
-                .unwrap(),
+                Render2dGradientStop::new(0.0, Render2dColorRgba8::new(255, 0, 0, 255)).unwrap(),
+                Render2dGradientStop::new(0.5, Render2dColorRgba8::new(255, 0, 0, 255)).unwrap(),
+                Render2dGradientStop::new(1.0, Render2dColorRgba8::new(0, 0, 255, 255)).unwrap(),
             ])
             .unwrap(),
         )
@@ -595,4 +583,60 @@ fn nonzero_same_direction_nested_contours_do_not_become_evenodd_holes() {
     check(pixel(&evenodd, 32, 32), [0; 4]);
     check(pixel(&nonzero, 16, 16), [255; 4]);
     check(pixel(&evenodd, 16, 16), [255; 4]);
+}
+
+#[test]
+fn clipped_overlapping_image_patches_preserve_translucent_source_over() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let id = Render2dResourceId::new(611).unwrap();
+    let extent = Render2dPixelExtent::new(2, 2).unwrap();
+    let pixels = vec![
+        255, 0, 0, 255, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 255, 128,
+    ];
+    let source = Render2dImageResource::new(extent, pixels).unwrap();
+    let patch = |sx, sy| {
+        Render2dImagePatch::new(
+            Render2dImageSourceRect::new(sx, sy, 1.0, 1.0).unwrap(),
+            r(0.0, 0.0, 64.0, 64.0),
+        )
+    };
+    let primitive = Render2dImagePrimitive::new(
+        id,
+        extent,
+        vec![patch(0.0, 0.0), patch(1.0, 1.0)],
+    )
+    .unwrap();
+    let image = Render2dEntry::item(Render2dItem::new(
+        Render2dPrimitive::Image(primitive),
+        Render2dAffineTransform::IDENTITY,
+        vec![cp_rect(10.25, 0.0, 0.25, 64.0)],
+        Render2dOpacity::OPAQUE,
+    ));
+    let bindings = Render2dResourceBindings::new(vec![Render2dResourceBinding::new(
+        id,
+        Render2dResourceValue::ImageRgba8Srgb(source),
+    )])
+    .unwrap();
+    let output = render(&ctx, vec![image], &bindings);
+
+    // One of four horizontal samples survives the clip, all four vertical
+    // samples survive. A translucent blue patch then source-overs the
+    // opaque red patch; both are independently clipped before compositing.
+    let first_alpha = 0.25;
+    let second_alpha = 0.25 * (128.0 / 255.0);
+    let retained_red = first_alpha * (1.0 - second_alpha);
+    let total_alpha = second_alpha + retained_red;
+    check(
+        pixel(&output, 10, 20),
+        [
+            s_linear(255, retained_red),
+            0,
+            s_linear(255, second_alpha),
+            (total_alpha * 255.0_f64).round() as u8,
+        ],
+    );
+    check(pixel(&output, 11, 20), [0; 4]);
 }

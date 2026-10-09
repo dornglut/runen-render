@@ -150,7 +150,8 @@ after cache discard. The image path must not depend on direct wgpu rendering.
 
 F3D GPU-required public proof cases exercise cropped packed 16-bit conjunctive
 item masks, parent-space clip transforms, rounded corners, radial gradients,
-nonzero/even-odd winding paths, ellipses, image/text coverage and reconstruction,
+nonzero/even-odd winding paths, ellipses, translucent overlapping image-patch
+source-over, text coverage and reconstruction,
 fractional intersections that differ from products
 of pixel-averaged clip alphas, typed unadmitted-format failure, empty intersection
 no-work and no leakage across unclipped siblings. CPU mask work is deliberately
