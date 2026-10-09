@@ -653,7 +653,10 @@ fn missing_sample_plane_roles_reject_root_and_identity_group_equally() {
     // The old direct-root fallback would silently render different pixels.
     let descriptor =
         GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
-            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::ColorAttachment)
+            .require_format_role(
+                GpuTextureFormat::Rgba8UnormSrgb,
+                GpuFormatRole::ColorAttachment,
+            )
             .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Blendable)
             .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource)
             .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment)
@@ -664,15 +667,20 @@ fn missing_sample_plane_roles_reject_root_and_identity_group_equally() {
     let context = match pollster::block_on(GpuContext::request(descriptor)) {
         Ok(context) => context,
         Err(error) if error.category() == GpuContextRequestErrorCategory::NoAdapterAvailable => {
-            assert_ne!(std::env::var("RUNEN_RENDER_REQUIRE_GPU").ok().as_deref(), Some("1"));
+            assert_ne!(
+                std::env::var("RUNEN_RENDER_REQUIRE_GPU").ok().as_deref(),
+                Some("1")
+            );
             return;
         }
         Err(error) => panic!("F3E typed capability test GPU request: {error}"),
     };
-    let entries = || vec![
-        solid(Render2dColorRgba8::WHITE, 10.0, 0.5),
-        solid(Render2dColorRgba8::new(0, 0, 255, 255), 10.5, 0.5),
-    ];
+    let entries = || {
+        vec![
+            solid(Render2dColorRgba8::WHITE, 10.0, 0.5),
+            solid(Render2dColorRgba8::new(0, 0, 255, 255), 10.5, 0.5),
+        ]
+    };
     let direct = Render2dComposition::new(entries()).unwrap();
     let nested = Render2dComposition::new(vec![group(entries(), 1.0)]).unwrap();
     let (_, target) = super::target("F3E missing sample roles");
@@ -688,8 +696,15 @@ fn missing_sample_plane_roles_reject_root_and_identity_group_equally() {
     }
     // Purely non-painting input admits no operation and needs no sample scratch.
     let empty = Render2dComposition::new(Vec::new()).unwrap();
-    assert!(!Render2dExecutor::new()
-        .prepare(&context, &empty, &Render2dResourceBindings::default(), &target)
-        .unwrap()
-        .has_render_work());
+    assert!(
+        !Render2dExecutor::new()
+            .prepare(
+                &context,
+                &empty,
+                &Render2dResourceBindings::default(),
+                &target
+            )
+            .unwrap()
+            .has_render_work()
+    );
 }

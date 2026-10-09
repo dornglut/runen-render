@@ -411,7 +411,10 @@ fn f2_context() -> Option<GpuContext> {
 fn f2_context_with_blendable_role(blendable: bool) -> Option<GpuContext> {
     let mut descriptor =
         GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
-            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::ColorAttachment)
+            .require_format_role(
+                GpuTextureFormat::Rgba16Float,
+                GpuFormatRole::ColorAttachment,
+            )
             .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable)
             .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled)
             .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment)

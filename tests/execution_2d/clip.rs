@@ -6,7 +6,10 @@ use runen_render::execution_2d::Render2dClipError;
 fn context() -> Option<GpuContext> {
     let request =
         GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
-            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::ColorAttachment)
+            .require_format_role(
+                GpuTextureFormat::Rgba16Float,
+                GpuFormatRole::ColorAttachment,
+            )
             .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable)
             .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled)
             .require_format_role(
@@ -292,7 +295,10 @@ fn disjoint_clips_produce_no_work_without_invalidating_following_paint() {
 fn unadmitted_clip_format_has_typed_owner_level_failure() {
     let descriptor =
         GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
-            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::ColorAttachment)
+            .require_format_role(
+                GpuTextureFormat::Rgba16Float,
+                GpuFormatRole::ColorAttachment,
+            )
             .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable)
             .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled)
             .require_format_role(
