@@ -210,8 +210,8 @@ pub(super) fn analyze(
             RawEvent::Item { path, item } => {
                 let parent_to_root = *frames.last().expect("root affine frame");
                 validate_clips(item.clips(), parent_to_root, &path)?;
-                let to_root = parent_to_root
-                    .compose(Affine::from_source(item.local_to_parent()), &path)?;
+                let to_root =
+                    parent_to_root.compose(Affine::from_source(item.local_to_parent()), &path)?;
                 events.push(Event::Item {
                     path,
                     item,
@@ -383,17 +383,9 @@ mod tests {
 
     #[test]
     fn inactive_descendants_are_counted_against_depth_limits() {
-        let mut subtree = group(
-            Vec::new(),
-            Render2dAffineTransform::IDENTITY,
-            Vec::new(),
-        );
+        let mut subtree = group(Vec::new(), Render2dAffineTransform::IDENTITY, Vec::new());
         for _ in 0..MAX_DEPTH {
-            subtree = group(
-                vec![subtree],
-                Render2dAffineTransform::IDENTITY,
-                Vec::new(),
-            );
+            subtree = group(vec![subtree], Render2dAffineTransform::IDENTITY, Vec::new());
         }
         let tree = Render2dComposition::new(vec![subtree]).unwrap();
         assert!(matches!(
@@ -409,12 +401,8 @@ mod tests {
     fn active_group_keeps_its_f1_opacity_clips_and_parent_affine() {
         let transform = affine([2.0, 0.0, 0.0, 1.0, 4.0, 0.0]);
         let child = item(Render2dAffineTransform::IDENTITY);
-        let tree = Render2dComposition::new(vec![group(
-            vec![child],
-            transform,
-            Vec::new(),
-        )])
-        .unwrap();
+        let tree =
+            Render2dComposition::new(vec![group(vec![child], transform, Vec::new())]).unwrap();
         let plan = analyze(&tree).unwrap();
         assert!(matches!(
             plan.events.as_slice(),
