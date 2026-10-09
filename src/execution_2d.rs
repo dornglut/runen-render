@@ -671,6 +671,19 @@ pub struct Render2dContributionToken {
 }
 
 impl Render2dContributionToken {
+    /// Returns the exact work-node identities authored into the caller's RunenGPU
+    /// fragment, in the contribution's painter order. The first and last nodes
+    /// are its non-data control-order frontiers.
+    ///
+    /// These IDs allow the caller to add fragment-local `GpuExplicitOrder`
+    /// constraints before closing the builder. They do not confer execution or
+    /// presentation evidence and do not change RunenGPU's hazard authority.
+    /// A nonpainting contribution produces no token.
+    #[must_use]
+    pub fn authored_nodes(&self) -> &[GpuWorkNodeId] {
+        &self.nodes
+    }
+
     /// Consumes the token and proves every exact authored node participated and completed.
     pub fn completed_by(
         self,

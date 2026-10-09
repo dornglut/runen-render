@@ -39,6 +39,8 @@ const BOX_GLYPH: u32 = 2;
 
 #[path = "execution_2d/clip.rs"]
 mod clip;
+#[path = "execution_2d/control_order.rs"]
+mod control_order;
 #[path = "execution_2d/gradient.rs"]
 mod gradient;
 #[path = "execution_2d/image.rs"]
@@ -61,6 +63,7 @@ fn f2_public_execution_surface_is_available_to_downstream_consumers() {
     let _ = Render2dPreparedContribution::append_to;
     let _ = Render2dWorkBinding::new;
     let _ = Render2dWorkBinding::after;
+    let _ = Render2dContributionToken::authored_nodes;
     let _ = Render2dContributionToken::completed_by;
     let _ = Render2dContributionEvidence::submission_id;
 
