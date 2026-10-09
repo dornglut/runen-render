@@ -440,13 +440,200 @@ pub(super) struct NeutralCoverage {
     pub(super) values: Vec<f64>,
 }
 
+
+/* Continuous area reconstruction for a disposable parent-frame sample cell.
+ *
+ * At any open horizontal slab between triangle vertices, edge crossings and
+ * cell-boundary crossings, each triangle's horizontal interval endpoints are
+ * affine in y. Their union width is therefore affine: the midpoint rule
+ * integrates that slab exactly (apart from bounded f64 rounding).
+ *
+ * Unlike point samples or summed triangle areas, this computes the UNION:
+ * overlapping stroke triangles cannot inflate neutral coverage.
+ */
+fn area_sample(
+    triangles: &[[f64; 2]],
+    x0: f64,
+    y0: f64,
+    work: &mut usize,
+    path: &[usize],
+) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    let x1 = x0 + 1.0;
+    let y1 = y0 + 1.0;
+    let mut active = Vec::<[[f64; 2]; 3]>::new();
+    for tri in triangles.as_chunks::<3>().0 {
+        let xs = [tri[0][0], tri[1][0], tri[2][0]];
+        let ys = [tri[0][1], tri[1][1], tri[2][1]];
+        if xs.iter().copied().fold(f64::INFINITY, f64::min) >= x1
+            || xs.iter().copied().fold(f64::NEG_INFINITY, f64::max) <= x0
+            || ys.iter().copied().fold(f64::INFINITY, f64::min) >= y1
+            || ys.iter().copied().fold(f64::NEG_INFINITY, f64::max) <= y0
+            || orient(tri[0], tri[1], tri[2]) == 0.0
+        {
+            continue;
+        }
+        active
+            .try_reserve(1)
+            .map_err(|_| resource("neutral area triangle allocation failed"))?;
+        active.push(*tri);
+    }
+    if active.is_empty() {
+        return Ok(0.0);
+    }
+    // Admission bounds the cubic arrangement sweep even for maximally
+    // overlapping tessellated strokes.
+    let work_units = active
+        .len()
+        .checked_pow(3)
+        .and_then(|v| v.checked_mul(8))
+        .ok_or_else(|| resource("neutral area sweep cost overflow"))?;
+    *work = work
+        .checked_add(work_units)
+        .ok_or_else(|| resource("neutral area sweep work overflow"))?;
+    if *work > 134_217_728 {
+        return Err(resource("neutral area sweep exceeds bounded work"));
+    }
+    let mut edges = Vec::new();
+    let mut events = vec![y0, y1];
+    for triangle in &active {
+        // Fully covered unit cells have exact coverage one, no sweep needed.
+        if [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+            .iter()
+            .all(|&p| {
+                let a = orient(triangle[0], triangle[1], p);
+                let b = orient(triangle[1], triangle[2], p);
+                let c = orient(triangle[2], triangle[0], p);
+                (a >= 0.0 && b >= 0.0 && c >= 0.0)
+                    || (a <= 0.0 && b <= 0.0 && c <= 0.0)
+            })
+        {
+            return Ok(1.0);
+        }
+        for i in 0..3 {
+            let a = triangle[i];
+            let b = triangle[(i + 1) % 3];
+            edges.push((a, b));
+            if a[1] > y0 && a[1] < y1 {
+                events.push(a[1]);
+            }
+            if a[0] != b[0] {
+                for x in [x0, x1] {
+                    let t = (x - a[0]) / (b[0] - a[0]);
+                    if t > 0.0 && t < 1.0 {
+                        let y = (b[1] - a[1]).mul_add(t, a[1]);
+                        if y > y0 && y < y1 {
+                            events.push(y);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..edges.len() {
+        let (a, b) = edges[i];
+        let r = [b[0] - a[0], b[1] - a[1]];
+        for &(c, d) in edges.iter().skip(i + 1) {
+            let s = [d[0] - c[0], d[1] - c[1]];
+            let denominator = r[0].mul_add(s[1], -r[1] * s[0]);
+            if denominator == 0.0 {
+                continue;
+            }
+            let q = [c[0] - a[0], c[1] - a[1]];
+            let t = q[0].mul_add(s[1], -q[1] * s[0]) / denominator;
+            let u = q[0].mul_add(r[1], -q[1] * r[0]) / denominator;
+            if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
+                let y = r[1].mul_add(t, a[1]);
+                if y > y0 && y < y1 {
+                    events.push(y);
+                }
+            }
+        }
+    }
+    events.sort_by(|a, b| a.total_cmp(b));
+    events.dedup();
+    let mut area = 0.0;
+    for interval in events.windows(2) {
+        let height = interval[1] - interval[0];
+        if height <= 0.0 {
+            continue;
+        }
+        let y = interval[0] + height * 0.5;
+        let mut segments = Vec::<[f64; 2]>::new();
+        for triangle in &active {
+            let mut min_x = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            for i in 0..3 {
+                let a = triangle[i];
+                let b = triangle[(i + 1) % 3];
+                if (a[1] <= y && y < b[1]) || (b[1] <= y && y < a[1]) {
+                    let t = (y - a[1]) / (b[1] - a[1]);
+                    let x = (b[0] - a[0]).mul_add(t, a[0]);
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                }
+            }
+            let left = min_x.max(x0);
+            let right = max_x.min(x1);
+            if right > left {
+                segments.push([left, right]);
+            }
+        }
+        segments.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        let mut left = x0;
+        let mut width = 0.0;
+        for [start, end] in segments {
+            let next = end.max(left);
+            width += (next - left.max(start)).max(0.0);
+            left = next;
+        }
+        area += width * height;
+    }
+    Ok(area.clamp(0.0, 1.0))
+}
+
+/// Area-aware coverage of an immutable parent-frame triangle union. A true
+/// sub-sample caster contributes its *area*, not a fabricated binary center
+/// hit or an alpha inferred from visible painting.
+fn rasterize_area_coverage(
+    mesh: &NeutralMesh,
+    scale: f64,
+    path: &[usize],
+) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
+    let Some(grid) = rasterize_neutral_mesh(mesh, scale, path)? else {
+        return Ok(None);
+    };
+    let transform = scale / mesh.units_per_parent_logical_unit;
+    let mut triangles = filled(mesh.triangles.len(), [0.0; 2], path)?;
+    for (out, &[x, y]) in triangles.iter_mut().zip(&mesh.triangles) {
+        *out = [x * transform, y * transform];
+    }
+    let mut values = filled(grid.samples.len(), 0.0_f64, path)?;
+    let mut work = 0;
+    for y in 0..grid.height {
+        for x in 0..grid.width {
+            let x0 = f64::from(i32::try_from(grid.origin_x).expect("bounded lattice origin")) + as_f64(x);
+            let y0 = f64::from(i32::try_from(grid.origin_y).expect("bounded lattice origin")) + as_f64(y);
+            values[y * grid.width + x] = area_sample(&triangles, x0, y0, &mut work, path)?;
+        }
+    }
+    Ok(Some(NeutralCoverage {
+        origin_x: grid.origin_x,
+        origin_y: grid.origin_y,
+        width: grid.width,
+        height: grid.height,
+        values,
+    }))
+}
+
 /// Separable finite 3σ Gaussian-style convolution over the spread mask.
 /// The kernel is the normalized discrete approximation of the accepted F1
 /// continuous truncated reference, with an explicit finite, complete halo.
 /// Every allocation and worst-case sample tap is admitted before execution.
 #[allow(dead_code, reason = "awaiting unified F3F painter integration")]
-pub(super) fn blur_neutral_mask(
-    input: &NeutralMask,
+fn blur_neutral_coverage(
+    input: &NeutralCoverage,
     kernel: &GaussianKernel,
     path: &[usize],
 ) -> Result<NeutralCoverage, crate::execution_2d::Render2dExecutionError> {
@@ -459,9 +646,12 @@ pub(super) fn blur_neutral_mask(
         .ok_or_else(|| resource("neutral blur source extent overflow"))?;
     if source_count == 0
         || source_count > MAX_NEUTRAL_MASK_SAMPLES
-        || input.samples.len() != source_count
+        || input.values.len() != source_count
     {
-        return Err(resource("neutral blur source mask exceeds bounds"));
+        return Err(resource("neutral blur source coverage exceeds bounds"));
+    }
+    if !input.values.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+        return Err(precision("neutral blur input has invalid coverage"));
     }
     if kernel.radius
         > usize::try_from(MAX_GAUSSIAN_RADIUS_SAMPLES).expect("fixed Gaussian maximum fits usize")
@@ -524,7 +714,7 @@ pub(super) fn blur_neutral_mask(
     for y in 0..input.height {
         for x in 0..input.width {
             source[(y + pad) * width + x + pad] =
-                f64::from(input.samples[y * input.width + x]) / f64::from(u8::MAX);
+                input.values[y * input.width + x];
         }
     }
     let mut horizontal = filled(area, 0.0_f64, path)?;
@@ -572,6 +762,46 @@ pub(super) fn blur_neutral_mask(
     })
 }
 
+/// Retains the discrete binary-mask convolution for physical morphology and
+/// legacy discrete conformance. The area-aware source path shares the same
+/// bounded separable kernel and sample phase without u8 quantization.
+pub(super) fn blur_neutral_mask(
+    input: &NeutralMask,
+    kernel: &GaussianKernel,
+    path: &[usize],
+) -> Result<NeutralCoverage, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let count = input.width.checked_mul(input.height).ok_or_else(|| {
+        mask_failure(
+            path,
+            Render2dSampleSpaceError::ResourceLimit,
+            "neutral mask extent overflow",
+        )
+    })?;
+    if count == 0 || count > MAX_NEUTRAL_MASK_SAMPLES || count != input.samples.len() {
+        return Err(mask_failure(
+            path,
+            Render2dSampleSpaceError::ResourceLimit,
+            "neutral blur source mask exceeds bounds",
+        ));
+    }
+    let mut values = filled(count, 0.0_f64, path)?;
+    for (dst, src) in values.iter_mut().zip(&input.samples) {
+        *dst = f64::from(*src) / f64::from(u8::MAX);
+    }
+    blur_neutral_coverage(
+        &NeutralCoverage {
+            origin_x: input.origin_x,
+            origin_y: input.origin_y,
+            width: input.width,
+            height: input.height,
+            values,
+        },
+        kernel,
+        path,
+    )
+}
+
 /// Prepares one immutable neutral support source through signed Euclidean
 /// spread and finite Gaussian coverage without deriving shape from paint alpha.
 ///
@@ -594,6 +824,16 @@ pub(super) fn prepare_untranslated_shadow_coverage(
             Render2dSampleSpaceError::PrecisionLimit,
             "shadow spread or blur sigma is not representable",
         ));
+    }
+    // At zero signed spread, integrate the true triangle UNION over each
+    // parent-frame sample cell before the finite Gaussian convolution.
+    // A sliver between all sample centers must retain its positive measure.
+    if spread == 0.0 && sigma > 0.0 {
+        let Some(coverage) = rasterize_area_coverage(mesh, samples_per_logical_unit, path)? else {
+            return Ok(None);
+        };
+        let kernel = gaussian_kernel(sigma, samples_per_logical_unit, path)?;
+        return blur_neutral_coverage(&coverage, &kernel, path).map(Some);
     }
     // Positive spread evaluates distance from the original geometry at each
     // sample. Seed-then-dilate would falsely erase thin off-phase casters.
@@ -756,6 +996,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn area_integral_unions_duplicate_and_overlapping_triangles() {
+        let mut work = 0;
+        let a = [[0.1, 0.1], [0.9, 0.1], [0.1, 0.9]];
+        let mut geometry = Vec::from(a);
+        let single = area_sample(&geometry, 0.0, 0.0, &mut work, &[2]).unwrap();
+        assert!((single - 0.32).abs() < 1.0e-12);
+        geometry.extend(a);
+        let double = area_sample(&geometry, 0.0, 0.0, &mut work, &[2]).unwrap();
+        assert!((double - single).abs() < 1.0e-12);
+        let rect = [
+            [0.01, 0.01],
+            [0.02, 0.01],
+            [0.02, 0.02],
+            [0.01, 0.01],
+            [0.02, 0.02],
+            [0.01, 0.02],
+        ];
+        let sliver = area_sample(&rect, 0.0, 0.0, &mut work, &[2]).unwrap();
+        assert!((sliver - 0.0001).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn area_reconstruction_rejects_unbounded_overlap_before_target_work() {
+        let mut mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: Vec::new(),
+            bounds: [0.0, 0.0, 1.0, 1.0],
+        };
+        for _ in 0..257 {
+            mesh.triangles.extend([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
+        }
+        assert!(matches!(
+            rasterize_area_coverage(&mesh, 4.0, &[9, 7]),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [9, 7]
+        ));
+    }
+
+    #[test]
     fn logically_identical_meshes_at_different_preparation_scales_cast_same_shadow() {
         use crate::composition_2d::{
             Render2dAffineTransform, Render2dBrush, Render2dColorRgba8, Render2dItem,
@@ -818,17 +1100,13 @@ mod tests {
         };
         assert!(spread.values[index(0, 0)] > 0.0);
         assert_eq!(spread.values[index(-2, -2)], 0.0);
-        // A zero-spread positive-sigma reference must integrate the tiny
-        // positive-area caster. Until area-aware blur is implemented, reject
-        // it as a typed precision/capability limit rather than claiming no work.
-        assert!(matches!(
-            prepare_untranslated_shadow_coverage(&mesh, 0.0, 0.5, 4.0, &[6, 7]),
-            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
-                kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
-                path: Some(path),
-                ..
-            }) if path == [6, 7]
-        ));
+        // The same caster lies completely between centers but has an
+        // exact nonzero area of 0.04 x 0.04 physical sample units.
+        let area = prepare_untranslated_shadow_coverage(&mesh, 0.0, 0.5, 4.0, &[6, 7])
+            .unwrap()
+            .unwrap();
+        let total = area.values.iter().sum::<f64>();
+        assert!((total - 0.0016).abs() < 1.0e-10);
         assert!(matches!(
             prepare_untranslated_shadow_coverage(&mesh, 0.001, 0.5, 4.0, &[6, 8]),
             Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
