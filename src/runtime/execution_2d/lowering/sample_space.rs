@@ -343,12 +343,7 @@ fn text_pixel_bounds(placement: super::GlyphPlacement) -> [u32; 4] {
     ]
 }
 
-fn text_quad(
-    glyph: &PreparedGlyph,
-    origin: [u32; 2],
-    end: [u32; 2],
-    dimension: u32,
-) -> Vec<f32> {
+fn text_quad(glyph: &PreparedGlyph, origin: [u32; 2], end: [u32; 2], dimension: u32) -> Vec<f32> {
     let b = glyph.bounds;
     let [left, top, right, bottom] = [
         b[0].max(origin[0]),
@@ -363,8 +358,12 @@ fn text_quad(
     let color = linear_color(glyph.occurrence.color);
     let mut result = Vec::with_capacity(6 * FLOATS_PER_VERTEX);
     for [x, y] in [
-        [left, top], [right, top], [left, bottom],
-        [left, bottom], [right, top], [right, bottom],
+        [left, top],
+        [right, top],
+        [left, bottom],
+        [left, bottom],
+        [right, top],
+        [right, bottom],
     ] {
         let sx = f64::from(x - origin[0]) * f64::from(SAMPLES);
         let sy = f64::from(y - origin[1]) * f64::from(SAMPLES);
@@ -373,7 +372,10 @@ fn text_quad(
             physical_y_to_ndc(sy, dimension),
             f32_from_f64((f64::from(x) - p.x0) / p.width),
             f32_from_f64((f64::from(y) - p.y0) / p.height),
-            color[0], color[1], color[2], color[3],
+            color[0],
+            color[1],
+            color[2],
+            color[3],
         ]);
     }
     result
@@ -681,7 +683,9 @@ pub(in crate::runtime::execution_2d) fn lower(
     let has_images = items
         .iter()
         .any(|item| matches!(item, Some(PreparedItem::Image(_))));
-    let has_text = items.iter().any(|item| matches!(item, Some(PreparedItem::Text(_))));
+    let has_text = items
+        .iter()
+        .any(|item| matches!(item, Some(PreparedItem::Text(_))));
     let has_isolated_items = has_images || has_text;
     let extra_layer = if has_isolated_items { 1 } else { 0 };
     let side = tile_side(target, peak + extra_layer)?;
@@ -870,13 +874,11 @@ pub(in crate::runtime::execution_2d) fn lower(
                 .checked_add(bytes)
                 .ok_or_else(|| failure("aggregate text field upload overflow"))?;
             if text_upload_bytes > MAX_TEXT_UPLOAD_BYTES {
-                return Err(failure("aggregate text field upload exceeds bounded admission"));
+                return Err(failure(
+                    "aggregate text field upload exceeds bounded admission",
+                ));
             }
-            let view = super::create_field_view(
-                &mut resources,
-                key,
-                &glyph.occurrence.field,
-            )?;
+            let view = super::create_field_view(&mut resources, key, &glyph.occurrence.field)?;
             text_views.insert(key, view);
         }
     }
@@ -1158,10 +1160,13 @@ pub(in crate::runtime::execution_2d) fn lower(
                                             rectangle(
                                                 &mut vertices,
                                                 [
-                                                    f64::from(left - origin[0]) * f64::from(SAMPLES),
+                                                    f64::from(left - origin[0])
+                                                        * f64::from(SAMPLES),
                                                     f64::from(top - origin[1]) * f64::from(SAMPLES),
-                                                    f64::from(right - origin[0]) * f64::from(SAMPLES),
-                                                    f64::from(bottom - origin[1]) * f64::from(SAMPLES),
+                                                    f64::from(right - origin[0])
+                                                        * f64::from(SAMPLES),
+                                                    f64::from(bottom - origin[1])
+                                                        * f64::from(SAMPLES),
                                                 ],
                                                 physical,
                                                 [1.0; 4],
@@ -1177,7 +1182,8 @@ pub(in crate::runtime::execution_2d) fn lower(
                                         }
                                     }
                                     PreparedItem::Text(glyphs) => {
-                                        let pipeline = text_pipeline.as_ref().expect("text pipeline");
+                                        let pipeline =
+                                            text_pipeline.as_ref().expect("text pipeline");
                                         let sampler = text_sampler.as_ref().expect("field sampler");
                                         for glyph in glyphs {
                                             let vertices = text_quad(glyph, origin, end, dimension);
