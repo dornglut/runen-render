@@ -1856,7 +1856,11 @@ fn phase_fallback_gpu_context_reconstruction_resets_current_evidence() {
             false,
         )
         .unwrap();
-        let evidence = prepared.radiance_output(0).unwrap().temporal_execution_evidence().unwrap();
+        let evidence = prepared
+            .radiance_output(0)
+            .unwrap()
+            .temporal_execution_evidence()
+            .unwrap();
         assert_eq!(evidence.phase, phase);
         previous_generation = Some(evidence.history_generation);
         let availability =
@@ -1889,13 +1893,18 @@ fn phase_fallback_gpu_context_reconstruction_resets_current_evidence() {
         false,
     )
     .unwrap();
-    let evidence = prepared.radiance_output(0).unwrap().temporal_execution_evidence().unwrap();
+    let evidence = prepared
+        .radiance_output(0)
+        .unwrap()
+        .temporal_execution_evidence()
+        .unwrap();
     assert_eq!(evidence.phase, 0);
     assert_eq!(evidence.history_age, 0);
     assert!(evidence.history_reset);
     assert!(evidence.history_generation > previous_generation.unwrap());
     let resolved = cache.buffers[&(0, DeterministicBufferKind::TemporalProvisional)].clone();
-    let availability = cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
+    let availability =
+        cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
     let observed = observe(
         &second_context,
         prepared.work_set().fragments().to_vec(),
