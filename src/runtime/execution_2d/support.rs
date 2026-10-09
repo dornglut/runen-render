@@ -274,7 +274,7 @@ pub(super) fn rasterize_neutral_mesh(
     if !samples_per_logical_unit.is_finite() || samples_per_logical_unit <= 0.0 {
         return Err(precision("neutral sample spacing is invalid"));
     }
-    if mesh.triangles.len() % 3 != 0 {
+    if !mesh.triangles.len().is_multiple_of(3) {
         return Err(precision("neutral mesh triangle payload is incomplete"));
     }
     if mesh.triangles.is_empty() {
@@ -344,7 +344,7 @@ pub(super) fn rasterize_neutral_mesh(
         for x in 0..width {
             let sample_x = (f64::from(edges[0]) + as_f64(x) + 0.5) / samples_per_logical_unit;
             let p = [sample_x, sample_y];
-            for tri in mesh.triangles.chunks_exact(3) {
+            for tri in mesh.triangles.as_chunks::<3>().0 {
                 let ab = orient(tri[0], tri[1], p);
                 let bc = orient(tri[1], tri[2], p);
                 let ca = orient(tri[2], tri[0], p);
