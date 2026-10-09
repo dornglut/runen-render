@@ -539,6 +539,6 @@ F2 MSDF text retains its separately admitted pixel-level coverage law, multiplie
 once by the average of accepted binary clip samples. The clip mask never becomes
 resource, group, source-layout, cache, or semantic identity. Empty intersections
 emit no synthetic work; preflight caps texture dimensions, 64 MiB per mask,
-128 MiB aggregate uploaded masks, bounded per-item retained clip geometry,
+128 MiB aggregate uploaded masks (checked before allocation), bounded retained clip geometry,
 and a contribution-wide triangle-sample work budget. Group clips,
 atomic groups, group opacity and ordinary shadows are still outside this slice.

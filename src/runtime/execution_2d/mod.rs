@@ -229,6 +229,7 @@ impl Render2dExecutionState {
                     &ordered[root_start..],
                     root_index,
                     &admitted_target,
+                    clip_bytes,
                     &mut clip_raster_work,
                 )? {
                     clip_bytes = clip_bytes
@@ -244,7 +245,7 @@ impl Render2dExecutionState {
                                 crate::execution_2d::Render2dClipError::ResourceLimit,
                             )
                         })?;
-                    if clip_bytes > 128 * 1024 * 1024 {
+                    if clip_bytes > clip::MAX_TOTAL_MASK_BYTES {
                         return Err(clip::failure(
                             root_index,
                             crate::execution_2d::Render2dClipError::ResourceLimit,

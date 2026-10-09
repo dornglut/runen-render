@@ -11,6 +11,7 @@ use crate::execution_2d::{Render2dClipError, Render2dExecutionError, Render2dVec
 
 const AXIS_SAMPLES: u32 = 4;
 const MAX_MASK_BYTES: u64 = 64 * 1024 * 1024;
+pub(super) const MAX_TOTAL_MASK_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_TRIANGLE_SAMPLES: u64 = 1_000_000_000;
 const MAX_RETAINED_TRIANGLE_VERTICES: usize = 1_048_576;
 
@@ -53,6 +54,20 @@ fn charge_geometry(
         return Err(failure(root_index, Render2dClipError::ResourceLimit));
     }
     *used = next;
+    Ok(())
+}
+
+fn check_mask_budget(
+    bytes: u64,
+    previously_reserved: u64,
+    root_index: usize,
+) -> Result<(), Render2dExecutionError> {
+    let aggregate = previously_reserved
+        .checked_add(bytes)
+        .ok_or_else(|| failure(root_index, Render2dClipError::ResourceLimit))?;
+    if bytes > MAX_MASK_BYTES || aggregate > MAX_TOTAL_MASK_BYTES {
+        return Err(failure(root_index, Render2dClipError::ResourceLimit));
+    }
     Ok(())
 }
 
@@ -196,6 +211,7 @@ pub(super) fn prepare(
     ordered: &[OrderedItem],
     root_index: usize,
     target: &AdmittedTarget,
+    previously_reserved_mask_bytes: u64,
     contribution_work: &mut u64,
 ) -> Result<Option<ClipMask>, Render2dExecutionError> {
     if item.clips().is_empty() {
@@ -251,9 +267,8 @@ pub(super) fn prepare(
         .checked_mul(u64::from(height_u32))
         .and_then(|n| n.checked_mul(4))
         .ok_or_else(|| failure(root_index, Render2dClipError::ResourceLimit))?;
-    if bytes > MAX_MASK_BYTES {
-        return Err(failure(root_index, Render2dClipError::ResourceLimit));
-    }
+    // Check the cumulative upload budget before reserving CPU mask storage.
+    check_mask_budget(bytes, previously_reserved_mask_bytes, root_index)?;
     let pixels = usize::try_from(bytes / 4)
         .map_err(|_| failure(root_index, Render2dClipError::ResourceLimit))?;
     let width = usize::try_from(width_u32).expect("mask dimensions bounded");
@@ -302,6 +317,25 @@ pub(super) fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aggregate_mask_budget_is_checked_before_allocating_the_next_mask() {
+        assert!(check_mask_budget(MAX_MASK_BYTES, MAX_MASK_BYTES, 1).is_ok());
+        assert!(matches!(
+            check_mask_budget(MAX_MASK_BYTES, MAX_MASK_BYTES + 1, 2),
+            Err(Render2dExecutionError::Clip {
+                root_index: 2,
+                kind: Render2dClipError::ResourceLimit,
+            })
+        ));
+        assert!(matches!(
+            check_mask_budget(MAX_MASK_BYTES + 1, 0, 3),
+            Err(Render2dExecutionError::Clip {
+                root_index: 3,
+                kind: Render2dClipError::ResourceLimit,
+            })
+        ));
+    }
 
     #[test]
     fn retained_clip_geometry_is_bounded_before_another_mesh_is_kept() {
