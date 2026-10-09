@@ -312,12 +312,10 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
             }
             scene::Event::BeginGroup { path, has_shadows } => {
                 if *has_shadows {
-                    return Err(
-                        Render2dUnsupportedContent::Group {
-                            root_index: path[0],
-                        }
-                        .into(),
-                    );
+                    return Err(Render2dUnsupportedContent::Group {
+                        root_index: path[0],
+                    }
+                    .into());
                 }
                 continue;
             }

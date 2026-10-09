@@ -327,21 +327,19 @@ fn f2_nonpainting_and_unsupported_content_fail_or_elide_structurally() {
     assert!(fragment.nodes().is_empty());
 
     // Empty nested descendants are also safe, without recursive execution.
-    let nested = Render2dComposition::new(vec![Render2dEntry::group(
-        Render2dGroup::new(
-            vec![Render2dEntry::group(Render2dGroup::new(
-                Vec::new(),
-                Render2dAffineTransform::IDENTITY,
-                Vec::new(),
-                Render2dOpacity::OPAQUE,
-                Vec::new(),
-            ))],
+    let nested = Render2dComposition::new(vec![Render2dEntry::group(Render2dGroup::new(
+        vec![Render2dEntry::group(Render2dGroup::new(
+            Vec::new(),
             Render2dAffineTransform::IDENTITY,
             Vec::new(),
             Render2dOpacity::OPAQUE,
             Vec::new(),
-        ),
-    )])
+        ))],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ))])
     .unwrap();
     assert!(
         !executor

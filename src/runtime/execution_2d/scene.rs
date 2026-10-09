@@ -136,10 +136,8 @@ pub(super) fn analyze(
                 match entry {
                     Render2dEntry::Item(item) => {
                         validate_clips(item.clips(), parent_to_root, &path)?;
-                        let to_root = parent_to_root.compose(
-                            Affine::from_source(item.local_to_parent()),
-                            &path,
-                        )?;
+                        let to_root = parent_to_root
+                            .compose(Affine::from_source(item.local_to_parent()), &path)?;
                         events.push(Event::Item {
                             path,
                             item,
@@ -148,10 +146,8 @@ pub(super) fn analyze(
                     }
                     Render2dEntry::Group(group) => {
                         validate_clips(group.clips(), parent_to_root, &path)?;
-                        let to_root = parent_to_root.compose(
-                            Affine::from_source(group.local_to_parent()),
-                            &path,
-                        )?;
+                        let to_root = parent_to_root
+                            .compose(Affine::from_source(group.local_to_parent()), &path)?;
                         events.push(Event::BeginGroup {
                             path: path.clone(),
                             has_shadows: !group.shadows().is_empty(),
@@ -279,12 +275,8 @@ mod tests {
     #[test]
     fn nonfinite_composed_affine_is_a_structured_preparation_error() {
         let huge = affine([1.0e308, 0.0, 0.0, 1.0, 0.0, 0.0]);
-        let tree = Render2dComposition::new(vec![group(
-            vec![item(huge)],
-            huge,
-            Vec::new(),
-        )])
-        .unwrap();
+        let tree =
+            Render2dComposition::new(vec![group(vec![item(huge)], huge, Vec::new())]).unwrap();
         assert!(matches!(
             analyze(&tree),
             Err(Render2dExecutionError::Gpu {
@@ -297,7 +289,11 @@ mod tests {
     #[test]
     fn empty_nested_groups_elide_and_ordinary_groups_remain_ordered() {
         let empty = group(
-            vec![group(Vec::new(), Render2dAffineTransform::IDENTITY, Vec::new())],
+            vec![group(
+                Vec::new(),
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+            )],
             Render2dAffineTransform::IDENTITY,
             Vec::new(),
         );
