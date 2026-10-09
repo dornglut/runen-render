@@ -605,6 +605,16 @@ pub(super) fn prepare_untranslated_shadow_coverage(
         signed_euclidean_spread(&source, physical_spread, path)?
     };
     if spread_mask.samples.iter().all(|sample| *sample == 0) {
+        if spread == 0.0 && sigma > 0.0 {
+            // A nonempty, entirely off-phase source has a nonzero continuous
+            // Gaussian integral. Do not misreport absent neutral geometry as
+            // a valid zero-radiance effect until area-aware sampling exists.
+            return Err(mask_failure(
+                path,
+                Render2dSampleSpaceError::PrecisionLimit,
+                "subsample geometric support cannot be resolved for Gaussian blur",
+            ));
+        }
         return Ok(None);
     }
     let kernel = gaussian_kernel(sigma, samples_per_logical_unit, path)?;
@@ -761,6 +771,17 @@ mod tests {
         };
         assert!(spread.values[index(0, 0)] > 0.0);
         assert_eq!(spread.values[index(-2, -2)], 0.0);
+        // A zero-spread positive-sigma reference must integrate the tiny
+        // positive-area caster. Until area-aware blur is implemented, reject
+        // it as a typed precision/capability limit rather than claiming no work.
+        assert!(matches!(
+            prepare_untranslated_shadow_coverage(&mesh, 0.0, 0.5, 4.0, &[6, 7]),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [6, 7]
+        ));
     }
 
     #[test]
