@@ -70,7 +70,12 @@ fn text_pixel_bounds(placement: super::super::GlyphPlacement) -> [u32; 4] {
     ]
 }
 
-pub(super) fn text_quad(glyph: &PreparedGlyph, origin: [u32; 2], end: [u32; 2], dimension: u32) -> Vec<f32> {
+pub(super) fn text_quad(
+    glyph: &PreparedGlyph,
+    origin: [u32; 2],
+    end: [u32; 2],
+    dimension: u32,
+) -> Vec<f32> {
     let b = glyph.bounds;
     let [left, top, right, bottom] = [
         b[0].max(origin[0]),
@@ -271,7 +276,8 @@ pub(super) fn inspect(
                             .into_iter()
                             .flat_map(|values| values.iter())
                         {
-                            let Some(placement) = super::super::glyph_placement(target, glyph)? else {
+                            let Some(placement) = super::super::glyph_placement(target, glyph)?
+                            else {
                                 continue;
                             };
                             let bounds = text_pixel_bounds(placement);
@@ -311,4 +317,3 @@ pub(super) fn inspect(
         peak_group_depth: peak,
     })
 }
-

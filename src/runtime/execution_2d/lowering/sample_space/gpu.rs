@@ -213,4 +213,3 @@ pub(super) fn image_draw(
         .map_err(|e| gpu("F3E sampled image source bindings", e))?;
     vector::vector_draw(pipeline.clone(), bindings, vertices, extent, resources)
 }
-
