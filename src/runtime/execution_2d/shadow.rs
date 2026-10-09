@@ -5,12 +5,19 @@
 //! ancestor affines, non-semantic paint alpha and target culling. Every
 //! owner clip is a geometric intersection, not a source color or an AABB.
 
-use super::{support::NeutralMesh, vector};
+use super::{
+    field::{FieldSetKey, QualityTier, ResourceFields},
+    image, scene, support::NeutralMesh, vector,
+};
 use crate::composition_2d::{
     Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dColorRgba8, Render2dDropShadow,
-    Render2dItem, Render2dOpacity, Render2dPrimitive,
+    Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dResourceBindings,
+    Render2dResourceValue,
 };
-use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
+use crate::execution_2d::{
+    Render2dExecutionError, Render2dSampleSpaceError, Render2dUnsupportedContent,
+};
+use std::{collections::BTreeMap, sync::Arc};
 
 const MAX_NEUTRAL_VERTICES: usize = 1_048_576;
 const MAX_NEUTRAL_CLIP_WORK: usize = 16_777_216;
@@ -33,6 +40,196 @@ fn precision(path: &[usize], detail: &'static str) -> Render2dExecutionError {
 
 fn resource(path: &[usize], detail: &'static str) -> Render2dExecutionError {
     failed(path, Render2dSampleSpaceError::ResourceLimit, detail)
+}
+
+/// Per-invocation retained structural materialization budget. Counting
+/// intermediate copies prevents a deep sequence of individually bounded
+/// nested groups from retaining an unbounded aggregate working set.
+fn charge_vertices(
+    used: &mut usize,
+    count: usize,
+    path: &[usize],
+) -> Result<(), Render2dExecutionError> {
+    let next = used
+        .checked_add(count)
+        .ok_or_else(|| resource(path, "neutral source graph vertex count overflow"))?;
+    if next > MAX_NEUTRAL_VERTICES {
+        return Err(resource(path, "neutral source graph exceeds aggregate geometry budget"));
+    }
+    *used = next;
+    Ok(())
+}
+
+struct SourceFrame<'a> {
+    begin_event: usize,
+    path: Vec<usize>,
+    group: &'a crate::composition_2d::Render2dGroup,
+    /// All children are in this group's LOCAL frame, without opacity.
+    child_source: NeutralMesh,
+}
+
+fn neutral_item(
+    item: &Render2dItem,
+    path: &[usize],
+    bindings: &Render2dResourceBindings,
+    field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
+    resolution: f64,
+    max_buffer_bytes: u64,
+) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
+    let root_index = path[0];
+    let result = match item.primitive() {
+        Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => {
+            vector::neutral_support(item, root_index, resolution, max_buffer_bytes)?
+        }
+        Render2dPrimitive::Image(primitive) => {
+            image::neutral_support(item, primitive, root_index, resolution, max_buffer_bytes)?
+        }
+        Render2dPrimitive::ShapedText(primitive) => {
+            let value = bindings
+                .get(primitive.resource_id())
+                .ok_or_else(|| precision(path, "missing validated shaped-text binding"))?;
+            let Render2dResourceValue::ShapedText(resource) = value else {
+                return Err(precision(path, "shaped-text binding kind changed"));
+            };
+            let quality = QualityTier::select(resource.font_size(), resolution)
+                .ok_or_else(|| precision(path, "shaped-text quality is not representable"))?;
+            let key = FieldSetKey::new(primitive.resource_id(), quality);
+            let fields = field_sets
+                .get(&key)
+                .ok_or_else(|| precision(path, "missing validated immutable font outlines"))?;
+            let mut result = empty_mesh();
+            for glyph in resource.glyphs() {
+                let Some(field) = fields.glyph(glyph.id()) else {
+                    // An admitted empty glyph outline has no neutral area.
+                    continue;
+                };
+                let origin = [
+                    primitive.origin().x() + glyph.x(),
+                    primitive.origin().y() + glyph.y(),
+                ];
+                let instance = vector::NeutralGlyphInstance {
+                    field,
+                    resource_id: primitive.resource_id(),
+                    origin,
+                    font_size: resource.font_size(),
+                    to_parent: item.local_to_parent(),
+                };
+                if let Some(mesh) = vector::neutral_shaped_glyph(
+                    instance, path, resolution, max_buffer_bytes,
+                )? {
+                    append(&mut result, &mesh, Render2dAffineTransform::IDENTITY, path)?;
+                }
+            }
+            (!result.triangles.is_empty()).then_some(result)
+        }
+    };
+    let Some(mesh) = result else {
+        return Ok(None);
+    };
+    let clipped = intersect_clips(
+        &mesh, item.clips(), root_index, path, resolution, max_buffer_bytes,
+    )?;
+    Ok((!clipped.triangles.is_empty()).then_some(clipped))
+}
+
+/// Derives F1 group child geometry in each attached group's immediate-parent
+/// frame, with no root flattening, pixel-alpha sampling or final canvas cull.
+///
+/// The result identifies each SHADOW-BEARING group's one pre-shadow C source
+/// by its BeginGroup event index. A shadow-bearing nested group cannot yet
+/// be propagated to an ancestor: returning an explicit unsupported error is
+/// mandatory until its own expanded effect geometry is representable. This
+/// method never substitutes the child's original geometry for that effect.
+pub(super) fn group_child_sources(
+    plan: &scene::Plan<'_>,
+    bindings: &Render2dResourceBindings,
+    field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
+    resolution: f64,
+    max_buffer_bytes: u64,
+) -> Result<BTreeMap<usize, NeutralMesh>, Render2dExecutionError> {
+    let mut active = Vec::<SourceFrame<'_>>::new();
+    let mut sources = BTreeMap::new();
+    let mut retained_vertices = 0_usize;
+    for (index, event) in plan.events.iter().enumerate() {
+        match event {
+            scene::Event::BeginGroup { path, group, .. } => {
+                active.push(SourceFrame {
+                    begin_event: index,
+                    path: path.clone(),
+                    group,
+                    child_source: empty_mesh(),
+                });
+            }
+            scene::Event::Item { path, item, .. } => {
+                if active.is_empty() {
+                    continue;
+                }
+                if let Some(mesh) = neutral_item(
+                    item, path, bindings, field_sets, resolution, max_buffer_bytes,
+                )? {
+                    charge_vertices(&mut retained_vertices, mesh.triangles.len(), path)?;
+                    append(
+                        &mut active.last_mut().expect("active source group").child_source,
+                        &mesh,
+                        Render2dAffineTransform::IDENTITY,
+                        path,
+                    )?;
+                }
+            }
+            scene::Event::EndGroup => {
+                let frame = active.pop().expect("F1 balanced group plan");
+                let mut in_parent = empty_mesh();
+                append(
+                    &mut in_parent,
+                    &frame.child_source,
+                    frame.group.local_to_parent(),
+                    &frame.path,
+                )?;
+                charge_vertices(
+                    &mut retained_vertices,
+                    in_parent.triangles.len(),
+                    &frame.path,
+                )?;
+                if !frame.group.shadows().is_empty() {
+                    // C is before this group's own clips; those must later
+                    // clip completed shadow+children output exactly once.
+                    if !active.is_empty() {
+                        return Err(super::unsupported_at(
+                            &frame.path,
+                            Render2dUnsupportedContent::Shadows {
+                                root_index: frame.path[0],
+                            },
+                        ));
+                    }
+                    sources.insert(frame.begin_event, in_parent);
+                    continue;
+                }
+                let clipped = intersect_clips(
+                    &in_parent,
+                    frame.group.clips(),
+                    frame.path[0],
+                    &frame.path,
+                    resolution,
+                    max_buffer_bytes,
+                )?;
+                if let Some(parent) = active.last_mut() {
+                    charge_vertices(
+                        &mut retained_vertices,
+                        clipped.triangles.len(),
+                        &frame.path,
+                    )?;
+                    append(
+                        &mut parent.child_source,
+                        &clipped,
+                        Render2dAffineTransform::IDENTITY,
+                        &frame.path,
+                    )?;
+                }
+            }
+        }
+    }
+    debug_assert!(active.is_empty());
+    Ok(sources)
 }
 
 /// A literal empty mesh never introduces a fake shadow caster.
@@ -416,6 +613,69 @@ mod tests {
                 ..
             }) if path == [0, 7]
         ));
+    }
+
+    #[test]
+    fn nested_group_source_is_in_the_immediate_parent_frame_and_pre_group_clip() {
+        use crate::composition_2d::{
+            Render2dComposition, Render2dEntry, Render2dGroup, Render2dRect,
+            Render2dShape,
+        };
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(
+                    Render2dRect::new(0.0, 0.0, 1.0, 1.0).unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![Render2dClip::new(
+                Render2dShape::rect(
+                    Render2dRect::new(0.25, 0.0, 1.0, 1.0).unwrap(),
+                ),
+                Render2dAffineTransform::IDENTITY,
+            )],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let inner = Render2dGroup::new(
+            vec![Render2dEntry::item(item)],
+            Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap(),
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            Vec::new(),
+        );
+        let effect = Render2dDropShadow::new(
+            0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT,
+        ).unwrap();
+        let root = Render2dGroup::new(
+            vec![Render2dEntry::group(inner)],
+            Render2dAffineTransform::IDENTITY,
+            vec![Render2dClip::new(
+                Render2dShape::rect(
+                    Render2dRect::new(1.5, 0.0, 1.0, 1.0).unwrap(),
+                ),
+                Render2dAffineTransform::IDENTITY,
+            )],
+            Render2dOpacity::TRANSPARENT,
+            vec![effect],
+        );
+        let composition = Render2dComposition::new(
+            vec![Render2dEntry::group(root)],
+        ).unwrap();
+        let plan = scene::analyze(&composition).unwrap();
+        let empty = Render2dResourceBindings::new(Vec::new()).unwrap();
+        let sources = group_child_sources(
+            &plan, &empty, &BTreeMap::new(), 4.0, 1_048_576,
+        ).unwrap();
+        assert_eq!(sources.len(), 1);
+        let caster = sources.get(&0).unwrap();
+        for (actual, expected) in caster.bounds.iter().zip([0.5, 0.0, 2.0, 1.0]) {
+            assert!((*actual - expected).abs() < 1.0e-6);
+        }
+        assert_eq!(
+            shadow_envelope(caster, effect, &[0]).unwrap().unwrap(),
+            [-0.5, -1.0, 3.0, 2.0]
+        );
     }
 
     #[test]
