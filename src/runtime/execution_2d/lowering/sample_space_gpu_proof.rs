@@ -114,11 +114,8 @@ fn sample_layer(
         .unwrap();
     resources
         .texture_view(
-            GpuTextureViewDescriptor::ordinary_full_owned(
-                format!("{label} view"),
-                &texture,
-            )
-            .unwrap(),
+            GpuTextureViewDescriptor::ordinary_full_owned(format!("{label} view"), &texture)
+                .unwrap(),
         )
         .unwrap()
 }
@@ -132,10 +129,16 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
             .with_allowed_backends([GpuBackendFamily::Vulkan])
             .with_label("F3E once-only isolated group opacity");
     for (format, role) in [
-        (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::ColorAttachment),
+        (
+            GpuTextureFormat::Rgba8UnormSrgb,
+            GpuFormatRole::ColorAttachment,
+        ),
         (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Blendable),
         (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource),
-        (GpuTextureFormat::Rgba16Float, GpuFormatRole::ColorAttachment),
+        (
+            GpuTextureFormat::Rgba16Float,
+            GpuFormatRole::ColorAttachment,
+        ),
         (GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable),
         (GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled),
     ] {
@@ -156,7 +159,10 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
                 64,
                 64,
                 GpuTextureFormat::Rgba8UnormSrgb,
-                [GpuTextureUsage::ColorAttachment, GpuTextureUsage::CopySource],
+                [
+                    GpuTextureUsage::ColorAttachment,
+                    GpuTextureUsage::CopySource,
+                ],
                 GpuTextureInitialization::Zeroed,
             )
             .unwrap(),
@@ -164,11 +170,8 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
         .unwrap();
     let output_view = resources
         .texture_view(
-            GpuTextureViewDescriptor::ordinary_full_owned(
-                "F3E group opacity output",
-                &output,
-            )
-            .unwrap(),
+            GpuTextureViewDescriptor::ordinary_full_owned("F3E group opacity output", &output)
+                .unwrap(),
         )
         .unwrap();
 
@@ -193,9 +196,7 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
     let child_op = GpuRenderOperation::new(
         [GpuRenderColorAttachment::new(
             child_view.clone(),
-            GpuColorAttachmentLoad::Clear(
-                GpuColorClearValue::new(0.0, 0.0, 0.0, 0.0).unwrap(),
-            ),
+            GpuColorAttachmentLoad::Clear(GpuColorClearValue::new(0.0, 0.0, 0.0, 0.0).unwrap()),
             GpuAttachmentStore::Store,
             None,
         )
@@ -227,9 +228,7 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
     let parent_op = GpuRenderOperation::new(
         [GpuRenderColorAttachment::new(
             parent_view.clone(),
-            GpuColorAttachmentLoad::Clear(
-                GpuColorClearValue::new(0.0, 0.0, 0.0, 0.0).unwrap(),
-            ),
+            GpuColorAttachmentLoad::Clear(GpuColorClearValue::new(0.0, 0.0, 0.0, 0.0).unwrap()),
             GpuAttachmentStore::Store,
             None,
         )
@@ -261,9 +260,7 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
     let output_op = GpuRenderOperation::new(
         [GpuRenderColorAttachment::new(
             output_view,
-            GpuColorAttachmentLoad::Clear(
-                GpuColorClearValue::new(0.0, 0.0, 0.0, 0.0).unwrap(),
-            ),
+            GpuColorAttachmentLoad::Clear(GpuColorClearValue::new(0.0, 0.0, 0.0, 0.0).unwrap()),
             GpuAttachmentStore::Store,
             None,
         )
@@ -274,7 +271,9 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
     )
     .unwrap();
     let readback = GpuReadbackOperation::ordinary(
-        GpuTextureCopyRegion::whole_base_mip(&output).unwrap().into(),
+        GpuTextureCopyRegion::whole_base_mip(&output)
+            .unwrap()
+            .into(),
     )
     .unwrap();
     let readback_id = readback.id();
@@ -305,7 +304,10 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
             }
             GpuReadbackStatus::Failed(error) => panic!("F3E group opacity readback: {error:?}"),
             _ => {
-                assert!(Instant::now() < deadline, "F3E group opacity readback timed out");
+                assert!(
+                    Instant::now() < deadline,
+                    "F3E group opacity readback timed out"
+                );
                 std::thread::yield_now();
             }
         }
@@ -317,7 +319,10 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
     // (red=.125, blue=.25, α=.375) ONCE after composition.
     // Per-child opacity would instead give red=.1875, α=.4375.
     for (actual, expected) in pixel.iter().zip([99_u8, 0, 137, 96]) {
-        assert!(actual.abs_diff(expected) <= 4, "group opacity channel {actual}, expected {expected}");
+        assert!(
+            actual.abs_diff(expected) <= 4,
+            "group opacity channel {actual}, expected {expected}"
+        );
     }
     let outside = (20 * 64 + 11) * 4;
     assert_eq!(&bytes.as_bytes()[outside..outside + 4], &[0, 0, 0, 0]);
@@ -326,12 +331,11 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
 #[test]
 #[ignore = "GPU-required F3E proof: explicitly executed by the Vulkan workflow"]
 fn retained_gpu_plane_resolves_correlated_siblings_once_over_prior_target() {
-    let mut request = GpuContextDescriptor::new(
-        GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements(),
-    )
-    .with_fallback_policy(GpuSoftwareFallbackPolicy::Require)
-    .with_allowed_backends([GpuBackendFamily::Vulkan])
-    .with_label("F3E float sample-plane and final resolve proof");
+    let mut request =
+        GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
+            .with_fallback_policy(GpuSoftwareFallbackPolicy::Require)
+            .with_allowed_backends([GpuBackendFamily::Vulkan])
+            .with_label("F3E float sample-plane and final resolve proof");
     for (format, role) in [
         (
             GpuTextureFormat::Rgba8UnormSrgb,
@@ -435,8 +439,7 @@ fn retained_gpu_plane_resolves_correlated_siblings_once_over_prior_target() {
     )
     .unwrap();
 
-    let resolve_pipeline =
-        pipeline(GpuTextureFormat::Rgba8UnormSrgb, "fs_sample_resolve", true);
+    let resolve_pipeline = pipeline(GpuTextureFormat::Rgba8UnormSrgb, "fs_sample_resolve", true);
     let mut output_vertices = Vec::new();
     rectangle(
         &mut output_vertices,
