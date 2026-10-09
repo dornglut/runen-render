@@ -276,7 +276,10 @@ impl fmt::Display for Render2dUnsupportedContent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Shadows { root_index } => {
-                write!(formatter, "2D root entry {root_index} carries unsupported group shadows")
+                write!(
+                    formatter,
+                    "2D root entry {root_index} carries unsupported group shadows"
+                )
             }
             Self::Transform { root_index } => write!(
                 formatter,
