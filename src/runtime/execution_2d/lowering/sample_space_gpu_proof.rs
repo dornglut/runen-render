@@ -78,6 +78,16 @@ fn pipeline(
 }
 
 fn rectangle(vertices: &mut Vec<f32>, bounds: [f32; 4], extent: [f32; 2], color: [f32; 4]) {
+    rectangle_local(vertices, bounds, extent, color, [0.0, 0.0]);
+}
+
+fn rectangle_local(
+    vertices: &mut Vec<f32>,
+    bounds: [f32; 4],
+    extent: [f32; 2],
+    color: [f32; 4],
+    tile_origin: [f32; 2],
+) {
     let [left, top, right, bottom] = bounds;
     for [x, y] in [
         [left, top],
@@ -90,8 +100,8 @@ fn rectangle(vertices: &mut Vec<f32>, bounds: [f32; 4], extent: [f32; 2], color:
         vertices.extend([
             x / extent[0] * 2.0 - 1.0,
             1.0 - y / extent[1] * 2.0,
-            0.0,
-            0.0,
+            x - tile_origin[0],
+            y - tile_origin[1],
             color[0],
             color[1],
             color[2],
@@ -463,8 +473,8 @@ fn retained_gpu_plane_resolves_correlated_siblings_once_over_prior_target() {
                 "F3E sample layer",
                 GpuResourceLifetime::Transient,
                 GpuReconstruction::SourceBacked,
-                256,
-                256,
+                8,
+                8,
                 GpuTextureFormat::Rgba16Float,
                 [GpuTextureUsage::ColorAttachment, GpuTextureUsage::Sampled],
                 GpuTextureInitialization::Uninitialized,
@@ -502,19 +512,19 @@ fn retained_gpu_plane_resolves_correlated_siblings_once_over_prior_target() {
         .unwrap();
 
     let mut sample_vertices = Vec::new();
-    // Red covers precisely 8 of the 16 logical pixel samples, and blue
-    // covers the other 8. Per-item pixel averaging would give alpha .75,
+    // The cropped 8x8 sample texture represents global target pixel (10,20).
+    // Red covers 8 of its 16 samples, blue covers the other 8. Per-item pixel averaging would give alpha .75,
     // whereas one coherent sample space has alpha 1.0 before the resolve.
     rectangle(
         &mut sample_vertices,
-        [40.0, 80.0, 42.0, 84.0],
-        [256.0, 256.0],
+        [0.0, 0.0, 2.0, 4.0],
+        [8.0, 8.0],
         [1.0, 0.0, 0.0, 1.0],
     );
     rectangle(
         &mut sample_vertices,
-        [42.0, 80.0, 44.0, 84.0],
-        [256.0, 256.0],
+        [2.0, 0.0, 4.0, 4.0],
+        [8.0, 8.0],
         [0.0, 0.0, 1.0, 1.0],
     );
     let sample_pipeline = pipeline(GpuTextureFormat::Rgba16Float, "fs_sample_fill", true);
@@ -522,7 +532,7 @@ fn retained_gpu_plane_resolves_correlated_siblings_once_over_prior_target() {
         sample_pipeline.clone(),
         sample_pipeline.runtime_bindings([]).unwrap(),
         &sample_vertices,
-        [256, 256],
+        [8, 8],
         &mut resources,
     )
     .unwrap();
@@ -542,11 +552,12 @@ fn retained_gpu_plane_resolves_correlated_siblings_once_over_prior_target() {
 
     let resolve_pipeline = pipeline(GpuTextureFormat::Rgba8UnormSrgb, "fs_sample_resolve", true);
     let mut output_vertices = Vec::new();
-    rectangle(
+    rectangle_local(
         &mut output_vertices,
-        [0.0, 0.0, 64.0, 64.0],
+        [10.0, 20.0, 11.0, 21.0],
         [64.0, 64.0],
         [1.0, 1.0, 1.0, 1.0],
+        [10.0, 20.0],
     );
     let resolve_draw = vector::vector_draw(
         resolve_pipeline.clone(),

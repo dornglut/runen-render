@@ -256,7 +256,8 @@ fn clip_hit(pixel: vec2<i32>, sx: i32, sy: i32) -> f32 {
 
 @group(0) @binding(6) var sample_layer: texture_2d<f32>;
 @fragment fn fs_sample_resolve(input: VertexOutput) -> @location(0) vec4<f32> {
-    let base = vec2<i32>(floor(input.position.xy)) * COVERAGE_AXIS_SAMPLES;
+    // The interpolated coordinate is local to the cropped sample tile.
+    let base = vec2<i32>(floor(input.mask_pixel)) * COVERAGE_AXIS_SAMPLES;
     var sum = vec4<f32>(0.0);
     for (var y = 0; y < COVERAGE_AXIS_SAMPLES; y += 1) {
         for (var x = 0; x < COVERAGE_AXIS_SAMPLES; x += 1) {
