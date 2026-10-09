@@ -61,4 +61,3 @@ pub(super) fn upload(
         )
         .map_err(|e| gpu("image view", e))
 }
-

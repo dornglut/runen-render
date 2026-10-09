@@ -12,11 +12,7 @@ use crate::execution_2d::{
 };
 use crate::runtime::program::retained_shaped_text_source;
 use runen_gpu::*;
-use std::{
-    collections::BTreeSet,
-    fmt,
-    sync::Arc,
-};
+use std::{collections::BTreeSet, fmt, sync::Arc};
 
 const FIELD_FORMAT: GpuTextureFormat = GpuTextureFormat::Rgba8Unorm;
 const VERTEX_STRIDE: u64 = crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE;
@@ -276,7 +272,8 @@ pub(crate) fn add_target_boundary(
     Ok(())
 }
 
-pub(super) fn shaped_text_pipeline() -> Result<GpuRenderPipelineDescriptor, Render2dExecutionError> {
+pub(super) fn shaped_text_pipeline() -> Result<GpuRenderPipelineDescriptor, Render2dExecutionError>
+{
     let source =
         retained_shaped_text_source().map_err(|error| Render2dExecutionError::Program {
             stage: "retained shaped-text source",
@@ -285,7 +282,7 @@ pub(super) fn shaped_text_pipeline() -> Result<GpuRenderPipelineDescriptor, Rend
     let vertex =
         GpuEntryPointName::new("vs_main").map_err(|error| gpu("vertex entry-point name", error))?;
     let fragment = GpuEntryPointName::new("fs_sample_projection")
-    .map_err(|error| gpu("fragment entry-point name", error))?;
+        .map_err(|error| gpu("fragment entry-point name", error))?;
     let refinements = vec![
         GpuBindingLayoutRefinement::new(
             GpuBindingKey::try_new(0, 0).map_err(|error| gpu("field texture layout key", error))?,
