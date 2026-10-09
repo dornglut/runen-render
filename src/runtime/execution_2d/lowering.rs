@@ -908,7 +908,6 @@ pub(super) fn lower_ordered(
     Ok(operations)
 }
 
-
 #[cfg(test)]
 mod sample_space_gpu_proof {
     //! GPU-required hardware admission of the exact F3E sample-plane resolve.
@@ -917,10 +916,9 @@ mod sample_space_gpu_proof {
     //! sample locations and premultiplied source-over.
     use super::*;
     use runen_gpu::{
-        GpuBackendFamily, GpuCapabilityProfile, GpuContextDescriptor,
-        GpuFormatRole, GpuReadbackOperation, GpuReadbackStatus,
-        GpuSoftwareFallbackPolicy, GpuSubmissionStatus, GpuTextureCopyRegion,
-        GpuWorkFragment,
+        GpuBackendFamily, GpuCapabilityProfile, GpuContextDescriptor, GpuFormatRole,
+        GpuReadbackOperation, GpuReadbackStatus, GpuSoftwareFallbackPolicy, GpuSubmissionStatus,
+        GpuTextureCopyRegion, GpuWorkFragment,
     };
     use std::time::{Duration, Instant};
 
@@ -941,12 +939,9 @@ mod sample_space_gpu_proof {
         } else {
             Vec::new()
         };
-        let program = GpuProgramDescriptor::new(
-            source,
-            [vertex.clone(), fragment.clone()],
-            refinements,
-        )
-        .unwrap();
+        let program =
+            GpuProgramDescriptor::new(source, [vertex.clone(), fragment.clone()], refinements)
+                .unwrap();
         let vertex_layout = GpuVertexBufferLayoutDescriptor::new(
             0,
             VERTEX_STRIDE,
@@ -967,12 +962,9 @@ mod sample_space_gpu_proof {
             .unwrap();
             GpuBlendState::new(component, component)
         });
-        let output = GpuColorTargetStateDescriptor::new(
-            target_format,
-            blend,
-            GpuColorWriteMask::ALL,
-        )
-        .unwrap();
+        let output =
+            GpuColorTargetStateDescriptor::new(target_format, blend, GpuColorWriteMask::ALL)
+                .unwrap();
         let state = GpuRenderPipelineStateDescriptor::new(
             GpuVertexInputStateDescriptor::new([vertex_layout]).unwrap(),
             Some(GpuFragmentOutputStateDescriptor::new([output])),
