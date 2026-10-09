@@ -42,42 +42,6 @@ fn msdf_coverage(sample: vec3<f32>, pixel_uv_width: vec2<f32>) -> f32 {
     return clamp(screen_pixel_range * signed_distance + 0.5, 0.0, 1.0);
 }
 
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let sample = textureSample(field_texture, field_sampler, input.uv).rgb;
-    let coverage = msdf_coverage(sample, fwidth(input.uv));
-    let alpha = input.foreground.a * coverage;
-    return vec4<f32>(input.foreground.rgb * alpha, alpha);
-}
-
-
-// F3D: F2 text remains an MSDF pixel-coverage approximation. Its fragment
-// alpha is intersected once with the accepted 4x4 binary clip sample fraction.
-@group(0) @binding(2) var clip_bits: texture_2d<f32>;
-struct ClipParameters { origin_and_extent: vec4<f32>, }
-@group(0) @binding(3) var<storage, read> clip_params: ClipParameters;
-
-fn clip_fraction(position: vec4<f32>) -> f32 {
-    let coord = vec2<i32>(floor(position.xy)) -
-        vec2<i32>(clip_params.origin_and_extent.xy);
-    let dimension = vec2<i32>(textureDimensions(clip_bits));
-    if (any(coord < vec2<i32>(0)) || any(coord >= dimension)) {
-        return 0.0;
-    }
-    let packed = textureLoad(clip_bits, coord, 0);
-    let low = u32(round(packed.r * 255.0));
-    let high = u32(round(packed.g * 255.0));
-    return f32(countOneBits(low) + countOneBits(high)) / 16.0;
-}
-
-@fragment
-fn fs_main_clipped(input: VertexOutput) -> @location(0) vec4<f32> {
-    let sample = textureSample(field_texture, field_sampler, input.uv).rgb;
-    let coverage = msdf_coverage(sample, fwidth(input.uv));
-    let alpha = input.foreground.a * coverage * clip_fraction(input.position);
-    return vec4<f32>(input.foreground.rgb * alpha, alpha);
-}
-
 // F3E retains the original F2 logical-pixel MSDF estimate for all sixteen
 // correlated subpixels. Structural clips and whole-item opacity are applied
 // later, once, by the shared item/group compositor. The tile is aligned to
