@@ -255,11 +255,12 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
             }
             scene::Event::EndGroup => continue,
         };
-        match item.primitive() {
-            Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => continue,
-            Render2dPrimitive::Image(_) => continue,
-            Render2dPrimitive::ShapedText(_) => {}
-        }
+        let text = match item.primitive() {
+            Render2dPrimitive::Fill { .. }
+            | Render2dPrimitive::Stroke { .. }
+            | Render2dPrimitive::Image(_) => continue,
+            Render2dPrimitive::ShapedText(text) => text,
+        };
         let [m11, m12, m21, m22, translate_x, translate_y] = to_root.coefficients();
         if m11 != 1.0 || m12 != 0.0 || m21 != 0.0 || m22 != 1.0 {
             let kind = Render2dUnsupportedContent::Transform { root_index };
@@ -269,9 +270,6 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
             };
             return Err(unsupported_at(path, kind));
         }
-        let Render2dPrimitive::ShapedText(text) = item.primitive() else {
-            return Err(Render2dUnsupportedContent::Primitive { root_index }.into());
-        };
         runs.push(AdmittedRun {
             event_index,
             resource_id: text.resource_id(),

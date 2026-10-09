@@ -260,21 +260,6 @@ pub enum Render2dUnsupportedContent {
         /// Root painter-order index.
         root_index: usize,
     },
-    /// Primitive or brush class is outside the admitted execution subset.
-    Primitive {
-        /// Root painter-order index.
-        root_index: usize,
-    },
-    /// Item clips are outside this slice.
-    Clips {
-        /// Root painter-order index.
-        root_index: usize,
-    },
-    /// Non-opaque shaped-text item opacity is outside this slice.
-    Opacity {
-        /// Root painter-order index.
-        root_index: usize,
-    },
     /// Non-translation shaped-text transform is outside this slice.
     Transform {
         /// Root painter-order index.
@@ -293,17 +278,6 @@ impl fmt::Display for Render2dUnsupportedContent {
             Self::Shadows { root_index } => {
                 write!(formatter, "2D root entry {root_index} carries unsupported group shadows")
             }
-            Self::Primitive { root_index } => write!(
-                formatter,
-                "2D root entry {root_index} carries unsupported primitive or brush content"
-            ),
-            Self::Clips { root_index } => {
-                write!(formatter, "2D F2 root item {root_index} carries clips")
-            }
-            Self::Opacity { root_index } => write!(
-                formatter,
-                "2D F2 root item {root_index} carries non-opaque item opacity"
-            ),
             Self::Transform { root_index } => write!(
                 formatter,
                 "2D F2 root item {root_index} carries a non-translation transform"

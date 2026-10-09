@@ -199,9 +199,9 @@ distinct capability classes and fail closed until an exact separately accepted
 realization exists. They must not be silently flattened to monochrome outline
 semantics.
 
-The initial F2 production execution boundary is `execution_2d`. It accepts a
-caller-owned RunenGPU color view plus logical canvas extent and raster scale,
-admits only the exact bounded direct-root shaped-text subset, and returns
+The historical initial F2 production execution boundary is `execution_2d`.
+It accepted a caller-owned RunenGPU color view plus logical canvas extent
+and raster scale, admitted a bounded direct-root shaped-text subset, and returned
 composable RunenGPU work wrapped with source-neutral execution correlation.
 Retained semantic identity observations are separate from the private derived
 field cache: cache discard may remove derived MSDF fields but cannot make an
@@ -224,9 +224,11 @@ A private read-only buffer preserves authored stop order and premultiplied linea
 RGB/alpha; the gradient compose pass integrates painted color at each covered
 4×4 sample in local brush coordinates before applying item opacity once. Hard
 stop and precision/storage limitations reject structurally rather than altering
-immutable authored semantics. Shaped text retains the F2 opaque-item,
-identity/translation class; arbitrary
-text transforms and run opacity remain fail-closed.
+immutable authored semantics. Shaped text retains F2's immutable outline font/shaping and
+identity/translation geometry class. The F3E sample compositor applies
+item and ancestor group opacity/clipping exactly once after rendering the
+retained glyph coverage; non-translation text transforms and unsupported
+intrinsic glyph classes remain fail-closed.
 
 One ordered private lowering produces coverage/composition operations and
 painter-ordered shaped-text draws. Consuming a prepared contribution appends the
