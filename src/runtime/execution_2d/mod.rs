@@ -302,6 +302,7 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
                 path,
                 item,
                 to_root,
+                ..
             } => {
                 let root_index = path[0];
                 // The existing direct-root compiler remains fail-closed until
@@ -311,8 +312,8 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
                 }
                 (root_index, *item, *to_root)
             }
-            scene::Event::BeginGroup { path, has_shadows } => {
-                if *has_shadows {
+            scene::Event::BeginGroup { path, group, .. } => {
+                if !group.shadows().is_empty() {
                     return Err(Render2dUnsupportedContent::Group {
                         root_index: path[0],
                     }

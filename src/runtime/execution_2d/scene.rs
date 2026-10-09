@@ -1,16 +1,14 @@
-//! Private F3E painter-tree admission in one immutable F1 composition domain.
+//! One bounded, source-neutral F1 painter tree traversal for private GPU lowering.
 //!
-//! This traversal does not paint or create a second semantic scene. It retains
-//! borrowed F1 item references, source order, and exactly composed transforms.
-//! The private execution compiler consumes it; no identity crosses the public
-//! RunenGPU work/evidence boundary.
-
+//! Source occurrence, group isolation, clip coordinates and derived transforms
+//! are retained without inventing another scene semantic authority.
 use crate::composition_2d::{
     Render2dAffineTransform, Render2dComposition, Render2dEntry, Render2dGroup, Render2dItem,
 };
 use crate::execution_2d::Render2dExecutionError;
 
-// These are bounded compiler traversal resources, not public scene limits.
+// Private admission budgets. Every authored entry is counted, including
+// discarded empty descendants; none can hide unbounded traversal work.
 const MAX_DEPTH: usize = 64;
 const MAX_VISITED_ENTRIES: usize = 1_048_576;
 
@@ -54,18 +52,21 @@ impl Affine {
     }
 }
 
-/// One lexically ordered semantic occurrence; grouping changes the
-/// compositing operation, never the source representation's ownership.
+/// One renderer-private occurrence. All content, opacity and clipping still
+/// come from the borrowed F1 item/group; transforms are derived, not authored.
 #[derive(Debug)]
 pub(super) enum Event<'a> {
     Item {
         path: Vec<usize>,
         item: &'a Render2dItem,
+        parent_to_root: Affine,
         to_root: Affine,
     },
     BeginGroup {
         path: Vec<usize>,
-        has_shadows: bool,
+        group: &'a Render2dGroup,
+        parent_to_root: Affine,
+        to_root: Affine,
     },
     EndGroup,
 }
@@ -79,7 +80,18 @@ enum Pending<'a> {
     Visit {
         entry: &'a Render2dEntry,
         path: Vec<usize>,
-        parent_to_root: Affine,
+    },
+    EndGroup,
+}
+
+enum RawEvent<'a> {
+    Item {
+        path: Vec<usize>,
+        item: &'a Render2dItem,
+    },
+    BeginGroup {
+        path: Vec<usize>,
+        group: &'a Render2dGroup,
     },
     EndGroup,
 }
@@ -91,40 +103,26 @@ fn limit(path: &[usize], problem: &'static str) -> Render2dExecutionError {
     }
 }
 
-/// A no-paint, no-effect subtree must never be forced through physical
-/// transform/clip admission: mathematically its contribution is transparent.
-/// The walk is iterative so even hostile nesting does not grow the call stack.
-fn is_structurally_empty(group: &Render2dGroup) -> bool {
-    let mut pending = vec![group];
-    while let Some(current) = pending.pop() {
-        if !current.shadows().is_empty() {
-            return false;
-        }
-        for entry in current.entries() {
-            match entry {
-                Render2dEntry::Item(_) => return false,
-                Render2dEntry::Group(child) => pending.push(child),
-            }
-        }
-    }
-    true
-}
-
 fn validate_clips(
     owner_clips: &[crate::composition_2d::Render2dClip],
     parent_to_root: Affine,
     path: &[usize],
 ) -> Result<(), Render2dExecutionError> {
     for clip in owner_clips {
-        // A clip is in its owner's *parent* space, never transformed by
-        // the owning item's or group's local_to_parent a second time.
+        // The clip is in the owner's immediate parent space: NEVER multiply
+        // the owner's own local-to-parent transform into its own clip.
         parent_to_root.compose(Affine::from_source(clip.clip_to_parent()), path)?;
     }
     Ok(())
 }
 
-/// Builds a bounded, nonrecursive event stream. No clipping, blending, resource
-/// identity or placement policy is invented here: F1 remains the sole source.
+/// Builds each authored occurrence exactly once, then marks contributing
+/// groups in reverse lexical order. This replaces repeated subtree searches
+/// with a linear postorder pass and charges even transparent/empty children
+/// against explicit depth and work budgets before any GPU preparation.
+///
+/// Physical affine admission is a separate forward pass so genuinely inert
+/// subtrees cannot spuriously reject unrepresentable, unused transforms.
 pub(super) fn analyze(
     composition: &Render2dComposition,
 ) -> Result<Plan<'_>, Render2dExecutionError> {
@@ -133,50 +131,29 @@ pub(super) fn analyze(
         pending.push(Pending::Visit {
             entry,
             path: vec![index],
-            parent_to_root: Affine::IDENTITY,
         });
     }
-
-    let mut events = Vec::new();
-    let mut visits = 0_usize;
+    let mut raw = Vec::new();
+    let mut visited = 0_usize;
     while let Some(next) = pending.pop() {
         match next {
-            Pending::EndGroup => events.push(Event::EndGroup),
-            Pending::Visit {
-                entry,
-                path,
-                parent_to_root,
-            } => {
-                visits = visits
+            Pending::EndGroup => raw.push(RawEvent::EndGroup),
+            Pending::Visit { entry, path } => {
+                visited = visited
                     .checked_add(1)
                     .ok_or_else(|| limit(&path, "visit count overflow"))?;
-                if visits > MAX_VISITED_ENTRIES {
+                if visited > MAX_VISITED_ENTRIES {
                     return Err(limit(&path, "semantic entry count exceeds compiler budget"));
                 }
                 if path.len() > MAX_DEPTH {
                     return Err(limit(&path, "nested group depth exceeds compiler budget"));
                 }
                 match entry {
-                    Render2dEntry::Item(item) => {
-                        validate_clips(item.clips(), parent_to_root, &path)?;
-                        let to_root = parent_to_root
-                            .compose(Affine::from_source(item.local_to_parent()), &path)?;
-                        events.push(Event::Item {
-                            path,
-                            item,
-                            to_root,
-                        });
-                    }
+                    Render2dEntry::Item(item) => raw.push(RawEvent::Item { path, item }),
                     Render2dEntry::Group(group) => {
-                        if is_structurally_empty(group) {
-                            continue;
-                        }
-                        validate_clips(group.clips(), parent_to_root, &path)?;
-                        let to_root = parent_to_root
-                            .compose(Affine::from_source(group.local_to_parent()), &path)?;
-                        events.push(Event::BeginGroup {
+                        raw.push(RawEvent::BeginGroup {
                             path: path.clone(),
-                            has_shadows: !group.shadows().is_empty(),
+                            group,
                         });
                         pending.push(Pending::EndGroup);
                         for (index, child) in group.entries().iter().enumerate().rev() {
@@ -185,7 +162,6 @@ pub(super) fn analyze(
                             pending.push(Pending::Visit {
                                 entry: child,
                                 path: child_path,
-                                parent_to_root: to_root,
                             });
                         }
                     }
@@ -193,6 +169,87 @@ pub(super) fn analyze(
             }
         }
     }
+
+    // Reverse walking a balanced group stream yields a group-activity stack.
+    // An authored item is always significant for source identity even when it
+    // has zero opacity or emits no pixels. An authored shadow is an effect,
+    // currently unsupported, and MUST NOT silently be treated as transparent.
+    let mut active = vec![false; raw.len()];
+    let mut group_activity = Vec::<bool>::new();
+    for (index, event) in raw.iter().enumerate().rev() {
+        match event {
+            RawEvent::EndGroup => group_activity.push(false),
+            RawEvent::Item { .. } => {
+                if let Some(parent) = group_activity.last_mut() {
+                    *parent = true;
+                }
+            }
+            RawEvent::BeginGroup { group, .. } => {
+                let descendants = group_activity
+                    .pop()
+                    .expect("balanced group events emitted by one compiler");
+                let contributes = descendants || !group.shadows().is_empty();
+                active[index] = contributes;
+                if contributes {
+                    if let Some(parent) = group_activity.last_mut() {
+                        *parent = true;
+                    }
+                }
+            }
+        }
+    }
+    debug_assert!(group_activity.is_empty());
+
+    // Only active groups need transform/clip admission. The group frames are
+    // derived from one F1 tree and are never stored as another semantic model.
+    let mut events = Vec::new();
+    let mut frames = vec![Affine::IDENTITY];
+    let mut group_is_active = Vec::new();
+    for (index, event) in raw.into_iter().enumerate() {
+        match event {
+            RawEvent::Item { path, item } => {
+                let parent_to_root = *frames.last().expect("root affine frame");
+                validate_clips(item.clips(), parent_to_root, &path)?;
+                let to_root = parent_to_root
+                    .compose(Affine::from_source(item.local_to_parent()), &path)?;
+                events.push(Event::Item {
+                    path,
+                    item,
+                    parent_to_root,
+                    to_root,
+                });
+            }
+            RawEvent::BeginGroup { path, group } => {
+                let parent_to_root = *frames.last().expect("root affine frame");
+                let contributes = active[index];
+                group_is_active.push(contributes);
+                if contributes {
+                    validate_clips(group.clips(), parent_to_root, &path)?;
+                    let to_root = parent_to_root
+                        .compose(Affine::from_source(group.local_to_parent()), &path)?;
+                    events.push(Event::BeginGroup {
+                        path,
+                        group,
+                        parent_to_root,
+                        to_root,
+                    });
+                    frames.push(to_root);
+                } else {
+                    // Its children contain no items/effects. Keep balanced
+                    // frames without evaluating unused physical transforms.
+                    frames.push(parent_to_root);
+                }
+            }
+            RawEvent::EndGroup => {
+                frames.pop().expect("balanced affine group frames");
+                if group_is_active.pop().expect("balanced group state") {
+                    events.push(Event::EndGroup);
+                }
+            }
+        }
+    }
+    debug_assert_eq!(frames.len(), 1);
+    debug_assert!(group_is_active.is_empty());
     Ok(Plan { events })
 }
 
@@ -322,6 +379,59 @@ mod tests {
         )])
         .unwrap();
         assert!(analyze(&tree).unwrap().events.is_empty());
+    }
+
+    #[test]
+    fn inactive_descendants_are_counted_against_depth_limits() {
+        let mut subtree = group(
+            Vec::new(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+        );
+        for _ in 0..MAX_DEPTH {
+            subtree = group(
+                vec![subtree],
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+            );
+        }
+        let tree = Render2dComposition::new(vec![subtree]).unwrap();
+        assert!(matches!(
+            analyze(&tree),
+            Err(Render2dExecutionError::Gpu {
+                stage: "F3E bounded semantic traversal",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn active_group_keeps_its_f1_opacity_clips_and_parent_affine() {
+        let transform = affine([2.0, 0.0, 0.0, 1.0, 4.0, 0.0]);
+        let child = item(Render2dAffineTransform::IDENTITY);
+        let tree = Render2dComposition::new(vec![group(
+            vec![child],
+            transform,
+            Vec::new(),
+        )])
+        .unwrap();
+        let plan = analyze(&tree).unwrap();
+        assert!(matches!(
+            plan.events.as_slice(),
+            [
+                Event::BeginGroup {
+                    group,
+                    path,
+                    parent_to_root,
+                    to_root,
+                },
+                Event::Item { .. },
+                Event::EndGroup
+            ] if group.opacity() == Render2dOpacity::OPAQUE
+                && path == &[0]
+                && *parent_to_root == Affine::IDENTITY
+                && to_root.coefficients() == [2.0, 0.0, 0.0, 1.0, 4.0, 0.0]
+        ));
     }
 
     #[test]
