@@ -159,3 +159,23 @@ work is bounded across the complete prepared contribution rather than resetting
 at each item. Aggregate clip-mask allocation is rejected before new mask storage
 is reserved. Retained tessellated clip geometry is independently bounded per item;
 no native-GPU performance claim or persistent GPU mask cache follows.
+
+F3E canonical and Vulkan-required tests extend all accepted F2/F3A–D proofs
+to one correlated 4×4 premultiplied sample-space renderer for direct roots and
+nested groups. Independent public D1–D4 and F3E-R1 oracles prove identity-group
+invariance, source-over disjoint coverage, once-only item/image-patch/group
+opacity, parent-space binary-conjunctive item and group clipping, and the final
+resolve over caller-owned nontransparent target contents. Conformance also
+covers retained shaped-text pixel-center coverage, gradient brush mapping,
+affine nesting, source-neutral immutable images, multiple tiles, resource
+identity, cache reconstruction, full work-node completion, valid no-work,
+typed missing sample-plane roles, and transactional failed preparation.
+
+The private F3E compiler constrains scratch depth/peak bytes, cumulative
+clip/geometry/tile replay, image and gradient payloads, and work-node counts
+before appending caller-owned RunenGPU work. Per-invocation MSDF field generation
+charges cached and new RGBA field extents against one bounded budget before
+CPU bitmap allocation; successful derived-cache residency keeps only the
+last completed preparation's needed field working set. These bounds are
+implementation policies, not a public source semantics or native-performance
+claim. Issue #72 separately owns safe long-lived immutable identity retirement.

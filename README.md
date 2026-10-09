@@ -53,6 +53,23 @@ selected Rust 1.93.0, but executable transfer validation proved that the
 accepted RunenShader dependency graph requires Rust 1.97.1 through its exact
 WESL 0.5.0 graph.
 
+## 2D composition execution
+
+The public `composition_2d` module expresses one immutable source-neutral
+painter tree of geometry, solid and gradient paint, image patches, already-shaped
+text, conjunctive parent-space clips and atomic nested groups. The public
+`execution_2d` executor admits compatible immutable resource bindings and a
+caller-owned color target, then returns composable RunenGPU work and exact
+completion evidence. All admitted root and nested content uses the same
+correlated 4×4 sample-space color law with once-only item and group opacity.
+Shaped text remains limited to the supported monochrome outline/
+identity-or-translation class. Ordinary shadows/effects are not yet rendered,
+and native presentation remains with the host.
+
+The renderer's private realization uses bounded tiles and reconstructible
+field caches; semantic resource identities remain immutable across cache loss.
+The separate long-lived identity retirement contract is tracked under #72.
+
 ## Start with the ordinary API
 
 The compact public-only [ordinary example](examples/ordinary_render.rs) builds a
