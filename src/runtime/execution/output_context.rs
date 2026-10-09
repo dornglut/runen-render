@@ -109,13 +109,25 @@ pub(super) fn resolve_output_context<'a>(
             .workload_budget()
             .limits()
             .max_storage_buffer_binding_size()
-            .min(context.device_facts().device_limits().values().max_storage_buffer_binding_size()),
+            .min(
+                context
+                    .device_facts()
+                    .device_limits()
+                    .values()
+                    .max_storage_buffer_binding_size(),
+            ),
         max_buffer_size: context
             .device_facts()
             .workload_budget()
             .limits()
             .max_buffer_size()
-            .min(context.device_facts().device_limits().values().max_buffer_size()),
+            .min(
+                context
+                    .device_facts()
+                    .device_limits()
+                    .values()
+                    .max_buffer_size(),
+            ),
     })
 }
 
@@ -163,11 +175,13 @@ pub(super) fn prepare_temporal_state(
         && (!temporal_phase_mapping_is_injective(requested_extent, evaluation_extent)
             || !temporal_phase_mapping_is_injective(requested_extent, requested_extent))
     {
-        return Err(RenderDeterministicLoweringError::NonInjectiveTemporalPhaseMapping {
-            output_index: resolved.output_index,
-            requested_extent,
-            evaluation_extent,
-        });
+        return Err(
+            RenderDeterministicLoweringError::NonInjectiveTemporalPhaseMapping {
+                output_index: resolved.output_index,
+                requested_extent,
+                evaluation_extent,
+            },
+        );
     }
     let alignment = resolved
         .bytes_per_row_alignment

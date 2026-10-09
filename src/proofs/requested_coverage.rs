@@ -210,7 +210,19 @@ fn observe(
                 work.operation(node.label().as_str(), node.operation().clone())?;
             }
             for output in fragment.outputs() {
-                work.add_output(output.clone())?;
+                // This GPU readback oracle appends its observations *after*
+                // production, changing the observed buffer's final access
+                // from storage ReadWrite to copy Read. Its real export was
+                // already authored and separately validated by production
+                // submissions; do not attach that now-stale final-access
+                // declaration to this augmented, readback-only proof graph.
+                let observed_buffer_export = match output.relationship().resource() {
+                    GpuResourceRef::Buffer(buffer) => handles.contains(buffer),
+                    _ => false,
+                };
+                if !observed_buffer_export {
+                    work.add_output(output.clone())?;
+                }
             }
         }
         for (index, readback) in readbacks.into_iter().enumerate() {

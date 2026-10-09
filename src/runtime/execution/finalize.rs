@@ -399,7 +399,10 @@ fn build_output_fragment(
                 work.compute("reconstruct deterministic footprint output", reconstruction)?;
             }
             if let Some(fallback) = fallback_compute {
-                work.compute("resolve phase-aligned current radiance and availability", fallback)?;
+                work.compute(
+                    "resolve phase-aligned current radiance and availability",
+                    fallback,
+                )?;
             }
             work.operation(
                 "copy reconstructed output to admitted destination",

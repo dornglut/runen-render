@@ -23,8 +23,8 @@ use super::program::{
     MAINTAINED_EVALUATOR_REVISION, TEMPORAL_RECONSTRUCTION_REVISION, TEMPORAL_RECONSTRUCTION_WGSL,
     abi::{camera, temporal},
     build_maintained_program_sources, retained_camera_reprojection_source,
-    retained_temporal_fallback_source,
-    retained_maintained_evaluator_source, retained_temporal_reconstruction_source,
+    retained_maintained_evaluator_source, retained_temporal_fallback_source,
+    retained_temporal_reconstruction_source,
 };
 use super::program::{RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError};
 #[cfg(test)]

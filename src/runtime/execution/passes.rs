@@ -67,11 +67,12 @@ fn prepare_static_fallback(
 ) -> Result<PreparedStaticFallback, RenderDeterministicLoweringError> {
     let width = packed.input_words[header::REQUESTED_WIDTH];
     let height = packed.input_words[header::REQUESTED_HEIGHT];
-    let count = width.checked_mul(height).ok_or(
-        RenderDeterministicLoweringError::SizeOverflow {
-            field: "temporal fallback requested cell count",
-        },
-    )?;
+    let count =
+        width
+            .checked_mul(height)
+            .ok_or(RenderDeterministicLoweringError::SizeOverflow {
+                field: "temporal fallback requested cell count",
+            })?;
     let availability_bytes = u64::from(count).checked_mul(WORD_BYTES).ok_or(
         RenderDeterministicLoweringError::SizeOverflow {
             field: "temporal fallback cell state",
@@ -85,11 +86,13 @@ fn prepare_static_fallback(
             field: "temporal fallback aggregate scratch",
         })?;
     if peak_scratch_bytes > temporal_fallback::MAX_PER_OUTPUT_SCRATCH_BYTES {
-        return Err(RenderDeterministicLoweringError::TemporalFallbackScratchBudgetExceeded {
-            output_index: resolved.output_index,
-            required_bytes: peak_scratch_bytes,
-            budget_bytes: temporal_fallback::MAX_PER_OUTPUT_SCRATCH_BYTES,
-        });
+        return Err(
+            RenderDeterministicLoweringError::TemporalFallbackScratchBudgetExceeded {
+                output_index: resolved.output_index,
+                required_bytes: peak_scratch_bytes,
+                budget_bytes: temporal_fallback::MAX_PER_OUTPUT_SCRATCH_BYTES,
+            },
+        );
     }
     // Resource and storage-binding limits are checked on the actual admitted
     // RunenGPU device/workload profile before allocating or dispatching.
@@ -102,20 +105,28 @@ fn prepare_static_fallback(
             .max_storage_buffer_binding_size
             .min(resolved.max_buffer_size);
         if bytes > limit_bytes {
-            return Err(RenderDeterministicLoweringError::TemporalFallbackGpuLimitExceeded {
-                output_index: resolved.output_index,
-                carrier,
-                required_bytes: bytes,
-                limit_bytes,
-            });
+            return Err(
+                RenderDeterministicLoweringError::TemporalFallbackGpuLimitExceeded {
+                    output_index: resolved.output_index,
+                    carrier,
+                    required_bytes: bytes,
+                    limit_bytes,
+                },
+            );
         }
     }
     // Reuse continuity-local logical identities, not per-frame GPU handles.
     // The retained history buffers remain disjoint from all three scratch carriers.
     let descriptions = [
         (DeterministicBufferKind::TemporalProvisional, resolved_bytes),
-        (DeterministicBufferKind::TemporalPhasePresence, availability_bytes),
-        (DeterministicBufferKind::TemporalAvailability, availability_bytes),
+        (
+            DeterministicBufferKind::TemporalPhasePresence,
+            availability_bytes,
+        ),
+        (
+            DeterministicBufferKind::TemporalAvailability,
+            availability_bytes,
+        ),
     ];
     let handles = descriptions
         .into_iter()
