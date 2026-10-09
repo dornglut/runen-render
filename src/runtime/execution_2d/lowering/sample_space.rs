@@ -335,8 +335,7 @@ fn admit_tile_work(
     items: &[Option<PreparedItem>],
     tiles: u64,
 ) -> Result<(), Render2dExecutionError> {
-    let mut units =
-        u64::try_from(plan_events).map_err(|_| failure("tile event count overflow"))?;
+    let mut units = u64::try_from(plan_events).map_err(|_| failure("tile event count overflow"))?;
     for item in items.iter().flatten() {
         let count = match item {
             PreparedItem::Vector(mesh) => mesh.triangles.len(),
