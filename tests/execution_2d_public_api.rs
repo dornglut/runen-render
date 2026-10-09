@@ -510,6 +510,10 @@ fn shaped_entry(
 }
 
 fn target(name: &str) -> (GpuTextureHandle, Render2dTarget) {
+    target_sized(name, WIDTH, HEIGHT)
+}
+
+fn target_sized(name: &str, width: u32, height: u32) -> (GpuTextureHandle, Render2dTarget) {
     let mut resources = GpuResourceScope::new();
     let texture = resources
         .texture(
@@ -517,8 +521,8 @@ fn target(name: &str) -> (GpuTextureHandle, Render2dTarget) {
                 name,
                 GpuResourceLifetime::Transient,
                 GpuReconstruction::SourceBacked,
-                WIDTH,
-                HEIGHT,
+                width,
+                height,
                 GpuTextureFormat::Rgba8UnormSrgb,
                 [
                     GpuTextureUsage::ColorAttachment,
@@ -535,7 +539,7 @@ fn target(name: &str) -> (GpuTextureHandle, Render2dTarget) {
                 .expect("F2 target view descriptor"),
         )
         .expect("F2 target view identity");
-    let target = Render2dTarget::new(view, f64::from(WIDTH), f64::from(HEIGHT), 1.0)
+    let target = Render2dTarget::new(view, f64::from(width), f64::from(height), 1.0)
         .expect("exact F2 target mapping");
     (texture, target)
 }
@@ -547,7 +551,20 @@ fn execute(
     bindings: &Render2dResourceBindings,
     label: &str,
 ) -> GpuReadbackBytes {
-    let (texture, target) = target(label);
+    execute_sized(context, executor, composition, bindings, label, WIDTH, HEIGHT)
+}
+
+/// Bounded canvas-size override for independent F3E multi-tile public oracles.
+fn execute_sized(
+    context: &GpuContext,
+    executor: &mut Render2dExecutor,
+    composition: &Render2dComposition,
+    bindings: &Render2dResourceBindings,
+    label: &str,
+    width: u32,
+    height: u32,
+) -> GpuReadbackBytes {
+    let (texture, target) = target_sized(label, width, height);
     let contribution = executor
         .prepare(context, composition, bindings, &target)
         .expect("F2 contribution preparation");
@@ -876,7 +893,11 @@ fn assert_rendered_box(bytes: &GpuReadbackBytes) {
 }
 
 fn pixel(bytes: &GpuReadbackBytes, x: u32, y: u32) -> [u8; 4] {
-    let offset = usize::try_from((y * WIDTH + x) * 4).expect("small proof offset");
+    pixel_sized(bytes, WIDTH, x, y)
+}
+
+fn pixel_sized(bytes: &GpuReadbackBytes, width: u32, x: u32, y: u32) -> [u8; 4] {
+    let offset = usize::try_from((y * width + x) * 4).expect("bounded proof offset");
     bytes.as_bytes()[offset..offset + 4]
         .try_into()
         .expect("RGBA8 pixel")

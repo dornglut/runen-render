@@ -324,9 +324,18 @@ fn fractional_group_clip_and_gradient_source_share_exact_samples() {
 }
 
 fn repeated_image_patches(id: Render2dResourceId, item_opacity: f64) -> Render2dEntry {
+    repeated_image_patches_at(id, 0.0, 64.0, item_opacity)
+}
+
+fn repeated_image_patches_at(
+    id: Render2dResourceId,
+    x: f64,
+    width: f64,
+    item_opacity: f64,
+) -> Render2dEntry {
     let patch = Render2dImagePatch::new(
         Render2dImageSourceRect::new(0.0, 0.0, 1.0, 1.0).unwrap(),
-        Render2dRect::new(0.0, 0.0, 64.0, 64.0).unwrap(),
+        Render2dRect::new(x, 0.0, width, 64.0).unwrap(),
     );
     let image = Render2dImagePrimitive::new(
         id,
@@ -405,4 +414,66 @@ fn image_binding_identity_survives_group_execution_and_cache_independence() {
         Err(Render2dExecutionError::ResourceIdentityRebound { resource_id })
             if resource_id == id
     ));
+}
+
+
+#[test]
+fn multi_tile_image_item_and_group_clips_retain_absolute_sample_phase() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    // 576 pixel width forces three output tiles at F3E's <=256px tile side.
+    // All sample positions and alpha answers below derive exclusively from F1
+    // geometry and the independent straight-alpha source-over equation.
+    let id = Render2dResourceId::new(778).unwrap();
+    let left_group = Render2dGroup::new(
+        vec![repeated_image_patches_at(id, 254.75, 2.5, 0.5)],
+        Render2dAffineTransform::IDENTITY,
+        vec![clip(255.25, 1.5)],
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    );
+    let distant_group = group(
+        vec![repeated_image_patches_at(id, 510.0, 4.0, 0.25)],
+        1.0,
+    );
+    let composition = Render2dComposition::new(vec![
+        Render2dEntry::group(left_group),
+        distant_group,
+    ])
+    .unwrap();
+    let result = super::execute_sized(
+        &ctx,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &image_binding(id, [255, 0, 0, 128]),
+        "F3E wide three-tile source-and-clip sample phase",
+        576,
+        64,
+    );
+    let source_alpha = f64::from(128_u8) / 255.0;
+    let two_patch_alpha = 1.0 - (1.0 - source_alpha).powi(2);
+    let expected_at_seam = two_patch_alpha * 0.5 * (3.0 / 4.0);
+    let expected_distant = two_patch_alpha * 0.25;
+    let encoded = |alpha: f64| [
+        encode_linear(alpha),
+        0,
+        0,
+        (alpha * 255.0).round() as u8,
+    ];
+    for x in [255, 256] {
+        pixel_close(
+            super::pixel_sized(&result, 576, x, 20),
+            encoded(expected_at_seam),
+        );
+    }
+    for x in [510, 512, 513] {
+        pixel_close(
+            super::pixel_sized(&result, 576, x, 20),
+            encoded(expected_distant),
+        );
+    }
+    for x in [254, 257, 514, 575] {
+        pixel_close(super::pixel_sized(&result, 576, x, 20), [0, 0, 0, 0]);
+    }
 }

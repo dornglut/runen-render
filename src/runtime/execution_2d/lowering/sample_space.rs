@@ -11,7 +11,9 @@ use crate::composition_2d::{
     Render2dPrimitive, Render2dResourceBindings, Render2dResourceId, Render2dResourceValue,
 };
 use crate::execution_2d::Render2dUnsupportedContent;
-use crate::runtime::execution_2d::{clip as clip_geometry, image as image_semantics, scene, vector as geometry};
+use crate::runtime::execution_2d::{
+    clip as clip_geometry, image as image_semantics, scene, vector as geometry,
+};
 use crate::runtime::program::retained_vector_source;
 
 // At RGBA16F each 4x4 sample tile occupies 128 bytes per logical pixel/layer.
@@ -50,8 +52,8 @@ fn pipeline(
             GpuBindingKey::try_new(0, u64::from(binding))
                 .map(|key| {
                     vec![
-                        GpuBindingLayoutRefinement::new(key)
-                            .with_texture_sample_class(if entry == "fs_sample_image" {
+                        GpuBindingLayoutRefinement::new(key).with_texture_sample_class(
+                            if entry == "fs_sample_image" {
                                 GpuTextureSampleClass::FloatFilterable
                             } else {
                                 GpuTextureSampleClass::FloatUnfilterable
