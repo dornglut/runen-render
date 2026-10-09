@@ -282,10 +282,14 @@ fn clip_hit(pixel: vec2<i32>, sx: i32, sy: i32) -> f32 {
 // the packed bit masks multiply the *completed* isolated group at each
 // correlated physical sample before once-only group opacity/source-over.
 @fragment fn fs_sample_merge_clipped(input: VertexOutput) -> @location(0) vec4<f32> {
-    let physical = vec2<i32>(floor(input.position.xy));
-    let logical = physical / COVERAGE_AXIS_SAMPLES;
-    let offset = physical % COVERAGE_AXIS_SAMPLES;
+    let local_sample = vec2<i32>(floor(input.position.xy));
+    // The clip is authored in the owner's parent space; the interpolated
+    // coordinate carries the corresponding global 4x4 sample location.
+    // Texture addressing remains tile-local, including nonzero tile origins.
+    let global_sample = vec2<i32>(floor(input.mask_pixel));
+    let logical = global_sample / COVERAGE_AXIS_SAMPLES;
+    let offset = global_sample % COVERAGE_AXIS_SAMPLES;
     let visible = clip_hit(logical, offset.x, offset.y);
-    let sample = textureLoad(sample_layer, physical, 0);
+    let sample = textureLoad(sample_layer, local_sample, 0);
     return sample * (input.color.a * visible);
 }

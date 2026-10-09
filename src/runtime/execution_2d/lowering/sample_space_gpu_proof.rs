@@ -78,15 +78,15 @@ fn pipeline(
 }
 
 fn rectangle(vertices: &mut Vec<f32>, bounds: [f32; 4], extent: [f32; 2], color: [f32; 4]) {
-    rectangle_local(vertices, bounds, extent, color, [0.0, 0.0]);
+    rectangle_sample_coordinates(vertices, bounds, extent, color, [0.0, 0.0]);
 }
 
-fn rectangle_local(
+fn rectangle_sample_coordinates(
     vertices: &mut Vec<f32>,
     bounds: [f32; 4],
     extent: [f32; 2],
     color: [f32; 4],
-    tile_origin: [f32; 2],
+    sample_bias: [f32; 2],
 ) {
     let [left, top, right, bottom] = bounds;
     for [x, y] in [
@@ -100,8 +100,8 @@ fn rectangle_local(
         vertices.extend([
             x / extent[0] * 2.0 - 1.0,
             1.0 - y / extent[1] * 2.0,
-            x - tile_origin[0],
-            y - tile_origin[1],
+            x + sample_bias[0],
+            y + sample_bias[1],
             color[0],
             color[1],
             color[2],
@@ -110,15 +110,19 @@ fn rectangle_local(
     }
 }
 
-fn sample_layer(resources: &mut GpuResourceScope, label: &str) -> GpuTextureViewHandle {
+fn sample_layer(
+    resources: &mut GpuResourceScope,
+    label: &str,
+    extent: [u32; 2],
+) -> GpuTextureViewHandle {
     let texture = resources
         .texture(
             GpuTextureDescriptor::ordinary_owned_2d(
                 label,
                 GpuResourceLifetime::Transient,
                 GpuReconstruction::SourceBacked,
-                256,
-                256,
+                extent[0],
+                extent[1],
                 GpuTextureFormat::Rgba16Float,
                 [GpuTextureUsage::ColorAttachment, GpuTextureUsage::Sampled],
                 GpuTextureInitialization::Uninitialized,
@@ -164,8 +168,8 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
         .expect("isolated F3E group proof requires the real admitted Vulkan format roles");
 
     let mut resources = GpuResourceScope::new();
-    let child_view = sample_layer(&mut resources, "F3E isolated child");
-    let parent_view = sample_layer(&mut resources, "F3E parent sample plane");
+    let child_view = sample_layer(&mut resources, "F3E isolated child", [8, 8]);
+    let parent_view = sample_layer(&mut resources, "F3E parent sample plane", [8, 8]);
     let output = resources
         .texture(
             GpuTextureDescriptor::ordinary_owned_2d(
@@ -195,8 +199,8 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
     for color in [[1.0, 0.0, 0.0, 0.5], [0.0, 0.0, 1.0, 0.5]] {
         rectangle(
             &mut child_vertices,
-            [40.0, 80.0, 44.0, 84.0],
-            [256.0, 256.0],
+            [0.0, 0.0, 4.0, 4.0],
+            [8.0, 8.0],
             color,
         );
     }
@@ -205,7 +209,7 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
         fill_pipeline.clone(),
         fill_pipeline.runtime_bindings([]).unwrap(),
         &child_vertices,
-        [256, 256],
+        [8, 8],
         &mut resources,
     )
     .unwrap();
@@ -225,11 +229,12 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
 
     let merge_pipeline = pipeline(GpuTextureFormat::Rgba16Float, "fs_sample_merge", true);
     let mut merge_vertices = Vec::new();
-    rectangle(
+    rectangle_sample_coordinates(
         &mut merge_vertices,
-        [0.0, 0.0, 256.0, 256.0],
-        [256.0, 256.0],
+        [0.0, 0.0, 8.0, 8.0],
+        [8.0, 8.0],
         [1.0, 1.0, 1.0, 0.5],
+        [40.0, 80.0],
     );
     let merge_draw = vector::vector_draw(
         merge_pipeline.clone(),
@@ -237,7 +242,7 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
             .runtime_bindings([texture_binding(6, &child_view).unwrap()])
             .unwrap(),
         &merge_vertices,
-        [256, 256],
+        [8, 8],
         &mut resources,
     )
     .unwrap();
@@ -257,11 +262,12 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
 
     let resolve_pipeline = pipeline(GpuTextureFormat::Rgba8UnormSrgb, "fs_sample_resolve", true);
     let mut resolve_vertices = Vec::new();
-    rectangle(
+    rectangle_sample_coordinates(
         &mut resolve_vertices,
-        [0.0, 0.0, 64.0, 64.0],
+        [10.0, 20.0, 11.0, 21.0],
         [64.0, 64.0],
         [1.0, 1.0, 1.0, 1.0],
+        [-10.0, -20.0],
     );
     let resolve_draw = vector::vector_draw(
         resolve_pipeline.clone(),
@@ -316,7 +322,7 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
         clip_pipeline.clone(),
         clip_pipeline.runtime_bindings(clip_values).unwrap(),
         &merge_vertices,
-        [256, 256],
+        [8, 8],
         &mut resources,
     )
     .unwrap();
@@ -552,12 +558,12 @@ fn retained_gpu_plane_resolves_correlated_siblings_once_over_prior_target() {
 
     let resolve_pipeline = pipeline(GpuTextureFormat::Rgba8UnormSrgb, "fs_sample_resolve", true);
     let mut output_vertices = Vec::new();
-    rectangle_local(
+    rectangle_sample_coordinates(
         &mut output_vertices,
         [10.0, 20.0, 11.0, 21.0],
         [64.0, 64.0],
         [1.0, 1.0, 1.0, 1.0],
-        [10.0, 20.0],
+        [-10.0, -20.0],
     );
     let resolve_draw = vector::vector_draw(
         resolve_pipeline.clone(),
