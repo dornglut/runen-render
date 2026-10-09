@@ -55,12 +55,9 @@ fn pipeline(
         })
         .transpose()?
         .unwrap_or_default();
-    let program = GpuProgramDescriptor::new(
-        source,
-        [vertex.clone(), fragment.clone()],
-        refinements,
-    )
-    .map_err(|e| gpu("F3E sample program", e))?;
+    let program =
+        GpuProgramDescriptor::new(source, [vertex.clone(), fragment.clone()], refinements)
+            .map_err(|e| gpu("F3E sample program", e))?;
     let layout = GpuVertexBufferLayoutDescriptor::new(
         0,
         VERTEX_STRIDE,
@@ -85,8 +82,7 @@ fn pipeline(
     )
     .map_err(|e| gpu("F3E attachment format", e))?;
     let state = GpuRenderPipelineStateDescriptor::new(
-        GpuVertexInputStateDescriptor::new([layout])
-            .map_err(|e| gpu("F3E vertex input", e))?,
+        GpuVertexInputStateDescriptor::new([layout]).map_err(|e| gpu("F3E vertex input", e))?,
         Some(GpuFragmentOutputStateDescriptor::new([output])),
         GpuPrimitiveStateDescriptor::default(),
         None,
@@ -125,11 +121,8 @@ fn scratch(
         .map_err(|e| gpu("F3E scratch", e))?;
     resources
         .texture_view(
-            GpuTextureViewDescriptor::ordinary_full_owned(
-                format!("{name} view"),
-                &texture,
-            )
-            .map_err(|e| gpu("F3E scratch view descriptor", e))?,
+            GpuTextureViewDescriptor::ordinary_full_owned(format!("{name} view"), &texture)
+                .map_err(|e| gpu("F3E scratch view descriptor", e))?,
         )
         .map_err(|e| gpu("F3E scratch view", e))
 }
@@ -147,15 +140,10 @@ fn operation(
     } else {
         GpuColorAttachmentLoad::Load
     };
-    let attachment = GpuRenderColorAttachment::new(
-        view.clone(),
-        load,
-        GpuAttachmentStore::Store,
-        None,
-    )
-    .map_err(|e| gpu("F3E attachment", e))?;
-    GpuRenderOperation::new([attachment], None, draws, None)
-        .map_err(|e| gpu("F3E pass", e))
+    let attachment =
+        GpuRenderColorAttachment::new(view.clone(), load, GpuAttachmentStore::Store, None)
+            .map_err(|e| gpu("F3E attachment", e))?;
+    GpuRenderOperation::new([attachment], None, draws, None).map_err(|e| gpu("F3E pass", e))
 }
 
 fn append(
@@ -216,10 +204,7 @@ fn draw(
     vector::vector_draw(pipeline.clone(), bindings, vertices, extent, resources)
 }
 
-fn tile_side(
-    target: &AdmittedTarget,
-    depth: usize,
-) -> Result<u32, Render2dExecutionError> {
+fn tile_side(target: &AdmittedTarget, depth: usize) -> Result<u32, Render2dExecutionError> {
     let depth = u64::try_from(depth).map_err(|_| failure("sample-depth overflow"))?;
     let bytes_per_pixel = (depth + 1)
         .checked_mul(COLOR_BYTES_PER_PIXEL)
@@ -264,7 +249,11 @@ fn inspect(
                 depth -= 1;
                 meshes.push(None);
             }
-            scene::Event::Item { item, path, to_root } => {
+            scene::Event::Item {
+                item,
+                path,
+                to_root,
+            } => {
                 if !item.clips().is_empty()
                     || !matches!(
                         item.primitive(),
@@ -283,8 +272,9 @@ fn inspect(
                     .into());
                 }
                 let [a, b, c, d, tx, ty] = to_root.coefficients();
-                let transform = Render2dAffineTransform::new(a, b, c, d, tx, ty)
-                    .map_err(|_| failure(format!("entry path {path:?}: unrepresentable transform")))?;
+                let transform = Render2dAffineTransform::new(a, b, c, d, tx, ty).map_err(|_| {
+                    failure(format!("entry path {path:?}: unrepresentable transform"))
+                })?;
                 let derived = Render2dItem::new(
                     item.primitive().clone(),
                     transform,
@@ -328,7 +318,10 @@ pub(in crate::runtime::execution_2d) fn lower(
         .format_roles()
         .collect::<BTreeSet<_>>();
     for (format, role) in [
-        (GpuTextureFormat::Rgba16Float, GpuFormatRole::ColorAttachment),
+        (
+            GpuTextureFormat::Rgba16Float,
+            GpuFormatRole::ColorAttachment,
+        ),
         (GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable),
         (GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled),
         (FIELD_FORMAT, GpuFormatRole::ColorAttachment),
@@ -380,11 +373,7 @@ pub(in crate::runtime::execution_2d) fn lower(
         "fs_sample_mask_fill",
         Some(0),
     )?;
-    let merge_pipeline = pipeline(
-        GpuTextureFormat::Rgba16Float,
-        "fs_sample_merge",
-        Some(6),
-    )?;
+    let merge_pipeline = pipeline(GpuTextureFormat::Rgba16Float, "fs_sample_merge", Some(6))?;
     let resolve_pipeline = pipeline(target.format, "fs_sample_resolve", Some(6))?;
 
     let mut operations = Vec::new();
@@ -404,8 +393,10 @@ pub(in crate::runtime::execution_2d) fn lower(
             let mut any_mesh = false;
             for mesh in meshes.iter().flatten() {
                 let b = mesh.bounds;
-                if b[0] < end[0] && b[0].saturating_add(b[2]) > origin[0]
-                    && b[1] < end[1] && b[1].saturating_add(b[3]) > origin[1]
+                if b[0] < end[0]
+                    && b[0].saturating_add(b[2]) > origin[0]
+                    && b[1] < end[1]
+                    && b[1].saturating_add(b[3]) > origin[1]
                 {
                     any_mesh = true;
                     break;
@@ -422,7 +413,10 @@ pub(in crate::runtime::execution_2d) fn lower(
                     scene::Event::BeginGroup { group, .. } => {
                         depth += 1;
                         group_stack.push(group);
-                        append(&mut operations, operation(&layers[depth], true, Vec::new())?)?;
+                        append(
+                            &mut operations,
+                            operation(&layers[depth], true, Vec::new())?,
+                        )?;
                     }
                     scene::Event::EndGroup => {
                         let group = group_stack.pop().expect("balanced F1 group plan");
