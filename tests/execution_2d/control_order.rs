@@ -58,11 +58,11 @@ fn independent_predecessor_and_successor_bracket_every_authored_f2_node() {
     ])
     .expect("vector/text/vector paint");
     let source = bindings(id, shaped_resource(OUTLINE_FONT, false, BOX_GLYPH, 24.0));
-    let (main_texture, target) = target("controlled F2 surface");
+    let (main_texture, main_target) = target("controlled F2 surface");
     let (_, before_target) = target("independent predecessor surface");
     let (_, after_target) = target("independent successor surface");
     let prepared_f2 = Render2dExecutor::new()
-        .prepare(&context, &composition, &source, &target)
+        .prepare(&context, &composition, &source, &main_target)
         .expect("real mixed contribution");
     assert!(prepared_f2.has_render_work());
     let readback = GpuReadbackOperation::ordinary(
@@ -75,7 +75,7 @@ fn independent_predecessor_and_successor_bracket_every_authored_f2_node() {
     let mut token = None;
     let mut control = None;
     let fragment = GpuWorkFragment::build("mixed F2 inside one fragment", |work| {
-        work.operation("initialize target", clear(&target, 0.0))?;
+        work.operation("initialize target", clear(&main_target, 0.0))?;
         let predecessor = work.operation("unrelated before", clear(&before_target, 1.0))?;
         let f2 = prepared_f2.append_to(work)?.expect("painting token");
         assert!(
