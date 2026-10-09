@@ -471,8 +471,15 @@ pub enum Render2dExecutionError {
     ResourceBindings(Render2dResourceBindingError),
     /// Invocation target facts are not admitted.
     Target(Render2dTargetAdmissionError),
-    /// Composition content is outside the accepted F2 subset.
+    /// Composition content is outside the admitted supported subset.
     UnsupportedContent(Render2dUnsupportedContent),
+    /// A nested composition entry requires an unadmitted semantic capability.
+    UnsupportedEntry {
+        /// Exact zero-based authored F1 root/child occurrence path.
+        path: Vec<usize>,
+        /// Stable renderer-owned unsupported content class.
+        kind: Render2dUnsupportedContent,
+    },
     /// An already-observed semantic identity was rebound to different immutable content.
     ResourceIdentityRebound {
         /// Rebound semantic identity.
@@ -520,6 +527,9 @@ impl fmt::Display for Render2dExecutionError {
             Self::ResourceBindings(error) => error.fmt(formatter),
             Self::Target(error) => error.fmt(formatter),
             Self::UnsupportedContent(error) => error.fmt(formatter),
+            Self::UnsupportedEntry { path, kind } => {
+                write!(formatter, "2D entry path {path:?}: {kind}")
+            },
             Self::ResourceIdentityRebound { resource_id } => write!(
                 formatter,
                 "2D semantic resource {} was rebound to different immutable content",

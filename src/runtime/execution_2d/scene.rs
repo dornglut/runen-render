@@ -5,7 +5,7 @@
 use crate::composition_2d::{
     Render2dAffineTransform, Render2dComposition, Render2dEntry, Render2dGroup, Render2dItem,
 };
-use crate::execution_2d::Render2dExecutionError;
+use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 
 // Private admission budgets. Every authored entry is counted, including
 // discarded empty descendants; none can hide unbounded traversal work.
@@ -40,9 +40,10 @@ impl Affine {
         if product.into_iter().all(f64::is_finite) {
             Ok(Self(product))
         } else {
-            Err(Render2dExecutionError::Gpu {
-                stage: "F3E nested affine admission",
-                detail: format!("entry path {path:?} exceeds finite affine representation"),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path.to_vec()),
+                detail: "cumulative nested affine exceeds finite representation".to_owned(),
             })
         }
     }
@@ -96,9 +97,10 @@ enum RawEvent<'a> {
 }
 
 fn limit(path: &[usize], problem: &'static str) -> Render2dExecutionError {
-    Render2dExecutionError::Gpu {
-        stage: "F3E bounded semantic traversal",
-        detail: format!("entry path {path:?}: {problem}"),
+    Render2dExecutionError::SampleSpace {
+        kind: Render2dSampleSpaceError::ResourceLimit,
+        path: Some(path.to_vec()),
+        detail: problem.to_owned(),
     }
 }
 

@@ -546,10 +546,10 @@ fn inspect(
         match event {
             scene::Event::BeginGroup { group, path, .. } => {
                 if !group.shadows().is_empty() {
-                    return Err(Render2dUnsupportedContent::Group {
+                    let kind = Render2dUnsupportedContent::Group {
                         root_index: path[0],
-                    }
-                    .into());
+                    };
+                    return Err(super::super::unsupported_at(path, kind));
                 }
                 depth += 1;
                 peak = peak.max(depth);

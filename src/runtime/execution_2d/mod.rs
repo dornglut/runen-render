@@ -220,6 +220,20 @@ struct AdmittedRun {
     translate_y: f64,
 }
 
+fn unsupported_at(
+    path: &[usize],
+    kind: Render2dUnsupportedContent,
+) -> Render2dExecutionError {
+    if path.len() <= 1 {
+        Render2dExecutionError::UnsupportedContent(kind)
+    } else {
+        Render2dExecutionError::UnsupportedEntry {
+            path: path.to_vec(),
+            kind,
+        }
+    }
+}
+
 fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecutionError> {
     let mut runs = Vec::new();
     for (event_index, event) in plan.events.iter().enumerate() {
@@ -235,10 +249,10 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
             }
             scene::Event::BeginGroup { path, group, .. } => {
                 if !group.shadows().is_empty() {
-                    return Err(Render2dUnsupportedContent::Group {
+                    let kind = Render2dUnsupportedContent::Group {
                         root_index: path[0],
-                    }
-                    .into());
+                    };
+                    return Err(unsupported_at(path, kind));
                 }
                 continue;
             }
@@ -251,7 +265,12 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
         }
         let [m11, m12, m21, m22, translate_x, translate_y] = to_root.coefficients();
         if m11 != 1.0 || m12 != 0.0 || m21 != 0.0 || m22 != 1.0 {
-            return Err(Render2dUnsupportedContent::Transform { root_index }.into());
+            let kind = Render2dUnsupportedContent::Transform { root_index };
+            let path = match event {
+                scene::Event::Item { path, .. } => path,
+                _ => unreachable!("the admitted run is an item event"),
+            };
+            return Err(unsupported_at(path, kind));
         }
         let Render2dPrimitive::ShapedText(text) = item.primitive() else {
             return Err(Render2dUnsupportedContent::Primitive { root_index }.into());
