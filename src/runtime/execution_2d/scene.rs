@@ -381,10 +381,11 @@ mod tests {
             Render2dComposition::new(vec![group(vec![item(huge)], huge, Vec::new())]).unwrap();
         assert!(matches!(
             analyze(&tree),
-            Err(Render2dExecutionError::Gpu {
-                stage: "F3E nested affine admission",
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
                 ..
-            })
+            }) if path == [0, 0]
         ));
     }
 
@@ -409,10 +410,11 @@ mod tests {
         let tree = Render2dComposition::new(vec![subtree]).unwrap();
         assert!(matches!(
             analyze(&tree),
-            Err(Render2dExecutionError::Gpu {
-                stage: "F3E bounded semantic traversal",
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
                 ..
-            })
+            }) if path.len() == MAX_DEPTH + 1 && path.iter().all(|index| *index == 0)
         ));
     }
 
