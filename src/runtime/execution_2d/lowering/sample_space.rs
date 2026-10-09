@@ -302,7 +302,10 @@ fn prepare_clip(
         )
     };
     let bytes = u64::try_from(mask.rgba.len()).map_err(|_| exceeded())?;
-    budget.reserved_bytes = budget.reserved_bytes.checked_add(bytes).ok_or_else(exceeded)?;
+    budget.reserved_bytes = budget
+        .reserved_bytes
+        .checked_add(bytes)
+        .ok_or_else(exceeded)?;
     super::clip::upload(target, &mask, resources).map(Some)
 }
 
@@ -450,6 +453,49 @@ pub(in crate::runtime::execution_2d) fn lower(
         dimension,
         FIELD_FORMAT,
     )?;
+    // The same immutable F3B stop payload is uploaded once per authored
+    // vector occurrence. Tiles reuse its source-backed RunenGPU handle;
+    // previously a large scene could upload the same payload per tile.
+    const MAX_GRADIENT_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
+    let mut allocated_gradient_bytes = 0_u64;
+    let gradient_buffers = meshes
+        .iter()
+        .map(|maybe_mesh| {
+            let Some(mesh) = maybe_mesh else { return Ok(None) };
+            let Some(words) = vector::gradient_payload(mesh)? else { return Ok(None) };
+            let bytes = u64::try_from(words.len())
+                .ok()
+                .and_then(|length| length.checked_mul(4))
+                .ok_or_else(|| failure("gradient payload size overflow"))?;
+            allocated_gradient_bytes = allocated_gradient_bytes
+                .checked_add(bytes)
+                .ok_or_else(|| failure("aggregate gradient resource overflow"))?;
+            if bytes > target.max_buffer_bytes()
+                || allocated_gradient_bytes > MAX_GRADIENT_PAYLOAD_BYTES
+            {
+                return Err(failure("gradient stop storage exceeds bounded admission"));
+            }
+            let data = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
+                "runen-render F3E retained gradient stops",
+                &words,
+            )
+            .map_err(|e| gpu("F3E gradient payload", e))?;
+            let buffer = resources
+                .buffer(
+                    GpuBufferDescriptor::ordinary_owned(
+                        "runen-render F3E retained gradient stops",
+                        GpuResourceLifetime::Transient,
+                        GpuReconstruction::SourceBacked,
+                        data.layout().byte_len(),
+                        [GpuBufferUsage::Storage, GpuBufferUsage::CopyDestination],
+                        GpuBufferInitialization::Prepared(data),
+                    )
+                    .map_err(|e| gpu("F3E gradient buffer descriptor", e))?,
+                )
+                .map_err(|e| gpu("F3E gradient buffer", e))?;
+            Ok(Some(buffer))
+        })
+        .collect::<Result<Vec<_>, Render2dExecutionError>>()?;
     let coverage_pipeline = pipeline(FIELD_FORMAT, "fs_coverage", None)?;
     let fill_pipeline = pipeline(
         GpuTextureFormat::Rgba16Float,
@@ -467,11 +513,7 @@ pub(in crate::runtime::execution_2d) fn lower(
         "fs_sample_mask_fill_clipped",
         Some(0),
     )?;
-    let gradient_pipeline = pipeline(
-        GpuTextureFormat::Rgba16Float,
-        "fs_sample_gradient",
-        Some(0),
-    )?;
+    let gradient_pipeline = pipeline(GpuTextureFormat::Rgba16Float, "fs_sample_gradient", Some(0))?;
     let gradient_clipped_pipeline = pipeline(
         GpuTextureFormat::Rgba16Float,
         "fs_sample_gradient_clipped",
@@ -654,7 +696,6 @@ pub(in crate::runtime::execution_2d) fn lower(
                         )?;
                         // F3B's single gradient payload authority supplies exact
                         // premultiplied linear authored stops and inverse brush mapping.
-                        let mut gradient_buffer = None;
                         let (paint_pipeline, vertex_color) = match &mesh.brush {
                             Render2dBrush::Solid(color) => {
                                 let mut rgba = linear_color(*color);
@@ -667,27 +708,6 @@ pub(in crate::runtime::execution_2d) fn lower(
                                 (pipeline, rgba)
                             }
                             Render2dBrush::Linear(_) | Render2dBrush::Radial(_) => {
-                                let words = vector::gradient_payload(mesh)?
-                                    .expect("shared F3B non-solid gradient payload");
-                                let data = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
-                                    "runen-render F3E gradient stops",
-                                    &words,
-                                )
-                                .map_err(|e| gpu("F3E gradient payload", e))?;
-                                let buffer = resources
-                                    .buffer(
-                                        GpuBufferDescriptor::ordinary_owned(
-                                            "runen-render F3E gradient stops",
-                                            GpuResourceLifetime::Transient,
-                                            GpuReconstruction::SourceBacked,
-                                            data.layout().byte_len(),
-                                            [GpuBufferUsage::Storage, GpuBufferUsage::CopyDestination],
-                                            GpuBufferInitialization::Prepared(data),
-                                        )
-                                        .map_err(|e| gpu("F3E gradient buffer descriptor", e))?,
-                                    )
-                                    .map_err(|e| gpu("F3E gradient buffer", e))?;
-                                gradient_buffer = Some(buffer);
                                 let pipeline = if item_clip.is_some() {
                                     &gradient_clipped_pipeline
                                 } else {
@@ -712,7 +732,7 @@ pub(in crate::runtime::execution_2d) fn lower(
                             paint_pipeline,
                             Some((0, &mask)),
                             item_clip.as_ref(),
-                            gradient_buffer.as_ref(),
+                            gradient_buffers[index].as_ref(),
                             &full_quad,
                             physical,
                             &mut resources,

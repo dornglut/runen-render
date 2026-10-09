@@ -198,7 +198,6 @@ fn group_item_clip_uses_its_own_parent_space_after_group_transform() {
     pixel_close(pixel(&image, 11, 20), [0, 0, 0, 0]);
 }
 
-
 fn linear_gradient_item(start: f64, end: f64, left: f64, width: f64) -> Render2dEntry {
     let stops = Render2dGradientStops::new(vec![
         Render2dGradientStop::new(0.0, Render2dColorRgba8::new(255, 0, 0, 255)).unwrap(),
