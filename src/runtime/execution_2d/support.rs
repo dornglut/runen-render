@@ -516,7 +516,6 @@ pub(super) fn blur_neutral_mask(
     })
 }
 
-
 /// Prepares one immutable neutral support source through signed Euclidean
 /// spread and finite Gaussian coverage without deriving shape from paint alpha.
 ///
@@ -681,7 +680,6 @@ pub(super) fn signed_euclidean_spread(
 mod tests {
     use super::*;
 
-
     #[test]
     fn real_transparent_offscreen_fill_flows_through_neutral_shadow_coverage() {
         use crate::composition_2d::{
@@ -690,9 +688,7 @@ mod tests {
         };
         let item = Render2dItem::new(
             Render2dPrimitive::Fill {
-                shape: Render2dShape::rect(
-                    Render2dRect::new(-10.0, 0.0, 9.0, 2.0).unwrap(),
-                ),
+                shape: Render2dShape::rect(Render2dRect::new(-10.0, 0.0, 9.0, 2.0).unwrap()),
                 brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
             },
             Render2dAffineTransform::IDENTITY,
@@ -702,11 +698,9 @@ mod tests {
         let mesh = super::super::vector::neutral_support(&item, 0, 1.0, 16_384)
             .unwrap()
             .unwrap();
-        let prepared = prepare_untranslated_shadow_coverage(
-            &mesh, 0.0, 0.0, 4.0, &[3, 1],
-        )
-        .unwrap()
-        .expect("transparent offscreen color must not erase geometric support");
+        let prepared = prepare_untranslated_shadow_coverage(&mesh, 0.0, 0.0, 4.0, &[3, 1])
+            .unwrap()
+            .expect("transparent offscreen color must not erase geometric support");
         assert_eq!(prepared.origin_x, -40);
         assert_eq!(prepared.origin_y, 0);
         assert_eq!((prepared.width, prepared.height), (36, 8));
@@ -726,17 +720,23 @@ mod tests {
     fn signed_spread_can_erode_real_neutral_geometry_completely() {
         let mesh = NeutralMesh {
             triangles: vec![
-                [0.0, 0.0], [1.0, 0.0], [1.0, 1.0],
-                [0.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 1.0],
+                [0.0, 0.0],
+                [1.0, 1.0],
+                [0.0, 1.0],
             ],
             bounds: [0.0, 0.0, 1.0, 1.0],
         };
-        assert!(prepare_untranslated_shadow_coverage(
-            &mesh, -1.0, 0.0, 4.0, &[0],
-        ).unwrap().is_none());
-        let visible = prepare_untranslated_shadow_coverage(
-            &mesh, 0.0, 0.25, 4.0, &[0],
-        ).unwrap().unwrap();
+        assert!(
+            prepare_untranslated_shadow_coverage(&mesh, -1.0, 0.0, 4.0, &[0],)
+                .unwrap()
+                .is_none()
+        );
+        let visible = prepare_untranslated_shadow_coverage(&mesh, 0.0, 0.25, 4.0, &[0])
+            .unwrap()
+            .unwrap();
         assert!(visible.values.iter().any(|value| *value > 0.0));
     }
 
