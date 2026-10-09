@@ -646,3 +646,50 @@ fn grouped_text_unsupported_intrinsic_fails_without_observing_identity() {
             .has_render_work()
     );
 }
+
+#[test]
+fn missing_sample_plane_roles_reject_root_and_identity_group_equally() {
+    // Target admission succeeds, but Rgba16Float sample planes are NOT admitted.
+    // The old direct-root fallback would silently render different pixels.
+    let descriptor =
+        GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
+            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::ColorAttachment)
+            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Blendable)
+            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource)
+            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment)
+            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled)
+            .with_allowed_backends([GpuBackendFamily::Vulkan])
+            .with_fallback_policy(GpuSoftwareFallbackPolicy::Require)
+            .with_label("F3E typed unified sample-plane admission");
+    let context = match pollster::block_on(GpuContext::request(descriptor)) {
+        Ok(context) => context,
+        Err(error) if error.category() == GpuContextRequestErrorCategory::NoAdapterAvailable => {
+            assert_ne!(std::env::var("RUNEN_RENDER_REQUIRE_GPU").ok().as_deref(), Some("1"));
+            return;
+        }
+        Err(error) => panic!("F3E typed capability test GPU request: {error}"),
+    };
+    let entries = || vec![
+        solid(Render2dColorRgba8::WHITE, 10.0, 0.5),
+        solid(Render2dColorRgba8::new(0, 0, 255, 255), 10.5, 0.5),
+    ];
+    let direct = Render2dComposition::new(entries()).unwrap();
+    let nested = Render2dComposition::new(vec![group(entries(), 1.0)]).unwrap();
+    let (_, target) = super::target("F3E missing sample roles");
+    for composition in [&direct, &nested] {
+        assert!(matches!(
+            Render2dExecutor::new().prepare(
+                &context, composition, &Render2dResourceBindings::default(), &target
+            ),
+            Err(Render2dExecutionError::Target(
+                runen_render::execution_2d::Render2dTargetAdmissionError::SamplePlaneFormatUnsupported
+            ))
+        ));
+    }
+    // Purely non-painting input admits no operation and needs no sample scratch.
+    let empty = Render2dComposition::new(Vec::new()).unwrap();
+    assert!(!Render2dExecutor::new()
+        .prepare(&context, &empty, &Render2dResourceBindings::default(), &target)
+        .unwrap()
+        .has_render_work());
+}
