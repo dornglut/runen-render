@@ -11,12 +11,18 @@ fn context() -> Option<GpuContext> {
             .with_allowed_backends([GpuBackendFamily::Vulkan])
             .with_label("F3E source-neutral grouped solid vector consumer");
     for (format, role) in [
-        (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::ColorAttachment),
+        (
+            GpuTextureFormat::Rgba8UnormSrgb,
+            GpuFormatRole::ColorAttachment,
+        ),
         (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Blendable),
         (GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment),
         (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled),
-        (GpuTextureFormat::Rgba16Float, GpuFormatRole::ColorAttachment),
+        (
+            GpuTextureFormat::Rgba16Float,
+            GpuFormatRole::ColorAttachment,
+        ),
         (GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable),
         (GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled),
     ] {
@@ -62,7 +68,10 @@ fn group(entries: Vec<Render2dEntry>, opacity: f64) -> Render2dEntry {
 
 fn pixel_close(actual: [u8; 4], expected: [u8; 4]) {
     assert!(
-        actual.into_iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 4),
+        actual
+            .into_iter()
+            .zip(expected)
+            .all(|(a, b)| a.abs_diff(b) <= 4),
         "correlated pixel {actual:?}, expected {expected:?}"
     );
 }

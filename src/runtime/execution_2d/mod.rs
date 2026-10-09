@@ -49,7 +49,11 @@ impl Render2dExecutionState {
         // F3E's admitted vector-only tree uses one correlated physical 4x4
         // sample plane for roots AND isolated nested groups. Other grouped
         // semantic classes are rejected before any external target mutation.
-        if plan.events.iter().any(|event| matches!(event, scene::Event::BeginGroup { .. })) {
+        if plan
+            .events
+            .iter()
+            .any(|event| matches!(event, scene::Event::BeginGroup { .. }))
+        {
             let admitted_target = lowering::admit_target(context, target, false)?;
             let lowered = lowering::sample_space::lower(context, &admitted_target, &plan)?;
             return Ok(Render2dPreparedContribution::new(

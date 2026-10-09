@@ -44,7 +44,7 @@ fn pipeline(
     let fragment = GpuEntryPointName::new(entry).map_err(|e| gpu("F3E fragment entry", e))?;
     let refinements = sample_binding
         .map(|binding| {
-            GpuBindingKey::try_new(0, binding)
+            GpuBindingKey::try_new(0, u64::from(binding))
                 .map(|key| {
                     vec![
                         GpuBindingLayoutRefinement::new(key)
@@ -317,7 +317,7 @@ fn inspect(
 /// globally-phased sample plane. This is an admitted *staging subset* of the
 /// same future mixed-content F3E compiler, not a second persistent renderer.
 /// All nonadmitted semantics reject before an external target is modified.
-pub(super) fn lower(
+pub(in crate::runtime::execution_2d) fn lower(
     context: &GpuContext,
     target: &AdmittedTarget,
     plan: &scene::Plan<'_>,
@@ -435,17 +435,25 @@ pub(super) fn lower(
                             [0.0, 0.0],
                         );
                         let merged = draw(
-                            &merge_pipeline, Some((6, &layers[depth])),
-                            &vertices, physical, &mut resources,
+                            &merge_pipeline,
+                            Some((6, &layers[depth])),
+                            &vertices,
+                            physical,
+                            &mut resources,
                         )?;
-                        append(&mut operations, operation(&layers[depth - 1], false, vec![merged])?)?;
+                        append(
+                            &mut operations,
+                            operation(&layers[depth - 1], false, vec![merged])?,
+                        )?;
                         depth -= 1;
                     }
                     scene::Event::Item { .. } => {
                         let Some(mesh) = &meshes[index] else { continue };
                         let [left, top, width, height] = mesh.bounds;
-                        if left >= end[0] || left.saturating_add(width) <= origin[0]
-                            || top >= end[1] || top.saturating_add(height) <= origin[1]
+                        if left >= end[0]
+                            || left.saturating_add(width) <= origin[0]
+                            || top >= end[1]
+                            || top.saturating_add(height) <= origin[1]
                         {
                             continue;
                         }
@@ -456,14 +464,25 @@ pub(super) fn lower(
                             coverage_vertices.extend([
                                 physical_x_to_ndc(x, dimension),
                                 physical_y_to_ndc(y, dimension),
-                                0.0, 0.0, 1.0, 1.0, 1.0, 1.0,
+                                0.0,
+                                0.0,
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0,
                             ]);
                         }
                         let coverage_draw = draw(
-                            &coverage_pipeline, None,
-                            &coverage_vertices, physical, &mut resources,
+                            &coverage_pipeline,
+                            None,
+                            &coverage_vertices,
+                            physical,
+                            &mut resources,
                         )?;
-                        append(&mut operations, operation(&mask, true, vec![coverage_draw])?)?;
+                        append(
+                            &mut operations,
+                            operation(&mask, true, vec![coverage_draw])?,
+                        )?;
                         let Render2dBrush::Solid(color) = &mesh.brush else {
                             unreachable!("solid brush preflight")
                         };
@@ -478,10 +497,16 @@ pub(super) fn lower(
                             [0.0, 0.0],
                         );
                         let color_draw = draw(
-                            &fill_pipeline, Some((0, &mask)),
-                            &full_quad, physical, &mut resources,
+                            &fill_pipeline,
+                            Some((0, &mask)),
+                            &full_quad,
+                            physical,
+                            &mut resources,
                         )?;
-                        append(&mut operations, operation(&layers[depth], false, vec![color_draw])?)?;
+                        append(
+                            &mut operations,
+                            operation(&layers[depth], false, vec![color_draw])?,
+                        )?;
                     }
                 }
             }
@@ -489,8 +514,10 @@ pub(super) fn lower(
             rectangle(
                 &mut resolve_vertices,
                 [
-                    f64::from(origin[0]), f64::from(origin[1]),
-                    f64::from(end[0]), f64::from(end[1]),
+                    f64::from(origin[0]),
+                    f64::from(origin[1]),
+                    f64::from(end[0]),
+                    f64::from(end[1]),
                 ],
                 [target.physical_width, target.physical_height],
                 [1.0; 4],
@@ -503,7 +530,10 @@ pub(super) fn lower(
                 [target.physical_width, target.physical_height],
                 &mut resources,
             )?;
-            append(&mut operations, operation(&target.view, false, vec![resolve_draw])?)?;
+            append(
+                &mut operations,
+                operation(&target.view, false, vec![resolve_draw])?,
+            )?;
         }
     }
     Ok(operations)
