@@ -440,7 +440,6 @@ pub(super) struct NeutralCoverage {
     pub(super) values: Vec<f64>,
 }
 
-
 /* Continuous area reconstruction for a disposable parent-frame sample cell.
  *
  * At any open horizontal slab between triangle vertices, edge crossings and
@@ -499,16 +498,12 @@ fn area_sample(
     let mut events = vec![y0, y1];
     for triangle in &active {
         // Fully covered unit cells have exact coverage one, no sweep needed.
-        if [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
-            .iter()
-            .all(|&p| {
-                let a = orient(triangle[0], triangle[1], p);
-                let b = orient(triangle[1], triangle[2], p);
-                let c = orient(triangle[2], triangle[0], p);
-                (a >= 0.0 && b >= 0.0 && c >= 0.0)
-                    || (a <= 0.0 && b <= 0.0 && c <= 0.0)
-            })
-        {
+        if [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].iter().all(|&p| {
+            let a = orient(triangle[0], triangle[1], p);
+            let b = orient(triangle[1], triangle[2], p);
+            let c = orient(triangle[2], triangle[0], p);
+            (a >= 0.0 && b >= 0.0 && c >= 0.0) || (a <= 0.0 && b <= 0.0 && c <= 0.0)
+        }) {
             return Ok(1.0);
         }
         for i in 0..3 {
@@ -613,8 +608,10 @@ fn rasterize_area_coverage(
     let mut work = 0;
     for y in 0..grid.height {
         for x in 0..grid.width {
-            let x0 = f64::from(i32::try_from(grid.origin_x).expect("bounded lattice origin")) + as_f64(x);
-            let y0 = f64::from(i32::try_from(grid.origin_y).expect("bounded lattice origin")) + as_f64(y);
+            let x0 = f64::from(i32::try_from(grid.origin_x).expect("bounded lattice origin"))
+                + as_f64(x);
+            let y0 = f64::from(i32::try_from(grid.origin_y).expect("bounded lattice origin"))
+                + as_f64(y);
             values[y * grid.width + x] = area_sample(&triangles, x0, y0, &mut work, path)?;
         }
     }
@@ -650,7 +647,11 @@ fn blur_neutral_coverage(
     {
         return Err(resource("neutral blur source coverage exceeds bounds"));
     }
-    if !input.values.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+    if !input
+        .values
+        .iter()
+        .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+    {
         return Err(precision("neutral blur input has invalid coverage"));
     }
     if kernel.radius
@@ -713,8 +714,7 @@ fn blur_neutral_coverage(
     let mut source = filled(area, 0.0_f64, path)?;
     for y in 0..input.height {
         for x in 0..input.width {
-            source[(y + pad) * width + x + pad] =
-                input.values[y * input.width + x];
+            source[(y + pad) * width + x + pad] = input.values[y * input.width + x];
         }
     }
     let mut horizontal = filled(area, 0.0_f64, path)?;
