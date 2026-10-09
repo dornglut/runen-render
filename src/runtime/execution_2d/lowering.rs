@@ -283,7 +283,7 @@ fn lower(
         return Ok(None);
     }
 
-    let pipeline = shaped_text_pipeline(target.format, clipped.is_some())?;
+    let pipeline = shaped_text_pipeline(target.format, clipped.is_some(), false)?;
     let mut resources = GpuResourceScope::new();
     let sampler = create_sampler(&mut resources)?;
     let vertex_buffer = create_vertex_buffer(&mut resources, &vertex_values)?;
@@ -398,9 +398,10 @@ pub(crate) fn add_target_boundary(
     Ok(())
 }
 
-fn shaped_text_pipeline(
+pub(super) fn shaped_text_pipeline(
     format: GpuTextureFormat,
     clipped: bool,
+    sampled: bool,
 ) -> Result<GpuRenderPipelineDescriptor, Render2dExecutionError> {
     let source =
         retained_shaped_text_source().map_err(|error| Render2dExecutionError::Program {
@@ -409,7 +410,9 @@ fn shaped_text_pipeline(
         })?;
     let vertex =
         GpuEntryPointName::new("vs_main").map_err(|error| gpu("vertex entry-point name", error))?;
-    let fragment = GpuEntryPointName::new(if clipped {
+    let fragment = GpuEntryPointName::new(if sampled {
+        "fs_sample_projection"
+    } else if clipped {
         "fs_main_clipped"
     } else {
         "fs_main"
@@ -645,10 +648,22 @@ fn f32_from_f64(value: f64) -> f32 {
     value as f32
 }
 
-fn glyph_vertices(
+#[derive(Clone, Copy, Debug)]
+pub(super) struct GlyphPlacement {
+    pub(super) x0: f64,
+    pub(super) y0: f64,
+    pub(super) width: f64,
+    pub(super) height: f64,
+    pub(super) left: f64,
+    pub(super) top: f64,
+    pub(super) right: f64,
+    pub(super) bottom: f64,
+}
+
+pub(super) fn glyph_placement(
     target: &AdmittedTarget,
     occurrence: &GlyphOccurrence,
-) -> Result<Option<[[f32; FLOATS_PER_VERTEX]; GLYPH_VERTEX_ARRAY_LEN]>, Render2dExecutionError> {
+) -> Result<Option<GlyphPlacement>, Render2dExecutionError> {
     if occurrence.logical_width <= 0.0 || occurrence.logical_height <= 0.0 {
         return Err(gpu_text("glyph bounds", "2D glyph extent must be positive"));
     }
@@ -680,8 +695,20 @@ fn glyph_vertices(
         return Ok(None);
     }
 
-    // Generated samples lie at texel centers. Geometry spans the texture edges,
-    // so normalized UVs preserve the field's exact projection without rescaling it.
+
+    Ok(Some(GlyphPlacement { x0, y0, width, height, left, top, right, bottom }))
+}
+
+fn glyph_vertices(
+    target: &AdmittedTarget,
+    occurrence: &GlyphOccurrence,
+) -> Result<Option<[[f32; FLOATS_PER_VERTEX]; GLYPH_VERTEX_ARRAY_LEN]>, Render2dExecutionError> {
+    let Some(GlyphPlacement { x0, y0, width, height, left, top, right, bottom }) =
+        glyph_placement(target, occurrence)?
+    else {
+        return Ok(None);
+    };
+    // Preserve the accepted F2 pixel-coordinate projection exactly.
     let u0 = f32_from_f64(((left - x0) / width).clamp(0.0, 1.0));
     let u1 = f32_from_f64(((right - x0) / width).clamp(0.0, 1.0));
     let v0 = f32_from_f64(((top - y0) / height).clamp(0.0, 1.0));
