@@ -15,7 +15,7 @@ The temporal reconstruction shader scatters an explicit current-phase visited st
 - If neither is available and this phase did not visit the cell, evaluate the **same phase-aligned requested-cell ray** through the shared RunenShader-admitted nearest-hit/direct-radiance implementation. A valid same-ray no-hit is defined zero under the maintained no-environment policy; a hit requires successful finite direct illumination (availability 2).
 - If the primary query was invalid, current-only query is invalid, or radiance cannot be established, output availability 0 and the explicit quiet-NaN physical sentinel `0x7fc00000`. A zero-initialized scratch word is never considered availability evidence.
 
-A provisional current-only sample is neither a finished footprint integral nor a new history contributor. Source generation and scene/observation revisions continue to invalidate retained history. GPU submission identity and terminal status remain with RunenGPU. A prepared output alone is not successful execution evidence.
+A provisional current-only sample is neither a finished footprint integral nor a new history contributor. Source generation and scene/observation revisions continue to invalidate retained history. The temporal signature additionally retains and compares the **exact structurally shared immutable scene snapshot**: different scene stores with coincident numeric revisions but different material/emitter facts MUST NOT be accepted as compatible history. Persistent root equality is O(1) for unchanged snapshots. GPU submission identity and terminal status remain with RunenGPU. A prepared output alone is not successful execution evidence.
 
 ## Downstream contract
 

@@ -208,7 +208,11 @@ pub(super) fn prepare_temporal_state(
     }
     let camera_capable = evaluation_extent == requested_extent;
     let signature = DeterministicTemporalSignature {
-        scene_revision: admitted.scene_revision(),
+        // The full structurally shared snapshot distinguishes independent scene
+        // stores that happen to have the same numeric revision but different
+        // emitters/materials or visibility. A revision alone cannot certify
+        // static radiance compatibility.
+        scene: admitted.plan().scene().clone(),
         observation: temporal_observation_compatibility(resolved.observation, camera_capable),
         output: resolved.requested.spec(),
         semantic_inputs: admitted.surface_semantic_inputs().to_vec(),

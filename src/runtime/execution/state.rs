@@ -7,7 +7,7 @@ use crate::field_input::RenderFieldSemanticInputBinding;
 use crate::request::{
     RenderObservationSpec, RenderOutputSpec, RenderPerspectiveObservation, RenderSamplingSupport,
 };
-use crate::scene::RenderSceneRevision;
+use crate::scene::RenderSceneSnapshot;
 use crate::space_time::RenderTimeInterval;
 use crate::surface_input::RenderSurfaceSemanticInputBinding;
 use runen_gpu::{
@@ -64,7 +64,7 @@ pub(super) enum DeterministicTemporalObservationCompatibility {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DeterministicTemporalSignature {
-    pub(super) scene_revision: RenderSceneRevision,
+    pub(super) scene: RenderSceneSnapshot,
     pub(super) observation: DeterministicTemporalObservationCompatibility,
     pub(super) output: RenderOutputSpec,
     pub(super) semantic_inputs: Vec<RenderSurfaceSemanticInputBinding>,

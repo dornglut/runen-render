@@ -1051,10 +1051,8 @@ fn phase_aligned_fallback_gpu_matches_same_phase_full_requested_evaluator() {
     for requested in [(8_u32, 8_u32), (7, 5), (9, 1), (1, 9)] {
         let profile = |numerator: u32, denominator: u32| {
             (
-                ((requested.0 * numerator) / denominator)
-                    .max(requested.0.div_ceil(2)),
-                ((requested.1 * numerator) / denominator)
-                    .max(requested.1.div_ceil(2)),
+                ((requested.0 * numerator) / denominator).max(requested.0.div_ceil(2)),
+                ((requested.1 * numerator) / denominator).max(requested.1.div_ceil(2)),
             )
         };
         for evaluation in [profile(3, 4), profile(2, 3), profile(1, 2)] {
@@ -1089,14 +1087,26 @@ fn phase_aligned_fallback_gpu_matches_same_phase_full_requested_evaluator() {
                 assert_eq!(evidence.phase, phase);
                 assert!(!evidence.camera_reprojection_eligible);
                 assert!(radiance.availability_export_relationship().is_some());
-                assert!(radiance.availability_import(
-                    GpuResourceProvenance::new(
-                        radiance.texture().unwrap().descriptor().common().label().clone(),
-                        None, None
-                    )
-                ).is_some());
                 assert!(
-                    prepared.work_set().fragments().iter()
+                    radiance
+                        .availability_import(GpuResourceProvenance::new(
+                            radiance
+                                .texture()
+                                .unwrap()
+                                .descriptor()
+                                .common()
+                                .label()
+                                .clone(),
+                            None,
+                            None
+                        ))
+                        .is_some()
+                );
+                assert!(
+                    prepared
+                        .work_set()
+                        .fragments()
+                        .iter()
                         .flat_map(|fragment| fragment.nodes())
                         .all(|node| node.kind() != GpuWorkNodeKind::Readback),
                     "ordinary fallback may not introduce per-frame CPU readback"
@@ -1107,7 +1117,9 @@ fn phase_aligned_fallback_gpu_matches_same_phase_full_requested_evaluator() {
                 let visited = get(DeterministicBufferKind::TemporalPhasePresence);
                 let (history, counts) = match &cache.temporal_histories[&0].storage {
                     DeterministicTemporalStorage::Static {
-                        handle, sample_counts, ..
+                        handle,
+                        sample_counts,
+                        ..
                     } => (handle.clone(), sample_counts.clone()),
                     _ => panic!("sub-native uses finite static estimator"),
                 };
@@ -1313,12 +1325,8 @@ fn fixture_with_directional_illumination(
         RenderObjectParticipation::from_representations([])
             .unwrap()
             .with_emitter(Some(
-                RenderDirectionalEmitter::new(
-                    light_direction,
-                    550e-9,
-                    std::f64::consts::PI,
-                )
-                .unwrap(),
+                RenderDirectionalEmitter::new(light_direction, 550e-9, std::f64::consts::PI)
+                    .unwrap(),
             )),
     );
     store.commit(attach).unwrap();
@@ -1345,9 +1353,7 @@ fn gpu_current_fallback_uses_actual_illumination_not_only_identical_depth() {
                 fixture,
                 &context,
                 0,
-                MaintainedExecutionKind::Semantic(
-                    fixture.request.outputs()[0].spec().value(),
-                ),
+                MaintainedExecutionKind::Semantic(fixture.request.outputs()[0].spec().value()),
             ),
         );
         let mut cache = DeterministicResourceCache::default();
@@ -1372,16 +1378,19 @@ fn gpu_current_fallback_uses_actual_illumination_not_only_identical_depth() {
         );
         let stride = results[0].len() / requested.1 as usize;
         for cell in 0..256_usize {
-            let physical = (cell / requested.0 as usize) * stride
-                + cell % requested.0 as usize;
+            let physical = (cell / requested.0 as usize) * stride + cell % requested.0 as usize;
             if reference[1][cell] == 1 {
                 assert_eq!(results[1][cell], temporal_fallback::CURRENT_PHASE);
-                assert_eq!(results[0][physical], reference[0][physical],
-                    "real WGSL fallback shading must equal the same-phase full evaluator");
+                assert_eq!(
+                    results[0][physical], reference[0][physical],
+                    "real WGSL fallback shading must equal the same-phase full evaluator"
+                );
             } else {
                 assert_eq!(results[1][cell], temporal_fallback::UNRESOLVED);
-                assert_eq!(results[0][physical],
-                    temporal_fallback::UNRESOLVED_RADIANCE_BITS);
+                assert_eq!(
+                    results[0][physical],
+                    temporal_fallback::UNRESOLVED_RADIANCE_BITS
+                );
             }
         }
         cache.reconcile_temporal_outputs(true);
@@ -1393,10 +1402,63 @@ fn gpu_current_fallback_uses_actual_illumination_not_only_identical_depth() {
     assert_eq!(expected[0][1], expected[1][1]);
     assert_eq!(expected[0][3], expected[1][3]);
     assert_eq!(expected[0][4], expected[1][4]);
-    assert!(expected[0][0].iter().zip(&expected[1][0]).any(|(lit, dark)| {
-        f32::from_bits(*lit) > 0.0 && f32::from_bits(*dark) == 0.0
-    }), "the GPU scene must prove genuinely illuminated versus unlit geometry");
-    assert!(produced[0][0].iter().zip(&produced[1][0]).any(|(lit, dark)| {
-        f32::from_bits(*lit) > 0.0 && f32::from_bits(*dark) == 0.0
-    }), "actual current-only fallback must reflect illumination differences");
+    assert!(
+        expected[0][0]
+            .iter()
+            .zip(&expected[1][0])
+            .any(|(lit, dark)| { f32::from_bits(*lit) > 0.0 && f32::from_bits(*dark) == 0.0 }),
+        "the GPU scene must prove genuinely illuminated versus unlit geometry"
+    );
+    assert!(
+        produced[0][0]
+            .iter()
+            .zip(&produced[1][0])
+            .any(|(lit, dark)| { f32::from_bits(*lit) > 0.0 && f32::from_bits(*dark) == 0.0 }),
+        "actual current-only fallback must reflect illumination differences"
+    );
+}
+
+#[test]
+fn equal_numeric_scene_revisions_do_not_certify_different_illumination_histories() {
+    let Some(context) = context() else { return };
+    let first_fixture =
+        fixture_with_directional_illumination((8, 8), [0.0, 0.0, 1.0]);
+    let second_fixture =
+        fixture_with_directional_illumination((8, 8), [0.0, 0.0, -1.0]);
+    assert_eq!(first_fixture.scene.revision(), second_fixture.scene.revision());
+    assert_ne!(first_fixture.scene, second_fixture.scene);
+    let mut cache = DeterministicResourceCache::default();
+    let first = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&first_fixture, &context),
+        &context,
+        &mut cache,
+        Some((0, (4, 4))),
+        false,
+    ).unwrap();
+    let previous = first
+        .radiance_output(0)
+        .unwrap()
+        .temporal_execution_evidence()
+        .unwrap()
+        .clone();
+    let availability = cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
+    let result = observe(&context, first.work_set().fragments().to_vec(), &[availability]);
+    assert!(result[0].iter().any(|word| *word == 2));
+    cache.reconcile_temporal_outputs(true);
+    let second = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&second_fixture, &context),
+        &context,
+        &mut cache,
+        Some((0, (4, 4))),
+        false,
+    ).unwrap();
+    let current = second
+        .radiance_output(0)
+        .unwrap()
+        .temporal_execution_evidence()
+        .unwrap();
+    assert!(current.history_reset, "distinct emitter facts reject same-revision history");
+    assert_eq!(current.phase, 0);
+    assert_eq!(current.history_age, 0);
+    assert_ne!(current.history_generation, previous.history_generation);
 }

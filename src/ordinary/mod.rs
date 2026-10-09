@@ -21,9 +21,6 @@ use super::runtime::capture::{
     RenderCapturedDeterministicRadiance, RenderDeterministicRadianceCaptureError,
     RenderDeterministicRadianceCaptureRequest, RenderDeterministicRadianceCaptureRequestError,
 };
-pub use super::runtime::execution::{
-    RenderObjectIdentityDecoder, RenderRadianceCellAvailability,
-};
 use super::runtime::execution::{
     AssociatedDeterministicRender, DeterministicResourceCache, PreparedDeterministicRadianceOutput,
     PreparedDeterministicRender, RenderDeterministicExecutionError,
@@ -33,6 +30,7 @@ use super::runtime::execution::{
     prepare_deterministic_render_with_cache_and_evaluation, submit_deterministic_render,
     submit_deterministic_render_for_verified_result,
 };
+pub use super::runtime::execution::{RenderObjectIdentityDecoder, RenderRadianceCellAvailability};
 use super::runtime::verification::{
     RenderDeterministicVerificationEligibilityError, RenderDeterministicVerificationError,
     RenderDeterministicVerifiedSubmissionError,

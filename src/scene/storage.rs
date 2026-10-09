@@ -36,10 +36,24 @@ impl SceneNode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(super) struct SceneObjects {
     root: Arc<SceneNode>,
 }
+
+// An immutable snapshot retains the same persistent root across ordinary
+// rendering frames. Make equality constant-time for that overwhelmingly common
+// case, while preserving structural equality for independent equal snapshots.
+// This lets temporal compatibility compare complete scene semantics (not just
+// a coincident numeric revision) without traversing every retained object per
+// frame.
+impl PartialEq for SceneObjects {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.root, &other.root) || self.root == other.root
+    }
+}
+
+impl Eq for SceneObjects {}
 
 impl Default for SceneObjects {
     fn default() -> Self {

@@ -336,7 +336,7 @@ fn temporal_signature(source_generation: u64) -> DeterministicTemporalSignature 
     .with_generation(RenderSurfaceSemanticInputGeneration::new(source_generation));
 
     DeterministicTemporalSignature {
-        scene_revision: RenderSceneRevision::INITIAL,
+        scene: crate::scene::RenderSceneStore::new().snapshot(),
         observation: temporal_observation_compatibility(observation, false),
         output,
         semantic_inputs: vec![binding],
