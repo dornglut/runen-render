@@ -20,7 +20,6 @@ pub(super) fn align_up(
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct TemporalFallbackBufferLayout {
     pub(super) cell_count: u32,
@@ -38,22 +37,21 @@ pub(super) fn temporal_fallback_layout(
     max_storage_buffer_binding_size: u64,
     max_buffer_size: u64,
 ) -> Result<TemporalFallbackBufferLayout, RenderDeterministicLoweringError> {
-    let cell_count = extent
-        .0
-        .checked_mul(extent.1)
-        .ok_or(RenderDeterministicLoweringError::SizeOverflow {
-            field: "temporal fallback requested cell count",
-        })?;
-    let logical_row_bytes = u64::from(extent.0)
-        .checked_mul(WORD_BYTES)
-        .ok_or(RenderDeterministicLoweringError::SizeOverflow {
+    let cell_count =
+        extent
+            .0
+            .checked_mul(extent.1)
+            .ok_or(RenderDeterministicLoweringError::SizeOverflow {
+                field: "temporal fallback requested cell count",
+            })?;
+    let logical_row_bytes = u64::from(extent.0).checked_mul(WORD_BYTES).ok_or(
+        RenderDeterministicLoweringError::SizeOverflow {
             field: "temporal fallback row bytes",
-        })?;
+        },
+    )?;
     let row_bytes = align_up(logical_row_bytes, alignment)?;
     if row_bytes % WORD_BYTES != 0 {
-        return Err(RenderDeterministicLoweringError::InvalidBytesPerRowAlignment {
-            alignment,
-        });
+        return Err(RenderDeterministicLoweringError::InvalidBytesPerRowAlignment { alignment });
     }
     u32::try_from(row_bytes / WORD_BYTES).map_err(|_| {
         RenderDeterministicLoweringError::SizeOverflow {
@@ -151,12 +149,14 @@ mod tests {
     fn fallback_layout_fails_device_binding_limit_and_cell_overflow() {
         assert!(matches!(
             temporal_fallback_layout(0, (7, 5), 256, 128, u64::MAX),
-            Err(RenderDeterministicLoweringError::TemporalFallbackGpuLimitExceeded {
-                output_index: 0,
-                carrier: "resolved radiance",
-                required_bytes: 1280,
-                limit_bytes: 128,
-            })
+            Err(
+                RenderDeterministicLoweringError::TemporalFallbackGpuLimitExceeded {
+                    output_index: 0,
+                    carrier: "resolved radiance",
+                    required_bytes: 1280,
+                    limit_bytes: 128,
+                }
+            )
         ));
         assert!(matches!(
             temporal_fallback_layout(0, (u32::MAX, 2), 256, u64::MAX, u64::MAX),
