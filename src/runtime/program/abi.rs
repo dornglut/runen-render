@@ -120,7 +120,6 @@ pub(crate) mod camera {
 pub(crate) const WORKGROUP_SIZE: u32 = 64;
 
 pub(crate) const COMPOSITION_VERTEX_STRIDE: u64 = 32;
-pub(crate) const VECTOR_COVERAGE_AXIS_SAMPLES: u32 = 4;
 
 #[cfg(test)]
 mod tests {

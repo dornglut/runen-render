@@ -207,7 +207,6 @@ impl Render2dExecutionState {
 #[derive(Clone, Copy, Debug)]
 struct AdmittedRun {
     event_index: usize,
-    root_index: usize,
     resource_id: Render2dResourceId,
     origin_x: f64,
     origin_y: f64,
@@ -254,7 +253,6 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
         };
         runs.push(AdmittedRun {
             event_index,
-            root_index,
             resource_id: text.resource_id(),
             origin_x: text.origin().x(),
             origin_y: text.origin().y(),

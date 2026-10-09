@@ -1,5 +1,5 @@
 //! Reusable source-backed GPU vertex submission for one correlated sample pass.
-use super::{create_vertex_buffer, f32_from_f64, f32_from_u32, gpu, linear_color, vertex_count};
+use super::{create_vertex_buffer, f32_from_u32, gpu, linear_color, vertex_count};
 use crate::composition_2d::Render2dBrush;
 use crate::execution_2d::{Render2dExecutionError, Render2dVectorError};
 use runen_gpu::*;
