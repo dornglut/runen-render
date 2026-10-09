@@ -2,6 +2,7 @@
 
 mod clip;
 mod image;
+pub(super) mod sample_space;
 mod vector;
 
 use super::field::GlyphField;

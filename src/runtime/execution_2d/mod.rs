@@ -46,6 +46,17 @@ impl Render2dExecutionState {
     ) -> Result<Render2dPreparedContribution, Render2dExecutionError> {
         composition.validate_bindings(bindings)?;
         let plan = scene::analyze(composition)?;
+        // F3E's admitted vector-only tree uses one correlated physical 4x4
+        // sample plane for roots AND isolated nested groups. Other grouped
+        // semantic classes are rejected before any external target mutation.
+        if plan.events.iter().any(|event| matches!(event, scene::Event::BeginGroup { .. })) {
+            let admitted_target = lowering::admit_target(context, target, false)?;
+            let lowered = lowering::sample_space::lower(context, &admitted_target, &plan)?;
+            return Ok(Render2dPreparedContribution::new(
+                lowered,
+                target.view().clone(),
+            ));
+        }
         let runs = admit_runs(&plan)?;
         let admitted_target = lowering::admit_target(context, target, !runs.is_empty())?;
         // The immutable F1 composition is the complete resource authority,

@@ -293,3 +293,14 @@ fn clip_hit(pixel: vec2<i32>, sx: i32, sy: i32) -> f32 {
     let sample = textureLoad(sample_layer, local_sample, 0);
     return sample * (input.color.a * visible);
 }
+
+
+// F3E physical sample-plane union coverage, not independently averaged alpha.
+// Each vector's tessellation triangles first write an idempotent 4x4 mask;
+// one source-over draw per covered *sample* then applies the brush/item alpha.
+@fragment fn fs_sample_mask_fill(input: VertexOutput) -> @location(0) vec4<f32> {
+    let sample = vec2<i32>(floor(input.position.xy));
+    let coverage = textureLoad(coverage_mask, sample, 0).r;
+    let alpha = input.color.a * coverage;
+    return vec4<f32>(input.color.rgb * alpha, alpha);
+}

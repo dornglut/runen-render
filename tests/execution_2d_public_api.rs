@@ -43,6 +43,8 @@ mod clip;
 mod control_order;
 #[path = "execution_2d/gradient.rs"]
 mod gradient;
+#[path = "execution_2d/group.rs"]
+mod group;
 #[path = "execution_2d/image.rs"]
 mod image;
 #[path = "execution_2d/vector.rs"]
