@@ -831,82 +831,82 @@ pub(in crate::runtime::execution_2d) fn lower(
                         };
                         match content {
                             PreparedItem::Vector(mesh) => {
-                            let mut coverage_vertices =
-                                Vec::with_capacity(mesh.triangles.len() * 8);
-                            for &[x, y] in &mesh.triangles {
-                                let x = (x - f64::from(origin[0])) * f64::from(SAMPLES);
-                                let y = (y - f64::from(origin[1])) * f64::from(SAMPLES);
-                                coverage_vertices.extend([
-                                    physical_x_to_ndc(x, dimension),
-                                    physical_y_to_ndc(y, dimension),
-                                    0.0,
-                                    0.0,
-                                    1.0,
-                                    1.0,
-                                    1.0,
-                                    1.0,
-                                ]);
-                            }
-                            let coverage_draw = draw(
-                                &coverage_pipeline,
-                                None,
-                                None,
-                                None,
-                                &coverage_vertices,
-                                physical,
-                                &mut resources,
-                            )?;
-                            append(
-                                &mut operations,
-                                operation(&mask, true, vec![coverage_draw])?,
-                            )?;
-                            // F3B's single gradient payload authority supplies exact
-                            // premultiplied linear authored stops and inverse brush mapping.
-                            let (paint_pipeline, vertex_color) = match &mesh.brush {
-                                Render2dBrush::Solid(color) => {
-                                    let mut rgba = linear_color(*color);
-                                    rgba[3] *= f32_from_f64(mesh.opacity);
-                                    let pipeline = if item_clip.is_some() {
-                                        &fill_clipped_pipeline
-                                    } else {
-                                        &fill_pipeline
-                                    };
-                                    (pipeline, rgba)
+                                let mut coverage_vertices =
+                                    Vec::with_capacity(mesh.triangles.len() * 8);
+                                for &[x, y] in &mesh.triangles {
+                                    let x = (x - f64::from(origin[0])) * f64::from(SAMPLES);
+                                    let y = (y - f64::from(origin[1])) * f64::from(SAMPLES);
+                                    coverage_vertices.extend([
+                                        physical_x_to_ndc(x, dimension),
+                                        physical_y_to_ndc(y, dimension),
+                                        0.0,
+                                        0.0,
+                                        1.0,
+                                        1.0,
+                                        1.0,
+                                        1.0,
+                                    ]);
                                 }
-                                Render2dBrush::Linear(_) | Render2dBrush::Radial(_) => {
-                                    let pipeline = if item_clip.is_some() {
-                                        &gradient_clipped_pipeline
-                                    } else {
-                                        &gradient_pipeline
-                                    };
-                                    (pipeline, [1.0; 4])
-                                }
-                            };
-                            let mut full_quad = Vec::new();
-                            let origin_sample = [
-                                f64::from(origin[0]) * f64::from(SAMPLES),
-                                f64::from(origin[1]) * f64::from(SAMPLES),
-                            ];
-                            rectangle(
-                                &mut full_quad,
-                                [0.0, 0.0, f64::from(dimension), f64::from(dimension)],
-                                physical,
-                                vertex_color,
-                                origin_sample,
-                            );
-                            let color_draw = draw(
-                                paint_pipeline,
-                                Some((0, &mask)),
-                                item_clip.as_ref(),
-                                gradient_buffers[index].as_ref(),
-                                &full_quad,
-                                physical,
-                                &mut resources,
-                            )?;
-                            append(
-                                &mut operations,
-                                operation(&layers[depth], false, vec![color_draw])?,
-                            )?;
+                                let coverage_draw = draw(
+                                    &coverage_pipeline,
+                                    None,
+                                    None,
+                                    None,
+                                    &coverage_vertices,
+                                    physical,
+                                    &mut resources,
+                                )?;
+                                append(
+                                    &mut operations,
+                                    operation(&mask, true, vec![coverage_draw])?,
+                                )?;
+                                // F3B's single gradient payload authority supplies exact
+                                // premultiplied linear authored stops and inverse brush mapping.
+                                let (paint_pipeline, vertex_color) = match &mesh.brush {
+                                    Render2dBrush::Solid(color) => {
+                                        let mut rgba = linear_color(*color);
+                                        rgba[3] *= f32_from_f64(mesh.opacity);
+                                        let pipeline = if item_clip.is_some() {
+                                            &fill_clipped_pipeline
+                                        } else {
+                                            &fill_pipeline
+                                        };
+                                        (pipeline, rgba)
+                                    }
+                                    Render2dBrush::Linear(_) | Render2dBrush::Radial(_) => {
+                                        let pipeline = if item_clip.is_some() {
+                                            &gradient_clipped_pipeline
+                                        } else {
+                                            &gradient_pipeline
+                                        };
+                                        (pipeline, [1.0; 4])
+                                    }
+                                };
+                                let mut full_quad = Vec::new();
+                                let origin_sample = [
+                                    f64::from(origin[0]) * f64::from(SAMPLES),
+                                    f64::from(origin[1]) * f64::from(SAMPLES),
+                                ];
+                                rectangle(
+                                    &mut full_quad,
+                                    [0.0, 0.0, f64::from(dimension), f64::from(dimension)],
+                                    physical,
+                                    vertex_color,
+                                    origin_sample,
+                                );
+                                let color_draw = draw(
+                                    paint_pipeline,
+                                    Some((0, &mask)),
+                                    item_clip.as_ref(),
+                                    gradient_buffers[index].as_ref(),
+                                    &full_quad,
+                                    physical,
+                                    &mut resources,
+                                )?;
+                                append(
+                                    &mut operations,
+                                    operation(&layers[depth], false, vec![color_draw])?,
+                                )?;
                             }
                             PreparedItem::Image(_) => {
                                 let layer = image_layer
