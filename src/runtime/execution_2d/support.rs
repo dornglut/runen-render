@@ -252,6 +252,111 @@ fn squared_distance_2d(
     Ok(output)
 }
 
+
+/// Rasterizes disposable neutral triangles in one explicitly chosen
+/// **group-parent** continuous coordinate frame, not final-target RGBA.
+///
+/// A globally anchored 4x correlated sample lattice avoids tile-dependent
+/// coverage shifts. Caller MUST provide triangles in this frame *before*
+/// applying ancestor transforms, spread or blur; do not pass preclipped
+/// final-output geometry or infer this support from paint alpha.
+#[allow(dead_code, reason = "awaiting F3F group support and compositor integration")]
+pub(super) fn rasterize_neutral_mesh(
+    mesh: &NeutralMesh,
+    samples_per_logical_unit: f64,
+    path: &[usize],
+) -> Result<Option<NeutralMask>, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    if !samples_per_logical_unit.is_finite() || samples_per_logical_unit <= 0.0 {
+        return Err(precision("neutral sample spacing is invalid"));
+    }
+    if mesh.triangles.len() % 3 != 0 {
+        return Err(precision("neutral mesh triangle payload is incomplete"));
+    }
+    if mesh.triangles.is_empty() {
+        return Ok(None);
+    }
+    if !mesh.bounds.iter().all(|value| value.is_finite())
+        || !mesh.triangles.iter().flatten().all(|value| value.is_finite())
+    {
+        return Err(precision("neutral triangle bounds are not finite"));
+    }
+    let scaled = [
+        mesh.bounds[0] * samples_per_logical_unit,
+        mesh.bounds[1] * samples_per_logical_unit,
+        mesh.bounds[2] * samples_per_logical_unit,
+        mesh.bounds[3] * samples_per_logical_unit,
+    ];
+    if !scaled.iter().all(|value| value.is_finite())
+        || scaled[0] >= scaled[2]
+        || scaled[1] >= scaled[3]
+        || scaled.iter().any(|value| value.abs() > f64::from(i32::MAX) / 2.0)
+    {
+        return Err(precision("neutral sample lattice extent is not representable"));
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "finite bounded sample edges are narrowed after exact i32-range admission"
+    )]
+    let edges = [
+        scaled[0].floor() as i32,
+        scaled[1].floor() as i32,
+        scaled[2].ceil() as i32,
+        scaled[3].ceil() as i32,
+    ];
+    let width = usize::try_from(i64::from(edges[2]) - i64::from(edges[0]))
+        .map_err(|_| resource("neutral sample width overflow"))?;
+    let height = usize::try_from(i64::from(edges[3]) - i64::from(edges[1]))
+        .map_err(|_| resource("neutral sample height overflow"))?;
+    let cells = width.checked_mul(height)
+        .ok_or_else(|| resource("neutral sample area overflow"))?;
+    if cells == 0 || cells > MAX_NEUTRAL_MASK_SAMPLES {
+        return Err(resource("neutral geometry sample grid exceeds bounded area"));
+    }
+    let triangles = mesh.triangles.len() / 3;
+    let work = cells.checked_mul(triangles)
+        .ok_or_else(|| resource("neutral triangle/sample work overflow"))?;
+    if work > 16_777_216 {
+        return Err(resource("neutral triangle/sample work exceeds the bounded budget"));
+    }
+    let mut samples = filled(cells, 0_u8, path)?;
+    for y in 0..height {
+        let sample_y = (f64::from(edges[1]) + as_f64(y) + 0.5) / samples_per_logical_unit;
+        for x in 0..width {
+            let sample_x = (f64::from(edges[0]) + as_f64(x) + 0.5)
+                / samples_per_logical_unit;
+            let p = [sample_x, sample_y];
+            for tri in mesh.triangles.chunks_exact(3) {
+                let ab = orient(tri[0], tri[1], p);
+                let bc = orient(tri[1], tri[2], p);
+                let ca = orient(tri[2], tri[0], p);
+                let area = orient(tri[0], tri[1], tri[2]);
+                if area != 0.0
+                    && ((ab >= 0.0 && bc >= 0.0 && ca >= 0.0)
+                        || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0))
+                {
+                    samples[y * width + x] = u8::MAX;
+                    break;
+                }
+            }
+        }
+    }
+    Ok(Some(NeutralMask {
+        origin_x: i64::from(edges[0]),
+        origin_y: i64::from(edges[1]),
+        width,
+        height,
+        samples,
+    }))
+}
+
+fn orient(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
+    (b[0] - a[0]).mul_add(p[1] - a[1], -((b[1] - a[1]) * (p[0] - a[0])))
+}
+
 /// Signed Euclidean disk morphology on a *disposable* aligned binary grid.
 /// Positive radii dilate; negative radii erode. The padded exterior is empty,
 /// so narrow support can erode away completely. Dilation retains offscreen
@@ -373,6 +478,48 @@ pub(super) fn signed_euclidean_spread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn rasterized_neutral_rect_is_phase_aligned_and_not_alpha_dependent() {
+        let mesh = NeutralMesh {
+            triangles: vec![
+                [-1.0, -1.0], [1.0, -1.0], [1.0, 1.0],
+                [-1.0, -1.0], [1.0, 1.0], [-1.0, 1.0],
+            ],
+            bounds: [-1.0, -1.0, 1.0, 1.0],
+        };
+        let mask = rasterize_neutral_mesh(&mesh, 4.0, &[1, 2])
+            .unwrap()
+            .unwrap();
+        assert_eq!((mask.origin_x, mask.origin_y), (-4, -4));
+        assert_eq!((mask.width, mask.height), (8, 8));
+        assert!(mask.samples.iter().all(|value| *value == u8::MAX));
+        let expanded = signed_euclidean_spread(&mask, 1.0, &[1, 2]).unwrap();
+        assert_eq!((expanded.origin_x, expanded.origin_y), (-6, -6));
+        let at = |x: usize, y: usize| expanded.samples[y * expanded.width + x];
+        assert_eq!(at(1, 4), u8::MAX);
+        assert_eq!(at(0, 4), 0);
+        assert_eq!(at(1, 1), 0);
+    }
+
+    #[test]
+    fn neutral_rasterization_rejects_preallocation_work_excess_with_exact_path() {
+        let mesh = NeutralMesh {
+            triangles: vec![
+                [0.0, 0.0], [1024.0, 0.0], [0.0, 1024.0],
+            ],
+            bounds: [0.0, 0.0, 1024.0, 1024.0],
+        };
+        assert!(matches!(
+            rasterize_neutral_mesh(&mesh, 4.0, &[3, 4]),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [3, 4]
+        ));
+    }
 
     #[test]
     fn euclidean_spread_is_disk_not_square_and_retains_signed_halo() {
