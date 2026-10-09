@@ -22,6 +22,7 @@ use crate::runtime::program::retained_vector_source;
 const MAX_PRIVATE_SCRATCH_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_IMAGE_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_PATCH_PARAMETER_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_TEXT_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_TILE_SIDE: u32 = 256;
 const MAX_TILES: u64 = 16384;
 const MAX_OPERATIONS: usize = 1_048_576;
@@ -275,9 +276,16 @@ fn tile_side(target: &AdmittedTarget, depth: usize) -> Result<u32, Render2dExecu
 
 /// One derived, preflight-only solid-vector snapshot. Its fields are not
 /// authored semantic state; the immutable F1 plan remains the only authority.
+struct PreparedGlyph {
+    occurrence: super::GlyphOccurrence,
+    placement: super::GlyphPlacement,
+    bounds: [u32; 4],
+}
+
 enum PreparedItem {
     Vector(geometry::VectorMesh),
     Image(Vec<image_semantics::ImagePatchWork>),
+    Text(Vec<PreparedGlyph>),
 }
 
 impl PreparedItem {
@@ -303,8 +311,72 @@ impl PreparedItem {
                 }
                 bounds
             }
+            Self::Text(glyphs) => {
+                let mut bounds = [u32::MAX, u32::MAX, 0, 0];
+                for glyph in glyphs {
+                    let b = glyph.bounds;
+                    bounds[0] = bounds[0].min(b[0]);
+                    bounds[1] = bounds[1].min(b[1]);
+                    bounds[2] = bounds[2].max(b[2]);
+                    bounds[3] = bounds[3].max(b[3]);
+                }
+                bounds
+            }
         }
     }
+}
+
+/// Original F2 pixels cover an MSDF glyph when their centers lie inside
+/// its physical quad; tile-local 4x4 replicas must preserve that membership.
+fn text_pixel_bounds(placement: super::GlyphPlacement) -> [u32; 4] {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "finite glyph placement is clipped to admitted u32 target dimensions"
+    )]
+    let first = |edge: f64| (edge - 0.5).ceil().max(0.0) as u32;
+    [
+        first(placement.left),
+        first(placement.top),
+        first(placement.right),
+        first(placement.bottom),
+    ]
+}
+
+fn text_quad(
+    glyph: &PreparedGlyph,
+    origin: [u32; 2],
+    end: [u32; 2],
+    dimension: u32,
+) -> Vec<f32> {
+    let b = glyph.bounds;
+    let [left, top, right, bottom] = [
+        b[0].max(origin[0]),
+        b[1].max(origin[1]),
+        b[2].min(end[0]),
+        b[3].min(end[1]),
+    ];
+    if left >= right || top >= bottom {
+        return Vec::new();
+    }
+    let p = glyph.placement;
+    let color = linear_color(glyph.occurrence.color);
+    let mut result = Vec::with_capacity(6 * FLOATS_PER_VERTEX);
+    for [x, y] in [
+        [left, top], [right, top], [left, bottom],
+        [left, bottom], [right, top], [right, bottom],
+    ] {
+        let sx = f64::from(x - origin[0]) * f64::from(SAMPLES);
+        let sy = f64::from(y - origin[1]) * f64::from(SAMPLES);
+        result.extend([
+            physical_x_to_ndc(sx, dimension),
+            physical_y_to_ndc(sy, dimension),
+            f32_from_f64((f64::from(x) - p.x0) / p.width),
+            f32_from_f64((f64::from(y) - p.y0) / p.height),
+            color[0], color[1], color[2], color[3],
+        ]);
+    }
+    result
 }
 
 /// An indexed physical realization only, aligned with the ONE F1 painter plan.
@@ -340,6 +412,7 @@ fn admit_tile_work(
         let count = match item {
             PreparedItem::Vector(mesh) => mesh.triangles.len(),
             PreparedItem::Image(patches) => patches.len(),
+            PreparedItem::Text(glyphs) => glyphs.len(),
         };
         units = units
             .checked_add(u64::try_from(count).map_err(|_| failure("tile work count overflow"))?)
@@ -423,13 +496,14 @@ fn inspect(
     plan: &scene::Plan<'_>,
     target: &AdmittedTarget,
     bindings: &Render2dResourceBindings,
+    glyphs_by_event: &BTreeMap<usize, Vec<super::GlyphOccurrence>>,
 ) -> Result<Inspected, Render2dExecutionError> {
     let mut items = Vec::with_capacity(plan.events.len());
     let mut bounds = [u32::MAX, u32::MAX, 0, 0];
     let mut depth = 0usize;
     let mut peak = 0usize;
     let mut retained_vector_vertices = 0usize;
-    for event in &plan.events {
+    for (event_index, event) in plan.events.iter().enumerate() {
         match event {
             scene::Event::BeginGroup { group, path, .. } => {
                 if !group.shadows().is_empty() {
@@ -497,11 +571,26 @@ fn inspect(
                         )?;
                         (!patches.is_empty()).then_some(PreparedItem::Image(patches))
                     }
-                    _ => {
-                        return Err(Render2dUnsupportedContent::Group {
-                            root_index: path[0],
+                    Render2dPrimitive::ShapedText(_) => {
+                        let mut glyphs = Vec::new();
+                        for glyph in glyphs_by_event
+                            .get(&event_index)
+                            .into_iter()
+                            .flat_map(|values| values.iter())
+                        {
+                            let Some(placement) = super::glyph_placement(target, glyph)? else {
+                                continue;
+                            };
+                            let bounds = text_pixel_bounds(placement);
+                            if bounds[0] < bounds[2] && bounds[1] < bounds[3] {
+                                glyphs.push(PreparedGlyph {
+                                    occurrence: glyph.clone(),
+                                    placement,
+                                    bounds,
+                                });
+                            }
                         }
-                        .into());
+                        (!glyphs.is_empty()).then_some(PreparedItem::Text(glyphs))
                     }
                 };
                 if let Some(PreparedItem::Vector(mesh)) = realized.as_ref() {
@@ -558,6 +647,7 @@ pub(in crate::runtime::execution_2d) fn lower(
     target: &AdmittedTarget,
     plan: &scene::Plan<'_>,
     bindings: &Render2dResourceBindings,
+    glyphs_by_event: &BTreeMap<usize, Vec<super::GlyphOccurrence>>,
 ) -> Result<Vec<GpuRenderOperation>, Render2dExecutionError> {
     let roles = context
         .device_facts()
@@ -584,14 +674,16 @@ pub(in crate::runtime::execution_2d) fn lower(
         items,
         bounds,
         peak_group_depth: peak,
-    } = inspect(plan, target, bindings)?;
+    } = inspect(plan, target, bindings, glyphs_by_event)?;
     if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
         return Ok(Vec::new());
     }
     let has_images = items
         .iter()
         .any(|item| matches!(item, Some(PreparedItem::Image(_))));
-    let extra_layer = if has_images { 1 } else { 0 };
+    let has_text = items.iter().any(|item| matches!(item, Some(PreparedItem::Text(_))));
+    let has_isolated_items = has_images || has_text;
+    let extra_layer = if has_isolated_items { 1 } else { 0 };
     let side = tile_side(target, peak + extra_layer)?;
     let x0 = bounds[0] / side * side;
     let y0 = bounds[1] / side * side;
@@ -626,10 +718,10 @@ pub(in crate::runtime::execution_2d) fn lower(
         dimension,
         FIELD_FORMAT,
     )?;
-    let image_layer = if has_images {
+    let item_layer = if has_isolated_items {
         Some(scratch(
             &mut resources,
-            "F3E isolated image item sample plane",
+            "F3E isolated item sample plane",
             dimension,
             GpuTextureFormat::Rgba16Float,
         )?)
