@@ -918,7 +918,7 @@ mod sample_space_gpu_proof {
     use super::*;
     use runen_gpu::{
         GpuBackendFamily, GpuCapabilityProfile, GpuContextDescriptor,
-        GpuContextRequestErrorCategory, GpuFormatRole, GpuReadbackOperation, GpuReadbackStatus,
+        GpuFormatRole, GpuReadbackOperation, GpuReadbackStatus,
         GpuSoftwareFallbackPolicy, GpuSubmissionStatus, GpuTextureCopyRegion,
         GpuWorkFragment,
     };
@@ -1018,6 +1018,7 @@ mod sample_space_gpu_proof {
     }
 
     #[test]
+    #[ignore = "GPU-required F3E proof: explicitly executed by the Vulkan workflow"]
     fn retained_gpu_plane_resolves_correlated_siblings_once_over_prior_target() {
         let mut request =
             GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
@@ -1034,20 +1035,8 @@ mod sample_space_gpu_proof {
         ] {
             request = request.require_format_role(format, role);
         }
-        let context = match pollster::block_on(GpuContext::request(request)) {
-            Ok(context) => context,
-            Err(error)
-                if error.category() == GpuContextRequestErrorCategory::NoAdapterAvailable =>
-            {
-                assert_ne!(
-                    std::env::var("RUNEN_RENDER_REQUIRE_GPU").ok().as_deref(),
-                    Some("1"),
-                    "F3E physical sample proof requires Vulkan"
-                );
-                return;
-            }
-            Err(error) => panic!("F3E physical sample admission: {error}"),
-        };
+        let context = pollster::block_on(GpuContext::request(request))
+            .expect("F3E GPU-only proof requires admitted Lavapipe Vulkan and Rgba16Float roles");
 
         let mut resources = GpuResourceScope::new();
         let sample = resources
