@@ -516,6 +516,49 @@ pub(super) fn blur_neutral_mask(
     })
 }
 
+
+/// Prepares one immutable neutral support source through signed Euclidean
+/// spread and finite Gaussian coverage without deriving shape from paint alpha.
+///
+/// This handles only the **untranslated** coverage in the attached group's
+/// immediate-parent frame. F3F group composition owns shadow offset, clips,
+/// ordered colors, once-only opacity and ancestor transforms; applying those
+/// here in a flattened final-target frame would change F1 meaning.
+#[allow(dead_code, reason = "awaiting F3F group composition")]
+pub(super) fn prepare_untranslated_shadow_coverage(
+    mesh: &NeutralMesh,
+    spread: f64,
+    sigma: f64,
+    samples_per_logical_unit: f64,
+    path: &[usize],
+) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    if !spread.is_finite() || !sigma.is_finite() || sigma < 0.0 {
+        return Err(mask_failure(
+            path,
+            Render2dSampleSpaceError::PrecisionLimit,
+            "shadow spread or blur sigma is not representable",
+        ));
+    }
+    let Some(source) = rasterize_neutral_mesh(mesh, samples_per_logical_unit, path)? else {
+        return Ok(None);
+    };
+    let physical_spread = spread * samples_per_logical_unit;
+    if !physical_spread.is_finite() {
+        return Err(mask_failure(
+            path,
+            Render2dSampleSpaceError::PrecisionLimit,
+            "shadow spread exceeds finite sample coordinates",
+        ));
+    }
+    let spread_mask = signed_euclidean_spread(&source, physical_spread, path)?;
+    if spread_mask.samples.iter().all(|sample| *sample == 0) {
+        return Ok(None);
+    }
+    let kernel = gaussian_kernel(sigma, samples_per_logical_unit, path)?;
+    blur_neutral_mask(&spread_mask, &kernel, path).map(Some)
+}
+
 /// Signed Euclidean disk morphology on a *disposable* aligned binary grid.
 /// Positive radii dilate; negative radii erode. The padded exterior is empty,
 /// so narrow support can erode away completely. Dilation retains offscreen
@@ -637,6 +680,63 @@ pub(super) fn signed_euclidean_spread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn real_transparent_offscreen_fill_flows_through_neutral_shadow_coverage() {
+        use crate::composition_2d::{
+            Render2dAffineTransform, Render2dBrush, Render2dColorRgba8, Render2dItem,
+            Render2dOpacity, Render2dPrimitive, Render2dRect, Render2dShape,
+        };
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(
+                    Render2dRect::new(-10.0, 0.0, 9.0, 2.0).unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let mesh = super::super::vector::neutral_support(&item, 0, 1.0, 16_384)
+            .unwrap()
+            .unwrap();
+        let prepared = prepare_untranslated_shadow_coverage(
+            &mesh, 0.0, 0.0, 4.0, &[3, 1],
+        )
+        .unwrap()
+        .expect("transparent offscreen color must not erase geometric support");
+        assert_eq!(prepared.origin_x, -40);
+        assert_eq!(prepared.origin_y, 0);
+        assert_eq!((prepared.width, prepared.height), (36, 8));
+        assert!(prepared.values.iter().all(|alpha| *alpha == 1.0));
+        // Offset (+12,0) remains a separate parent-frame painter translation.
+        // Its shift is +48 samples: [-40,-4] -> [8,44], even though the
+        // current unshifted source lies entirely off the caller's canvas.
+        assert_eq!(prepared.origin_x + 12 * 4, 8);
+        assert!(prepare_untranslated_shadow_coverage(
+            &mesh, -10.0, 0.0, 4.0, &[3, 1],
+        ).is_err());
+    }
+
+    #[test]
+    fn signed_spread_can_erode_real_neutral_geometry_completely() {
+        let mesh = NeutralMesh {
+            triangles: vec![
+                [0.0, 0.0], [1.0, 0.0], [1.0, 1.0],
+                [0.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+            ],
+            bounds: [0.0, 0.0, 1.0, 1.0],
+        };
+        assert!(prepare_untranslated_shadow_coverage(
+            &mesh, -1.0, 0.0, 4.0, &[0],
+        ).unwrap().is_none());
+        let visible = prepare_untranslated_shadow_coverage(
+            &mesh, 0.0, 0.25, 4.0, &[0],
+        ).unwrap().unwrap();
+        assert!(visible.values.iter().any(|value| *value > 0.0));
+    }
 
     #[test]
     fn gaussian_neutral_coverage_is_normalized_and_has_finite_halo() {
