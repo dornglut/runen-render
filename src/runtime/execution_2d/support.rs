@@ -11,7 +11,7 @@ pub(super) struct NeutralMesh {
     pub(super) bounds: [f64; 4],
 }
 
-const MAX_GAUSSIAN_RADIUS_SAMPLES: usize = 512;
+const MAX_GAUSSIAN_RADIUS_SAMPLES: u32 = 512;
 
 /// Private finite truncated-Gaussian *physical* kernel. These weights approximate
 /// the F1 continuous convolution in a chosen group-parent sample frame; the
@@ -36,9 +36,7 @@ pub(super) fn gaussian_kernel(
     sample_scale: f64,
     path: &[usize],
 ) -> Result<GaussianKernel, crate::execution_2d::Render2dExecutionError> {
-    use crate::execution_2d::{
-        Render2dExecutionError, Render2dSampleSpaceError,
-    };
+    use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
     let fail = |kind, detail: &'static str| Render2dExecutionError::SampleSpace {
         kind,
         path: Some(path.to_vec()),
@@ -62,7 +60,7 @@ pub(super) fn gaussian_kernel(
     if !cutoff.is_finite() || physical_sigma <= 0.0 {
         return Err(fail(Render2dSampleSpaceError::PrecisionLimit, "shadow blur sample scale is not representable"));
     }
-    if cutoff.ceil() > MAX_GAUSSIAN_RADIUS_SAMPLES as f64 {
+    if cutoff.ceil() > f64::from(MAX_GAUSSIAN_RADIUS_SAMPLES) {
         return Err(fail(Render2dSampleSpaceError::ResourceLimit, "shadow blur radius exceeds bounded sample kernel"));
     }
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "finite nonnegative radius was bounded to 512 samples")]
@@ -72,7 +70,7 @@ pub(super) fn gaussian_kernel(
         fail(Render2dSampleSpaceError::ResourceLimit, "shadow blur kernel allocation failed")
     })?;
     for offset in 0..=radius {
-        let distance = offset as f64;
+        let distance = f64::from(u32::try_from(offset).expect("bounded blur sample radius"));
         let weight = if distance <= cutoff {
             (-0.5 * (distance / physical_sigma).powi(2)).exp()
         } else {
