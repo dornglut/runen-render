@@ -17,14 +17,8 @@ fn transparent_child_and_group_keep_ordered_signed_shadow_facts() {
         Render2dColorRgba8::new(255, 0, 0, 128),
     )
     .expect("signed spread");
-    let blue = Render2dDropShadow::new(
-        0.0,
-        1.0,
-        2.0,
-        3.0,
-        Render2dColorRgba8::new(0, 0, 255, 128),
-    )
-    .expect("finite blur");
+    let blue = Render2dDropShadow::new(0.0, 1.0, 2.0, 3.0, Render2dColorRgba8::new(0, 0, 255, 128))
+        .expect("finite blur");
 
     let child = Render2dEntry::item(Render2dItem::new(
         Render2dPrimitive::Fill {
