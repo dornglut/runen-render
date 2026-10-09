@@ -293,6 +293,7 @@ mod tests {
     use super::*;
     use crate::composition_2d::{
         Render2dAffineTransform, Render2dColorRgba8, Render2dEntry, Render2dFontBinding,
+        Render2dGroup,
         Render2dGlyph, Render2dItem, Render2dOpacity, Render2dPoint, Render2dResourceBinding,
         Render2dShapedTextPrimitive, Render2dShapedTextResource,
     };
@@ -324,6 +325,39 @@ mod tests {
         ))])
         .expect("composition");
         (composition, bindings)
+    }
+
+    #[test]
+    fn nested_nontranslation_text_reports_exact_authored_path() {
+        let (inner, bindings) = shaped_composition(
+            Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap(),
+        );
+        let child = inner.root_entries()[0].clone();
+        let nested = Render2dComposition::new(vec![Render2dEntry::group(
+            Render2dGroup::new(
+                vec![Render2dEntry::group(Render2dGroup::new(
+                    vec![child],
+                    Render2dAffineTransform::IDENTITY,
+                    Vec::new(),
+                    Render2dOpacity::OPAQUE,
+                    Vec::new(),
+                ))],
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::OPAQUE,
+                Vec::new(),
+            ),
+        )])
+        .unwrap();
+        nested.validate_bindings(&bindings).unwrap();
+        let plan = scene::analyze(&nested).unwrap();
+        assert!(matches!(
+            admit_runs(&plan),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Transform { root_index: 0 },
+            }) if path == [0, 0, 0]
+        ));
     }
 
     #[test]

@@ -293,6 +293,27 @@ mod tests {
     }
 
     #[test]
+    fn nested_affine_and_traversal_budgets_preserve_machine_readable_paths() {
+        let overflow = Affine([1e308, 0.0, 0.0, 1e308, 0.0, 0.0]);
+        assert!(matches!(
+            overflow.compose(overflow, &[2, 3, 5]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [2, 3, 5]
+        ));
+        assert!(matches!(
+            limit(&[0, 4], "bounded traversal"),
+            Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            } if path == [0, 4]
+        ));
+    }
+
+    #[test]
     fn grouping_is_preorder_and_child_transform_composes_in_parent_order() {
         let tree = Render2dComposition::new(vec![
             item(Render2dAffineTransform::IDENTITY),
