@@ -10,6 +10,9 @@ fn context() -> Option<GpuContext> {
 fn context_with_text_roles(text: bool) -> Option<GpuContext> {
     let mut descriptor =
         GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::ColorAttachment)
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable)
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled)
             .require_format_role(
                 GpuTextureFormat::Rgba8UnormSrgb,
                 GpuFormatRole::ColorAttachment,

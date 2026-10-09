@@ -6,6 +6,9 @@ use runen_render::execution_2d::Render2dImageError;
 fn context() -> Option<GpuContext> {
     let descriptor =
         GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::ColorAttachment)
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable)
+            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled)
             .require_format_role(
                 GpuTextureFormat::Rgba8UnormSrgb,
                 GpuFormatRole::ColorAttachment,
