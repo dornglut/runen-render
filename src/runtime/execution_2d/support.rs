@@ -103,7 +103,6 @@ pub(super) fn gaussian_kernel(
     Ok(GaussianKernel { radius, weights })
 }
 
-
 /// Private finite binary sample mask on one group-parent aligned sample lattice.
 ///
 /// The origin is signed so neutral off-canvas sources survive until final
@@ -142,7 +141,11 @@ fn filled<T: Clone>(
     use crate::execution_2d::Render2dSampleSpaceError;
     let mut buffer = Vec::new();
     buffer.try_reserve_exact(count).map_err(|_| {
-        mask_failure(path, Render2dSampleSpaceError::ResourceLimit, "neutral mask allocation failed")
+        mask_failure(
+            path,
+            Render2dSampleSpaceError::ResourceLimit,
+            "neutral mask allocation failed",
+        )
     })?;
     buffer.resize(count, value);
     Ok(buffer)
@@ -172,8 +175,7 @@ fn squared_distance_1d(
         while count != 0 {
             let p = sites[count - 1];
             let pf = as_f64(p);
-            intersection = ((values[q] + qf * qf) - (values[p] + pf * pf))
-                / (2.0 * (qf - pf));
+            intersection = ((values[q] + qf * qf) - (values[p] + pf * pf)) / (2.0 * (qf - pf));
             if intersection > boundaries[count - 1] {
                 break;
             }
@@ -270,10 +272,14 @@ pub(super) fn signed_euclidean_spread(
     if input.width == 0 || input.height == 0 {
         return Err(precision("neutral mask extent is empty"));
     }
-    let count = input.width.checked_mul(input.height)
+    let count = input
+        .width
+        .checked_mul(input.height)
         .ok_or_else(|| resource("neutral source mask extent overflow"))?;
     if count > MAX_NEUTRAL_MASK_SAMPLES || input.samples.len() != count {
-        return Err(resource("neutral source mask exceeds the admitted sample budget"));
+        return Err(resource(
+            "neutral source mask exceeds the admitted sample budget",
+        ));
     }
     if radius == 0.0 || input.samples.iter().all(|value| *value == 0) {
         return Ok(input.clone());
@@ -281,7 +287,9 @@ pub(super) fn signed_euclidean_spread(
     let magnitude = radius.abs();
     let pad_f64 = magnitude.ceil() + 1.0;
     if !pad_f64.is_finite() || pad_f64 > f64::from(MAX_SPREAD_RADIUS_SAMPLES) {
-        return Err(resource("Euclidean spread halo exceeds the bounded sample radius"));
+        return Err(resource(
+            "Euclidean spread halo exceeds the bounded sample radius",
+        ));
     }
     #[allow(
         clippy::cast_possible_truncation,
@@ -289,21 +297,36 @@ pub(super) fn signed_euclidean_spread(
         reason = "finite nonnegative halo is proven bounded by 512"
     )]
     let pad = pad_f64 as usize;
-    let width = input.width.checked_add(pad.checked_mul(2)
-        .ok_or_else(|| resource("neutral mask padding overflow"))?)
+    let width = input
+        .width
+        .checked_add(
+            pad.checked_mul(2)
+                .ok_or_else(|| resource("neutral mask padding overflow"))?,
+        )
         .ok_or_else(|| resource("neutral mask width overflow"))?;
-    let height = input.height.checked_add(pad.checked_mul(2)
-        .ok_or_else(|| resource("neutral mask padding overflow"))?)
+    let height = input
+        .height
+        .checked_add(
+            pad.checked_mul(2)
+                .ok_or_else(|| resource("neutral mask padding overflow"))?,
+        )
         .ok_or_else(|| resource("neutral mask height overflow"))?;
-    let cells = width.checked_mul(height)
+    let cells = width
+        .checked_mul(height)
         .ok_or_else(|| resource("neutral mask sample count overflow"))?;
     if cells > MAX_NEUTRAL_MASK_SAMPLES {
-        return Err(resource("padded neutral mask exceeds bounded sample budget"));
+        return Err(resource(
+            "padded neutral mask exceeds bounded sample budget",
+        ));
     }
     let pad_i64 = i64::try_from(pad).map_err(|_| resource("neutral mask origin overflow"))?;
-    let origin_x = input.origin_x.checked_sub(pad_i64)
+    let origin_x = input
+        .origin_x
+        .checked_sub(pad_i64)
         .ok_or_else(|| precision("signed neutral mask x origin overflow"))?;
-    let origin_y = input.origin_y.checked_sub(pad_i64)
+    let origin_y = input
+        .origin_y
+        .checked_sub(pad_i64)
         .ok_or_else(|| precision("signed neutral mask y origin overflow"))?;
     let mut padded = filled(cells, 0_u8, path)?;
     for y in 0..input.height {
@@ -350,7 +373,6 @@ pub(super) fn signed_euclidean_spread(
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn euclidean_spread_is_disk_not_square_and_retains_signed_halo() {
