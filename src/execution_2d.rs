@@ -371,6 +371,15 @@ pub enum Render2dShapedTextError {
         /// Admitted maximum 2D texture dimension.
         maximum: u32,
     },
+    /// Sum of retained shaped field allocations exceeds the F2/F3E invocation budget.
+    FieldBudgetExceeded {
+        /// Affected immutable shaped resource.
+        resource_id: Render2dResourceId,
+        /// Already-shaped glyph that would exceed the aggregate budget.
+        glyph_id: u32,
+        /// Maximum cumulative RGBA8 bytes admitted for shaped field data.
+        maximum_bytes: u64,
+    },
 }
 
 impl fmt::Display for Render2dShapedTextError {
@@ -408,6 +417,15 @@ impl fmt::Display for Render2dShapedTextError {
             } => write!(
                 formatter,
                 "2D shaped resource {} glyph {glyph_id} field {width}x{height} exceeds admitted dimension {maximum}",
+                resource_id.get()
+            ),
+            Self::FieldBudgetExceeded {
+                resource_id,
+                glyph_id,
+                maximum_bytes,
+            } => write!(
+                formatter,
+                "2D shaped resource {} glyph {glyph_id} exceeds the {maximum_bytes}-byte cumulative retained field budget",
                 resource_id.get()
             ),
         }
