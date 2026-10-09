@@ -19,7 +19,10 @@ fn pipeline(
         crate::runtime::program::retained_vector_source().expect("maintained vector shader source");
     let vertex = GpuEntryPointName::new("vs_main").unwrap();
     let fragment = GpuEntryPointName::new(entry).unwrap();
-    let refinements = if entry == "fs_sample_resolve" || entry == "fs_sample_merge" {
+    let mut refinements = if matches!(
+        entry,
+        "fs_sample_resolve" | "fs_sample_merge" | "fs_sample_merge_clipped"
+    ) {
         vec![
             GpuBindingLayoutRefinement::new(GpuBindingKey::try_new(0, 6).unwrap())
                 .with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable),
@@ -27,6 +30,12 @@ fn pipeline(
     } else {
         Vec::new()
     };
+    if entry == "fs_sample_merge_clipped" {
+        refinements.push(
+            GpuBindingLayoutRefinement::new(GpuBindingKey::try_new(0, 4).unwrap())
+                .with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable),
+        );
+    }
     let program =
         GpuProgramDescriptor::new(source, [vertex.clone(), fragment.clone()], refinements).unwrap();
     let vertex_layout = GpuVertexBufferLayoutDescriptor::new(
@@ -136,6 +145,8 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
         ),
         (GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable),
         (GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled),
+        (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled),
+        (GpuTextureFormat::Rgba8Unorm, GpuFormatRole::CopyDestination),
     ] {
         request = request.require_format_role(format, role);
     }
@@ -254,7 +265,7 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
     .unwrap();
     let output_op = GpuRenderOperation::new(
         [GpuRenderColorAttachment::new(
-            output_view,
+            output_view.clone(),
             GpuColorAttachmentLoad::Clear(GpuColorClearValue::new(0.0, 0.0, 0.0, 0.0).unwrap()),
             GpuAttachmentStore::Store,
             None,
@@ -272,11 +283,87 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
     )
     .unwrap();
     let readback_id = readback.id();
+
+    // F3D's actual packed 16-bit mask storage, not an averaged alpha:
+    // 0x3333 = the left two samples of each of four horizontal sample rows.
+    let public_target = Render2dTarget::new(output_view.clone(), 64.0, 64.0, 1.0).unwrap();
+    let admitted = admit_target(&context, &public_target, false).unwrap();
+    let clip_mask = crate::runtime::execution_2d::clip::ClipMask {
+        root_index: 0,
+        origin: [10, 20],
+        extent: [1, 1],
+        rgba: vec![0x33, 0x33, 0, 255],
+    };
+    let clipped = clip::upload(&admitted, &clip_mask, &mut resources).unwrap();
+    let clip_pipeline = pipeline(
+        GpuTextureFormat::Rgba16Float,
+        "fs_sample_merge_clipped",
+        true,
+    );
+    let mut clip_values = vec![texture_binding(6, &child_view).unwrap()];
+    clip_values.extend(clip::bindings(&clipped, 4, 5).unwrap());
+    let clip_draw = vector::vector_draw(
+        clip_pipeline.clone(),
+        clip_pipeline.runtime_bindings(clip_values).unwrap(),
+        &merge_vertices,
+        [256, 256],
+        &mut resources,
+    )
+    .unwrap();
+    let clipped_parent_op = GpuRenderOperation::new(
+        [GpuRenderColorAttachment::new(
+            parent_view.clone(),
+            GpuColorAttachmentLoad::Clear(GpuColorClearValue::new(0.0, 0.0, 0.0, 0.0).unwrap()),
+            GpuAttachmentStore::Store,
+            None,
+        )
+        .unwrap()],
+        None,
+        [clip_draw],
+        None,
+    )
+    .unwrap();
+    let clipped_resolve_draw = vector::vector_draw(
+        resolve_pipeline.clone(),
+        resolve_pipeline
+            .runtime_bindings([texture_binding(6, &parent_view).unwrap()])
+            .unwrap(),
+        &resolve_vertices,
+        [64, 64],
+        &mut resources,
+    )
+    .unwrap();
+    let clipped_output_op = GpuRenderOperation::new(
+        [GpuRenderColorAttachment::new(
+            output_view,
+            GpuColorAttachmentLoad::Clear(GpuColorClearValue::new(0.0, 0.0, 0.0, 0.0).unwrap()),
+            GpuAttachmentStore::Store,
+            None,
+        )
+        .unwrap()],
+        None,
+        [clipped_resolve_draw],
+        None,
+    )
+    .unwrap();
+    let clipped_readback = GpuReadbackOperation::ordinary(
+        GpuTextureCopyRegion::whole_base_mip(&output)
+            .unwrap()
+            .into(),
+    )
+    .unwrap();
+    let clipped_id = clipped_readback.id();
     let fragment = GpuWorkFragment::build("F3E isolated group sample passes", |work| {
         work.operation("compose children onto isolated sample scratch", child_op)?;
         work.operation("merge group with opacity once", parent_op)?;
         work.operation("resolve accumulated parent sample colors", output_op)?;
         work.operation("read group proof", readback)?;
+        work.operation(
+            "merge completed group with exact packed clip",
+            clipped_parent_op,
+        )?;
+        work.operation("resolve once after binary-sample clip", clipped_output_op)?;
+        work.operation("read correlated group clip proof", clipped_readback)?;
         Ok(())
     })
     .unwrap();
@@ -321,6 +408,25 @@ fn sample_space_isolates_child_colors_then_applies_group_opacity_once() {
     }
     let outside = (20 * 64 + 11) * 4;
     assert_eq!(&bytes.as_bytes()[outside..outside + 4], &[0, 0, 0, 0]);
+
+    let clipped_bytes = match submission.readback(clipped_id).unwrap().status() {
+        GpuReadbackStatus::Ready(bytes) => bytes,
+        status => panic!("F3E clipped group output was not completed: {status:?}"),
+    };
+    let clipped_pixel = &clipped_bytes.as_bytes()[offset..offset + 4];
+    // Exactly eight of sixteen samples survive the parent's 0x3333 mask:
+    // premul (red=.0625, blue=.125, α=.1875).
+    // Pixel-averaged per-child clipping is numerically different.
+    for (actual, expected) in clipped_pixel.iter().zip([71_u8, 0, 99, 48]) {
+        assert!(
+            actual.abs_diff(expected) <= 4,
+            "correlated group clip channel {actual}, expected {expected}"
+        );
+    }
+    assert_eq!(
+        &clipped_bytes.as_bytes()[outside..outside + 4],
+        &[0, 0, 0, 0]
+    );
 }
 
 #[test]
