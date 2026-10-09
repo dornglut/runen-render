@@ -340,7 +340,7 @@ fn repeated_image_patches_at(
     let image = Render2dImagePrimitive::new(
         id,
         Render2dPixelExtent::new(1, 1).unwrap(),
-        vec![patch.clone(), patch],
+        vec![patch, patch],
     )
     .unwrap();
     Render2dEntry::item(Render2dItem::new(
