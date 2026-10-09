@@ -1,5 +1,7 @@
 //! Private shared GPU admission, source-backed text fields and correlated-sample draws.
 
+mod clip;
+mod image;
 pub(super) mod sample_space;
 mod vector;
 
@@ -31,6 +33,8 @@ pub(super) struct AdmittedTarget {
     raster_scale: f64,
     max_texture_dimension_2d: u32,
     max_buffer_bytes: u64,
+    image_format: bool,
+    clip_format: bool,
 }
 
 impl AdmittedTarget {
@@ -210,6 +214,16 @@ pub(super) fn admit_target(
         continuous_height,
         raster_scale: target.raster_scale(),
         max_texture_dimension_2d,
+        image_format: [
+            GpuFormatRole::Sampled,
+            GpuFormatRole::Filterable,
+            GpuFormatRole::CopyDestination,
+        ]
+        .into_iter()
+        .all(|role| admitted_roles.contains(&(GpuTextureFormat::Rgba8UnormSrgb, role))),
+        clip_format: [GpuFormatRole::Sampled, GpuFormatRole::CopyDestination]
+            .into_iter()
+            .all(|role| admitted_roles.contains(&(FIELD_FORMAT, role))),
         max_buffer_bytes: context
             .device_facts()
             .device_limits()
