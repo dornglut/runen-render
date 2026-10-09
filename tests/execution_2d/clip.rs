@@ -458,3 +458,53 @@ fn affine_parent_space_clip_with_double_raster_scale_is_not_transformed_twice() 
     // become inside if the owner's +2 translation were incorrectly applied.
     check(pixel(&pixels, 49, 18), [0; 4]);
 }
+
+#[test]
+fn singular_clip_transforms_produce_no_work_and_do_not_erase_siblings() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let singular_transforms = [
+        Render2dAffineTransform::new(0.0, 0.0, 0.0, 0.0, 16.0, 16.0).unwrap(),
+        Render2dAffineTransform::new(1.0, 0.0, 0.0, 0.0, 16.0, 16.0).unwrap(),
+    ];
+    for (index, transform) in singular_transforms.into_iter().enumerate() {
+        let clipped = painted(
+            Render2dBrush::solid(Render2dColorRgba8::WHITE),
+            vec![Render2dClip::new(
+                Render2dShape::rect(r(0.0, 0.0, 32.0, 32.0)),
+                transform,
+            )],
+            Render2dAffineTransform::IDENTITY,
+            1.0,
+        );
+        let composition = Render2dComposition::new(vec![clipped.clone()]).unwrap();
+        let (_, target) = target("F3D singular parent-space clip");
+        let prepared = Render2dExecutor::new()
+            .prepare(
+                &ctx,
+                &composition,
+                &Render2dResourceBindings::default(),
+                &target,
+            )
+            .unwrap();
+        assert!(
+            !prepared.has_render_work(),
+            "singular clip #{index} must not author synthetic GPU work"
+        );
+
+        let sibling = painted(
+            Render2dBrush::solid(Render2dColorRgba8::new(0, 255, 0, 255)),
+            vec![],
+            Render2dAffineTransform::IDENTITY,
+            1.0,
+        );
+        let pixels = render(
+            &ctx,
+            vec![clipped, sibling],
+            &Render2dResourceBindings::default(),
+        );
+        check(pixel(&pixels, 16, 16), [0, 255, 0, 255]);
+        check(pixel(&pixels, 40, 40), [0, 255, 0, 255]);
+    }
+}
