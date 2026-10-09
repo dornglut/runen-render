@@ -1472,3 +1472,116 @@ fn equal_numeric_scene_revisions_do_not_certify_different_illumination_histories
     assert_eq!(current.history_age, 0);
     assert_ne!(current.history_generation, previous.history_generation);
 }
+
+
+/// Exercise two independent renderer continuities on the same Vulkan context.
+/// A compatible view must retain its phase while an unrelated view invalidates
+/// its source generation or camera pose. Every reset must produce only truthful
+/// same-phase values, never stale retained radiance.
+#[test]
+fn phase_fallback_gpu_isolates_views_and_resets_incompatible_sources_and_cameras() {
+    use crate::runtime::program::abi::temporal_fallback;
+    let Some(context) = context() else { return };
+    let mut caches = [
+        DeterministicResourceCache::default(),
+        DeterministicResourceCache::default(),
+    ];
+    let mut generations = [None::<u64>, None::<u64>];
+    // (view, camera_x, sphere_x, source_generation, expected_phase, reset)
+    let steps = [
+        (0_usize, 0.0, 0.0, 9_u64, 0, true),
+        (1, 0.5, 0.0, 9, 0, true),
+        (0, 0.0, 0.0, 9, 1, false),
+        (0, 0.0, 0.0, 9, 2, false),
+        (1, 0.5, 0.0, 9, 1, false),
+        (0, 0.0, 0.0, 9, 3, false),
+        (0, 0.0, 0.0, 9, 0, false), // Completed four-phase wrap.
+        (0, 0.0, 40.0, 10, 0, true), // New surface generation.
+        (1, 0.5, 0.0, 9, 2, false), // Independent view remains compatible.
+        (0, 0.75, 40.0, 10, 0, true), // Sub-native camera movement.
+    ];
+    for (view, camera_x, sphere_x, source_generation, expected_phase, reset) in steps {
+        let scene = fixture((8, 8), camera_x, sphere_x, source_generation);
+        let reference = evaluate(
+            &context,
+            packed(
+                &scene,
+                &context,
+                expected_phase,
+                MaintainedExecutionKind::Semantic(scene.request.outputs()[0].spec().value()),
+            ),
+        );
+        let cache = &mut caches[view];
+        let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+            admit(&scene, &context),
+            &context,
+            cache,
+            Some((0, (4, 4))),
+            false,
+        )
+        .expect("independent-view fallback preparation");
+        let output = prepared.radiance_output(0).unwrap();
+        assert!(output.availability_export_relationship().is_some());
+        let evidence = output.temporal_execution_evidence().unwrap();
+        assert_eq!(evidence.phase, expected_phase);
+        assert_eq!(evidence.history_reset, reset);
+        assert!(!evidence.camera_reprojection_eligible);
+        if let Some(previous) = generations[view] {
+            assert_eq!(
+                evidence.history_generation != previous,
+                reset,
+                "only this view's incompatible semantic state may reset it"
+            );
+        }
+        generations[view] = Some(evidence.history_generation);
+        let resolved = cache.buffers[&(0, DeterministicBufferKind::TemporalProvisional)].clone();
+        let availability = cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
+        let counts = match &cache.temporal_histories[&0].storage {
+            DeterministicTemporalStorage::Static { sample_counts, .. } => sample_counts.clone(),
+            _ => panic!("sub-native view needs static history"),
+        };
+        let observed = observe(
+            &context,
+            prepared.work_set().fragments().to_vec(),
+            &[resolved, availability, counts],
+        );
+        let stride = observed[0].len() / 8;
+        assert_eq!(observed[1].len(), 64);
+        for cell in 0..64 {
+            let physical = cell / 8 * stride + cell % 8;
+            let state = observed[1][cell];
+            let value = observed[0][physical];
+            if reference[1][cell] == 0 {
+                assert_eq!(state, temporal_fallback::UNRESOLVED);
+                assert_eq!(value, temporal_fallback::UNRESOLVED_RADIANCE_BITS);
+            } else if reset {
+                assert_eq!(
+                    state,
+                    temporal_fallback::CURRENT_PHASE,
+                    "reset cannot reuse an incompatible estimator"
+                );
+                assert_eq!(value, reference[0][physical]);
+            } else {
+                match state {
+                    temporal_fallback::CURRENT_PHASE => {
+                        assert_eq!(value, reference[0][physical]);
+                    }
+                    temporal_fallback::COMPATIBLE_HISTORY => {
+                        assert!(observed[2][physical] > 0);
+                        assert_ne!(observed[2][physical], u32::MAX);
+                        assert!(f32::from_bits(value).is_finite());
+                    }
+                    _ => panic!("available current radiance cannot become unresolved"),
+                }
+            }
+            if sphere_x == 40.0 && state == temporal_fallback::CURRENT_PHASE {
+                assert_eq!(
+                    value,
+                    0.0_f32.to_bits(),
+                    "a current background miss must overwrite old foreground radiance"
+                );
+            }
+        }
+        cache.reconcile_temporal_outputs(true);
+    }
+}
