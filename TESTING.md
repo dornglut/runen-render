@@ -154,5 +154,6 @@ nonzero/even-odd winding paths, ellipses, translucent overlapping image-patch
 source-over, text coverage and reconstruction,
 fractional intersections that differ from products
 of pixel-averaged clip alphas, typed unadmitted-format failure, empty intersection
-no-work and no leakage across unclipped siblings. CPU mask work is deliberately
-bounded; no native-GPU performance claim or persistent GPU mask cache follows.
+no-work and no leakage across unclipped siblings. CPU mask triangle-sample
+work is bounded across the complete prepared contribution rather than resetting
+at each item; no native-GPU performance claim or persistent GPU mask cache follows.

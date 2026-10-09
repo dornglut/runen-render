@@ -143,12 +143,13 @@ fn raster_triangle(
         .checked_mul(u64::from(bottom - top))
         .and_then(|value| value.checked_mul(u64::from(AXIS_SAMPLES * AXIS_SAMPLES)))
         .ok_or_else(|| failure(root_index, Render2dClipError::ResourceLimit))?;
-    *work = work
+    let next_work = work
         .checked_add(area_samples)
         .ok_or_else(|| failure(root_index, Render2dClipError::ResourceLimit))?;
-    if *work > MAX_TRIANGLE_SAMPLES {
+    if next_work > MAX_TRIANGLE_SAMPLES {
         return Err(failure(root_index, Render2dClipError::ResourceLimit));
     }
+    *work = next_work;
     for y in top..bottom {
         for x in left..right {
             let index = usize::try_from(y - bounds[1]).expect("bounded row") * width
@@ -179,6 +180,7 @@ pub(super) fn prepare(
     ordered: &[OrderedItem],
     root_index: usize,
     target: &AdmittedTarget,
+    contribution_work: &mut u64,
 ) -> Result<Option<ClipMask>, Render2dExecutionError> {
     if item.clips().is_empty() {
         return Ok(None);
@@ -238,7 +240,7 @@ pub(super) fn prepare(
     let width = usize::try_from(width_u32).expect("mask dimensions bounded");
     let mut intersection = vec![u16::MAX; pixels];
     let mut temporary = vec![0u16; pixels];
-    let mut work = 0u64;
+    // Charge each triangle against the complete prepared contribution, not the root item.
     for mesh in geometries {
         temporary.fill(0);
         for triangle in mesh.triangles.as_chunks::<3>().0 {
@@ -247,7 +249,7 @@ pub(super) fn prepare(
                 bounds,
                 width,
                 &mut temporary,
-                &mut work,
+                contribution_work,
                 root_index,
             )?;
         }
@@ -276,4 +278,46 @@ pub(super) fn prepare(
         extent: [width_u32, height_u32],
         rgba,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raster_work_budget_is_cumulative_and_rejects_before_mutating_coverage() {
+        let triangle = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let mut bits = [0u16];
+        let mut contribution_work = MAX_TRIANGLE_SAMPLES - 16;
+
+        raster_triangle(
+            triangle,
+            [0, 0, 1, 1],
+            1,
+            &mut bits,
+            &mut contribution_work,
+            7,
+        )
+        .expect("final permitted triangle must fit the contribution budget");
+        assert_eq!(contribution_work, MAX_TRIANGLE_SAMPLES);
+        assert_ne!(bits[0], 0);
+        let accepted_bits = bits;
+
+        assert!(matches!(
+            raster_triangle(
+                triangle,
+                [0, 0, 1, 1],
+                1,
+                &mut bits,
+                &mut contribution_work,
+                8,
+            ),
+            Err(Render2dExecutionError::Clip {
+                root_index: 8,
+                kind: Render2dClipError::ResourceLimit,
+            })
+        ));
+        assert_eq!(contribution_work, MAX_TRIANGLE_SAMPLES);
+        assert_eq!(bits, accepted_bits);
+    }
 }

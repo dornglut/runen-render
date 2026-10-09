@@ -182,6 +182,7 @@ impl Render2dExecutionState {
         let mut ordered = Vec::new();
         let mut clips = BTreeMap::new();
         let mut clip_bytes = 0u64;
+        let mut clip_raster_work = 0u64;
         for (root_index, entry) in composition.root_entries().iter().enumerate() {
             let root_start = ordered.len();
             let Render2dEntry::Item(item) = entry else {
@@ -224,7 +225,13 @@ impl Render2dExecutionState {
             }
             if !item.clips().is_empty() {
                 if let Some(mask) =
-                    clip::prepare(item, &ordered[root_start..], root_index, &admitted_target)?
+                    clip::prepare(
+                        item,
+                        &ordered[root_start..],
+                        root_index,
+                        &admitted_target,
+                        &mut clip_raster_work,
+                    )?
                 {
                     clip_bytes = clip_bytes
                         .checked_add(u64::try_from(mask.rgba.len()).map_err(|_| {
