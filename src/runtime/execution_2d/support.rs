@@ -372,7 +372,6 @@ fn orient(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
     (b[0] - a[0]).mul_add(p[1] - a[1], -((b[1] - a[1]) * (p[0] - a[0])))
 }
 
-
 /// Private linear alpha coverage from one sampled neutral shadow support.
 /// All values are finite, normalized, and independent of authored paint alpha.
 #[derive(Debug)]
@@ -398,7 +397,9 @@ pub(super) fn blur_neutral_mask(
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
-    let source_count = input.width.checked_mul(input.height)
+    let source_count = input
+        .width
+        .checked_mul(input.height)
         .ok_or_else(|| resource("neutral blur source extent overflow"))?;
     if source_count == 0
         || source_count > MAX_NEUTRAL_MASK_SAMPLES
@@ -406,10 +407,13 @@ pub(super) fn blur_neutral_mask(
     {
         return Err(resource("neutral blur source mask exceeds bounds"));
     }
-    if kernel.radius > usize::try_from(MAX_GAUSSIAN_RADIUS_SAMPLES)
-        .expect("fixed Gaussian maximum fits usize")
+    if kernel.radius
+        > usize::try_from(MAX_GAUSSIAN_RADIUS_SAMPLES).expect("fixed Gaussian maximum fits usize")
         || kernel.weights.len() != kernel.radius + 1
-        || !kernel.weights.iter().all(|value| value.is_finite() && *value >= 0.0)
+        || !kernel
+            .weights
+            .iter()
+            .all(|value| value.is_finite() && *value >= 0.0)
     {
         return Err(precision("neutral blur kernel is malformed"));
     }
@@ -418,31 +422,46 @@ pub(super) fn blur_neutral_mask(
         return Err(precision("neutral blur kernel is not normalized"));
     }
     let pad = kernel.radius;
-    let width = input.width.checked_add(pad.checked_mul(2)
-        .ok_or_else(|| resource("neutral blur padding overflow"))?)
+    let width = input
+        .width
+        .checked_add(
+            pad.checked_mul(2)
+                .ok_or_else(|| resource("neutral blur padding overflow"))?,
+        )
         .ok_or_else(|| resource("neutral blur width overflow"))?;
-    let height = input.height.checked_add(pad.checked_mul(2)
-        .ok_or_else(|| resource("neutral blur padding overflow"))?)
+    let height = input
+        .height
+        .checked_add(
+            pad.checked_mul(2)
+                .ok_or_else(|| resource("neutral blur padding overflow"))?,
+        )
         .ok_or_else(|| resource("neutral blur height overflow"))?;
-    let area = width.checked_mul(height)
+    let area = width
+        .checked_mul(height)
         .ok_or_else(|| resource("neutral blur sample area overflow"))?;
     if area > MAX_NEUTRAL_MASK_SAMPLES {
         return Err(resource("neutral blur halo exceeds bounded sample area"));
     }
-    let taps = pad.checked_mul(2)
+    let taps = pad
+        .checked_mul(2)
         .and_then(|v| v.checked_add(1))
         .ok_or_else(|| resource("neutral blur tap count overflow"))?;
-    let work = area.checked_mul(taps)
+    let work = area
+        .checked_mul(taps)
         .and_then(|v| v.checked_mul(2))
         .ok_or_else(|| resource("neutral blur work count overflow"))?;
     if work > 16_777_216 {
         return Err(resource("neutral blur exceeds bounded sample-tap work"));
     }
-    let pad_i64 = i64::try_from(pad)
-        .map_err(|_| resource("neutral blur origin padding overflow"))?;
-    let origin_x = input.origin_x.checked_sub(pad_i64)
+    let pad_i64 =
+        i64::try_from(pad).map_err(|_| resource("neutral blur origin padding overflow"))?;
+    let origin_x = input
+        .origin_x
+        .checked_sub(pad_i64)
         .ok_or_else(|| precision("neutral blur x origin overflow"))?;
-    let origin_y = input.origin_y.checked_sub(pad_i64)
+    let origin_y = input
+        .origin_y
+        .checked_sub(pad_i64)
         .ok_or_else(|| precision("neutral blur y origin overflow"))?;
 
     let mut source = filled(area, 0.0_f64, path)?;
@@ -618,8 +637,6 @@ pub(super) fn signed_euclidean_spread(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-
 
     #[test]
     fn gaussian_neutral_coverage_is_normalized_and_has_finite_halo() {
