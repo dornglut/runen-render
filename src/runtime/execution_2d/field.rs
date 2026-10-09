@@ -722,8 +722,12 @@ mod tests {
     fn cumulative_msdf_budget_accounts_cached_and_new_fields_transactionally() {
         let id = Render2dResourceId::new(920).unwrap();
         let mut budget = FieldBudget::default();
-        budget.charge(id, 1, 2048, 2048).expect("first sixteen MiB field");
-        budget.charge(id, 2, 2048, 2048).expect("second sixteen MiB field");
+        budget
+            .charge(id, 1, 2048, 2048)
+            .expect("first sixteen MiB field");
+        budget
+            .charge(id, 2, 2048, 2048)
+            .expect("second sixteen MiB field");
         assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
         assert!(matches!(
             budget.charge(id, 3, 1, 1),
@@ -737,14 +741,17 @@ mod tests {
         assert!(budget.charge(id, 4, u32::MAX, u32::MAX).is_err());
         assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
         let mut cached = BTreeMap::new();
-        cached.insert(5, Some(Arc::new(GlyphField {
-            glyph_id: 5,
-            origin_x: 0.0,
-            origin_y: 0.0,
-            width: 2,
-            height: 2,
-            rgba8: Arc::from([0_u8; 16]),
-        })));
+        cached.insert(
+            5,
+            Some(Arc::new(GlyphField {
+                glyph_id: 5,
+                origin_x: 0.0,
+                origin_y: 0.0,
+                width: 2,
+                height: 2,
+                rgba8: Arc::from([0_u8; 16]),
+            })),
+        );
         let fields = ResourceFields { by_glyph: cached };
         assert!(matches!(
             fields.charge_cached(id, &mut budget),

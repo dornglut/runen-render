@@ -893,9 +893,7 @@ pub(in crate::runtime::execution_2d) fn lower(
     let text_sampler = has_text
         .then(|| super::create_sampler(&mut resources))
         .transpose()?;
-    let text_pipeline = has_text
-        .then(super::shaped_text_pipeline)
-        .transpose()?;
+    let text_pipeline = has_text.then(super::shaped_text_pipeline).transpose()?;
 
     let coverage_pipeline = pipeline(FIELD_FORMAT, "fs_coverage", None)?;
     let fill_pipeline = pipeline(
