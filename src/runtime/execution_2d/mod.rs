@@ -12,8 +12,8 @@ use self::field::{FieldSetKey, QualityTier, ResourceFields};
 use self::lowering::GlyphOccurrence;
 pub(crate) use self::lowering::add_target_boundary;
 use crate::composition_2d::{
-    Render2dComposition, Render2dPrimitive, Render2dResourceBindings,
-    Render2dResourceId, Render2dResourceRequirement, Render2dResourceValue,
+    Render2dComposition, Render2dPrimitive, Render2dResourceBindings, Render2dResourceId,
+    Render2dResourceRequirement, Render2dResourceValue,
 };
 use crate::execution_2d::{
     Render2dExecutionError, Render2dPreparedContribution, Render2dTarget,

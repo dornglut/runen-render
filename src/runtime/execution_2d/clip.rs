@@ -1,9 +1,6 @@
 //! Renderer-private exact-lattice conjunctive clips: structural tessellation is
 //! disposable, and each physical pixel packs its sixteen binary coverage samples.
-use super::{
-    lowering::AdmittedTarget,
-    scene, vector,
-};
+use super::{lowering::AdmittedTarget, scene, vector};
 use crate::composition_2d::{
     Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dColorRgba8, Render2dItem,
     Render2dOpacity, Render2dPrimitive,
