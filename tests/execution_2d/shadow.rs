@@ -704,13 +704,7 @@ fn positive_euclidean_spread_convolves_continuous_geometry_on_actual_gpu() {
     // yielding alpha=60 and linear-red->sRGB=134 at 8-bit resolve.
     // The old cell-area/discrete-kernel path gave alpha about 26 instead.
     let composition = group(
-        vec![caster(
-            Render2dColorRgba8::TRANSPARENT,
-            0.1,
-            0.0,
-            0.1,
-            1.0,
-        )],
+        vec![caster(Render2dColorRgba8::TRANSPARENT, 0.1, 0.0, 0.1, 1.0)],
         vec![effect(
             0.0,
             0.0,
