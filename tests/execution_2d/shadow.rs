@@ -421,13 +421,7 @@ fn transparent_nested_shadow_support_reaches_ancestor_after_own_clip() {
         Render2dAffineTransform::IDENTITY,
         vec![clip],
         Render2dOpacity::TRANSPARENT,
-        vec![effect(
-            5.0,
-            0.0,
-            0.0,
-            0.0,
-            Render2dColorRgba8::TRANSPARENT,
-        )],
+        vec![effect(5.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT)],
     ));
     let outer = Render2dEntry::group(Render2dGroup::new(
         vec![nested],

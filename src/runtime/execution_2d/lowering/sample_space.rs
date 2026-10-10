@@ -16,9 +16,7 @@ use crate::composition_2d::{
     Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dGroup, Render2dItem,
     Render2dPrimitive, Render2dResourceBindings, Render2dResourceId, Render2dResourceValue,
 };
-use crate::execution_2d::{
-    Render2dSampleSpaceError, Render2dTargetAdmissionError,
-};
+use crate::execution_2d::{Render2dSampleSpaceError, Render2dTargetAdmissionError};
 use crate::runtime::execution_2d::{
     clip as clip_geometry,
     field::{FieldSetKey, ResourceFields},

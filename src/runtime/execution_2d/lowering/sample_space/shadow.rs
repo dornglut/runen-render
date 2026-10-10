@@ -176,8 +176,7 @@ pub(super) fn prepare(
             // projection, so a nested translated C remains exact triangles.
             // Nonzero nested kernels reject in group_child_sources rather
             // than being incorrectly applied in root space.
-            let Some(parent_envelope) =
-                geometry_support::shadow_envelope(source, *effect, path)?
+            let Some(parent_envelope) = geometry_support::shadow_envelope(source, *effect, path)?
             else {
                 continue;
             };
