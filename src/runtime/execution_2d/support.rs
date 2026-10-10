@@ -1929,8 +1929,12 @@ mod tests {
         // sign, even though the union bounding rectangle is [0,3]^2.
         let rect = |x: f64, y: f64, w: f64, h: f64| {
             [
-                [x, y], [x + w, y], [x + w, y + h],
-                [x, y], [x + w, y + h], [x, y + h],
+                [x, y],
+                [x + w, y],
+                [x + w, y + h],
+                [x, y],
+                [x + w, y + h],
+                [x, y + h],
             ]
         };
         let triangles = [
@@ -1938,7 +1942,8 @@ mod tests {
             rect(0.0, 2.0, 3.0, 1.0),
             rect(0.0, 1.0, 1.0, 1.0),
             rect(2.0, 1.0, 1.0, 1.0),
-        ].concat();
+        ]
+        .concat();
         let boundary = union_exterior_boundary(&triangles, &[9, 1]).unwrap();
         let hole = union_signed_interior_distance(&triangles, &boundary, [1.5, 1.5]);
         let interior = union_signed_interior_distance(&triangles, &boundary, [0.5, 1.5]);
@@ -1946,9 +1951,15 @@ mod tests {
         assert!((interior - 0.5).abs() < 1e-9, "{interior}");
         let mut work = 0_usize;
         let alpha = continuous_signed_spread_sample(
-            &triangles, Some(&boundary), [1.5, 1.5], -0.1, 0.0,
-            &mut work, &[9, 1],
-        ).unwrap();
+            &triangles,
+            Some(&boundary),
+            [1.5, 1.5],
+            -0.1,
+            0.0,
+            &mut work,
+            &[9, 1],
+        )
+        .unwrap();
         // Remaining uncertain mass is bounded, not silently interpreted
         // as exactly zero. A near-zero representative is acceptable here.
         assert!(alpha <= 1.0 / 2048.0, "{alpha}");
@@ -1960,16 +1971,26 @@ mod tests {
         // inside the .2-eroded unit square. Its alpha must normalize to 1,
         // independent of how the square is triangulated or duplicated.
         let rect = [
-            [0.0, 0.0], [1.0, 0.0], [1.0, 1.0],
-            [0.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 1.0],
         ];
         let triangles = [rect, rect].concat();
         let boundary = union_exterior_boundary(&triangles, &[7, 1]).unwrap();
         let mut work = 0_usize;
         let value = continuous_signed_spread_sample(
-            &triangles, Some(&boundary), [0.5, 0.5], -0.2, 0.025,
-            &mut work, &[7, 1],
-        ).unwrap();
+            &triangles,
+            Some(&boundary),
+            [0.5, 0.5],
+            -0.2,
+            0.025,
+            &mut work,
+            &[7, 1],
+        )
+        .unwrap();
         assert!((value - 1.0).abs() <= 1.0 / 2048.0, "{value}");
     }
 
