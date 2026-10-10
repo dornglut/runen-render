@@ -507,7 +507,13 @@ fn continuous_negative_erosion_gaussian_preserves_normalized_inner_samples() {
     // Exactly four of sixteen sample contributions survive: alpha=.25,
     // linear-premul red .25 => sRGB 137 and unorm alpha 64.
     let composition = group(
-        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 1.0, 1.0)],
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            1.0,
+            1.0,
+        )],
         vec![effect(
             0.0,
             0.0,
