@@ -889,27 +889,19 @@ fn one_dilated_triangle_contains_cell(
 ) -> bool {
     let [x0, y0, x1, y1] = rectangle;
     let corners = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]];
-    triangles
-        .as_chunks::<3>()
-        .0
-        .iter()
-        .any(|tri| {
-            orient(tri[0], tri[1], tri[2]) != 0.0
-                && corners
-                    .iter()
-                    .all(|&p| neutral_union_distance(tri, p) <= radius)
-        })
+    triangles.as_chunks::<3>().0.iter().any(|tri| {
+        orient(tri[0], tri[1], tri[2]) != 0.0
+            && corners
+                .iter()
+                .all(|&p| neutral_union_distance(tri, p) <= radius)
+    })
 }
 
 /// Bounding rectangles of all convex triangles are a conservative superset.
 /// If the cell-to-each-bounds Euclidean gap is >radius, *no* point of the
 /// integration cell can lie inside the real disk dilation. This tighter box
 /// test avoids the half-diagonal Lipschitz overestimate near long edges.
-fn dilated_triangles_miss_cell(
-    triangles: &[[f64; 2]],
-    rectangle: [f64; 4],
-    radius: f64,
-) -> bool {
+fn dilated_triangles_miss_cell(triangles: &[[f64; 2]], rectangle: [f64; 4], radius: f64) -> bool {
     let [x0, y0, x1, y1] = rectangle;
     triangles.as_chunks::<3>().0.iter().all(|tri| {
         let min_x = tri.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
