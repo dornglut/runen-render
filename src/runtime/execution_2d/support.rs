@@ -1123,6 +1123,157 @@ fn union_signed_interior_distance(
     if inside { nearest } else { -nearest }
 }
 
+/// Certified convex triangle-union erosion. Every exposed union-boundary
+/// segment must be a supporting line of ALL original triangle vertices;
+/// otherwise the source is nonconvex or has a hole and the general signed-
+/// distance path remains authoritative. This is a geometric certificate,
+/// never an AABB or sampled-alpha membership shortcut.
+///
+/// A convex polygon eroded by a Euclidean disk is precisely the intersection
+/// of its inward-offset supporting halfplanes. Intersect each ORIGINAL
+/// triangle with those planes and take the resulting triangle union; this
+/// retains the source geometry and works under arbitrary affine shear and
+/// anisotropic scaling without interpreting the transform as a box kernel.
+fn certified_convex_eroded_union(
+    triangles: &[[f64; 2]],
+    exterior: &[UnionBoundaryEdge],
+    radius: f64,
+    path: &[usize],
+) -> Result<Option<Vec<[f64; 2]>>, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    if !radius.is_finite() || radius <= 0.0 {
+        return Err(precision("convex erosion radius is not representable"));
+    }
+    if triangles.is_empty() || exterior.is_empty() || !triangles.len().is_multiple_of(3) {
+        return Ok(None);
+    }
+    // Classifying all vertices costs m*n. Clipping each initial triangle
+    // against m planes may inspect up to 3+k edges at plane k; charge the
+    // entire quadratic worst case BEFORE any polygon allocations. The
+    // output can have at most m+1 triangles per original triangle.
+    let m = exterior.len();
+    let triangle_count = triangles.len() / 3;
+    let clipping_edges = m
+        .checked_mul(3)
+        .and_then(|n| m.checked_mul(m.saturating_sub(1)).and_then(|q| q.checked_div(2)).and_then(|q| n.checked_add(q)))
+        .ok_or_else(|| resource("convex erosion clipping work overflow"))?;
+    let work = m
+        .checked_mul(triangles.len())
+        .and_then(|n| clipping_edges.checked_mul(triangle_count).and_then(|q| n.checked_add(q)))
+        .ok_or_else(|| resource("convex erosion supporting-plane work overflow"))?;
+    let retained_vertices = m
+        .checked_add(1)
+        .and_then(|n| n.checked_mul(triangles.len()))
+        .ok_or_else(|| resource("convex erosion output size overflow"))?;
+    if work > 16_777_216 || retained_vertices > MAX_NEUTRAL_MASK_SAMPLES {
+        return Err(resource("convex erosion supporting-plane work exceeds admission"));
+    }
+    let mut planes = Vec::new();
+    planes
+        .try_reserve_exact(exterior.len())
+        .map_err(|_| resource("convex erosion plane allocation failed"))?;
+    for &[a, b] in exterior {
+        let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+        if !length.is_finite() || length == 0.0 {
+            return Err(precision("convex erosion exposed boundary is degenerate"));
+        }
+        let mut side = 0.0_f64;
+        for &point in triangles {
+            let cross = orient(a, b, point);
+            if !cross.is_finite() {
+                return Err(precision("convex erosion supporting line lost precision"));
+            }
+            if cross == 0.0 {
+                continue;
+            }
+            if side == 0.0 {
+                side = cross.signum();
+            } else if cross.signum() != side {
+                // An exposed edge with triangle vertices on both sides
+                // cannot define a supporting halfplane: reject certificate.
+                return Ok(None);
+            }
+        }
+        if side == 0.0 {
+            return Ok(None);
+        }
+        planes.push((a, b, side, length));
+    }
+    let mut output = Vec::new();
+    for triangle in triangles.as_chunks::<3>().0 {
+        if orient(triangle[0], triangle[1], triangle[2]) == 0.0 {
+            continue;
+        }
+        let mut polygon = triangle.to_vec();
+        for &(a, b, side, length) in &planes {
+            if polygon.len() < 3 {
+                break;
+            }
+            let mut next = Vec::new();
+            next.try_reserve_exact(polygon.len() + 1)
+                .map_err(|_| resource("convex erosion polygon clipping allocation failed"))?;
+            for j in 0..polygon.len() {
+                let p = polygon[j];
+                let q = polygon[(j + 1) % polygon.len()];
+                let dp = side * orient(a, b, p) / length - radius;
+                let dq = side * orient(a, b, q) / length - radius;
+                if !dp.is_finite() || !dq.is_finite() {
+                    return Err(precision("convex erosion clip distance lost precision"));
+                }
+                if (dp >= 0.0) != (dq >= 0.0) {
+                    let denominator = dp - dq;
+                    if denominator == 0.0 {
+                        return Err(precision("convex erosion clip intersection is singular"));
+                    }
+                    let t = dp / denominator;
+                    if !t.is_finite() || !(0.0..=1.0).contains(&t) {
+                        return Err(precision("convex erosion clip ratio is unrepresentable"));
+                    }
+                    let intersection = [
+                        (q[0] - p[0]).mul_add(t, p[0]),
+                        (q[1] - p[1]).mul_add(t, p[1]),
+                    ];
+                    if !intersection.iter().all(|v| v.is_finite()) {
+                        return Err(precision("convex erosion intersection is not finite"));
+                    }
+                    next.push(intersection);
+                }
+                if dq >= 0.0 {
+                    next.push(q);
+                }
+            }
+            polygon = next;
+        }
+        if polygon.len() < 3 {
+            continue;
+        }
+        for i in 1..polygon.len() - 1 {
+            let tri = [polygon[0], polygon[i], polygon[i + 1]];
+            let area = orient(tri[0], tri[1], tri[2]);
+            if !area.is_finite() {
+                return Err(precision("convex erosion output triangle area lost precision"));
+            }
+            if area == 0.0 {
+                continue;
+            }
+            let size = output
+                .len()
+                .checked_add(3)
+                .ok_or_else(|| resource("convex erosion triangle count overflow"))?;
+            if size > MAX_NEUTRAL_MASK_SAMPLES {
+                return Err(resource("convex erosion triangle retention exceeds admission"));
+            }
+            output
+                .try_reserve(3)
+                .map_err(|_| resource("convex erosion output allocation failed"))?;
+            output.extend(tri);
+        }
+    }
+    Ok(Some(output))
+}
+
 /// Certify that the complete triangle UNION is exactly one axis-aligned
 /// rectangle. Each nondegenerate triangle must use three distinct rectangle
 /// corners; two triangles missing opposite corners cover the whole rectangle.
@@ -1551,6 +1702,18 @@ fn rasterize_continuous_shadow_coverage(
     } else {
         None
     };
+    // A certified convex union admits an EXACT Euclidean inward offset as
+    // another triangle union. Integrate that derived geometry under the same
+    // continuous area/Gaussian law; never spend adaptive subdivision work on
+    // known straight supporting planes or substitute an enclosing rectangle.
+    let convex_inset = if let Some(exterior) = &erosion_boundary {
+        certified_convex_eroded_union(&triangles, exterior, -physical_spread, path)?
+    } else {
+        None
+    };
+    if convex_inset.as_ref().is_some_and(Vec::is_empty) {
+        return Ok(None);
+    }
     let mut values = filled(area, 0.0_f64, path)?;
     let mut work = 0_usize;
     for row in 0..height {
@@ -1561,6 +1724,12 @@ fn rasterize_continuous_shadow_coverage(
             ];
             values[row * width + column] = if let Some(rect) = inset {
                 inset_rectangle_sample(rect, center, physical_sigma)
+            } else if let Some(polygon) = &convex_inset {
+                if physical_sigma > 0.0 {
+                    gaussian_union_sample(polygon, center, physical_sigma, &mut work, path)?
+                } else {
+                    area_sample(polygon, center[0] - 0.5, center[1] - 0.5, &mut work, path)?
+                }
             } else if signed_spread != 0.0 {
                 continuous_signed_spread_sample(
                     &triangles,
@@ -1998,6 +2167,63 @@ mod tests {
         assert!((actual - independent_cdf).abs() <= 1.0 / 2048.0);
         assert!((actual - 0.04).abs() > 0.03);
         assert!(work > 0);
+    }
+
+    #[test]
+    fn certified_sheared_convex_erosion_uses_exposed_halfplanes_not_enclosing_box() {
+        // The two triangles cover a full sheared parallelogram, and have a
+        // shared internal diagonal. The exposed exterior owns the Euclidean
+        // erosion support, not that diagonal or the shape's AABB.
+        let source = [
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [6.0, 4.0],
+            [0.0, 0.0],
+            [6.0, 4.0],
+            [2.0, 4.0],
+        ];
+        let exterior = union_exterior_boundary(&source, &[6]).unwrap();
+        let eroded = certified_convex_eroded_union(&source, &exterior, 0.5, &[6])
+            .unwrap()
+            .expect("complete sheared convex union is certified");
+        assert!(!eroded.is_empty());
+        assert_eq!(neutral_union_distance(&eroded, [3.0, 2.0]), 0.0);
+        assert!(neutral_union_distance(&eroded, [1.0, 2.0]) > 0.0);
+        let mut total = 0.0;
+        let mut work = 0;
+        for y in 0..4 {
+            for x in 0..6 {
+                total += area_sample(&eroded, f64::from(x), f64::from(y), &mut work, &[6])
+                    .expect("exposed-plane inset has bounded exact cell area");
+            }
+        }
+        // Convex Euclidean erosion narrows each slanted edge by r*sqrt(1.25)
+        // in the x-.5*y coordinates and each horizontal edge by r.
+        let independent_area = (4.0 - 1.25_f64.sqrt()) * 3.0;
+        assert!((total - independent_area).abs() < 1.0e-8, "{total} vs {independent_area}");
+
+        // A concave L has an exposed notch boundary inside its convex hull.
+        // Its inner boundary cannot be promoted to a global supporting line.
+        let l_shape = [
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 1.0],
+            [0.0, 0.0],
+            [4.0, 1.0],
+            [0.0, 1.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 4.0],
+            [0.0, 1.0],
+            [1.0, 4.0],
+            [0.0, 4.0],
+        ];
+        let concave_boundary = union_exterior_boundary(&l_shape, &[6]).unwrap();
+        assert!(
+            certified_convex_eroded_union(&l_shape, &concave_boundary, 0.5, &[6])
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
