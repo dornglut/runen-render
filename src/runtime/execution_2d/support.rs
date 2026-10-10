@@ -1898,7 +1898,12 @@ mod tests {
                 + usize::try_from(x - spread.origin_x).unwrap()
         };
         assert!(spread.values[index(0, 0)] > 0.0);
-        assert_eq!(spread.values[index(-2, -2)], 0.0);
+        // The disk intersects the [-2,-1]^2 sample cell even though its
+        // center (-1.5,-1.5) is outside the dilation. Uniform cell-area
+        // reconstruction must retain this fractional Euclidean intersection,
+        // unlike the old binary-center path.
+        assert!(spread.values[index(-2, -2)] > 0.0);
+        assert!(spread.values[index(-2, -2)] < 1.0);
         // The same caster lies completely between centers but has an
         // exact nonzero area of 0.04 x 0.04 physical sample units.
         let area = prepare_untranslated_shadow_coverage(&mesh, 0.0, 0.5, 4.0, &[6, 7])
