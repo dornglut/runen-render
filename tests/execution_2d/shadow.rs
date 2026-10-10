@@ -470,13 +470,7 @@ fn sheared_parent_frame_erosion_uses_real_union_not_aabb_on_actual_gpu() {
     // Erosion by .5 uses signed distance to the true parallelogram edges;
     // the enclosing AABB [16,28] x [8,16] is an extent, not geometry.
     let transformed = Render2dGroup::new(
-        vec![caster(
-            Render2dColorRgba8::TRANSPARENT,
-            8.0,
-            8.0,
-            8.0,
-            8.0,
-        )],
+        vec![caster(Render2dColorRgba8::TRANSPARENT, 8.0, 8.0, 8.0, 8.0)],
         Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
         Vec::new(),
         Render2dOpacity::OPAQUE,
