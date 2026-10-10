@@ -15,6 +15,29 @@ pub(super) struct NeutralMesh {
 }
 
 const MAX_GAUSSIAN_RADIUS_SAMPLES: u32 = 512;
+// Covers repeated neutral grid traversal AND continuous support integration
+// across every authored effect in one contribution, not just one shadow.
+const MAX_AGGREGATE_SHADOW_PREPARATION_WORK: usize = 134_217_728;
+
+fn charge_shadow_preparation_work(
+    used: &mut usize,
+    cost: usize,
+    path: &[usize],
+) -> Result<(), crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let fail = || {
+        mask_failure(
+            path,
+            Render2dSampleSpaceError::ResourceLimit,
+            "aggregate shadow preparation work exceeds bounded admission",
+        )
+    };
+    *used = used.checked_add(cost).ok_or_else(fail)?;
+    if *used > MAX_AGGREGATE_SHADOW_PREPARATION_WORK {
+        return Err(fail());
+    }
+    Ok(())
+}
 
 /// Historical finite truncated-Gaussian sampled-kernel comparator for
 /// deterministic conformance ONLY; production uses continuous integration.
@@ -273,7 +296,7 @@ pub(super) fn rasterize_neutral_mesh(
     samples_per_logical_unit: f64,
     path: &[usize],
 ) -> Result<Option<NeutralMask>, crate::execution_2d::Render2dExecutionError> {
-    rasterize_mesh_with_positive_spread(mesh, samples_per_logical_unit, 0.0, path)
+    rasterize_mesh_with_positive_spread(mesh, samples_per_logical_unit, 0.0, path, None)
 }
 
 /// Tests the true tessellated geometric distance at each parent-frame sample,
@@ -284,6 +307,7 @@ fn rasterize_mesh_with_positive_spread(
     samples_per_logical_unit: f64,
     positive_spread: f64,
     path: &[usize],
+    aggregate_work: Option<&mut usize>,
 ) -> Result<Option<NeutralMask>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
@@ -372,6 +396,9 @@ fn rasterize_mesh_with_positive_spread(
         return Err(resource(
             "neutral triangle/sample work exceeds the bounded budget",
         ));
+    }
+    if let Some(used) = aggregate_work {
+        charge_shadow_preparation_work(used, work, path)?;
     }
     let mut samples = filled(cells, 0_u8, path)?;
     for y in 0..height {
@@ -684,8 +711,11 @@ fn rasterize_area_coverage(
     mesh: &NeutralMesh,
     scale: f64,
     path: &[usize],
+    aggregate_work: &mut usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
-    let Some(grid) = rasterize_neutral_mesh(mesh, scale, path)? else {
+    let Some(grid) =
+        rasterize_mesh_with_positive_spread(mesh, scale, 0.0, path, Some(aggregate_work))?
+    else {
         return Ok(None);
     };
     let transform = scale / mesh.units_per_parent_logical_unit;
@@ -694,14 +724,13 @@ fn rasterize_area_coverage(
         *out = [x * transform, y * transform];
     }
     let mut values = filled(grid.samples.len(), 0.0_f64, path)?;
-    let mut work = 0;
     for y in 0..grid.height {
         for x in 0..grid.width {
             let x0 = f64::from(i32::try_from(grid.origin_x).expect("bounded lattice origin"))
                 + as_f64(x);
             let y0 = f64::from(i32::try_from(grid.origin_y).expect("bounded lattice origin"))
                 + as_f64(y);
-            values[y * grid.width + x] = area_sample(&triangles, x0, y0, &mut work, path)?;
+            values[y * grid.width + x] = area_sample(&triangles, x0, y0, aggregate_work, path)?;
         }
     }
     Ok(Some(NeutralCoverage {
@@ -1599,12 +1628,18 @@ fn rasterize_continuous_shadow_coverage(
     sigma: f64,
     scale: f64,
     path: &[usize],
+    aggregate_work: &mut usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
-    let Some(grid) =
-        rasterize_mesh_with_positive_spread(mesh, scale, signed_spread.max(0.0), path)?
+    let Some(grid) = rasterize_mesh_with_positive_spread(
+        mesh,
+        scale,
+        signed_spread.max(0.0),
+        path,
+        Some(aggregate_work),
+    )?
     else {
         return Ok(None);
     };
@@ -1657,6 +1692,7 @@ fn rasterize_continuous_shadow_coverage(
             "continuous Gaussian halo scan exceeds bounded work",
         ));
     }
+    charge_shadow_preparation_work(aggregate_work, scan_work, path)?;
     let offset = i64::try_from(pad).map_err(|_| resource("continuous Gaussian halo overflow"))?;
     let origin_x = grid
         .origin_x
@@ -1729,7 +1765,6 @@ fn rasterize_continuous_shadow_coverage(
         return Ok(None);
     }
     let mut values = filled(area, 0.0_f64, path)?;
-    let mut work = 0_usize;
     for row in 0..height {
         for column in 0..width {
             let center = [
@@ -1740,9 +1775,9 @@ fn rasterize_continuous_shadow_coverage(
                 inset_rectangle_sample(rect, center, physical_sigma)
             } else if let Some(polygon) = &convex_inset {
                 if physical_sigma > 0.0 {
-                    gaussian_union_sample(polygon, center, physical_sigma, &mut work, path)?
+                    gaussian_union_sample(polygon, center, physical_sigma, aggregate_work, path)?
                 } else {
-                    area_sample(polygon, center[0] - 0.5, center[1] - 0.5, &mut work, path)?
+                    area_sample(polygon, center[0] - 0.5, center[1] - 0.5, aggregate_work, path)?
                 }
             } else if signed_spread != 0.0 {
                 continuous_signed_spread_sample(
@@ -1751,11 +1786,11 @@ fn rasterize_continuous_shadow_coverage(
                     center,
                     physical_spread,
                     physical_sigma,
-                    &mut work,
+                    aggregate_work,
                     path,
                 )?
             } else {
-                gaussian_union_sample(&triangles, center, physical_sigma, &mut work, path)?
+                gaussian_union_sample(&triangles, center, physical_sigma, aggregate_work, path)?
             };
         }
     }
@@ -1962,6 +1997,27 @@ pub(super) fn prepare_untranslated_shadow_coverage(
     samples_per_logical_unit: f64,
     path: &[usize],
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
+    let mut aggregate_work = 0;
+    prepare_shadow_coverage_admitted(
+        mesh,
+        spread,
+        sigma,
+        samples_per_logical_unit,
+        path,
+        &mut aggregate_work,
+    )
+}
+
+/// Same continuous neutral geometry law for production multi-effect scenes.
+/// The caller retains this work counter across every sibling and nested owner.
+pub(super) fn prepare_shadow_coverage_admitted(
+    mesh: &NeutralMesh,
+    spread: f64,
+    sigma: f64,
+    samples_per_logical_unit: f64,
+    path: &[usize],
+    aggregate_work: &mut usize,
+) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     if !spread.is_finite() || !sigma.is_finite() || sigma < 0.0 {
         return Err(mask_failure(
@@ -1997,9 +2053,10 @@ pub(super) fn prepare_untranslated_shadow_coverage(
                 sigma,
                 samples_per_logical_unit,
                 path,
+                aggregate_work,
             );
         }
-        return rasterize_area_coverage(mesh, samples_per_logical_unit, path);
+        return rasterize_area_coverage(mesh, samples_per_logical_unit, path, aggregate_work);
     }
     if spread > 0.0 {
         return rasterize_continuous_shadow_coverage(
@@ -2008,6 +2065,7 @@ pub(super) fn prepare_untranslated_shadow_coverage(
             sigma,
             samples_per_logical_unit,
             path,
+            aggregate_work,
         );
     }
     // Continuous negative Euclidean erosion uses the boundary-certified
@@ -2015,8 +2073,14 @@ pub(super) fn prepare_untranslated_shadow_coverage(
     // positive spread. An all-zero sampled result is NOT proof that the true
     // eroded support is empty; only the bounding extent certificate above
     // can return None, otherwise reject with a truthful precision outcome.
-    let coverage =
-        rasterize_continuous_shadow_coverage(mesh, spread, sigma, samples_per_logical_unit, path)?;
+    let coverage = rasterize_continuous_shadow_coverage(
+        mesh,
+        spread,
+        sigma,
+        samples_per_logical_unit,
+        path,
+        aggregate_work,
+    )?;
     if coverage
         .as_ref()
         .is_some_and(|c| c.values.iter().all(|v| *v == 0.0))
@@ -2151,6 +2215,71 @@ pub(super) fn signed_euclidean_spread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sibling_shadow_masks_share_preparation_work_without_changing_coverage() {
+        let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [0.0, 0.0], [2.0, 0.0], [2.0, 2.0],
+                [0.0, 0.0], [2.0, 2.0], [0.0, 2.0],
+            ],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let mut shared = 0_usize;
+        let first = prepare_shadow_coverage_admitted(&mesh, 0.0, 0.0, 4.0, &[0], &mut shared)
+            .unwrap()
+            .unwrap();
+        assert!(shared > 0, "geometry and area integration must both charge work");
+        let after_first = shared;
+        let second = prepare_shadow_coverage_admitted(&mesh, 0.0, 0.0, 4.0, &[1], &mut shared)
+            .unwrap()
+            .unwrap();
+        assert!(shared > after_first, "sibling preparation cannot reset the budget");
+        assert_eq!(first.origin_x, second.origin_x);
+        assert_eq!(first.origin_y, second.origin_y);
+        assert_eq!(first.values, second.values);
+
+        // A late sibling must reject BEFORE its own expensive grid materialization,
+        // preserving the actual offending F1 owner path. No per-effect reset.
+        let mut nearly_exhausted = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 1;
+        assert!(matches!(
+            prepare_shadow_coverage_admitted(
+                &mesh,
+                0.0,
+                0.0,
+                4.0,
+                &[5, 2],
+                &mut nearly_exhausted,
+            ),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [5, 2]
+        ));
+    }
+
+    #[test]
+    fn cumulative_continuous_halo_work_is_admitted_before_allocation() {
+        let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        // The neutral lattice's source traversal fits in the residual
+        // budget, but expansion by the finite 3σ blur halo does not.
+        // Reject at the originating occurrence before coverage allocation.
+        let mut used = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 100;
+        assert!(matches!(
+            prepare_shadow_coverage_admitted(&mesh, 0.0, 0.25, 4.0, &[4, 3], &mut used),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [4, 3]
+        ));
+    }
 
     #[test]
     fn continuous_positive_spread_gaussian_matches_independent_rectangle_cdf() {
@@ -2701,7 +2830,7 @@ mod tests {
             mesh.triangles.extend([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
         }
         assert!(matches!(
-            rasterize_area_coverage(&mesh, 4.0, &[9, 7]),
+            rasterize_area_coverage(&mesh, 4.0, &[9, 7], &mut 0),
             Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
                 kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path),

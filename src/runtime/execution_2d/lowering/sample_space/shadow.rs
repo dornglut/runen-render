@@ -150,6 +150,7 @@ pub(super) fn prepare(
     )?;
     let mut groups = BTreeMap::new();
     let mut retained_coverage_bytes = 0_u64;
+    let mut aggregate_coverage_work = 0_usize;
     for (index, event) in plan.events.iter().enumerate() {
         let scene::Event::BeginGroup {
             group,
@@ -216,12 +217,13 @@ pub(super) fn prepare(
             } else {
                 &shifted
             };
-            let Some(coverage) = support::prepare_untranslated_shadow_coverage(
+            let Some(coverage) = support::prepare_shadow_coverage_admitted(
                 raster_source,
                 effect.spread(),
                 effect.sigma(),
                 sample_scale,
                 path,
+                &mut aggregate_coverage_work,
             )?
             else {
                 continue;
