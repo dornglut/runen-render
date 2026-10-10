@@ -289,9 +289,9 @@ pub(super) fn admit_tile_uploads(
                 count = count
                     .checked_add(1)
                     .ok_or_else(|| shadow_resource(&shadow.path, "shadow upload node overflow"))?;
-                total_work = total_work
-                    .checked_add(per_upload_work)
-                    .ok_or_else(|| shadow_resource(&shadow.path, "shadow sample visits overflow"))?;
+                total_work = total_work.checked_add(per_upload_work).ok_or_else(|| {
+                    shadow_resource(&shadow.path, "shadow sample visits overflow")
+                })?;
                 if total_bytes > MAX_SHADOW_MASK_UPLOAD_BYTES || count > MAX_OPERATIONS / 2 {
                     return Err(shadow_resource(
                         &shadow.path,
