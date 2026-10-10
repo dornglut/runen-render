@@ -2482,6 +2482,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn certified_nested_convex_erosion_uses_true_sheared_halfplanes_not_aabb() {
+        // The caster is a sheared parallelogram, NOT its [10,25]x[10,20]
+        // enclosing rectangle. Its exact inward Euclidean disk offset
+        // remains an actual convex polygon under any later ancestor affine.
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [10.0, 10.0],
+                [20.0, 10.0],
+                [25.0, 20.0],
+                [10.0, 10.0],
+                [25.0, 20.0],
+                [15.0, 20.0],
+            ],
+            bounds: [10.0, 10.0, 25.0, 20.0],
+        };
+        let mut work = 0_usize;
+        let region =
+            certified_convex_erosion_mesh(&source, 1.0, &[0, 0], &mut work)
+                .unwrap()
+                .expect("a sheared convex union has a certified exact erosion");
+        assert!(work > 0);
+        assert!(!region.triangles.is_empty());
+        assert_eq!(neutral_union_distance(&region.triangles, [17.0, 15.0]), 0.0);
+        assert!(
+            neutral_union_distance(&region.triangles, [15.0, 10.5]) > 0.0,
+            "a point outside the true disk-eroded parallelogram is not admitted"
+        );
+    }
+
+    #[test]
+    fn nested_erosion_cannot_certify_concave_union_as_convex_hull() {
+        // Union of two rectangles forms a concave L. Neither its AABB nor
+        // convex hull is the neutral caster for signed disk erosion.
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [10.0, 10.0], [14.0, 10.0], [10.0, 12.0],
+                [14.0, 10.0], [14.0, 12.0], [10.0, 12.0],
+                [10.0, 12.0], [12.0, 12.0], [10.0, 14.0],
+                [12.0, 12.0], [12.0, 14.0], [10.0, 14.0],
+            ],
+            bounds: [10.0, 10.0, 14.0, 14.0],
+        };
+        assert!(
+            certified_convex_erosion_mesh(&source, 0.25, &[0, 0], &mut 0)
+                .unwrap()
+                .is_none(),
+            "nonconvex union must remain unsupported, never treated as empty"
+        );
+    }
+
+    #[test]
     fn sibling_shadow_masks_share_preparation_work_without_changing_coverage() {
         let mesh = NeutralMesh {
             units_per_parent_logical_unit: 1.0,
