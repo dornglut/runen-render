@@ -3,7 +3,7 @@
 //! NOT by reading an implementation-owned mask, intermediate or shader.
 use super::*;
 use runen_render::composition_2d::{
-    Render2dBrush, Render2dDropShadow, Render2dRect, Render2dShape,
+    Render2dBrush, Render2dClip, Render2dDropShadow, Render2dRect, Render2dShape,
 };
 
 fn context() -> Option<GpuContext> {
