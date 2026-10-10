@@ -1086,10 +1086,12 @@ fn continuous_positive_spread_sample(
     Ok(alpha.clamp(0.0, 1.0))
 }
 
-/// Sample the immutable *continuous* indicator/Gaussian convolution on the
-/// exact correlated output lattice, before any ancestor affine or opacity.
-/// This solves sub-lattice Gaussian casters without sampled-mask inference.
-fn rasterize_gaussian_coverage(
+/// Reconstruct neutral continuous coverage on the correlated physical grid:
+/// sigma>0 integrates the finite Gaussian over geometric support, while
+/// positive spread at sigma=0 integrates its exact Euclidean indicator in
+/// the corresponding unit sample cell. Ancestor affines/opacity remain
+/// separate; no paint alpha or sampled geometry defines F1 support.
+fn rasterize_continuous_shadow_coverage(
     mesh: &NeutralMesh,
     positive_spread: f64,
     sigma: f64,
@@ -1429,20 +1431,18 @@ pub(super) fn prepare_untranslated_shadow_coverage(
     // correlated lattice centers. Gaussian convolution preserves that mass.
     if spread == 0.0 {
         if sigma > 0.0 {
-            return rasterize_gaussian_coverage(mesh, 0.0, sigma, samples_per_logical_unit, path);
+            return rasterize_continuous_shadow_coverage(mesh, 0.0, sigma, samples_per_logical_unit, path);
         }
         return rasterize_area_coverage(mesh, samples_per_logical_unit, path);
     }
     if spread > 0.0 {
-        return rasterize_gaussian_coverage(mesh, spread, sigma, samples_per_logical_unit, path);
+        return rasterize_continuous_shadow_coverage(mesh, spread, sigma, samples_per_logical_unit, path);
     }
     // Negative spread still has a separate bounded lattice approximation.
     // Never treat empty eroded center samples as proof of empty continuous
     // support; only the geometric complete-erosion certificate above may
     // return None without independent continuous morphology evidence.
-    let Some(source) =
-        rasterize_neutral_mesh(mesh, samples_per_logical_unit, path)?
-    else {
+    let Some(source) = rasterize_neutral_mesh(mesh, samples_per_logical_unit, path)? else {
         return Ok(None);
     };
     let physical_spread = spread * samples_per_logical_unit;
@@ -1605,9 +1605,15 @@ mod tests {
             [0.7, 4.0],
         ];
         let mut work = 0_usize;
-        let actual =
-            continuous_positive_spread_sample(&rectangle, [0.5, 0.5], 0.06, 0.1, &mut work, &[3, 2])
-                .expect("bounded continuous Euclidean Gaussian integration");
+        let actual = continuous_positive_spread_sample(
+            &rectangle,
+            [0.5, 0.5],
+            0.06,
+            0.1,
+            &mut work,
+            &[3, 2],
+        )
+        .expect("bounded continuous Euclidean Gaussian integration");
         let independent_cdf = 0.079_621_723_618_115_15_f64;
         assert!((actual - independent_cdf).abs() <= 1.0 / 2048.0);
         assert!((actual - 0.04).abs() > 0.03);
