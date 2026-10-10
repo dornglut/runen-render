@@ -374,7 +374,7 @@ fn nested_zero_kernel_shadow_maps_through_sheared_ancestor_before_paint() {
     let caster = caster(Render2dColorRgba8::TRANSPARENT, 2.0, 10.0, 4.0, 6.0);
     let nested = Render2dEntry::group(Render2dGroup::new(
         vec![caster],
-        Render2dAffineTransform::IDENTITY,
+        Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap(),
         Vec::new(),
         Render2dOpacity::OPAQUE,
         vec![effect(
@@ -400,11 +400,14 @@ fn nested_zero_kernel_shadow_maps_through_sheared_ancestor_before_paint() {
         &Render2dResourceBindings::default(),
         "F3F nested zero-kernel shadow under shear",
     );
-    // Child C x=[2,6], shadow offset +5 -> [7,11] in its parent,
-    // then ancestor x'=2x+0.5y+5. At y=13 shadow x=[25.5,33.5].
-    pixel_near(pixel(&output, 29, 13), [255, 0, 0, 255]);
-    assert_eq!(pixel(&output, 22, 13), [0, 0, 0, 0]);
-    assert_eq!(pixel(&output, 36, 13), [0, 0, 0, 0]);
+    // Child-local C x=[2,6] maps through its OWN 2x transform to
+    // [4,12]. The shadow's immediate-parent offset +5 yields [9,17]
+    // (not the incorrect local-offset-then-scale [14,22]). Only then
+    // does the ancestor shear x'=2x+0.5y+5 produce [29.5,45.5]
+    // at y=13. Test both ends and a deeply covered interior pixel.
+    pixel_near(pixel(&output, 35, 13), [255, 0, 0, 255]);
+    assert_eq!(pixel(&output, 26, 13), [0, 0, 0, 0]);
+    assert_eq!(pixel(&output, 49, 13), [0, 0, 0, 0]);
 }
 
 #[test]
