@@ -253,6 +253,88 @@ fn group_clips_intersect_shadows_after_child_source_and_opacity_preserves_zero()
 }
 
 #[test]
+fn shadows_preserve_nontransparent_caller_pixels_and_exact_completion_evidence() {
+    let Some(context) = context() else {
+        return;
+    };
+    let tree = group(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            16.0,
+            16.0,
+        )],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 128),
+        )],
+        1.0,
+    );
+    let (texture, target) = target("F3F caller-owned prior opaque blue");
+    let image = execute_inline(
+        &context,
+        &mut Render2dExecutor::new(),
+        &tree,
+        &Render2dResourceBindings::default(),
+        &texture,
+        &target,
+        Some([0.0, 0.0, 1.0, 1.0]),
+    );
+    // A red 0.5 source-over the opaque caller-owned blue target in linear light:
+    // red .5, blue .5, alpha 1. This path also witnesses complete membership
+    // and terminal completion of every authored work node via execute_inline.
+    pixel_near(pixel(&image, 15, 15), [188, 0, 187, 255]);
+    assert_eq!(pixel(&image, 5, 5), [0, 0, 255, 255]);
+}
+
+#[test]
+fn immutable_monochrome_text_casts_from_transparent_foreground_after_cache_loss() {
+    let Some(context) = context() else {
+        return;
+    };
+    let id = Render2dResourceId::new(911).unwrap();
+    let bindings = bindings(
+        id,
+        shaped_resource(OUTLINE_FONT, false, BOX_GLYPH, 24.0),
+    );
+    let composition = group(
+        vec![shaped_entry(id, [8.0, 32.0], Render2dColorRgba8::TRANSPARENT)],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let mut executor = Render2dExecutor::new();
+    let first = execute(
+        &context,
+        &mut executor,
+        &composition,
+        &bindings,
+        "F3F neutral outlined glyph",
+    );
+    // The published fixture's opaque box contains this physical pixel. The
+    // foreground here has zero alpha, so only immutable outline C can cast.
+    pixel_near(pixel(&first, 20, 20), [255, 0, 0, 255]);
+    executor.discard_cache();
+    let reconstructed = execute(
+        &context,
+        &mut executor,
+        &composition,
+        &bindings,
+        "F3F outlined glyph after derived cache loss",
+    );
+    assert_eq!(first.as_bytes(), reconstructed.as_bytes());
+}
+
+#[test]
 fn finite_gaussian_shadow_retains_continuous_coverage_across_two_gpu_tiles() {
     let Some(context) = context() else { return };
     let composition = group(
