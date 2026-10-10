@@ -511,6 +511,60 @@ fn zero_alpha_image_bytes_and_item_opacity_still_cast_from_resolved_destination(
 }
 
 #[test]
+fn positive_destination_with_zero_area_image_source_crop_still_casts_exact_shadow() {
+    let Some(context) = context() else {
+        return;
+    };
+    use runen_render::composition_2d::{
+        Render2dImagePatch, Render2dImagePrimitive, Render2dImageResource, Render2dImageSourceRect,
+        Render2dPixelExtent,
+    };
+    let id = Render2dResourceId::new(916).unwrap();
+    let extent = Render2dPixelExtent::new(1, 1).unwrap();
+    // No source texel can be sampled. F1 nevertheless retains the 16x16
+    // destination rectangle as geometric caster; derived image paint vanishes.
+    let patch = Render2dImagePatch::new(
+        Render2dImageSourceRect::new(0.0, 0.0, 0.0, 0.0).unwrap(),
+        Render2dRect::new(10.0, 10.0, 16.0, 16.0).unwrap(),
+    );
+    let item = Render2dEntry::item(Render2dItem::new(
+        Render2dPrimitive::Image(
+            Render2dImagePrimitive::new(id, extent, vec![patch]).unwrap(),
+        ),
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+    ));
+    let bindings = Render2dResourceBindings::new(vec![Render2dResourceBinding::new(
+        id,
+        Render2dResourceValue::ImageRgba8Srgb(
+            Render2dImageResource::new(extent, vec![255, 255, 255, 255]).unwrap(),
+        ),
+    )])
+    .unwrap();
+    let tree = group(
+        vec![item],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let rendered = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &tree,
+        &bindings,
+        "F3F zero-area image source positive destination",
+    );
+    pixel_near(pixel(&rendered, 18, 18), [255, 0, 0, 255]);
+    assert_eq!(pixel(&rendered, 7, 18), [0, 0, 0, 0]);
+}
+
+#[test]
 fn immutable_monochrome_text_casts_from_transparent_foreground_after_cache_loss() {
     let Some(context) = context() else {
         return;
