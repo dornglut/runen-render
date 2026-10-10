@@ -321,8 +321,28 @@ pub(super) fn append(
         }
         prepared.push(transformed);
     }
-    // Two-dimensional rank-deficient transforms have zero area and cannot
-    // create a false positive-area source for finite ordinary shadows.
+    // A rank-deficient authored affine truly maps positive-area 2D support
+    // to no filled area. A FULL-RANK affine whose triangles *numerically*
+    // collapse instead is a representability failure, never an empty caster.
+    // Complete the precision preflight before changing the output mesh.
+    let determinant = a.mul_add(d, -(b * c));
+    for (before, after) in source
+        .triangles
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(prepared.as_chunks::<3>().0)
+    {
+        if orient(after[0], after[1], after[2]) == 0.0
+            && determinant != 0.0
+            && orient(before[0], before[1], before[2]) != 0.0
+        {
+            return Err(precision(
+                path,
+                "full-rank parent affine loses positive-area neutral geometry",
+            ));
+        }
+    }
     output
         .triangles
         .try_reserve(prepared.len())
@@ -587,6 +607,35 @@ mod tests {
         assert_eq!(union.triangles, vec![[-3.0, 5.0], [-1.0, 5.0], [-3.0, 6.0]]);
         append(&mut union, &source, parent, &[1, 4]).unwrap();
         assert_eq!(union.triangles.len(), 6);
+    }
+
+    #[test]
+    fn nondegenerate_neutral_support_cannot_silently_collapse_at_large_translation() {
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            bounds: [0.0, 0.0, 1.0, 1.0],
+        };
+        let mut retained = empty_mesh();
+        append(&mut retained, &source, Render2dAffineTransform::IDENTITY, &[3]).unwrap();
+        let before = retained.triangles.clone();
+        let too_large = Render2dAffineTransform::translation(1.0e17, 0.0).unwrap();
+        assert!(matches!(
+            append(&mut retained, &source, too_large, &[3, 7]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [3, 7]
+        ));
+        assert_eq!(retained.triangles, before, "failed geometry preflight is atomic");
+        let rank_deficient = Render2dAffineTransform::new(
+            1.0, 0.0, 2.0, 0.0, 0.0, 0.0,
+        )
+        .unwrap();
+        let mut empty = empty_mesh();
+        append(&mut empty, &source, rank_deficient, &[3, 8]).unwrap();
+        assert!(empty.triangles.is_empty(), "mathematically singular 2D fill has no area");
     }
 
     #[test]
