@@ -751,15 +751,11 @@ fn excess_authored_shadows_fail_before_caller_work_and_executor_remains_reusable
         )),
     ])
     .unwrap();
-    let paint_priority = match executor.prepare(
-        &context,
-        &paint_before_effect_limit,
-        &bindings,
-        &target,
-    ) {
-        Ok(_) => panic!("shadow count must preempt costly physical paint inspection"),
-        Err(error) => error,
-    };
+    let paint_priority =
+        match executor.prepare(&context, &paint_before_effect_limit, &bindings, &target) {
+            Ok(_) => panic!("shadow count must preempt costly physical paint inspection"),
+            Err(error) => error,
+        };
     assert!(matches!(
         paint_priority,
         Render2dExecutionError::SampleSpace {
