@@ -1999,6 +1999,40 @@ mod tests {
     }
 
     #[test]
+    fn actual_transparent_vector_rectangle_proves_complete_neutral_union_certificate() {
+        use crate::composition_2d::{
+            Render2dAffineTransform, Render2dBrush, Render2dColorRgba8, Render2dItem,
+            Render2dOpacity, Render2dPrimitive, Render2dRect, Render2dShape,
+        };
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(10.0, 10.0, 16.0, 16.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let mesh = super::super::vector::neutral_support(&item, 0, 4.0, 16_384)
+            .unwrap()
+            .expect("transparent rectangle retains immutable source-neutral triangles");
+        assert_eq!(
+            certified_axis_aligned_rectangle(&mesh.triangles),
+            Some([40.0, 40.0, 104.0, 104.0]),
+            "real F3F vector tessellation must meet the strict full-rectangle certificate"
+        );
+        let coverage = prepare_untranslated_shadow_coverage(&mesh, -2.0, 0.0, 4.0, &[0])
+            .unwrap()
+            .expect("ordinary 16x16 negative rectangle must admit bounded exact erosion");
+        let index = |x: i64, y: i64| {
+            usize::try_from(y - coverage.origin_y).unwrap() * coverage.width
+                + usize::try_from(x - coverage.origin_x).unwrap()
+        };
+        assert_eq!(coverage.values[index(72, 72)], 1.0);
+        assert_eq!(coverage.values[index(45, 72)], 0.0);
+    }
+
+    #[test]
     fn certified_inset_rectangle_has_independent_identity_and_gaussian_coverage() {
         let inset = [0.8, 0.8, 3.2, 3.2];
         assert!((inset_rectangle_sample(inset, [0.5, 0.5], 0.0) - 0.04).abs() < 1e-12);
