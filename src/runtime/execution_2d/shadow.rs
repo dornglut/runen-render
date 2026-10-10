@@ -269,10 +269,10 @@ pub(super) fn group_child_sources(
                             append(&mut completed, &in_parent, offset, &frame.path)?;
                         }
                     }
-                    sources.insert(frame.begin_event, in_parent);
                     if !nested {
                         // The root group's own shadow+children color is
                         // merged by F3E; no ancestor needs its neutral output.
+                        sources.insert(frame.begin_event, in_parent);
                         continue;
                     }
                 }
@@ -288,6 +288,12 @@ pub(super) fn group_child_sources(
                     scales.geometry_sample_scale,
                     max_buffer_bytes,
                 )?;
+                // Retain pristine C only after all nested geometric clip
+                // reads have completed. Ownership transfers without cloning
+                // neutral triangles or double-charging aggregate memory.
+                if !frame.group.shadows().is_empty() {
+                    sources.insert(frame.begin_event, in_parent);
+                }
                 if let Some(parent) = active.last_mut() {
                     charge_vertices(&mut retained_vertices, clipped.triangles.len(), &frame.path)?;
                     append(
