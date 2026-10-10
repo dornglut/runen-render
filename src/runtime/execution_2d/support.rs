@@ -1086,6 +1086,29 @@ fn union_exterior_boundary(
     Ok(boundary)
 }
 
+/// A conservative separation certificate for the exact union exterior.
+/// The shortest distance between a boundary edge's containing AABB and a
+/// connected integration cell is a lower bound on their true separation.
+/// When every such bound exceeds the erosion radius, the cell cannot meet
+/// the union exterior nor its radius-r boundary strip. Membership at the
+/// midpoint is therefore constant across the full cell, even for concave
+/// unions, overlapping tessellation, and interior holes.
+fn eroded_cell_far_from_exterior(
+    exterior: &[UnionBoundaryEdge],
+    cell: [f64; 4],
+    radius: f64,
+) -> bool {
+    exterior.iter().all(|edge| {
+        let lo_x = edge[0][0].min(edge[1][0]);
+        let hi_x = edge[0][0].max(edge[1][0]);
+        let lo_y = edge[0][1].min(edge[1][1]);
+        let hi_y = edge[0][1].max(edge[1][1]);
+        let dx = (lo_x - cell[2]).max(cell[0] - hi_x).max(0.0);
+        let dy = (lo_y - cell[3]).max(cell[1] - hi_y).max(0.0);
+        dx.hypot(dy) > radius
+    })
+}
+
 fn union_signed_interior_distance(
     triangles: &[[f64; 2]],
     boundary: &[UnionBoundaryEdge],
@@ -1276,6 +1299,19 @@ fn continuous_signed_spread_sample(
             ));
         }
         let [x0, y0, x1, y1] = cell.bounds;
+        if signed_spread < 0.0
+            && let Some(edges) = boundary
+            && eroded_cell_far_from_exterior(edges, cell.bounds, radius)
+        {
+            // No exterior edge is within r of the cell. The polygon-union
+            // interior predicate therefore holds throughout this connected
+            // cell or nowhere, without any signed-distance subdivision.
+            let point = [(x0 + x1) * 0.5, (y0 + y1) * 0.5];
+            if neutral_union_distance(triangles, point) == 0.0 {
+                covered += cell.mass;
+            }
+            continue;
+        }
         if signed_spread > 0.0 && dilated_triangles_miss_cell(triangles, cell.bounds, radius) {
             continue;
         }
@@ -2113,6 +2149,22 @@ mod tests {
         assert!(
             (union_signed_interior_distance(&duplicate, &repeated, [1.0, 0.5]) - 0.5).abs() < 1e-9
         );
+    }
+
+    #[test]
+    fn generic_erosion_far_from_exterior_certificate_never_uses_aabb_as_source() {
+        let rectangle = [
+            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0],
+            [0.0, 0.0], [4.0, 4.0], [0.0, 4.0],
+        ];
+        let boundary = union_exterior_boundary(&rectangle, &[7]).unwrap();
+        assert!(eroded_cell_far_from_exterior(&boundary, [1.0, 1.0, 2.0, 2.0], 0.5));
+        assert!(!eroded_cell_far_from_exterior(&boundary, [0.0, 1.0, 1.0, 2.0], 0.5));
+        // The certificate only proves distance from exposed edges. A cell
+        // outside the shape can be far too, so its midpoint still decides
+        // its membership; this must never infer filled bounding-box area.
+        assert!(eroded_cell_far_from_exterior(&boundary, [6.0, 6.0, 7.0, 7.0], 0.5));
+        assert!(neutral_union_distance(&rectangle, [6.5, 6.5]) > 0.0);
     }
 
     #[test]
