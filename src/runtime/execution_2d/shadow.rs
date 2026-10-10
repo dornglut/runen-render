@@ -245,7 +245,9 @@ fn gaussian_square_support(
                 if !turn.is_finite() {
                     return Err(precision(path, "nested Gaussian hull orientation overflow"));
                 }
-                if turn > 0.0 { break; }
+                if turn > 0.0 {
+                    break;
+                }
                 hull.pop();
             }
             hull.push(point);
@@ -258,7 +260,9 @@ fn gaussian_square_support(
                 if !turn.is_finite() {
                     return Err(precision(path, "nested Gaussian hull orientation overflow"));
                 }
-                if turn > 0.0 { break; }
+                if turn > 0.0 {
+                    break;
+                }
                 hull.pop();
             }
             hull.push(point);
