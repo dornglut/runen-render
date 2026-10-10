@@ -101,12 +101,17 @@ pub(super) fn prepare(
     field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
     target: &AdmittedTarget,
 ) -> Result<ShadowGroups, Render2dExecutionError> {
-    if !plan.events.iter().any(|event| {
-        matches!(
-            event,
-            scene::Event::BeginGroup { group, .. } if !group.shadows().is_empty()
-        )
-    }) {
+    // Admit the total authored effect cardinality before materializing any
+    // source-neutral geometry or running any morphology/convolution. Checking
+    // group-by-group during preparation permits an inadmissible later sibling
+    // to consume up to 256 expensive masks before the budget rejects it.
+    let mut authored_effects = 0_usize;
+    for event in &plan.events {
+        let scene::Event::BeginGroup { group, path, .. } = event else {
+            continue;
+        };
+    }
+    if authored_effects == 0 {
         return Ok(BTreeMap::new());
     }
     let sample_scale = target.raster_scale() * f64::from(SAMPLES);
@@ -127,7 +132,6 @@ pub(super) fn prepare(
         target.max_buffer_bytes(),
     )?;
     let mut groups = BTreeMap::new();
-    let mut authored_effects = 0_usize;
     let mut retained_coverage_bytes = 0_u64;
     for (index, event) in plan.events.iter().enumerate() {
         let scene::Event::BeginGroup { group, path, .. } = event else {

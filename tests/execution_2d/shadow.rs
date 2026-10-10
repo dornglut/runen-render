@@ -653,9 +653,42 @@ fn excess_authored_shadows_fail_before_caller_work_and_executor_remains_reusable
         } if path == [0]
     ));
 
-    // The failed invocation cannot publish a partial GPU contribution or
-    // poison subsequent executor identity; caller owns the clear, and the
-    // next valid contribution blends into that exact prior-blue target.
+    // The bound applies across independent sibling groups, not only to
+    // the length of one group's effect list. Admission must reject at the
+    // second group before producing either sibling's expensive masks.
+    let siblings = Render2dComposition::new(vec![
+        Render2dEntry::group(Render2dGroup::new(
+            caster.clone(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![red; 128],
+        )),
+        Render2dEntry::group(Render2dGroup::new(
+            caster.clone(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![red; 129],
+        )),
+    ])
+    .unwrap();
+    let sibling_error = match executor.prepare(&context, &siblings, &bindings, &target) {
+        Ok(_) => panic!("257 shadows split across siblings must fail admission"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        sibling_error,
+        Render2dExecutionError::SampleSpace {
+            kind: runen_render::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+            path: Some(path),
+            ..
+        } if path == [1]
+    ));
+
+    // Neither failure can publish partial GPU work or poison subsequent
+    // executor identity. The next valid composition retains the caller's
+    // exact preexisting blue pixel and source-over order.
     let valid = group(caster, vec![red], 1.0);
     let image = execute_inline(
         &context,
