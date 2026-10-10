@@ -252,15 +252,16 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
                 (root_index, *item, *to_root)
             }
             scene::Event::BeginGroup { path, group, .. } => {
-                // A zero-spread, zero-blur nested effect has exact
-                // translated neutral-triangle support and is admitted by
-                // the single F3F compositor. Other nested kernels still
-                // reject BEFORE any F2 font/field resource preparation.
+                // A nested zero-spread Gaussian now retains its exact finite
+                // square-expanded neutral support and evaluates its
+                // continuous parent-frame kernel by inverse mapping.
+                // Nonzero nested signed DISK spread still rejects before
+                // F2 preparation until its region geometry is proven.
                 if path.len() > 1
                     && group
                         .shadows()
                         .iter()
-                        .any(|shadow| shadow.spread() != 0.0 || shadow.sigma() != 0.0)
+                        .any(|shadow| shadow.spread() != 0.0)
                 {
                     let kind = Render2dUnsupportedContent::Shadows {
                         root_index: path[0],

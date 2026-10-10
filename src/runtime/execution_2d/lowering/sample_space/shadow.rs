@@ -230,22 +230,52 @@ pub(super) fn prepare(
                 })?;
             let mut shifted = geometry_support::empty_mesh();
             geometry_support::append(&mut shifted, source, offset, path)?;
-            let mut projected = geometry_support::empty_mesh();
-            let raster_source = if let Some(ancestor) = parent_affine {
-                geometry_support::append(&mut projected, &shifted, ancestor, path)?;
-                &projected
+            // A nested finite Gaussian must be evaluated at each inverse-
+            // mapped ROOT sample in the group's immediate-parent frame.
+            // Projecting triangles and then applying root-axis sigma changes
+            // the convolution under shear/nonuniform ancestor affine.
+            let coverage = if let Some(ancestor) = parent_affine {
+                if effect.sigma() > 0.0 && effect.spread() == 0.0 {
+                    let [a, b, c, d, _, _] = ancestor.components();
+                    let determinant = a.mul_add(d, -(b * c));
+                    if determinant == 0.0 {
+                        // Rank-deficient ancestor transforms collapse 2D
+                        // painted area; the source-neutral propagation pass
+                        // separately discards degenerate affine triangles.
+                        continue;
+                    }
+                    support::affine_parent_gaussian_coverage_admitted(
+                        &shifted,
+                        effect.sigma(),
+                        ancestor,
+                        envelope,
+                        sample_scale,
+                        path,
+                        &mut aggregate_coverage_work,
+                    )?
+                } else {
+                    let mut projected = geometry_support::empty_mesh();
+                    geometry_support::append(&mut projected, &shifted, ancestor, path)?;
+                    support::prepare_shadow_coverage_admitted(
+                        &projected,
+                        effect.spread(),
+                        effect.sigma(),
+                        sample_scale,
+                        path,
+                        &mut aggregate_coverage_work,
+                    )?
+                }
             } else {
-                &shifted
+                support::prepare_shadow_coverage_admitted(
+                    &shifted,
+                    effect.spread(),
+                    effect.sigma(),
+                    sample_scale,
+                    path,
+                    &mut aggregate_coverage_work,
+                )?
             };
-            let Some(coverage) = support::prepare_shadow_coverage_admitted(
-                raster_source,
-                effect.spread(),
-                effect.sigma(),
-                sample_scale,
-                path,
-                &mut aggregate_coverage_work,
-            )?
-            else {
+            let Some(coverage) = coverage else {
                 continue;
             };
             let bytes = u64::try_from(coverage.values.len())

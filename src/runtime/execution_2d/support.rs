@@ -855,6 +855,121 @@ fn gaussian_union_sample(
     Ok(alpha.clamp(0.0, 1.0))
 }
 
+/// Evaluate nested zero-spread Gaussian coverage in its owning immediate-parent
+/// frame at each globally phased ROOT sample. An arbitrary full-rank ancestor
+/// affine changes the footprint in root space, not the parent's Gaussian:
+/// inverse-map each root sample to its parent before continuous integration.
+/// An extent is only allocation/reach admission, never a region mask.
+pub(super) fn affine_parent_gaussian_coverage_admitted(
+    source: &NeutralMesh,
+    sigma: f64,
+    parent_to_root: crate::composition_2d::Render2dAffineTransform,
+    root_envelope: [f64; 4],
+    scale: f64,
+    path: &[usize],
+    aggregate_work: &mut usize,
+) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    if source.triangles.is_empty() {
+        return Ok(None);
+    }
+    let [a, b, c, d, tx, ty] = parent_to_root.components();
+    let determinant = a.mul_add(d, -(b * c));
+    let physical_sigma = sigma * scale;
+    if !scale.is_finite()
+        || scale <= 0.0
+        || !source.units_per_parent_logical_unit.is_finite()
+        || source.units_per_parent_logical_unit <= 0.0
+        || !sigma.is_finite()
+        || sigma <= 0.0
+        || !physical_sigma.is_finite()
+        || physical_sigma <= 0.0
+        || !determinant.is_finite()
+        || determinant == 0.0
+        || !parent_to_root.components().iter().all(|x| x.is_finite())
+    {
+        return Err(precision("nested Gaussian parent affine or kernel is unrepresentable"));
+    }
+    if (3.0 * physical_sigma).ceil() > f64::from(MAX_GAUSSIAN_RADIUS_SAMPLES) {
+        return Err(resource("nested parent-frame Gaussian window exceeds bounded halo"));
+    }
+    let scaled = root_envelope.map(|v| v * scale);
+    if !scaled.iter().all(|x| x.is_finite())
+        || scaled.iter().any(|x| x.abs() > f64::from(i32::MAX) / 2.0)
+        || scaled[0] >= scaled[2]
+        || scaled[1] >= scaled[3]
+    {
+        return Err(precision("nested Gaussian root sample extent cannot be represented"));
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "root sample edges have been admitted into the safe i32 range"
+    )]
+    let edges = [
+        scaled[0].floor() as i32,
+        scaled[1].floor() as i32,
+        scaled[2].ceil() as i32,
+        scaled[3].ceil() as i32,
+    ];
+    let width = usize::try_from(i64::from(edges[2]) - i64::from(edges[0]))
+        .map_err(|_| resource("nested Gaussian root width overflow"))?;
+    let height = usize::try_from(i64::from(edges[3]) - i64::from(edges[1]))
+        .map_err(|_| resource("nested Gaussian root height overflow"))?;
+    let area = width
+        .checked_mul(height)
+        .ok_or_else(|| resource("nested Gaussian root area overflow"))?;
+    if area == 0 || area > MAX_NEUTRAL_MASK_SAMPLES {
+        return Err(resource("nested Gaussian root sample grid exceeds bounded area"));
+    }
+    let triangles_count = source.triangles.len() / 3;
+    let scan_work = area
+        .checked_mul(triangles_count)
+        .ok_or_else(|| resource("nested Gaussian neutral scan overflow"))?;
+    if scan_work > 16_777_216 {
+        return Err(resource("nested Gaussian neutral scan exceeds bounded work"));
+    }
+    charge_shadow_preparation_work(aggregate_work, scan_work, path)?;
+    let conversion = scale / source.units_per_parent_logical_unit;
+    if !conversion.is_finite() || conversion <= 0.0 {
+        return Err(precision("nested Gaussian triangle scale invalid"));
+    }
+    let mut triangles = filled(source.triangles.len(), [0.0; 2], path)?;
+    for (destination, &[x, y]) in triangles.iter_mut().zip(&source.triangles) {
+        *destination = [x * conversion, y * conversion];
+        if !destination.iter().all(|v| v.is_finite()) {
+            return Err(precision("nested Gaussian source projection lost precision"));
+        }
+    }
+    let mut values = filled(area, 0.0_f64, path)?;
+    for row in 0..height {
+        for column in 0..width {
+            let root_x = f64::from(edges[0]) + as_f64(column) + 0.5;
+            let root_y = f64::from(edges[1]) + as_f64(row) + 0.5;
+            let rx = root_x - tx * scale;
+            let ry = root_y - ty * scale;
+            let point = [
+                (d * rx - c * ry) / determinant,
+                (a * ry - b * rx) / determinant,
+            ];
+            if !point.iter().all(|x| x.is_finite()) {
+                return Err(precision("nested Gaussian inverse mapping lost precision"));
+            }
+            values[row * width + column] =
+                gaussian_union_sample(&triangles, point, physical_sigma, aggregate_work, path)?;
+        }
+    }
+    Ok(Some(NeutralCoverage {
+        origin_x: i64::from(edges[0]),
+        origin_y: i64::from(edges[1]),
+        width,
+        height,
+        values,
+    }))
+}
+
 /// A deterministic highest-uncertainty-first subdivision cell. `mass`
 /// is normalized positive Gaussian measure, never paint or sampled alpha.
 #[derive(Clone, Copy, Debug)]

@@ -185,14 +185,111 @@ fn neutral_item(
     Ok((!clipped.triangles.is_empty()).then_some(clipped))
 }
 
+/// An exact geometric Minkowski sum of a triangle UNION with the finite
+/// parent-axis Gaussian cutoff square. The 3sigma square is SUPPORT only:
+/// Gaussian alpha remains the separate continuous normalized integral.
+/// A square dilated convex triangle is its 12 translated vertices' convex
+/// hull, so the resulting triangulated union is exact (not an AABB).
+fn gaussian_square_support(
+    source: &NeutralMesh,
+    radius: f64,
+    path: &[usize],
+) -> Result<NeutralMesh, Render2dExecutionError> {
+    if !radius.is_finite() || radius <= 0.0 {
+        return Err(precision(path, "nested Gaussian support radius invalid"));
+    }
+    if !source.units_per_parent_logical_unit.is_finite()
+        || source.units_per_parent_logical_unit <= 0.0
+        || !source.triangles.len().is_multiple_of(3)
+    {
+        return Err(precision(path, "nested Gaussian source mesh invalid"));
+    }
+    let largest = source
+        .triangles
+        .len()
+        .checked_mul(10)
+        .ok_or_else(|| resource(path, "nested Gaussian support growth overflow"))?;
+    if largest > MAX_NEUTRAL_VERTICES {
+        return Err(resource(path, "nested Gaussian support growth exceeds geometry budget"));
+    }
+    let mut expanded = empty_mesh();
+    expanded
+        .triangles
+        .try_reserve(largest)
+        .map_err(|_| resource(path, "nested Gaussian support allocation failed"))?;
+    for tri in source.triangles.as_chunks::<3>().0 {
+        if orient(tri[0], tri[1], tri[2]) == 0.0 {
+            continue;
+        }
+        let mut points = Vec::with_capacity(12);
+        for &[x, y] in tri {
+            let x = x / source.units_per_parent_logical_unit;
+            let y = y / source.units_per_parent_logical_unit;
+            for dx in [-radius, radius] {
+                for dy in [-radius, radius] {
+                    let p = [x + dx, y + dy];
+                    if !p.iter().all(|n| n.is_finite()) {
+                        return Err(precision(path, "nested Gaussian square loses precision"));
+                    }
+                    points.push(p);
+                }
+            }
+        }
+        points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+        points.dedup();
+        let mut hull: Vec<[f64; 2]> = Vec::with_capacity(points.len() * 2);
+        for &point in &points {
+            while hull.len() >= 2 {
+                let n = hull.len();
+                let turn = orient(hull[n - 2], hull[n - 1], point);
+                if !turn.is_finite() {
+                    return Err(precision(path, "nested Gaussian hull orientation overflow"));
+                }
+                if turn > 0.0 { break; }
+                hull.pop();
+            }
+            hull.push(point);
+        }
+        let lower = hull.len();
+        for &point in points.iter().rev().skip(1) {
+            while hull.len() > lower {
+                let n = hull.len();
+                let turn = orient(hull[n - 2], hull[n - 1], point);
+                if !turn.is_finite() {
+                    return Err(precision(path, "nested Gaussian hull orientation overflow"));
+                }
+                if turn > 0.0 { break; }
+                hull.pop();
+            }
+            hull.push(point);
+        }
+        hull.pop();
+        if hull.len() < 3 {
+            return Err(precision(path, "nested Gaussian hull collapsed"));
+        }
+        for index in 1..hull.len() - 1 {
+            for point in [hull[0], hull[index], hull[index + 1]] {
+                expanded.bounds[0] = expanded.bounds[0].min(point[0]);
+                expanded.bounds[1] = expanded.bounds[1].min(point[1]);
+                expanded.bounds[2] = expanded.bounds[2].max(point[0]);
+                expanded.bounds[3] = expanded.bounds[3].max(point[1]);
+                expanded.triangles.push(point);
+            }
+        }
+    }
+    Ok(expanded)
+}
+
 /// Derives F1 group child geometry in each attached group's immediate-parent
 /// frame, with no root flattening, pixel-alpha sampling or final canvas cull.
 ///
 /// The result identifies each SHADOW-BEARING group's one pre-shadow C source
 /// by its BeginGroup event index. A nested zero-kernel shadow is a translated
 /// copy of the exact geometric C and may be propagated through ancestor
-/// affines. Other nested kernels remain typed unsupported, never substituted
-/// with the child's original geometry or conservative envelopes.
+/// affines. A nested positive-sigma, zero-spread shadow derives the exact
+/// finite square Minkowski union in its immediate-parent frame. Nonzero
+/// nested signed disk morphology still rejects without a compositional
+/// Euclidean region evaluator; neither sampled alpha nor AABBs stand in.
 pub(super) fn group_child_sources(
     plan: &scene::Plan<'_>,
     bindings: &Render2dResourceBindings,
@@ -263,7 +360,7 @@ pub(super) fn group_child_sources(
                             .group
                             .shadows()
                             .iter()
-                            .any(|shadow| shadow.spread() != 0.0 || shadow.sigma() != 0.0)
+                            .any(|shadow| shadow.spread() != 0.0)
                         {
                             return Err(super::unsupported_at(
                                 &frame.path,
@@ -296,7 +393,28 @@ pub(super) fn group_child_sources(
                                 in_parent.triangles.len(),
                                 &frame.path,
                             )?;
-                            append(&mut completed, &in_parent, offset, &frame.path)?;
+                            if shadow.sigma() == 0.0 {
+                                append(&mut completed, &in_parent, offset, &frame.path)?;
+                            } else {
+                                let mut shifted = empty_mesh();
+                                append(&mut shifted, &in_parent, offset, &frame.path)?;
+                                let square = gaussian_square_support(
+                                    &shifted,
+                                    shadow.sigma() * 3.0,
+                                    &frame.path,
+                                )?;
+                                charge_vertices(
+                                    &mut retained_vertices,
+                                    square.triangles.len(),
+                                    &frame.path,
+                                )?;
+                                append(
+                                    &mut completed,
+                                    &square,
+                                    Render2dAffineTransform::IDENTITY,
+                                    &frame.path,
+                                )?;
+                            }
                         }
                     }
                     if !nested {
@@ -902,6 +1020,30 @@ mod tests {
         let mesh = sources.get(&0).unwrap();
         assert!(!mesh.triangles.is_empty());
         assert!(mesh.bounds[0].is_finite() && mesh.bounds[2] > mesh.bounds[0]);
+    }
+
+    #[test]
+    fn exact_gaussian_square_support_of_triangle_does_not_fill_its_aabb() {
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let expanded = gaussian_square_support(&source, 0.5, &[1, 2]).unwrap();
+        assert_eq!(expanded.bounds, [-0.5, -0.5, 2.5, 2.5]);
+        let contains = |p: [f64; 2]| {
+            expanded.triangles.as_chunks::<3>().0.iter().any(|tri| {
+                let signs = [
+                    orient(tri[0], tri[1], p),
+                    orient(tri[1], tri[2], p),
+                    orient(tri[2], tri[0], p),
+                ];
+                signs.iter().all(|n| *n >= 0.0) || signs.iter().all(|n| *n <= 0.0)
+            })
+        };
+        assert!(contains([1.0, 1.0]));
+        assert!(contains([2.3, 0.2]));
+        assert!(!contains([2.4, 2.4]), "the extent is not geometric membership");
     }
 
     #[test]

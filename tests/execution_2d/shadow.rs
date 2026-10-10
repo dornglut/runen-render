@@ -531,6 +531,97 @@ fn nested_zero_kernel_shadow_maps_through_sheared_ancestor_before_paint() {
 }
 
 #[test]
+fn nested_finite_gaussian_integrates_parent_kernel_under_ancestor_shear() {
+    let Some(context) = context() else { return };
+    let nested = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 10.0)],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.5,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![nested],
+        Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F nested parent-frame Gaussian under nonuniform ancestor shear",
+    );
+    // Independent analytic separable truncated Gaussian over parent
+    // rectangle [10,20]^2, sigma=.5 and cutoff=1.5, after inverse
+    // mapping each correlated root point to
+    // parent=( (root_x-.5*root_y-4)/2, root_y ).
+    // The y-kernel is fully interior at y in [13,14]. Integrating x via
+    // normalized erf CDF at all sixteen 4x samples gives pixel alpha:
+    // (30,13)=0.405534, (31,13)=0.763495, (32,13)=0.953792.
+    // Incorrect root-axis sigma on the sheared parallelogram cannot meet
+    // these three independent premultiplied-red sample oracles.
+    pixel_near(pixel(&output, 30, 13), [171, 0, 0, 103]);
+    pixel_near(pixel(&output, 31, 13), [226, 0, 0, 195]);
+    pixel_near(pixel(&output, 32, 13), [250, 0, 0, 243]);
+    assert_eq!(pixel(&output, 26, 13), [0, 0, 0, 0]);
+}
+
+#[test]
+fn invisible_nested_gaussian_expands_exact_neutral_support_for_ancestor() {
+    let Some(context) = context() else { return };
+    let nested = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 10.0)],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(
+            0.0,
+            0.0,
+            0.5,
+            0.0,
+            Render2dColorRgba8::TRANSPARENT,
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![nested],
+        Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 255, 0, 255),
+        )],
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F invisible nested Gaussian retains expanded ancestor support",
+    );
+    // Finite blur SUPPORT (not alpha) is C + [-1.5,1.5]^2 in
+    // immediate-parent coordinates. Root x=29,y=13 maps to parent
+    // x in [9.1,9.7], strictly outside original C x>=10 but inside
+    // the dilated support. Child/group/color alpha do not erase it.
+    pixel_near(pixel(&output, 29, 13), [0, 255, 0, 255]);
+    assert_eq!(pixel(&output, 26, 13), [0, 0, 0, 0]);
+}
+
+#[test]
 fn transparent_nested_shadow_support_reaches_ancestor_after_own_clip() {
     let Some(context) = context() else {
         return;
