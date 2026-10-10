@@ -472,12 +472,17 @@ impl NeutralUnionSweep {
     ) -> Result<Self, crate::execution_2d::Render2dExecutionError> {
         use crate::execution_2d::Render2dSampleSpaceError;
         let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
-        let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+        let precision =
+            |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
         let [x0, y0, x1, y1] = bounds;
-        if !bounds.iter().all(|v| v.is_finite()) || x0 >= x1 || y0 >= y1
+        if !bounds.iter().all(|v| v.is_finite())
+            || x0 >= x1
+            || y0 >= y1
             || !triangles.len().is_multiple_of(3)
         {
-            return Err(precision("neutral scanline union bounds or triangle payload invalid"));
+            return Err(precision(
+                "neutral scanline union bounds or triangle payload invalid",
+            ));
         }
         let mut active = Vec::<[[f64; 2]; 3]>::new();
         for tri in triangles.as_chunks::<3>().0 {
@@ -497,8 +502,7 @@ impl NeutralUnionSweep {
                 let a = orient(tri[0], tri[1], p);
                 let b = orient(tri[1], tri[2], p);
                 let c = orient(tri[2], tri[0], p);
-                (a >= 0.0 && b >= 0.0 && c >= 0.0)
-                    || (a <= 0.0 && b <= 0.0 && c <= 0.0)
+                (a >= 0.0 && b >= 0.0 && c >= 0.0) || (a <= 0.0 && b <= 0.0 && c <= 0.0)
             }) {
                 return Ok(Self {
                     active: Vec::new(),
@@ -508,22 +512,33 @@ impl NeutralUnionSweep {
                     fully_covered: true,
                 });
             }
-            active.try_reserve(1)
+            active
+                .try_reserve(1)
                 .map_err(|_| resource("neutral scanline triangle allocation failed"))?;
             active.push(*tri);
         }
-        let charge = active.len().checked_pow(3)
+        let charge = active
+            .len()
+            .checked_pow(3)
             .and_then(|n| n.checked_mul(work_multiplier))
             .ok_or_else(|| resource("neutral scanline arrangement work overflow"))?;
-        *work = work.checked_add(charge)
+        *work = work
+            .checked_add(charge)
             .ok_or_else(|| resource("aggregate neutral scanline work overflow"))?;
         if *work > 134_217_728 {
-            return Err(resource("neutral scanline arrangement exceeds bounded work"));
+            return Err(resource(
+                "neutral scanline arrangement exceeds bounded work",
+            ));
         }
         let mut events = vec![y0, y1];
         let mut edges = Vec::new();
-        edges.try_reserve(active.len().checked_mul(3)
-            .ok_or_else(|| resource("neutral scanline edges overflow"))?)
+        edges
+            .try_reserve(
+                active
+                    .len()
+                    .checked_mul(3)
+                    .ok_or_else(|| resource("neutral scanline edges overflow"))?,
+            )
             .map_err(|_| resource("neutral scanline edge allocation failed"))?;
         for triangle in &active {
             for i in 0..3 {
@@ -569,7 +584,13 @@ impl NeutralUnionSweep {
         }
         events.sort_by(|a, b| a.total_cmp(b));
         events.dedup();
-        Ok(Self { active, events, x0, x1, fully_covered: false })
+        Ok(Self {
+            active,
+            events,
+            x0,
+            x1,
+            fully_covered: false,
+        })
     }
 
     /// Disjoint union intervals of immutable triangle interiors at this y.
@@ -582,7 +603,8 @@ impl NeutralUnionSweep {
         use crate::execution_2d::Render2dSampleSpaceError;
         let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
         let mut segments = Vec::<[f64; 2]>::new();
-        segments.try_reserve_exact(self.active.len())
+        segments
+            .try_reserve_exact(self.active.len())
             .map_err(|_| resource("neutral union row allocation failed"))?;
         for triangle in &self.active {
             let mut min_x = f64::INFINITY;
@@ -604,7 +626,8 @@ impl NeutralUnionSweep {
         }
         segments.sort_by(|a, b| a[0].total_cmp(&b[0]));
         let mut merged = Vec::<[f64; 2]>::new();
-        merged.try_reserve_exact(segments.len())
+        merged
+            .try_reserve_exact(segments.len())
             .map_err(|_| resource("neutral union intervals allocation failed"))?;
         for [start, end] in segments {
             if let Some(last) = merged.last_mut() {
@@ -628,9 +651,7 @@ fn area_sample(
     work: &mut usize,
     path: &[usize],
 ) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
-    let sweep = NeutralUnionSweep::new(
-        triangles, [x0, y0, x0 + 1.0, y0 + 1.0], 8, work, path,
-    )?;
+    let sweep = NeutralUnionSweep::new(triangles, [x0, y0, x0 + 1.0, y0 + 1.0], 8, work, path)?;
     if sweep.fully_covered {
         return Ok(1.0);
     }
@@ -644,7 +665,11 @@ fn area_sample(
             continue;
         }
         let y = slab[0] + height * 0.5;
-        let width = sweep.intervals(y, path)?.iter().map(|[a, b]| b - a).sum::<f64>();
+        let width = sweep
+            .intervals(y, path)?
+            .iter()
+            .map(|[a, b]| b - a)
+            .sum::<f64>();
         area += width * height;
     }
     Ok(area.clamp(0.0, 1.0))
@@ -747,7 +772,12 @@ fn gaussian_union_sample(
     let cutoff = sigma * 3.0;
     let sweep = NeutralUnionSweep::new(
         triangles,
-        [center[0] - cutoff, center[1] - cutoff, center[0] + cutoff, center[1] + cutoff],
+        [
+            center[0] - cutoff,
+            center[1] - cutoff,
+            center[0] + cutoff,
+            center[1] + cutoff,
+        ],
         16 * 16,
         work,
         path,
@@ -787,7 +817,9 @@ fn gaussian_union_sample(
     let normalizer = sigma * GAUSS_3SIGMA_NORMALIZER;
     let alpha = total / (normalizer * normalizer);
     if !alpha.is_finite() || !(-1.0e-9..=1.0 + 1.0e-9).contains(&alpha) {
-        return Err(precision("continuous Gaussian union integral is not normalized"));
+        return Err(precision(
+            "continuous Gaussian union integral is not normalized",
+        ));
     }
     Ok(alpha.clamp(0.0, 1.0))
 }
