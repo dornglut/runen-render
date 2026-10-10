@@ -1453,6 +1453,29 @@ mod tests {
     }
 
     #[test]
+    fn continuous_gaussian_partial_rectangle_matches_independent_erf_reference() {
+        let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [-0.25, -0.5], [0.175, -0.5], [0.175, 0.75],
+                [-0.25, -0.5], [0.175, 0.75], [-0.25, 0.75],
+            ],
+            bounds: [-0.25, -0.5, 0.175, 0.75],
+        };
+        let coverage = prepare_untranslated_shadow_coverage(&mesh, 0.0, 0.2, 4.0, &[7, 1])
+            .unwrap()
+            .unwrap();
+        let x = usize::try_from(-coverage.origin_x).unwrap();
+        let y = usize::try_from(-coverage.origin_y).unwrap();
+        // Independently computed exact erf ratio for one clipped axis:
+        // ([left,right]=[-1,.7], sample center=.5, physical sigma=.8)
+        // [erf(.25/sqrt(2)) - erf(-1.875/sqrt(2))] / [2 erf(3/sqrt(2))].
+        let analytic = 0.569_848_438_488_548_7;
+        let actual = coverage.values[y * coverage.width + x];
+        assert!((actual - analytic).abs() < 1.0e-8, "{actual}");
+    }
+
+    #[test]
     fn area_integral_unions_duplicate_and_overlapping_triangles() {
         let mut work = 0;
         let a = [[0.1, 0.1], [0.9, 0.1], [0.1, 0.9]];
