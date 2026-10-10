@@ -86,3 +86,40 @@ Two deliberately incorrect alternatives are independently evaluated:
 - Identity/affine-inverse round trips, coverage range [0,1], no alpha outside true finite support, sample totals and deliberate nonzero mismatches are checked by executable assertions.
 
 **Implications:** A compositional region/field evaluator may be entirely implicit and still produce correct samples by retaining an owning-frame transform and evaluating coverage there. An SDF value alone does not encode the normalized finite Gaussian integral. A GPU cache/field can accelerate a proven equivalent query, but moving morphology or blur into root space without transforming the structuring element/kernel breaks the immutable F1 law. Results are confined to an affine rectangle case with spread zero; still missing independently benchmarked nested Boolean/erosion, general paths, hardware-relevant cost and actual Vulkan candidate readback.
+
+## Nested Boolean signed spread plus finite Gaussian (nested_boolean_blur.py)
+
+Run from the repository root:
+
+~~~sh
+python3 research/rr86/nested_boolean_blur.py
+~~~
+
+This third **independent CPU/mathematical** experiment composes the **same** two overlapping unit circles in their immediate-parent frame, performs an **exact signed Euclidean** spread on their Boolean region, applies a normalized **finite square-cutoff Gaussian**, then maps the root query through an arbitrary invertible ancestor shear/nonuniform affine:
+
+~~~text
+root_x = 2.0 * parent_x + 0.7 * parent_y + 0.3
+root_y = -0.4 * parent_x + 0.9 * parent_y - 0.2
+~~~
+
+The comparison uses cheap but *incorrect as true distance* fields: min(primitive SDFs) for union and max(primitive SDFs) for intersection. **It does not calculate Gaussian coverage by thresholding distance.** Instead, it certifies the **entire support of the normalized finite Gaussian kernel** is inside/outside the true morphological shape (and opposite for the naïve threshold shape). Consequently, the Gaussian coverage values are mathematically **exactly** 1 and 0, independent of numerical quadrature and without relying on discretized pixels.
+
+### Case NBG-1: erode a union, then blur (true 1, naïve 0)
+
+- Two unit disks, centers (−0.5,0) and (+0.5,0); **union**. Point p=(0,0) in the inner shadow owner's parent frame. Ancestor-mapped root point q=(0.3,−0.2).
+- Erode by Euclidean radius **0.6** (spread −0.6). True exposed-union-boundary distance at p is sqrt(3)/2 ≈ 0.8660254, so after erosion a full disk of radius **0.2660254** around p remains inside the true eroded union (by 1-Lipschitz boundary-distance property).
+- Use sigma **0.02**, normalized finite separable Gaussian cutoff ±0.06 per parent axis. The farthest point of its square kernel from p is sqrt(2)*0.06≈**0.084853**, strictly inside the certified remaining radius. **Correct Gaussian coverage is exactly 1.**
+- Naïve min(field)+0.6 erodes each original circle independently: two disks of radius 0.4 with a 0.2 gap, excluding p. At p, min(field)=−0.5; across the entire Gaussian cutoff square the signed field remains greater than −0.6 because it is 1-Lipschitz and its maximum possible downward change is 0.084853. **Naïve Gaussian coverage is exactly 0.**
+
+### Case NBG-2: dilate an intersection, then blur (true 0, naïve 1)
+
+- Same disks but **intersection**, point p=(0,0.9), ancestor-mapped root point q≈(0.93,0.61).
+- Dilation radius **0.031**. True point-to-lens distance is 0.9−sqrt(3)/2≈**0.0339746**. After dilation, the point remains outside with certified distance >**0.0029746**.
+- Use sigma **0.0001**, finite parent-square cutoff ±0.0003. Its farthest point is ≈**0.0004243**, less than the true outside margin; the **correct Gaussian coverage is exactly 0**.
+- Naïve max(field) at p≈**0.0295630**, less than the requested radius 0.031. Because the composed field is still 1-Lipschitz, **all** points inside that cutoff square have naïve field <0.031. The **naïve Gaussian coverage is exactly 1**.
+
+### Why this matters
+
+The differences persist at pointwise **continuous** Gaussian coverage—not merely at SDF texture resolution, a missed pixel phase or root-space blur error. A renderer must distinguish a signed field with correct Boolean membership from **true Euclidean distance to the exposed boundary** before applying general erosion/dilation. A certified implicit/region evaluator can still deliver the correct result, and exact algebraic special cases (dilation distributes over union; erosion over intersection) remain valid.
+
+**Limits:** these are analytic point probes with artificial adversarial parameters (one sigma is extremely small), not measured visible output pixels at a specified canvas/raster resolution, not a benchmark, and not an admitted production F1 realization. Their proof does not cover arbitrary Béziers, intrinsic glyphs, complete nested compositions or numerical error in an actual GPU kernel. Do not use them as a substitute for #81 end-to-end F3F or #86 measured implementation comparison.
