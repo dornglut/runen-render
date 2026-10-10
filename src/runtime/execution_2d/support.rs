@@ -1111,9 +1111,15 @@ fn certified_axis_aligned_rectangle(triangles: &[[f64; 2]]) -> Option<[f64; 4]> 
         return None;
     }
     let min_x = triangles.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
-    let max_x = triangles.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+    let max_x = triangles
+        .iter()
+        .map(|p| p[0])
+        .fold(f64::NEG_INFINITY, f64::max);
     let min_y = triangles.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
-    let max_y = triangles.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+    let max_y = triangles
+        .iter()
+        .map(|p| p[1])
+        .fold(f64::NEG_INFINITY, f64::max);
     if ![min_x, max_x, min_y, max_y].iter().all(|x| x.is_finite())
         || min_x >= max_x
         || min_y >= max_y
@@ -1121,7 +1127,10 @@ fn certified_axis_aligned_rectangle(triangles: &[[f64; 2]]) -> Option<[f64; 4]> 
         return None;
     }
     let corners = [
-        [min_x, min_y], [max_x, min_y], [max_x, max_y], [min_x, max_y],
+        [min_x, min_y],
+        [max_x, min_y],
+        [max_x, max_y],
+        [min_x, max_y],
     ];
     let mut missing_mask = 0_u8;
     for tri in triangles.as_chunks::<3>().0 {
@@ -1148,11 +1157,7 @@ fn certified_axis_aligned_rectangle(triangles: &[[f64; 2]]) -> Option<[f64; 4]> 
 /// 3sigma Gaussian. A rectangular footprint never requires adaptive
 /// triangulation or an approximated discrete source mask.
 fn inset_rectangle_sample(rect: [f64; 4], center: [f64; 2], sigma: f64) -> f64 {
-    let (reach, axis) = if sigma > 0.0 {
-        (3.0 * sigma, gaussian_axis_mass as fn(f64, f64, f64, f64) -> f64)
-    } else {
-        (0.5, (|a: f64, b: f64, _center: f64, _sigma: f64| b - a) as fn(f64, f64, f64, f64) -> f64)
-    };
+    let reach = if sigma > 0.0 { 3.0 * sigma } else { 0.5 };
     let x0 = rect[0].max(center[0] - reach);
     let x1 = rect[2].min(center[0] + reach);
     let y0 = rect[1].max(center[1] - reach);
@@ -1160,8 +1165,15 @@ fn inset_rectangle_sample(rect: [f64; 4], center: [f64; 2], sigma: f64) -> f64 {
     if x0 >= x1 || y0 >= y1 {
         return 0.0;
     }
-    (axis(x0, x1, center[0], sigma) * axis(y0, y1, center[1], sigma))
-        .clamp(0.0, 1.0)
+    let (x_mass, y_mass) = if sigma > 0.0 {
+        (
+            gaussian_axis_mass(x0, x1, center[0], sigma),
+            gaussian_axis_mass(y0, y1, center[1], sigma),
+        )
+    } else {
+        (x1 - x0, y1 - y0)
+    };
+    (x_mass * y_mass).clamp(0.0, 1.0)
 }
 
 /// Deterministic high-order integration of one clipped Gaussian axis.
@@ -1479,7 +1491,9 @@ fn rasterize_continuous_shadow_coverage(
     };
     if let Some(rect) = inset {
         if !rect.iter().all(|v| v.is_finite()) {
-            return Err(precision("certified rectangular erosion lost finite coordinates"));
+            return Err(precision(
+                "certified rectangular erosion lost finite coordinates",
+            ));
         }
         if rect[0] >= rect[2] || rect[1] >= rect[3] {
             // Empty or measure-zero continuous support is a geometrically
@@ -1946,22 +1960,40 @@ mod tests {
     #[test]
     fn certified_rectangle_erosion_does_not_accept_unfilled_bounds_or_overlapping_halves() {
         let a = [
-            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0],
-            [0.0, 0.0], [4.0, 4.0], [0.0, 4.0],
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 4.0],
+            [0.0, 0.0],
+            [4.0, 4.0],
+            [0.0, 4.0],
         ];
-        assert_eq!(certified_axis_aligned_rectangle(&a), Some([0.0, 0.0, 4.0, 4.0]));
+        assert_eq!(
+            certified_axis_aligned_rectangle(&a),
+            Some([0.0, 0.0, 4.0, 4.0])
+        );
         let duplicate = [a, a].concat();
-        assert_eq!(certified_axis_aligned_rectangle(&duplicate), Some([0.0, 0.0, 4.0, 4.0]));
+        assert_eq!(
+            certified_axis_aligned_rectangle(&duplicate),
+            Some([0.0, 0.0, 4.0, 4.0])
+        );
         let partial = [
-            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0],
-            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0],
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 4.0],
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 4.0],
         ];
         assert_eq!(certified_axis_aligned_rectangle(&partial), None);
         let triangle_only = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]];
         assert_eq!(certified_axis_aligned_rectangle(&triangle_only), None);
         let displaced = [
-            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0],
-            [0.0, 0.0], [4.0, 4.0], [2.0, 4.0],
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 4.0],
+            [0.0, 0.0],
+            [4.0, 4.0],
+            [2.0, 4.0],
         ];
         assert_eq!(certified_axis_aligned_rectangle(&displaced), None);
     }
