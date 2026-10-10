@@ -462,6 +462,50 @@ fn signed_euclidean_disk_spread_has_gpu_erosion_and_non_square_dilation() {
 }
 
 #[test]
+fn sheared_parent_frame_erosion_uses_real_union_not_aabb_on_actual_gpu() {
+    let Some(context) = context() else { return };
+    // A transparent local [8,16]^2 caster is sheared and translated into
+    // the group's immediate-parent frame: (x,y) -> (x+.5*y+4, y).
+    // Its actual parallelogram is 8 <= x-.5*y-4 <= 16, 8 <= y <= 16.
+    // Erosion by .5 uses signed distance to the true parallelogram edges;
+    // the enclosing AABB [16,28] x [8,16] is an extent, not geometry.
+    let transformed = Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            8.0,
+            8.0,
+            8.0,
+            8.0,
+        )],
+        Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            -0.5,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    );
+    let composition = Render2dComposition::new(vec![Render2dEntry::group(transformed)]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F sheared Euclidean erosion cannot become AABB erosion",
+    );
+    // Every point in pixel [22,23] x [12,13] is >.5 from all four
+    // actual parallelogram edges; the full correlated pixel is red.
+    pixel_near(pixel(&output, 22, 12), [255, 0, 0, 255]);
+    // Pixel [17,18] x [12,13] lies strictly OUTSIDE the actual
+    // parallelogram (x-.5*y-4 < 8 throughout), yet an AABB inset
+    // would wrongly paint it. This is not a sampled-color comparison.
+    assert_eq!(pixel(&output, 17, 12), [0, 0, 0, 0]);
+}
+
+#[test]
 fn continuous_negative_euclidean_erosion_uses_actual_subpixel_area() {
     let Some(context) = context() else { return };
     // C=[10,11]^2, r=-.2, sigma=0. Its exact eroded support is
