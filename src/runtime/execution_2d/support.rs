@@ -2499,10 +2499,9 @@ mod tests {
             bounds: [10.0, 10.0, 25.0, 20.0],
         };
         let mut work = 0_usize;
-        let region =
-            certified_convex_erosion_mesh(&source, 1.0, &[0, 0], &mut work)
-                .unwrap()
-                .expect("a sheared convex union has a certified exact erosion");
+        let region = certified_convex_erosion_mesh(&source, 1.0, &[0, 0], &mut work)
+            .unwrap()
+            .expect("a sheared convex union has a certified exact erosion");
         assert!(work > 0);
         assert!(!region.triangles.is_empty());
         assert_eq!(neutral_union_distance(&region.triangles, [17.0, 15.0]), 0.0);
@@ -2519,10 +2518,18 @@ mod tests {
         let source = NeutralMesh {
             units_per_parent_logical_unit: 1.0,
             triangles: vec![
-                [10.0, 10.0], [14.0, 10.0], [10.0, 12.0],
-                [14.0, 10.0], [14.0, 12.0], [10.0, 12.0],
-                [10.0, 12.0], [12.0, 12.0], [10.0, 14.0],
-                [12.0, 12.0], [12.0, 14.0], [10.0, 14.0],
+                [10.0, 10.0],
+                [14.0, 10.0],
+                [10.0, 12.0],
+                [14.0, 10.0],
+                [14.0, 12.0],
+                [10.0, 12.0],
+                [10.0, 12.0],
+                [12.0, 12.0],
+                [10.0, 14.0],
+                [12.0, 12.0],
+                [12.0, 14.0],
+                [10.0, 14.0],
             ],
             bounds: [10.0, 10.0, 14.0, 14.0],
         };
