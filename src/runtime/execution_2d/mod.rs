@@ -6,6 +6,12 @@ mod image;
 mod intrinsic;
 mod lowering;
 mod scene;
+#[allow(
+    dead_code,
+    reason = "F3F geometry preflight wiring into group compositor"
+)]
+mod shadow;
+mod support;
 mod vector;
 
 use self::field::{FieldSetKey, QualityTier, ResourceFields};
@@ -193,6 +199,7 @@ impl Render2dExecutionState {
             &plan,
             bindings,
             &occurrences,
+            &resolved_fields,
         )?;
         for (resource_id, value) in observed_updates {
             let previous = self.observed.insert(resource_id, value);
@@ -245,7 +252,16 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
                 (root_index, *item, *to_root)
             }
             scene::Event::BeginGroup { path, group, .. } => {
-                if !group.shadows().is_empty() {
+                // A zero-spread, zero-blur nested effect has exact
+                // translated neutral-triangle support and is admitted by
+                // the single F3F compositor. Other nested kernels still
+                // reject BEFORE any F2 font/field resource preparation.
+                if path.len() > 1
+                    && group
+                        .shadows()
+                        .iter()
+                        .any(|shadow| shadow.spread() != 0.0 || shadow.sigma() != 0.0)
+                {
                     let kind = Render2dUnsupportedContent::Shadows {
                         root_index: path[0],
                     };
@@ -323,9 +339,9 @@ mod tests {
     }
 
     #[test]
-    fn empty_nested_shadow_group_reports_exact_unsupported_effect_path() {
+    fn nested_nonzero_kernel_shadow_group_reports_exact_unsupported_effect_path() {
         let shadow =
-            Render2dDropShadow::new(1.0, 1.0, 0.0, 0.0, Render2dColorRgba8::WHITE).unwrap();
+            Render2dDropShadow::new(1.0, 1.0, 0.0, 0.5, Render2dColorRgba8::WHITE).unwrap();
         let shadow_only = Render2dEntry::group(Render2dGroup::new(
             Vec::new(),
             Render2dAffineTransform::IDENTITY,
@@ -349,6 +365,32 @@ mod tests {
                 kind: Render2dUnsupportedContent::Shadows { root_index: 0 },
             }) if path == [0, 0]
         ));
+    }
+
+    #[test]
+    fn nested_zero_kernel_shadow_group_passes_f2_semantic_preflight() {
+        let shadow =
+            Render2dDropShadow::new(1.0, 1.0, 0.0, 0.0, Render2dColorRgba8::WHITE).unwrap();
+        let shadow_only = Render2dEntry::group(Render2dGroup::new(
+            Vec::new(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![shadow],
+        ));
+        let outer = Render2dGroup::new(
+            vec![shadow_only],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            Vec::new(),
+        );
+        let tree = Render2dComposition::new(vec![Render2dEntry::group(outer)]).unwrap();
+        let plan = scene::analyze(&tree).unwrap();
+        assert!(
+            admit_runs(&plan).unwrap().is_empty(),
+            "effect-only geometry does not fabricate any F2 shaped-text runs"
+        );
     }
 
     #[test]

@@ -7,6 +7,7 @@
 //! caller-owned target boundary.
 mod gpu;
 mod inspection;
+mod shadow;
 
 use self::gpu::*;
 use self::inspection::*;
@@ -15,14 +16,14 @@ use crate::composition_2d::{
     Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dGroup, Render2dItem,
     Render2dPrimitive, Render2dResourceBindings, Render2dResourceId, Render2dResourceValue,
 };
-use crate::execution_2d::{
-    Render2dSampleSpaceError, Render2dTargetAdmissionError, Render2dUnsupportedContent,
-};
+use crate::execution_2d::{Render2dSampleSpaceError, Render2dTargetAdmissionError};
 use crate::runtime::execution_2d::{
-    clip as clip_geometry, image as image_semantics, scene, vector as geometry,
+    clip as clip_geometry,
+    field::{FieldSetKey, ResourceFields},
+    image as image_semantics, scene, vector as geometry,
 };
 use crate::runtime::program::retained_vector_source;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 // At RGBA16F each 4x4 sample tile occupies 128 bytes per logical pixel/layer.
 // The 4x4 union mask consumes a further 64 bytes/logical pixel. The common
@@ -174,18 +175,73 @@ pub(in crate::runtime::execution_2d) fn lower(
     plan: &scene::Plan<'_>,
     bindings: &Render2dResourceBindings,
     glyphs_by_event: &BTreeMap<usize, Vec<super::GlyphOccurrence>>,
+    fields: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
 ) -> Result<Vec<GpuRenderOperation>, Render2dExecutionError> {
+    // Do not realize even the visible paint tessellation of an invocation
+    // whose authored shadow cardinality is already inadmissible.
+    let admitted_effects = shadow::admit_effect_count(plan)?;
     let Inspected {
         items,
-        group_bounds,
-        bounds,
+        mut group_bounds,
+        mut bounds,
         peak_group_depth: peak,
     } = inspect(plan, target, bindings, glyphs_by_event)?;
+    // This work comes from the SAME borrowed F1 painter tree as the visible
+    // F3E items, but never from their clipped/colorized physical footprints.
+    let shadow_groups = shadow::prepare(plan, bindings, fields, target, admitted_effects)?;
+    // Immutable borrowed paths index just the authored group nodes. Each
+    // visible shadow can widen at most its 64 semantic ancestors, rather
+    // than scanning a potentially million-entry F1 plan per effect.
+    let group_events = plan
+        .events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| match event {
+            scene::Event::BeginGroup { path, .. } => Some((path.as_slice(), index)),
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    for effects in shadow_groups.values() {
+        for effect in effects {
+            if !effect.group_visible || effect.color[3] == 0.0 {
+                continue;
+            }
+            let Some(b) = effect.bounds else { continue };
+            for dimension in 0..2 {
+                bounds[dimension] = bounds[dimension].min(b[dimension]);
+                bounds[dimension + 2] = bounds[dimension + 2].max(b[dimension + 2]);
+            }
+            // The effect's own owner and every containing group need this
+            // conservative bound, never as neutral geometric membership.
+            for depth in 1..=effect.path.len() {
+                let Some(&index) = group_events.get(&effect.path[..depth]) else {
+                    continue;
+                };
+                let old = group_bounds[index];
+                group_bounds[index] = Some(old.map_or(b, |existing| {
+                    [
+                        existing[0].min(b[0]),
+                        existing[1].min(b[1]),
+                        existing[2].max(b[2]),
+                        existing[3].max(b[3]),
+                    ]
+                }));
+            }
+        }
+    }
     if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
         // Valid no-paint scene does not require transient sample-plane roles.
         return Ok(Vec::new());
     }
     if !admits_sample_plane(context) {
+        return Err(Render2dTargetAdmissionError::SamplePlaneFormatUnsupported.into());
+    }
+    if shadow_groups
+        .values()
+        .flatten()
+        .any(|effect| effect.group_visible && effect.color[3] > 0.0 && effect.bounds.is_some())
+        && !shadow::required_roles_admitted(context)
+    {
         return Err(Render2dTargetAdmissionError::SamplePlaneFormatUnsupported.into());
     }
     let has_images = items
@@ -209,7 +265,12 @@ pub(in crate::runtime::execution_2d) fn lower(
     if tile_count > MAX_TILES {
         return Err(failure("sample-space tile count exceeds bounded budget"));
     }
-    admit_tile_work(plan.events.len(), &items, tile_count)?;
+    // Each shadow draw emits one GPU work node AND expands an immutable 4x
+    // source-backed mask over every tile sample cell. Both resource traversal
+    // and per-sample upload preparation share this compiler's replay budget.
+    // Account for both before constructing any GPU resource or target work.
+    let shadow_work = shadow::admit_tile_uploads(&shadow_groups, target, side, bounds)?;
+    admit_tile_work(plan.events.len(), &items, tile_count, shadow_work)?;
 
     let dimension = side * SAMPLES;
     let physical = [dimension, dimension];
@@ -427,10 +488,14 @@ pub(in crate::runtime::execution_2d) fn lower(
             if origin[0] >= end[0] || origin[1] >= end[1] {
                 continue;
             }
+            let tile_bounds = [origin[0], origin[1], end[0], end[1]];
             let has_content = items.iter().flatten().any(|item| {
                 let b = item.bounds();
                 b[0] < end[0] && b[2] > origin[0] && b[1] < end[1] && b[3] > origin[1]
-            });
+            }) || shadow_groups
+                .values()
+                .flatten()
+                .any(|effect| shadow::visible(effect, tile_bounds));
             if !has_content {
                 continue;
             }
@@ -439,7 +504,6 @@ pub(in crate::runtime::execution_2d) fn lower(
             append(&mut operations, operation(&layers[0], true, Vec::new())?)?;
             let mut depth = 0usize;
             let mut group_stack = Vec::<GroupFrame<'_>>::new();
-            let tile_bounds = [origin[0], origin[1], end[0], end[1]];
             for (index, event) in plan.events.iter().enumerate() {
                 match event {
                     scene::Event::BeginGroup {
@@ -482,6 +546,55 @@ pub(in crate::runtime::execution_2d) fn lower(
                                 &mut operations,
                                 operation(&layers[depth], true, Vec::new())?,
                             )?;
+                            // The group scratch starts transparent. Every
+                            // authored shadow independently samples C, paints
+                            // source-over in list order BEHIND its children,
+                            // then the existing group merge clips and applies
+                            // opacity exactly once. No separate backend.
+                            if let Some(effects) = shadow_groups.get(&index) {
+                                for effect in effects {
+                                    if !shadow::visible(effect, tile_bounds) {
+                                        continue;
+                                    }
+                                    let coverage = shadow::upload_tile(
+                                        effect,
+                                        origin,
+                                        dimension,
+                                        target,
+                                        &mut resources,
+                                    )?;
+                                    let mut quad = Vec::new();
+                                    let sample_origin = [
+                                        f64::from(origin[0]) * f64::from(SAMPLES),
+                                        f64::from(origin[1]) * f64::from(SAMPLES),
+                                    ];
+                                    rectangle(
+                                        &mut quad,
+                                        [0.0, 0.0, f64::from(dimension), f64::from(dimension)],
+                                        physical,
+                                        effect.color,
+                                        sample_origin,
+                                    );
+                                    let paint = draw(
+                                        &fill_pipeline,
+                                        Some((0, &coverage)),
+                                        None,
+                                        None,
+                                        &quad,
+                                        physical,
+                                        &mut resources,
+                                    )?;
+                                    append(
+                                        &mut operations,
+                                        operation(&layers[depth], false, vec![paint])?,
+                                    )?;
+                                    tile_painted = true;
+                                    group_stack
+                                        .last_mut()
+                                        .expect("the shadow has an active visible group")
+                                        .painted = true;
+                                }
+                            }
                         }
                     }
                     scene::Event::EndGroup => {
@@ -813,15 +926,39 @@ mod tile_budget_tests {
 
     #[test]
     fn cumulative_tile_replay_is_bounded_before_resource_preparation() {
-        assert!(admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024).is_ok());
+        assert!(admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024, 0).is_ok());
         assert!(matches!(
-            admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024 + 1),
+            admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024 + 1, 0),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit,
                 ..
             })
         ));
-        assert!(admit_tile_work(usize::MAX, &[], u64::MAX).is_err());
+        assert!(admit_tile_work(usize::MAX, &[], u64::MAX, 0).is_err());
+        // Previously admitted as independent replay and shadow budgets,
+        // although their combined sample visits and draws exceed the one
+        // compiler budget. The last scalar is actual shadow work, not just
+        // the number of authored shadows.
+        assert!(matches!(
+            admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024, 1),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
+        assert!(admit_tile_work(1, &[], 1, MAX_TILE_WORK_UNITS - 1).is_ok());
+        assert!(admit_tile_work(1, &[], 1, u64::MAX).is_err());
+        // One full 1024x1024 4x mask upload visits 1,048,576 sample cells
+        // and contributes one draw. Mask uploads are not one CPU work unit.
+        let upload = u64::from(1024_u32) * u64::from(1024_u32) + 1;
+        assert!(admit_tile_work(100, &[], 1, upload).is_ok());
+        assert!(matches!(
+            admit_tile_work(100, &[], 1, MAX_TILE_WORK_UNITS),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
     }
 
     #[test]
