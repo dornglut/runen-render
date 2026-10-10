@@ -164,3 +164,34 @@ The script prints **two separately scoped measurements**. The original combined 
 The implementation intentionally has no production memory, work-node, atlas, transformation, or clip-resource admission. Any adoption requires bounded peak-live work/memory, the actual F1 execution and Vulkan comparison, and independently calibrated error envelopes.
 
 **Critical conclusion:** Even after moving beyond simple overlapping disks to nested clipping and holes, a compositional region with a certified signed-value fast path and explicit exact fallback preserves these checked semantics. This is more evidence for a **region/capability-first** *hypothesis*, not for exclusive raster SDF authority or a final redesign decision.
+
+## Crosshatch scalability, exact reference cost and bounded-preflight caveat
+
+Run from the repository root:
+
+~~~sh
+python3 research/rr86/preflight_scaling.py
+~~~
+
+This additional **Python-only, stdlib research experiment** imports the already verified *orthogonal exact exposed-boundary reference* and probes a family of crosshatch unions built from alternating horizontal/vertical thin rectangles. With N leaf rectangles, each rectangle can contribute up to two new x or y coordinates, so the reference coordinate arrangement can have up to **(2N−1)²** induced open cells. Every cell calls a recursive Boolean-membership evaluator, potentially yielding **O(N³)** work during this naïve full arrangement construction. Exposed-edge enumeration and per-point full boundary scans introduce further cost; **the correct F3F production geometry model must not inherit these algorithms as defaults** without a proven resource/performance contract.
+
+Each N runs identical **841 parent-frame point queries** against both continuous exact exposed-edge signed distance and a conservative signed-field certificate with exact fallback, for positive +0.05 and negative −0.025 Euclidean disk spreads. It asserts **identical exact classifications** between the valid candidates. The code records cold arrangement preparation (including Python tracemalloc peak during preparation) separately from warm direct/reference and certified/hybrid queries. These peak bytes are Python-traced allocations during the region preparation **only**: they exclude expression creation, interpreter overhead, GPU uploads, reuse, background/device caches and concurrent/in-flight resources.
+
+### Executed adversarial scaling samples (one container run, Python 3)
+
+| Rectangle leaves | Retained inside cells | Exposed segments | Approx. prep wall time | Peak *traced during prep* |
+|---:|---:|---:|---:|---:|
+| 4 | 16 | 32 | 0.31 ms | 9.9 KB |
+| 8 | 56 | 96 | 0.37 ms | 7.0 KB |
+| 16 | 208 | 320 | 1.73 ms | 33 KB |
+| 32 | 800 | 1,152 | 12.33 ms | 253 KB |
+| 48 | 1,776 | 2,496 | 35.52 ms | 625 KB |
+| 64 | 3,136 | 4,352 | 140.61 ms | 1.17 MB |
+
+Timing/trace values are environmental illustrations, not stable acceptance thresholds; another run measured ~128.71 ms at 64 leaves. They are **not** measured RunenRender GPU or native CPU stage times. At 64 leaves the naïve exposed-segment oracle took approximately **1.2 seconds per 841 queries in Python**, while signed-field+exact-fallback took **~0.42–0.82 seconds** depending on radius. Positive spread +0.05 needed **549 exact fallbacks / 841 queries (65.3%)**; negative −0.025 needed 288 / 841. This is a particularly unfavorable example for the assumption that field certification almost always eliminates geometric work.
+
+### Illustrative fail-before-allocation gate
+
+A deliberately conservative preflight formula uses **(2N−1)²** as the maximum number of induced grid cells and **4(2N−1)²** as a safe upper bound on enumerated per-cell exposed segments. Before any arrangement allocation, reject inputs whose bounds exceed **example-only** caps of 10,000 cells or 40,000 boundary segments. At N=64, these bounds are **16,129 cells / 64,516 segments** so the example gate rejects *although the actual shape only generates 3,136 inside cells and 4,352 exposed segments*. This illustrates both a legitimate deterministic rejection and the **loss of admissible useful workloads from overly pessimistic admission**. These caps are **NOT** accepted F1/F3F limits and may not be silently adopted into renderer production.
+
+**Critical decision consequence:** An exact **compositional region** is a semantic capability, not a license to build a full dense arrangement for every frame. A credible production proposal must bound graph construction, expose region emptiness without sample heuristics, support reuse and incremental update, spatially accelerate closest-boundary/cell queries, account for *cumulative* per-effect and per-invocation work, and distinguish exact/uncertain/unsupported **before** modifying any caller target. SDF acceleration, segment BVHs, hierarchical tiling and analytic symbolic simplification remain hypotheses to benchmark **on identical F1 workloads**. This experiment only falsifies naïve unindexed geometry and overly confident fast-path claims; it does not select one production algorithm.
