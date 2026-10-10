@@ -874,6 +874,18 @@ fn rasterize_gaussian_coverage(
             "continuous Gaussian coverage exceeds bounded sample area",
         ));
     }
+    // The original source-lattice budget does not include the expanded
+    // 3sigma halo. Every halo cell scans the triangle inventory before local
+    // active-set selection, so preflight total traversal work before new
+    // coverage storage or caller-owned GPU work.
+    let scan_work = area
+        .checked_mul(mesh.triangles.len() / 3)
+        .ok_or_else(|| resource("continuous Gaussian halo scan work overflow"))?;
+    if scan_work > 16_777_216 {
+        return Err(resource(
+            "continuous Gaussian halo scan exceeds bounded work",
+        ));
+    }
     let offset = i64::try_from(pad).map_err(|_| resource("continuous Gaussian halo overflow"))?;
     let origin_x = grid
         .origin_x
@@ -1499,6 +1511,27 @@ mod tests {
         ];
         let sliver = area_sample(&rect, 0.0, 0.0, &mut work, &[2]).unwrap();
         assert!((sliver - 0.0001).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn expanded_gaussian_halo_scans_are_admitted_before_coverage_allocation() {
+        let triangle = [[0.0, 0.0], [0.25, 0.0], [0.0, 0.25]];
+        let mut mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: Vec::new(),
+            bounds: [0.0, 0.0, 0.25, 0.25],
+        };
+        for _ in 0..256 {
+            mesh.triangles.extend(triangle);
+        }
+        assert!(matches!(
+            prepare_untranslated_shadow_coverage(&mesh, 0.0, 20.0, 4.0, &[8, 2]),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [8, 2]
+        ));
     }
 
     #[test]
