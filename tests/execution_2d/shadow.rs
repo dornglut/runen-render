@@ -138,6 +138,120 @@ fn transparent_geometry_casts_actual_gpu_shadow_offscreen_and_at_fractional_offs
 }
 
 #[test]
+fn invisible_root_shadows_skip_halo_work_but_opaque_siblings_still_fail_preflight() {
+    let Some(context) = context() else {
+        return;
+    };
+    let caster = vec![caster(
+        Render2dColorRgba8::TRANSPARENT,
+        10.0,
+        10.0,
+        16.0,
+        16.0,
+    )];
+    let mut executor = Render2dExecutor::new();
+    let bindings = Render2dResourceBindings::default();
+    let (_, target) = target("F3F alpha-neutral no-paint halo admission");
+    let huge_transparent = group(
+        caster.clone(),
+        vec![effect(0.0, 0.0, 500.0, 0.0, Render2dColorRgba8::TRANSPARENT)],
+        1.0,
+    );
+    assert!(
+        !executor
+            .prepare(&context, &huge_transparent, &bindings, &target)
+            .expect("invisible shadow has no physical mask/halo to allocate")
+            .has_render_work()
+    );
+    let huge_zero_opacity_group = group(
+        caster.clone(),
+        vec![effect(
+            0.0,
+            0.0,
+            500.0,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        0.0,
+    );
+    assert!(
+        !executor
+            .prepare(&context, &huge_zero_opacity_group, &bindings, &target)
+            .expect("zero-opacity group has no physical effect work")
+            .has_render_work()
+    );
+    let actually_visible = group(
+        caster,
+        vec![effect(
+            0.0,
+            0.0,
+            500.0,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let error = match executor.prepare(&context, &actually_visible, &bindings, &target) {
+        Ok(_) => panic!("visible oversized 3sigma halo must remain inadmissible"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        Render2dExecutionError::SampleSpace {
+            kind: runen_render::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+            path: Some(path),
+            ..
+        } if path == [0]
+    ));
+}
+
+#[test]
+fn invisible_nested_effect_skips_mask_while_neutral_source_remains_admitted() {
+    let Some(context) = context() else {
+        return;
+    };
+    // This is much wider than the bounded disposable 4x physical mask,
+    // but source-neutral geometry is just two finite triangles.
+    let nested = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            0.0,
+            0.0,
+            900.0,
+            900.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let tree = Render2dComposition::new(vec![Render2dEntry::group(Render2dGroup::new(
+        vec![nested],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        Vec::new(),
+    ))])
+    .unwrap();
+    let (_, target) = target("F3F hidden nested neutral source");
+    let prepared = Render2dExecutor::new()
+        .prepare(
+            &context,
+            &tree,
+            &Render2dResourceBindings::default(),
+            &target,
+        )
+        .expect("ancestor opacity culls only physical paint, not F1 support verification");
+    assert!(!prepared.has_render_work());
+}
+
+#[test]
 fn two_translucent_shadows_have_authored_order_before_child_and_group_opacity() {
     let Some(context) = context() else { return };
     let red = effect(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(255, 0, 0, 128));

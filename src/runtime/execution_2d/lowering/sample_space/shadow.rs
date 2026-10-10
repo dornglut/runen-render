@@ -151,15 +151,26 @@ pub(super) fn prepare(
     let mut groups = BTreeMap::new();
     let mut retained_coverage_bytes = 0_u64;
     let mut aggregate_coverage_work = 0_usize;
+    // This is ONLY paint reachability. Alpha-neutral structural support for
+    // ancestors is independently prepared from every borrowed F1 group,
+    // including transparent effects and zero-opacity children.
+    let mut paintable_ancestors = Vec::<bool>::new();
     for (index, event) in plan.events.iter().enumerate() {
-        let scene::Event::BeginGroup {
-            group,
-            path,
-            parent_to_root,
-        } = event
-        else {
-            continue;
+        let (group, path, parent_to_root) = match event {
+            scene::Event::BeginGroup {
+                group,
+                path,
+                parent_to_root,
+            } => (group, path, parent_to_root),
+            scene::Event::EndGroup => {
+                paintable_ancestors.pop().expect("balanced F1 group plan");
+                continue;
+            }
+            scene::Event::Item { .. } => continue,
         };
+        let paintable = paintable_ancestors.last().copied().unwrap_or(true)
+            && group.opacity().get() > 0.0;
+        paintable_ancestors.push(paintable);
         if group.shadows().is_empty() {
             continue;
         }
@@ -202,6 +213,15 @@ pub(super) fn prepare(
                 || envelope[0] >= canvas[0] / target.raster_scale()
                 || envelope[1] >= canvas[1] / target.raster_scale()
             {
+                continue;
+            }
+            // An effect with no painted contribution must NOT allocate its
+            // physical lattice/halo. The independent group_child_sources
+            // pass already preserved the exact neutral support for any
+            // ancestor shadow, regardless of this alpha reachability.
+            // Still compute/validate every authored parent-frame envelope
+            // above; only the disposable raster work is elided.
+            if !paintable || color[3] == 0.0 {
                 continue;
             }
             let offset = Render2dAffineTransform::translation(effect.offset_x(), effect.offset_y())
@@ -247,12 +267,13 @@ pub(super) fn prepare(
                 coverage,
                 logical_envelope: envelope,
                 bounds,
-                group_visible: group.opacity().get() > 0.0,
+                group_visible: paintable,
                 path: path.clone(),
             });
         }
         groups.insert(index, prepared);
     }
+    debug_assert!(paintable_ancestors.is_empty());
     Ok(groups)
 }
 
