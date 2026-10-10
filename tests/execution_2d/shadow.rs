@@ -221,11 +221,23 @@ fn group_clips_intersect_shadows_after_child_source_and_opacity_preserves_zero()
         ),
     ];
     let tree = Render2dComposition::new(vec![Render2dEntry::group(Render2dGroup::new(
-        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 16.0, 16.0)],
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            16.0,
+            16.0,
+        )],
         Render2dAffineTransform::IDENTITY,
         clips,
         Render2dOpacity::OPAQUE,
-        vec![effect(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(255, 0, 0, 255))],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
     ))])
     .unwrap();
     let image = execute(

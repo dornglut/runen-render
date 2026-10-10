@@ -22,9 +22,7 @@ use crate::execution_2d::{
 use crate::runtime::execution_2d::{
     clip as clip_geometry,
     field::{FieldSetKey, ResourceFields},
-    image as image_semantics,
-    scene,
-    vector as geometry,
+    image as image_semantics, scene, vector as geometry,
 };
 use crate::runtime::program::retained_vector_source;
 use std::{collections::BTreeMap, sync::Arc};
@@ -218,9 +216,12 @@ pub(in crate::runtime::execution_2d) fn lower(
     if !admits_sample_plane(context) {
         return Err(Render2dTargetAdmissionError::SamplePlaneFormatUnsupported.into());
     }
-    if shadow_groups.values().flatten().any(|effect| {
-        effect.group_visible && effect.color[3] > 0.0 && effect.bounds.is_some()
-    }) && !shadow::required_roles_admitted(context) {
+    if shadow_groups
+        .values()
+        .flatten()
+        .any(|effect| effect.group_visible && effect.color[3] > 0.0 && effect.bounds.is_some())
+        && !shadow::required_roles_admitted(context)
+    {
         return Err(Render2dTargetAdmissionError::SamplePlaneFormatUnsupported.into());
     }
     let has_images = items
@@ -467,9 +468,10 @@ pub(in crate::runtime::execution_2d) fn lower(
             let has_content = items.iter().flatten().any(|item| {
                 let b = item.bounds();
                 b[0] < end[0] && b[2] > origin[0] && b[1] < end[1] && b[3] > origin[1]
-            }) || shadow_groups.values().flatten().any(|effect| {
-                shadow::visible(effect, tile_bounds)
-            });
+            }) || shadow_groups
+                .values()
+                .flatten()
+                .any(|effect| shadow::visible(effect, tile_bounds));
             if !has_content {
                 continue;
             }

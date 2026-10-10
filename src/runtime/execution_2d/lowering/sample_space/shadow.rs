@@ -296,9 +296,11 @@ pub(super) fn upload_tile(
             {
                 0.0
             } else {
-                let sx = x.checked_sub(shadow.coverage.origin_x)
+                let sx = x
+                    .checked_sub(shadow.coverage.origin_x)
                     .and_then(|delta| usize::try_from(delta).ok());
-                let sy = y.checked_sub(shadow.coverage.origin_y)
+                let sy = y
+                    .checked_sub(shadow.coverage.origin_y)
                     .and_then(|delta| usize::try_from(delta).ok());
                 match (sx, sy) {
                     (Some(sx), Some(sy))
@@ -310,12 +312,16 @@ pub(super) fn upload_tile(
                 }
             };
             if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                return Err(shadow_precision(&shadow.path, "shadow coverage is not normalized"));
+                return Err(shadow_precision(
+                    &shadow.path,
+                    "shadow coverage is not normalized",
+                ));
             }
             let narrow = value as f32;
             if value > 0.0 && narrow == 0.0 {
                 return Err(shadow_precision(
-                    &shadow.path, "shadow coverage cannot survive GPU mask precision",
+                    &shadow.path,
+                    "shadow coverage cannot survive GPU mask precision",
                 ));
             }
             data.extend_from_slice(&narrow.to_le_bytes());
@@ -325,26 +331,32 @@ pub(super) fn upload_tile(
     let label = GpuResourceLabel::new(&name).map_err(|e| gpu("shadow mask label", e))?;
     let source = PreparedGpuData::<TransferData>::ordinary_pod_transfer(&name, &data)
         .map_err(|e| gpu("shadow float mask bytes", e))?;
-    let extent = GpuTextureExtent::new(
-        &label, GpuTextureDimension::D2, dimension, dimension, 1,
-    ).map_err(|e| gpu("shadow mask extent", e))?;
-    let row_bytes = dimension.checked_mul(4)
+    let extent = GpuTextureExtent::new(&label, GpuTextureDimension::D2, dimension, dimension, 1)
+        .map_err(|e| gpu("shadow mask extent", e))?;
+    let row_bytes = dimension
+        .checked_mul(4)
         .ok_or_else(|| shadow_resource(&shadow.path, "shadow mask row overflow"))?;
-    let prepared = GpuPreparedTextureData::new(
-        &label, source, FORMAT, extent, row_bytes, 0,
-    ).map_err(|e| gpu("shadow prepared mask", e))?;
-    let texture = resources.texture(
-        GpuTextureDescriptor::ordinary_owned_2d(
-            &name, GpuResourceLifetime::Transient, GpuReconstruction::SourceBacked,
-            dimension, dimension, FORMAT,
-            [GpuTextureUsage::Sampled, GpuTextureUsage::CopyDestination],
-            GpuTextureInitialization::Prepared(prepared),
-        ).map_err(|e| gpu("shadow mask descriptor", e))?,
-    ).map_err(|e| gpu("shadow mask texture", e))?;
-    resources.texture_view(
-        GpuTextureViewDescriptor::ordinary_full_owned(
-            format!("{name} view"), &texture,
-        ).map_err(|e| gpu("shadow mask view descriptor", e))?,
-    ).map_err(|e| gpu("shadow mask view", e))
+    let prepared = GpuPreparedTextureData::new(&label, source, FORMAT, extent, row_bytes, 0)
+        .map_err(|e| gpu("shadow prepared mask", e))?;
+    let texture = resources
+        .texture(
+            GpuTextureDescriptor::ordinary_owned_2d(
+                &name,
+                GpuResourceLifetime::Transient,
+                GpuReconstruction::SourceBacked,
+                dimension,
+                dimension,
+                FORMAT,
+                [GpuTextureUsage::Sampled, GpuTextureUsage::CopyDestination],
+                GpuTextureInitialization::Prepared(prepared),
+            )
+            .map_err(|e| gpu("shadow mask descriptor", e))?,
+        )
+        .map_err(|e| gpu("shadow mask texture", e))?;
+    resources
+        .texture_view(
+            GpuTextureViewDescriptor::ordinary_full_owned(format!("{name} view"), &texture)
+                .map_err(|e| gpu("shadow mask view descriptor", e))?,
+        )
+        .map_err(|e| gpu("shadow mask view", e))
 }
-
