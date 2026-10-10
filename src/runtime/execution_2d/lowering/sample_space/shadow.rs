@@ -59,17 +59,25 @@ fn output_bounds(
     target: &AdmittedTarget,
     path: &[usize],
 ) -> Result<Option<[u32; 4]>, Render2dExecutionError> {
-    let upper_x = samples.origin_x.checked_add(
-        i64::try_from(samples.width)
-            .map_err(|_| shadow_resource(path, "shadow sample width exceeds signed index"))?,
-    ).ok_or_else(|| shadow_precision(path, "shadow x sample extent overflow"))?;
-    let upper_y = samples.origin_y.checked_add(
-        i64::try_from(samples.height)
-            .map_err(|_| shadow_resource(path, "shadow sample height exceeds signed index"))?,
-    ).ok_or_else(|| shadow_precision(path, "shadow y sample extent overflow"))?;
-    let upper_x = upper_x.checked_add(3)
+    let upper_x = samples
+        .origin_x
+        .checked_add(
+            i64::try_from(samples.width)
+                .map_err(|_| shadow_resource(path, "shadow sample width exceeds signed index"))?,
+        )
+        .ok_or_else(|| shadow_precision(path, "shadow x sample extent overflow"))?;
+    let upper_y = samples
+        .origin_y
+        .checked_add(
+            i64::try_from(samples.height)
+                .map_err(|_| shadow_resource(path, "shadow sample height exceeds signed index"))?,
+        )
+        .ok_or_else(|| shadow_precision(path, "shadow y sample extent overflow"))?;
+    let upper_x = upper_x
+        .checked_add(3)
         .ok_or_else(|| shadow_precision(path, "shadow x pixel ceiling overflow"))?;
-    let upper_y = upper_y.checked_add(3)
+    let upper_y = upper_y
+        .checked_add(3)
         .ok_or_else(|| shadow_precision(path, "shadow y pixel ceiling overflow"))?;
     let crop = |value: i64, maximum: u32| {
         u32::try_from(value.clamp(0, i64::from(maximum)))
@@ -93,15 +101,20 @@ pub(super) fn prepare(
     field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
     target: &AdmittedTarget,
 ) -> Result<ShadowGroups, Render2dExecutionError> {
-    if !plan.events.iter().any(|event| matches!(
-        event,
-        scene::Event::BeginGroup { group, .. } if !group.shadows().is_empty()
-    )) {
+    if !plan.events.iter().any(|event| {
+        matches!(
+            event,
+            scene::Event::BeginGroup { group, .. } if !group.shadows().is_empty()
+        )
+    }) {
         return Ok(BTreeMap::new());
     }
     let sample_scale = target.raster_scale() * f64::from(SAMPLES);
     if !sample_scale.is_finite() || sample_scale <= 0.0 {
-        return Err(shadow_precision(&[], "shadow group-parent sampling scale is invalid"));
+        return Err(shadow_precision(
+            &[],
+            "shadow group-parent sampling scale is invalid",
+        ));
     }
     let sources = geometry_support::group_child_sources(
         plan,
@@ -123,15 +136,21 @@ pub(super) fn prepare(
         if group.shadows().is_empty() {
             continue;
         }
-        authored_effects = authored_effects.checked_add(group.shadows().len())
+        authored_effects = authored_effects
+            .checked_add(group.shadows().len())
             .ok_or_else(|| shadow_resource(path, "shadow effect count overflow"))?;
         if authored_effects > MAX_AUTHORED_SHADOWS {
-            return Err(shadow_resource(path, "authored shadows exceed bounded effect admission"));
+            return Err(shadow_resource(
+                path,
+                "authored shadows exceed bounded effect admission",
+            ));
         }
-        let source = sources.get(&index)
+        let source = sources
+            .get(&index)
             .expect("the neutral F1 traversal records each shadow-bearing group");
         let mut prepared = Vec::new();
-        prepared.try_reserve_exact(group.shadows().len())
+        prepared
+            .try_reserve_exact(group.shadows().len())
             .map_err(|_| shadow_resource(path, "shadow preparation list allocation failed"))?;
         for effect in group.shadows() {
             let color = linear_color(effect.color());

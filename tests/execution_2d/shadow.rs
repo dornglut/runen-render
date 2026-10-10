@@ -297,12 +297,13 @@ fn immutable_monochrome_text_casts_from_transparent_foreground_after_cache_loss(
         return;
     };
     let id = Render2dResourceId::new(911).unwrap();
-    let bindings = bindings(
-        id,
-        shaped_resource(OUTLINE_FONT, false, BOX_GLYPH, 24.0),
-    );
+    let bindings = bindings(id, shaped_resource(OUTLINE_FONT, false, BOX_GLYPH, 24.0));
     let composition = group(
-        vec![shaped_entry(id, [8.0, 32.0], Render2dColorRgba8::TRANSPARENT)],
+        vec![shaped_entry(
+            id,
+            [8.0, 32.0],
+            Render2dColorRgba8::TRANSPARENT,
+        )],
         vec![effect(
             0.0,
             0.0,

@@ -629,10 +629,8 @@ mod tests {
             }) if path == [3, 7]
         ));
         assert_eq!(retained.triangles, before, "failed geometry preflight is atomic");
-        let rank_deficient = Render2dAffineTransform::new(
-            1.0, 0.0, 2.0, 0.0, 0.0, 0.0,
-        )
-        .unwrap();
+        let rank_deficient =
+            Render2dAffineTransform::new(1.0, 0.0, 2.0, 0.0, 0.0, 0.0).unwrap();
         let mut empty = empty_mesh();
         append(&mut empty, &source, rank_deficient, &[3, 8]).unwrap();
         assert!(empty.triangles.is_empty(), "mathematically singular 2D fill has no area");
