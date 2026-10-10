@@ -1487,8 +1487,7 @@ mod tests {
             [1.624_245_650_140_160_5, -1.490_622_465_767_189_4],
         ];
         let mut work = 0_usize;
-        let value = gaussian_union_sample(&triangle, [0.0, 0.0], 1.0, &mut work, &[5])
-            .unwrap();
+        let value = gaussian_union_sample(&triangle, [0.0, 0.0], 1.0, &mut work, &[5]).unwrap();
         // Independent adaptive y-quadrature + analytic Gaussian x-erf
         // evaluation, partitioned at triangle vertices (not 16x16 GL).
         let reference = 0.449_875_362_999_087_37;
