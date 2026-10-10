@@ -1100,6 +1100,70 @@ fn union_signed_interior_distance(
     if inside { nearest } else { -nearest }
 }
 
+/// Certify that the complete triangle UNION is exactly one axis-aligned
+/// rectangle. Each nondegenerate triangle must use three distinct rectangle
+/// corners; two triangles missing opposite corners cover the whole rectangle.
+/// This admits equivalent diagonals and duplicate tessellation without ever
+/// treating the union AABB alone as geometry. All other meshes take the
+/// general continuous signed-distance route.
+fn certified_axis_aligned_rectangle(triangles: &[[f64; 2]]) -> Option<[f64; 4]> {
+    if triangles.len() < 6 || !triangles.len().is_multiple_of(3) {
+        return None;
+    }
+    let min_x = triangles.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+    let max_x = triangles.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+    let min_y = triangles.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+    let max_y = triangles.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+    if ![min_x, max_x, min_y, max_y].iter().all(|x| x.is_finite())
+        || min_x >= max_x
+        || min_y >= max_y
+    {
+        return None;
+    }
+    let corners = [
+        [min_x, min_y], [max_x, min_y], [max_x, max_y], [min_x, max_y],
+    ];
+    let mut missing_mask = 0_u8;
+    for tri in triangles.as_chunks::<3>().0 {
+        let mut present = 0_u8;
+        for point in tri {
+            let index = corners.iter().position(|corner| corner == point)?;
+            let bit = 1_u8 << index;
+            if present & bit != 0 {
+                return None;
+            }
+            present |= bit;
+        }
+        if present.count_ones() != 3 {
+            return None;
+        }
+        missing_mask |= !present & 0b1111;
+    }
+    ((missing_mask & 0b0101 == 0b0101) || (missing_mask & 0b1010 == 0b1010))
+        .then_some([min_x, min_y, max_x, max_y])
+}
+
+/// Exact area of a certified axis-aligned inset rectangle under either
+/// the identity blur (one physical sample cell) or the normalized finite
+/// 3sigma Gaussian. A rectangular footprint never requires adaptive
+/// triangulation or an approximated discrete source mask.
+fn inset_rectangle_sample(rect: [f64; 4], center: [f64; 2], sigma: f64) -> f64 {
+    let (reach, axis) = if sigma > 0.0 {
+        (3.0 * sigma, gaussian_axis_mass as fn(f64, f64, f64, f64) -> f64)
+    } else {
+        (0.5, (|a: f64, b: f64, _center: f64, _sigma: f64| b - a) as fn(f64, f64, f64, f64) -> f64)
+    };
+    let x0 = rect[0].max(center[0] - reach);
+    let x1 = rect[2].min(center[0] + reach);
+    let y0 = rect[1].max(center[1] - reach);
+    let y1 = rect[3].min(center[1] + reach);
+    if x0 >= x1 || y0 >= y1 {
+        return 0.0;
+    }
+    (axis(x0, x1, center[0], sigma) * axis(y0, y1, center[1], sigma))
+        .clamp(0.0, 1.0)
+}
+
 /// Deterministic high-order integration of one clipped Gaussian axis.
 /// All intervals lie inside the finite 3sigma support; 16-point quadrature
 /// on this smooth interval can be checked independently against erf.
@@ -1397,9 +1461,35 @@ fn rasterize_continuous_shadow_coverage(
             ));
         }
     }
-    // Extract continuous union exterior once before the per-sample signed
-    // distance queries. Positive dilation does not need this extra topology.
-    let erosion_boundary = if signed_spread < 0.0 {
+    // A certified rectangular triangle UNION admits an exact inset for
+    // negative disk erosion. This avoids a long adaptive search along
+    // straight edges, while retaining the same continuous geometry law.
+    // An AABB without the full two-triangle coverage proof never qualifies.
+    let inset = if signed_spread < 0.0 {
+        certified_axis_aligned_rectangle(&triangles).map(|rect| {
+            [
+                rect[0] - physical_spread,
+                rect[1] - physical_spread,
+                rect[2] + physical_spread,
+                rect[3] + physical_spread,
+            ]
+        })
+    } else {
+        None
+    };
+    if let Some(rect) = inset {
+        if !rect.iter().all(|v| v.is_finite()) {
+            return Err(precision("certified rectangular erosion lost finite coordinates"));
+        }
+        if rect[0] >= rect[2] || rect[1] >= rect[3] {
+            // Empty or measure-zero continuous support is a geometrically
+            // certified empty paint source, not inferred from absent pixels.
+            return Ok(None);
+        }
+    }
+    // Nonrectangular erosion still requires the actual exposed union
+    // boundary. Positive dilation and certified rectangular erosion do not.
+    let erosion_boundary = if signed_spread < 0.0 && inset.is_none() {
         Some(union_exterior_boundary(&triangles, path)?)
     } else {
         None
@@ -1412,7 +1502,9 @@ fn rasterize_continuous_shadow_coverage(
                 (origin_x as f64 + as_f64(column)) + 0.5,
                 (origin_y as f64 + as_f64(row)) + 0.5,
             ];
-            values[row * width + column] = if signed_spread != 0.0 {
+            values[row * width + column] = if let Some(rect) = inset {
+                inset_rectangle_sample(rect, center, physical_sigma)
+            } else if signed_spread != 0.0 {
                 continuous_signed_spread_sample(
                     &triangles,
                     erosion_boundary.as_deref(),
@@ -1849,6 +1941,38 @@ mod tests {
         assert!((actual - independent_cdf).abs() <= 1.0 / 2048.0);
         assert!((actual - 0.04).abs() > 0.03);
         assert!(work > 0);
+    }
+
+    #[test]
+    fn certified_rectangle_erosion_does_not_accept_unfilled_bounds_or_overlapping_halves() {
+        let a = [
+            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0],
+            [0.0, 0.0], [4.0, 4.0], [0.0, 4.0],
+        ];
+        assert_eq!(certified_axis_aligned_rectangle(&a), Some([0.0, 0.0, 4.0, 4.0]));
+        let duplicate = [a, a].concat();
+        assert_eq!(certified_axis_aligned_rectangle(&duplicate), Some([0.0, 0.0, 4.0, 4.0]));
+        let partial = [
+            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0],
+            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0],
+        ];
+        assert_eq!(certified_axis_aligned_rectangle(&partial), None);
+        let triangle_only = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]];
+        assert_eq!(certified_axis_aligned_rectangle(&triangle_only), None);
+        let displaced = [
+            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0],
+            [0.0, 0.0], [4.0, 4.0], [2.0, 4.0],
+        ];
+        assert_eq!(certified_axis_aligned_rectangle(&displaced), None);
+    }
+
+    #[test]
+    fn certified_inset_rectangle_has_independent_identity_and_gaussian_coverage() {
+        let inset = [0.8, 0.8, 3.2, 3.2];
+        assert!((inset_rectangle_sample(inset, [0.5, 0.5], 0.0) - 0.04).abs() < 1e-12);
+        assert_eq!(inset_rectangle_sample(inset, [1.5, 1.5], 0.0), 1.0);
+        assert_eq!(inset_rectangle_sample(inset, [0.5, 0.5], 0.05), 0.0);
+        assert!((inset_rectangle_sample(inset, [1.5, 1.5], 0.05) - 1.0).abs() < 1e-12);
     }
 
     #[test]
