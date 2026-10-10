@@ -7,6 +7,7 @@
 //! caller-owned target boundary.
 mod gpu;
 mod inspection;
+mod shadow;
 
 use self::gpu::*;
 use self::inspection::*;
@@ -19,10 +20,14 @@ use crate::execution_2d::{
     Render2dSampleSpaceError, Render2dTargetAdmissionError, Render2dUnsupportedContent,
 };
 use crate::runtime::execution_2d::{
-    clip as clip_geometry, image as image_semantics, scene, vector as geometry,
+    clip as clip_geometry,
+    field::{FieldSetKey, ResourceFields},
+    image as image_semantics,
+    scene,
+    vector as geometry,
 };
 use crate::runtime::program::retained_vector_source;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 // At RGBA16F each 4x4 sample tile occupies 128 bytes per logical pixel/layer.
 // The 4x4 union mask consumes a further 64 bytes/logical pixel. The common
@@ -174,18 +179,48 @@ pub(in crate::runtime::execution_2d) fn lower(
     plan: &scene::Plan<'_>,
     bindings: &Render2dResourceBindings,
     glyphs_by_event: &BTreeMap<usize, Vec<super::GlyphOccurrence>>,
+    fields: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
 ) -> Result<Vec<GpuRenderOperation>, Render2dExecutionError> {
     let Inspected {
         items,
-        group_bounds,
-        bounds,
+        mut group_bounds,
+        mut bounds,
         peak_group_depth: peak,
     } = inspect(plan, target, bindings, glyphs_by_event)?;
+    // This work comes from the SAME borrowed F1 painter tree as the visible
+    // F3E items, but never from their clipped/colorized physical footprints.
+    let shadow_groups = shadow::prepare(plan, bindings, fields, target)?;
+    for (event, effects) in &shadow_groups {
+        for effect in effects {
+            if !effect.group_visible || effect.color[3] == 0.0 {
+                continue;
+            }
+            let Some(b) = effect.bounds else { continue };
+            for dimension in 0..2 {
+                bounds[dimension] = bounds[dimension].min(b[dimension]);
+                bounds[dimension + 2] = bounds[dimension + 2].max(b[dimension + 2]);
+            }
+            let old = group_bounds[*event];
+            group_bounds[*event] = Some(old.map_or(b, |existing| {
+                [
+                    existing[0].min(b[0]),
+                    existing[1].min(b[1]),
+                    existing[2].max(b[2]),
+                    existing[3].max(b[3]),
+                ]
+            }));
+        }
+    }
     if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
         // Valid no-paint scene does not require transient sample-plane roles.
         return Ok(Vec::new());
     }
     if !admits_sample_plane(context) {
+        return Err(Render2dTargetAdmissionError::SamplePlaneFormatUnsupported.into());
+    }
+    if shadow_groups.values().flatten().any(|effect| {
+        effect.group_visible && effect.color[3] > 0.0 && effect.bounds.is_some()
+    }) && !shadow::required_roles_admitted(context) {
         return Err(Render2dTargetAdmissionError::SamplePlaneFormatUnsupported.into());
     }
     let has_images = items
@@ -210,6 +245,7 @@ pub(in crate::runtime::execution_2d) fn lower(
         return Err(failure("sample-space tile count exceeds bounded budget"));
     }
     admit_tile_work(plan.events.len(), &items, tile_count)?;
+    shadow::admit_tile_uploads(&shadow_groups, target, side, bounds)?;
 
     let dimension = side * SAMPLES;
     let physical = [dimension, dimension];
@@ -427,9 +463,12 @@ pub(in crate::runtime::execution_2d) fn lower(
             if origin[0] >= end[0] || origin[1] >= end[1] {
                 continue;
             }
+            let tile_bounds = [origin[0], origin[1], end[0], end[1]];
             let has_content = items.iter().flatten().any(|item| {
                 let b = item.bounds();
                 b[0] < end[0] && b[2] > origin[0] && b[1] < end[1] && b[3] > origin[1]
+            }) || shadow_groups.values().flatten().any(|effect| {
+                shadow::visible(effect, tile_bounds)
             });
             if !has_content {
                 continue;
@@ -439,7 +478,6 @@ pub(in crate::runtime::execution_2d) fn lower(
             append(&mut operations, operation(&layers[0], true, Vec::new())?)?;
             let mut depth = 0usize;
             let mut group_stack = Vec::<GroupFrame<'_>>::new();
-            let tile_bounds = [origin[0], origin[1], end[0], end[1]];
             for (index, event) in plan.events.iter().enumerate() {
                 match event {
                     scene::Event::BeginGroup {
@@ -482,6 +520,55 @@ pub(in crate::runtime::execution_2d) fn lower(
                                 &mut operations,
                                 operation(&layers[depth], true, Vec::new())?,
                             )?;
+                            // The group scratch starts transparent. Every
+                            // authored shadow independently samples C, paints
+                            // source-over in list order BEHIND its children,
+                            // then the existing group merge clips and applies
+                            // opacity exactly once. No separate backend.
+                            if let Some(effects) = shadow_groups.get(&index) {
+                                for effect in effects {
+                                    if !shadow::visible(effect, tile_bounds) {
+                                        continue;
+                                    }
+                                    let coverage = shadow::upload_tile(
+                                        effect,
+                                        origin,
+                                        dimension,
+                                        target,
+                                        &mut resources,
+                                    )?;
+                                    let mut quad = Vec::new();
+                                    let sample_origin = [
+                                        f64::from(origin[0]) * f64::from(SAMPLES),
+                                        f64::from(origin[1]) * f64::from(SAMPLES),
+                                    ];
+                                    rectangle(
+                                        &mut quad,
+                                        [0.0, 0.0, f64::from(dimension), f64::from(dimension)],
+                                        physical,
+                                        effect.color,
+                                        sample_origin,
+                                    );
+                                    let paint = draw(
+                                        &fill_pipeline,
+                                        Some((0, &coverage)),
+                                        None,
+                                        None,
+                                        &quad,
+                                        physical,
+                                        &mut resources,
+                                    )?;
+                                    append(
+                                        &mut operations,
+                                        operation(&layers[depth], false, vec![paint])?,
+                                    )?;
+                                    tile_painted = true;
+                                    group_stack
+                                        .last_mut()
+                                        .expect("the shadow has an active visible group")
+                                        .painted = true;
+                                }
+                            }
                         }
                     }
                     scene::Event::EndGroup => {
