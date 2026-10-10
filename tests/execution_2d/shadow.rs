@@ -588,13 +588,19 @@ fn nested_convex_signed_disk_erosion_is_exact_before_ancestor_shear() {
     let inner = Render2dEntry::group(Render2dGroup::new(
         vec![caster(
             Render2dColorRgba8::TRANSPARENT,
-            10.0, 10.0, 10.0, 10.0,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
         )],
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::OPAQUE,
         vec![effect(
-            0.0, 0.0, 0.0, -1.0,
+            0.0,
+            0.0,
+            0.0,
+            -1.0,
             Render2dColorRgba8::new(255, 0, 0, 255),
         )],
     ));
@@ -627,13 +633,19 @@ fn nested_convex_erosion_gaussian_integrates_in_its_parent_frame() {
     let inner = Render2dEntry::group(Render2dGroup::new(
         vec![caster(
             Render2dColorRgba8::TRANSPARENT,
-            10.0, 10.0, 10.0, 10.0,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
         )],
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::OPAQUE,
         vec![effect(
-            0.0, 0.0, 0.1, -1.0,
+            0.0,
+            0.0,
+            0.1,
+            -1.0,
             Render2dColorRgba8::new(255, 0, 0, 255),
         )],
     ));
@@ -673,7 +685,10 @@ fn nested_nonconvex_disk_erosion_rejects_with_authored_path_before_gpu_work() {
         Vec::new(),
         Render2dOpacity::OPAQUE,
         vec![effect(
-            0.0, 0.0, 0.0, -0.25,
+            0.0,
+            0.0,
+            0.0,
+            -0.25,
             Render2dColorRgba8::new(255, 0, 0, 255),
         )],
     ));

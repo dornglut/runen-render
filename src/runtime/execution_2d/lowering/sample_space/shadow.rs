@@ -258,7 +258,11 @@ pub(super) fn prepare(
             if caster.triangles.is_empty() {
                 continue;
             }
-            let remaining_spread = if erosion.is_some() { 0.0 } else { effect.spread() };
+            let remaining_spread = if erosion.is_some() {
+                0.0
+            } else {
+                effect.spread()
+            };
             // A nested finite Gaussian must be evaluated at each inverse-
             // mapped ROOT sample in the group's immediate-parent frame.
             // Projecting triangles and then applying root-axis sigma changes
