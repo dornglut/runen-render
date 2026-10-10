@@ -138,36 +138,45 @@ pub(super) fn prepare(
             // The independently derived reach bound is in THIS group's
             // immediate-parent frame. The only currently admitted pixel
             // lowering is a direct-root group: its parent IS the root.
-            let Some(envelope) =
-                geometry_support::shadow_envelope(source, *effect, path)?
-            else {
+            let Some(envelope) = geometry_support::shadow_envelope(source, *effect, path)? else {
                 continue;
             };
             let canvas = target.canvas();
-            if envelope[2] <= 0.0 || envelope[3] <= 0.0
+            if envelope[2] <= 0.0
+                || envelope[3] <= 0.0
                 || envelope[0] >= canvas[0] / target.raster_scale()
                 || envelope[1] >= canvas[1] / target.raster_scale()
             {
                 continue;
             }
-            let offset = Render2dAffineTransform::translation(
-                effect.offset_x(), effect.offset_y(),
-            ).map_err(|_| shadow_precision(path, "shadow offset transform is unrepresentable"))?;
+            let offset = Render2dAffineTransform::translation(effect.offset_x(), effect.offset_y())
+                .map_err(|_| {
+                    shadow_precision(path, "shadow offset transform is unrepresentable")
+                })?;
             let mut shifted = geometry_support::empty_mesh();
             geometry_support::append(&mut shifted, source, offset, path)?;
             let Some(coverage) = support::prepare_untranslated_shadow_coverage(
-                &shifted, effect.spread(), effect.sigma(), sample_scale, path,
-            )? else {
+                &shifted,
+                effect.spread(),
+                effect.sigma(),
+                sample_scale,
+                path,
+            )?
+            else {
                 continue;
             };
             let bytes = u64::try_from(coverage.values.len())
                 .ok()
                 .and_then(|count| count.checked_mul(8))
                 .ok_or_else(|| shadow_resource(path, "shadow floating coverage bytes overflow"))?;
-            retained_coverage_bytes = retained_coverage_bytes.checked_add(bytes)
+            retained_coverage_bytes = retained_coverage_bytes
+                .checked_add(bytes)
                 .ok_or_else(|| shadow_resource(path, "aggregate shadow coverage bytes overflow"))?;
             if retained_coverage_bytes > MAX_SHADOW_COVERAGE_BYTES {
-                return Err(shadow_resource(path, "retained neutral coverage exceeds bounded memory"));
+                return Err(shadow_resource(
+                    path,
+                    "retained neutral coverage exceeds bounded memory",
+                ));
             }
             let bounds = output_bounds(&coverage, target, path)?;
             prepared.push(PreparedShadow {
@@ -198,7 +207,9 @@ pub(super) fn required_roles_admitted(context: &GpuContext) -> bool {
 pub(super) fn visible(shadow: &PreparedShadow, tile: [u32; 4]) -> bool {
     shadow.group_visible
         && shadow.color[3] > 0.0
-        && shadow.bounds.is_some_and(|bounds| intersection(bounds, tile))
+        && shadow
+            .bounds
+            .is_some_and(|bounds| intersection(bounds, tile))
 }
 
 /// Admission includes EACH immutable per-tile uploaded texture, not just one
@@ -209,7 +220,8 @@ pub(super) fn admit_tile_uploads(
     side: u32,
     bounds: [u32; 4],
 ) -> Result<(), Render2dExecutionError> {
-    let dimension = side.checked_mul(SAMPLES)
+    let dimension = side
+        .checked_mul(SAMPLES)
         .ok_or_else(|| failure("shadow tile sample extent overflow"))?;
     if dimension > target.max_texture_dimension_2d() {
         return Err(failure("shadow mask sample texture exceeds device extent"));
@@ -229,7 +241,8 @@ pub(super) fn admit_tile_uploads(
                 origin_y + u32::try_from(row).expect("bounded tile row") * side,
             ];
             let tile = [
-                origin[0], origin[1],
+                origin[0],
+                origin[1],
                 origin[0].saturating_add(side).min(bounds[2]),
                 origin[1].saturating_add(side).min(bounds[3]),
             ];
@@ -240,13 +253,16 @@ pub(super) fn admit_tile_uploads(
                 if !visible(shadow, tile) {
                     continue;
                 }
-                total_bytes = total_bytes.checked_add(bytes)
+                total_bytes = total_bytes
+                    .checked_add(bytes)
                     .ok_or_else(|| shadow_resource(&shadow.path, "shadow upload byte overflow"))?;
-                count = count.checked_add(1)
+                count = count
+                    .checked_add(1)
                     .ok_or_else(|| shadow_resource(&shadow.path, "shadow upload node overflow"))?;
                 if total_bytes > MAX_SHADOW_MASK_UPLOAD_BYTES || count > MAX_OPERATIONS / 2 {
                     return Err(shadow_resource(
-                        &shadow.path, "all-tile shadow upload/work budget exceeded",
+                        &shadow.path,
+                        "all-tile shadow upload/work budget exceeded",
                     ));
                 }
             }
@@ -270,7 +286,8 @@ pub(super) fn upload_tile(
         .ok()
         .and_then(|side| side.checked_mul(side))
         .ok_or_else(|| shadow_resource(&shadow.path, "shadow tile sample count overflow"))?;
-    let bytes = count.checked_mul(4)
+    let bytes = count
+        .checked_mul(4)
         .ok_or_else(|| shadow_resource(&shadow.path, "shadow upload allocation overflow"))?;
     let mut data = Vec::new();
     data.try_reserve_exact(bytes)
@@ -288,11 +305,14 @@ pub(super) fn upload_tile(
             let logical_x = sample_x / (f64::from(SAMPLES) * target.raster_scale());
             let logical_y = sample_y / (f64::from(SAMPLES) * target.raster_scale());
             let [left, top, right, bottom] = shadow.logical_envelope;
-            let value = if x < 0 || y < 0
+            let value = if x < 0
+                || y < 0
                 || sample_x >= canvas[0] * f64::from(SAMPLES)
                 || sample_y >= canvas[1] * f64::from(SAMPLES)
-                || logical_x < left || logical_x > right
-                || logical_y < top || logical_y > bottom
+                || logical_x < left
+                || logical_x > right
+                || logical_y < top
+                || logical_y > bottom
             {
                 0.0
             } else {
