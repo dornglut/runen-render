@@ -1498,6 +1498,9 @@ pub(super) fn certified_convex_erosion_mesh(
     if source.triangles.is_empty() {
         return Ok(Some(result));
     }
+    // Charge contribution-wide inspection and normalization BEFORE another
+    // potentially large temporary triangle payload is materialized.
+    charge_shadow_preparation_work(aggregate_work, source.triangles.len(), path)?;
     let mut triangles = filled(source.triangles.len(), [0.0_f64; 2], path)?;
     for (out, &[x, y]) in triangles.iter_mut().zip(&source.triangles) {
         *out = [
@@ -1510,11 +1513,22 @@ pub(super) fn certified_convex_erosion_mesh(
             ));
         }
     }
+    // A nonzero radius smaller than the owner-frame coordinate ULP cannot
+    // reliably shift supporting planes. Reject such an invocation rather
+    // than accidentally reproducing the un-eroded source as exact support.
+    let largest_coordinate = triangles
+        .iter()
+        .flat_map(|point| point.iter())
+        .fold(0.0_f64, |largest, value| largest.max(value.abs()));
+    if radius <= largest_coordinate * (16.0 * f64::EPSILON) {
+        return Err(precision(
+            "nested convex erosion radius is below parent-coordinate precision",
+        ));
+    }
     // A rectangle is certified from the WHOLE triangle union, not its AABB.
     // Its Euclidean disk erosion is exactly an inset rectangle. This common
     // class avoids an otherwise redundant quadratic exposed-edge arrangement.
     let derived = if let Some(rect) = certified_axis_aligned_rectangle(&triangles) {
-        charge_shadow_preparation_work(aggregate_work, triangles.len(), path)?;
         let [x0, y0, x1, y1] = rect;
         let bounds = [x0 + radius, y0 + radius, x1 - radius, y1 - radius];
         if !bounds.iter().all(|coordinate| coordinate.is_finite()) {
@@ -2509,6 +2523,32 @@ mod tests {
             neutral_union_distance(&region.triangles, [15.0, 10.5]) > 0.0,
             "a point outside the true disk-eroded parallelogram is not admitted"
         );
+    }
+
+    #[test]
+    fn nested_convex_inset_rejects_unresolvable_owner_frame_radius() {
+        let large = 1.0e12;
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [large, large],
+                [large + 100.0, large],
+                [large, large + 100.0],
+                [large + 100.0, large],
+                [large + 100.0, large + 100.0],
+                [large, large + 100.0],
+            ],
+            bounds: [large, large, large + 100.0, large + 100.0],
+        };
+        let mut work = 0;
+        assert!(matches!(
+            certified_convex_erosion_mesh(&source, 1.0e-6, &[7], &mut work),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [7]
+        ));
     }
 
     #[test]
