@@ -524,13 +524,7 @@ fn excess_authored_shadows_fail_before_caller_work_and_executor_remains_reusable
         16.0,
         16.0,
     )];
-    let red = effect(
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        Render2dColorRgba8::new(255, 0, 0, 128),
-    );
+    let red = effect(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(255, 0, 0, 128));
     let bindings = Render2dResourceBindings::default();
     let inadmissible = group(caster.clone(), vec![red; 257], 1.0);
     let failure = match executor.prepare(&context, &inadmissible, &bindings, &target) {
