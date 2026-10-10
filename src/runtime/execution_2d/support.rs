@@ -1287,8 +1287,14 @@ fn continuous_signed_spread_sample(
         })?;
         unknown -= cell.mass;
         visited += 1;
+        // The conservative exterior-box pass may be followed by a signed
+        // distance pass over the SAME boundary, so charge both traversals.
+        // A geometry-cache optimization never weakens aggregate admission.
+        let boundary_visits = boundary.map_or(0, <[UnionBoundaryEdge]>::len)
+            .checked_mul(2)
+            .ok_or_else(|| resource("continuous signed spread boundary-work overflow"))?;
         let classification_cost = (triangles.len() / 3)
-            .checked_add(boundary.map_or(0, <[UnionBoundaryEdge]>::len))
+            .checked_add(boundary_visits)
             .ok_or_else(|| resource("continuous signed spread classification work overflow"))?;
         *work = work
             .checked_add(classification_cost)
