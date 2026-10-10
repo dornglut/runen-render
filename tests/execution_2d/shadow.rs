@@ -354,8 +354,8 @@ fn zero_alpha_image_bytes_and_item_opacity_still_cast_from_resolved_destination(
         return;
     };
     use runen_render::composition_2d::{
-        Render2dImagePatch, Render2dImagePrimitive, Render2dImageResource,
-        Render2dImageSourceRect, Render2dPixelExtent,
+        Render2dImagePatch, Render2dImagePrimitive, Render2dImageResource, Render2dImageSourceRect,
+        Render2dPixelExtent,
     };
     let id = Render2dResourceId::new(915).unwrap();
     let extent = Render2dPixelExtent::new(1, 1).unwrap();
