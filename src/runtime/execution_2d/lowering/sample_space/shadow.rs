@@ -233,12 +233,14 @@ pub(super) fn visible(shadow: &PreparedShadow, tile: [u32; 4]) -> bool {
 
 /// Admission includes EACH immutable per-tile uploaded texture, not just one
 /// reusable scratch handle that cannot in fact be overwritten in-flight.
+/// Return the exact count of admitted visible shadow draws so the owning
+/// 4x compositor can charge its ONE aggregate replay/operation budget.
 pub(super) fn admit_tile_uploads(
     shadows: &ShadowGroups,
     target: &AdmittedTarget,
     side: u32,
     bounds: [u32; 4],
-) -> Result<(), Render2dExecutionError> {
+) -> Result<u64, Render2dExecutionError> {
     let dimension = side
         .checked_mul(SAMPLES)
         .ok_or_else(|| failure("shadow tile sample extent overflow"))?;
@@ -287,7 +289,8 @@ pub(super) fn admit_tile_uploads(
             }
         }
     }
-    Ok(())
+    u64::try_from(count)
+        .map_err(|_| failure("shadow tile draw count cannot fit aggregate work budget"))
 }
 
 /// Source-backed R32Float mask: every 4x physical sample receives the ONE

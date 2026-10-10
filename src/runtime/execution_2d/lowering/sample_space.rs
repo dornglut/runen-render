@@ -245,8 +245,12 @@ pub(in crate::runtime::execution_2d) fn lower(
     if tile_count > MAX_TILES {
         return Err(failure("sample-space tile count exceeds bounded budget"));
     }
-    admit_tile_work(plan.events.len(), &items, tile_count)?;
-    shadow::admit_tile_uploads(&shadow_groups, target, side, bounds)?;
+    // All authored shadow draws share this compositor's operation/work
+    // budget; independent upload-byte admission alone is insufficient.
+    // Count each visible per-tile shadow exactly once before any GPU
+    // resource or caller-target operation is prepared.
+    let shadow_nodes = shadow::admit_tile_uploads(&shadow_groups, target, side, bounds)?;
+    admit_tile_work(plan.events.len(), &items, tile_count, shadow_nodes)?;
 
     let dimension = side * SAMPLES;
     let physical = [dimension, dimension];
@@ -902,15 +906,26 @@ mod tile_budget_tests {
 
     #[test]
     fn cumulative_tile_replay_is_bounded_before_resource_preparation() {
-        assert!(admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024).is_ok());
+        assert!(admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024, 0).is_ok());
         assert!(matches!(
-            admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024 + 1),
+            admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024 + 1, 0),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit,
                 ..
             })
         ));
-        assert!(admit_tile_work(usize::MAX, &[], u64::MAX).is_err());
+        assert!(admit_tile_work(usize::MAX, &[], u64::MAX, 0).is_err());
+        // Previously admitted as independent replay and shadow budgets,
+        // although their combined work exceeds the one compiler budget.
+        assert!(matches!(
+            admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024, 1),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
+        assert!(admit_tile_work(1, &[], 1, MAX_TILE_WORK_UNITS - 1).is_ok());
+        assert!(admit_tile_work(1, &[], 1, u64::MAX).is_err());
     }
 
     #[test]
