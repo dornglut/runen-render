@@ -984,6 +984,7 @@ fn oriented_triangle_contains_outward(tri: &[[f64; 2]; 3], p: [f64; 2], outward:
 fn union_exterior_boundary(
     triangles: &[[f64; 2]],
     path: &[usize],
+    mut aggregate_work: Option<&mut usize>,
 ) -> Result<Vec<UnionBoundaryEdge>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
@@ -1000,6 +1001,10 @@ fn union_exterior_boundary(
         return Err(resource(
             "continuous erosion boundary arrangement exceeds bounded work",
         ));
+    }
+    // Charge the quadratic arrangement BEFORE its first allocation.
+    if let Some(total) = aggregate_work.as_deref_mut() {
+        charge_shadow_preparation_work(total, pairs, path)?;
     }
     let tris = triangles.as_chunks::<3>().0;
     let mut boundary = Vec::new();
@@ -1079,6 +1084,9 @@ fn union_exterior_boundary(
                     return Err(resource(
                         "continuous erosion exposed-edge classification exceeds budget",
                     ));
+                }
+                if let Some(total) = aggregate_work.as_deref_mut() {
+                    charge_shadow_preparation_work(total, tris.len(), path)?;
                 }
                 let t = (interval[0] + interval[1]) * 0.5;
                 let p = [edge[0].mul_add(t, a[0]), edge[1].mul_add(t, a[1])];
@@ -1168,6 +1176,7 @@ fn certified_convex_eroded_union(
     exterior: &[UnionBoundaryEdge],
     radius: f64,
     path: &[usize],
+    aggregate_work: Option<&mut usize>,
 ) -> Result<Option<Vec<[f64; 2]>>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
@@ -1208,6 +1217,9 @@ fn certified_convex_eroded_union(
         return Err(resource(
             "convex erosion supporting-plane work exceeds admission",
         ));
+    }
+    if let Some(total) = aggregate_work {
+        charge_shadow_preparation_work(total, work, path)?;
     }
     let mut planes = Vec::new();
     planes
@@ -1748,7 +1760,7 @@ fn rasterize_continuous_shadow_coverage(
     // Nonrectangular erosion still requires the actual exposed union
     // boundary. Positive dilation and certified rectangular erosion do not.
     let erosion_boundary = if signed_spread < 0.0 && inset.is_none() {
-        Some(union_exterior_boundary(&triangles, path)?)
+        Some(union_exterior_boundary(&triangles, path, Some(aggregate_work))?)
     } else {
         None
     };
@@ -1757,7 +1769,13 @@ fn rasterize_continuous_shadow_coverage(
     // continuous area/Gaussian law; never spend adaptive subdivision work on
     // known straight supporting planes or substitute an enclosing rectangle.
     let convex_inset = if let Some(exterior) = &erosion_boundary {
-        certified_convex_eroded_union(&triangles, exterior, -physical_spread, path)?
+        certified_convex_eroded_union(
+            &triangles,
+            exterior,
+            -physical_spread,
+            path,
+            Some(aggregate_work),
+        )?
     } else {
         None
     };
@@ -2298,6 +2316,42 @@ mod tests {
     }
 
     #[test]
+    fn repeated_erosion_boundary_and_convex_work_preserve_path_admission() {
+        let triangle = [[0.0, 0.0], [4.0, 0.0], [0.0, 4.0]];
+        let mut shared = 0_usize;
+        let exterior = union_exterior_boundary(&triangle, &[0], Some(&mut shared))
+            .expect("small triangle exposes three edges");
+        assert!(!exterior.is_empty());
+        assert!(shared > 0, "boundary arrangement work must be charged");
+
+        let mut nearly_exhausted = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 1;
+        assert!(matches!(
+            union_exterior_boundary(&triangle, &[2, 4], Some(&mut nearly_exhausted)),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [2, 4]
+        ));
+
+        let mut nearly_exhausted = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 1;
+        assert!(matches!(
+            certified_convex_eroded_union(
+                &triangle,
+                &exterior,
+                0.25,
+                &[3, 1],
+                Some(&mut nearly_exhausted),
+            ),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [3, 1]
+        ));
+    }
+
+    #[test]
     fn continuous_positive_spread_gaussian_matches_independent_rectangle_cdf() {
         // A 0.01-wide neutral caster is dilated by 0.015 parent units;
         // the output sample lies outside that dilation, but its finite
@@ -2341,8 +2395,8 @@ mod tests {
             [6.0, 4.0],
             [2.0, 4.0],
         ];
-        let exterior = union_exterior_boundary(&source, &[6]).unwrap();
-        let eroded = certified_convex_eroded_union(&source, &exterior, 0.5, &[6])
+        let exterior = union_exterior_boundary(&source, &[6], None).unwrap();
+        let eroded = certified_convex_eroded_union(&source, &exterior, 0.5, &[6], None)
             .unwrap()
             .expect("complete sheared convex union is certified");
         assert!(!eroded.is_empty());
@@ -2380,9 +2434,9 @@ mod tests {
             [1.0, 4.0],
             [0.0, 4.0],
         ];
-        let concave_boundary = union_exterior_boundary(&l_shape, &[6]).unwrap();
+        let concave_boundary = union_exterior_boundary(&l_shape, &[6], None).unwrap();
         assert!(
-            certified_convex_eroded_union(&l_shape, &concave_boundary, 0.5, &[6])
+            certified_convex_eroded_union(&l_shape, &concave_boundary, 0.5, &[6], None)
                 .unwrap()
                 .is_none()
         );
@@ -2486,7 +2540,7 @@ mod tests {
             [4.0, 4.0],
             [0.0, 4.0],
         ];
-        let boundary = union_exterior_boundary(&rect, &[4, 2]).unwrap();
+        let boundary = union_exterior_boundary(&rect, &[4, 2], None).unwrap();
         let mut work = 0_usize;
         let a = continuous_signed_spread_sample(
             &rect,
@@ -2533,14 +2587,14 @@ mod tests {
             [1.0, 1.0],
         ];
         let triangles = [left, right].concat();
-        let boundary = union_exterior_boundary(&triangles, &[8, 3]).unwrap();
+        let boundary = union_exterior_boundary(&triangles, &[8, 3], None).unwrap();
         // The center seam at x=1 is internal; the nearest true union
         // boundary at (1,.5) is .5 away, not zero.
         assert!(
             (union_signed_interior_distance(&triangles, &boundary, [1.0, 0.5]) - 0.5).abs() < 1e-9
         );
         let duplicate = [triangles.clone(), triangles.clone()].concat();
-        let repeated = union_exterior_boundary(&duplicate, &[8, 3]).unwrap();
+        let repeated = union_exterior_boundary(&duplicate, &[8, 3], None).unwrap();
         assert!(
             (union_signed_interior_distance(&duplicate, &repeated, [1.0, 0.5]) - 0.5).abs() < 1e-9
         );
@@ -2556,7 +2610,7 @@ mod tests {
             [4.0, 4.0],
             [0.0, 4.0],
         ];
-        let boundary = union_exterior_boundary(&rectangle, &[7]).unwrap();
+        let boundary = union_exterior_boundary(&rectangle, &[7], None).unwrap();
         assert!(eroded_cell_far_from_exterior(
             &boundary,
             [1.0, 1.0, 2.0, 2.0],
@@ -2600,7 +2654,7 @@ mod tests {
             rect(2.0, 1.0, 1.0, 1.0),
         ]
         .concat();
-        let boundary = union_exterior_boundary(&triangles, &[9, 1]).unwrap();
+        let boundary = union_exterior_boundary(&triangles, &[9, 1], None).unwrap();
         let hole = union_signed_interior_distance(&triangles, &boundary, [1.5, 1.5]);
         let interior = union_signed_interior_distance(&triangles, &boundary, [0.5, 1.5]);
         assert!((hole + 0.5).abs() < 1e-9, "{hole}");
