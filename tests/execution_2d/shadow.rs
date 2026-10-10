@@ -160,7 +160,10 @@ fn finite_gaussian_shadow_retains_continuous_coverage_across_two_gpu_tiles() {
         512,
         64,
     );
-    for x in 251..261 {
+    // At least three physical pixels inside both rectangle boundaries:
+    // the finite 3sigma Gaussian is exactly normalized here and has no
+    // contribution from missing exterior geometry.
+    for x in 254..259 {
         pixel_near(pixel_sized(&image, 512, x, 20), [255, 255, 255, 255]);
     }
     assert_eq!(pixel_sized(&image, 512, 245, 20), [0, 0, 0, 0]);
