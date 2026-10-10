@@ -25,6 +25,10 @@ The accepted F1 and #79 laws already determine all observable semantics. They pe
 
 These are *existing* F1/#79 guarantees; naming an internal region/field interface adds no public contract.
 
+### Critical eligibility correction: empty and rank-degenerate Boolean regions
+
+A primitive 1-Lipschitz field's *composed* zero-set cannot automatically certify its real region boundary. Example: subtracting a rectangle from itself produces the **empty** geometric region, but naïve max(d, -d) = |d| is zero all along the canceled rectangle boundary. A positive spread threshold at that ghost zero falsely admits shadow support. Two positive-area rectangles touching along a single edge produce **rank-degenerate empty filled support** under the accepted F1 law, while max(dA,dB) again has a ghost zero at the touching seam. Field certification must therefore require **independent valid-boundary/nonempty support evidence**; sign plus Lipschitz continuity alone is insufficient. All signed spreads of proven empty support stay empty, and exact-distance queries on an empty region are not numeric zero. The checked-in orthogonal reference now contains runnable negative assertions for both cases. This adds a mandatory capability precondition, **not** an exception allowing false coverage or an SDF-wide redesign.
+
 ## Independent evidence (bounded, not a native benchmark)
 
 Corrected reference PR #87 head adfc3175e930acc6e1fe9ba72360caef68dfa428 passed independent hosted **reference push #38077578258** and **reference PR #38077581555**, executing all six Python source files, after correcting a previous unexecutable script (QA-01). Existing renderer canonical and software-Vulkan #38077582081 passed on the same head. **The Vulkan lane did not run an alternate SDF backend.** Previous claim that the uncorrected R3 script had run was false and is explicitly reconciled in #86 R11.

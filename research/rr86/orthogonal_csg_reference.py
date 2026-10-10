@@ -276,7 +276,47 @@ def one_case(name, expr):
     return counts
 
 
+def check_degenerate_field_zero_sets():
+    """Bounded proof: CSG fields can have a ghost zero set for EMPTY regions.
+
+    Region semantics regularize zero-area filled support to empty. Neither a
+    1-Lipschitz value nor exact primitive distance certifies that its zero
+    set is the actual *composed-region* boundary.
+    """
+    same = rect((0.0, 0.0, 2.0, 1.0))
+    empty_difference = pair("difference", same, same)
+    # The scalar max(d, -d) = |d| is zero on the canceled rectangle edge,
+    # although the true difference has no positive-area geometric support.
+    point = (0.0, 0.5)
+    cells, exposed = arrangement(empty_difference)
+    assert not cells and not exposed
+    assert not inside(empty_difference, point)
+    field = naive_csg_field(empty_difference, point)
+    assert field == 0.0
+    assert partial_certificate(field, +0.2) is True  # FALSE inclusion!
+    assert partial_certificate(field, 0.0) is True   # FALSE identity!
+    # Correct positive/zero/negative morphology of empty remains EMPTY.
+    for spread in (-0.2, 0.0, +0.2):
+        assert not cells and not exposed
+
+    touching = pair("intersection", rect((0.0, 0.0, 1.0, 1.0)),
+                    rect((1.0, 0.0, 2.0, 1.0)))
+    # These filled rectangles touch only in a rank-one line. Accepted F1
+    # filled geometric support of rank-degenerate output is empty. Their
+    # scalar max-distance field nonetheless has a zero at the seam.
+    seam = (1.0, 0.5)
+    touched_cells, touched_boundary = arrangement(touching)
+    assert not touched_cells and not touched_boundary
+    assert naive_csg_field(touching, seam) == 0.0
+    assert partial_certificate(0.0, +0.2) is True  # FALSE inclusion!
+    # This toy exact arrangement can certify emptiness, so a correct region
+    # capability must return EMPTY directly, not call distance-to-boundary.
+    print("PASS: empty difference / touching-rank-degenerate CSG "
+          "reject ghost field zero-set certification before morphology")
+
+
 def main():
+    check_degenerate_field_zero_sets()
     total_wrong=0
     total_uncertain=0
     total_certified=0
