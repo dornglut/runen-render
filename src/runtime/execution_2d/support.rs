@@ -1777,7 +1777,13 @@ fn rasterize_continuous_shadow_coverage(
                 if physical_sigma > 0.0 {
                     gaussian_union_sample(polygon, center, physical_sigma, aggregate_work, path)?
                 } else {
-                    area_sample(polygon, center[0] - 0.5, center[1] - 0.5, aggregate_work, path)?
+                    area_sample(
+                        polygon,
+                        center[0] - 0.5,
+                        center[1] - 0.5,
+                        aggregate_work,
+                        path,
+                    )?
                 }
             } else if signed_spread != 0.0 {
                 continuous_signed_spread_sample(
@@ -2221,8 +2227,12 @@ mod tests {
         let mesh = NeutralMesh {
             units_per_parent_logical_unit: 1.0,
             triangles: vec![
-                [0.0, 0.0], [2.0, 0.0], [2.0, 2.0],
-                [0.0, 0.0], [2.0, 2.0], [0.0, 2.0],
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
             ],
             bounds: [0.0, 0.0, 2.0, 2.0],
         };
@@ -2230,12 +2240,18 @@ mod tests {
         let first = prepare_shadow_coverage_admitted(&mesh, 0.0, 0.0, 4.0, &[0], &mut shared)
             .unwrap()
             .unwrap();
-        assert!(shared > 0, "geometry and area integration must both charge work");
+        assert!(
+            shared > 0,
+            "geometry and area integration must both charge work"
+        );
         let after_first = shared;
         let second = prepare_shadow_coverage_admitted(&mesh, 0.0, 0.0, 4.0, &[1], &mut shared)
             .unwrap()
             .unwrap();
-        assert!(shared > after_first, "sibling preparation cannot reset the budget");
+        assert!(
+            shared > after_first,
+            "sibling preparation cannot reset the budget"
+        );
         assert_eq!(first.origin_x, second.origin_x);
         assert_eq!(first.origin_y, second.origin_y);
         assert_eq!(first.values, second.values);
