@@ -878,6 +878,50 @@ fn neutral_union_distance(triangles: &[[f64; 2]], p: [f64; 2]) -> f64 {
     closest.sqrt()
 }
 
+/// A rectangle is wholly in the dilation of one convex triangle if
+/// every corner is no farther than the radius from that triangle. Convexity
+/// then proves its *entire interior* is admitted, not just four samples.
+/// This is sufficient (not necessary) for the union of all triangle dilations.
+fn one_dilated_triangle_contains_cell(
+    triangles: &[[f64; 2]],
+    rectangle: [f64; 4],
+    radius: f64,
+) -> bool {
+    let [x0, y0, x1, y1] = rectangle;
+    let corners = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]];
+    triangles
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .any(|tri| {
+            orient(tri[0], tri[1], tri[2]) != 0.0
+                && corners
+                    .iter()
+                    .all(|&p| neutral_union_distance(tri, p) <= radius)
+        })
+}
+
+/// Bounding rectangles of all convex triangles are a conservative superset.
+/// If the cell-to-each-bounds Euclidean gap is >radius, *no* point of the
+/// integration cell can lie inside the real disk dilation. This tighter box
+/// test avoids the half-diagonal Lipschitz overestimate near long edges.
+fn dilated_triangles_miss_cell(
+    triangles: &[[f64; 2]],
+    rectangle: [f64; 4],
+    radius: f64,
+) -> bool {
+    let [x0, y0, x1, y1] = rectangle;
+    triangles.as_chunks::<3>().0.iter().all(|tri| {
+        let min_x = tri.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+        let max_x = tri.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+        let min_y = tri.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+        let max_y = tri.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+        let dx = (min_x - x1).max(x0 - max_x).max(0.0);
+        let dy = (min_y - y1).max(y0 - max_y).max(0.0);
+        dx.hypot(dy) > radius
+    })
+}
+
 /// Deterministic high-order integration of one clipped Gaussian axis.
 /// All intervals lie inside the finite 3sigma support; 16-point quadrature
 /// on this smooth interval can be checked independently against erf.
@@ -961,6 +1005,13 @@ fn positive_spread_gaussian_sample(
             ));
         }
         let [x0, y0, x1, y1] = cell.bounds;
+        if dilated_triangles_miss_cell(triangles, cell.bounds, radius) {
+            continue;
+        }
+        if one_dilated_triangle_contains_cell(triangles, cell.bounds, radius) {
+            covered += cell.mass;
+            continue;
+        }
         let midpoint = [(x0 + x1) * 0.5, (y0 + y1) * 0.5];
         let half_diagonal = ((x1 - x0) * 0.5).hypot((y1 - y0) * 0.5);
         let distance = neutral_union_distance(triangles, midpoint);
@@ -990,11 +1041,14 @@ fn positive_spread_gaussian_sample(
             [x0, midpoint[1], midpoint[0], y1],
             [midpoint[0], midpoint[1], x1, y1],
         ];
-        let mut weights = [0.0_f64; 4];
-        for (weight, region) in weights.iter_mut().zip(&quadrants) {
-            *weight = gaussian_axis_mass(region[0], region[2], center[0], sigma)
-                * gaussian_axis_mass(region[1], region[3], center[1], sigma);
-        }
+        // Four quadrants have only two unique x and two unique y
+        // integrals. Reuse each one instead of evaluating the same smooth
+        // Gaussian axis four times at every subdivision.
+        let left = gaussian_axis_mass(x0, midpoint[0], center[0], sigma);
+        let right = gaussian_axis_mass(midpoint[0], x1, center[0], sigma);
+        let top = gaussian_axis_mass(y0, midpoint[1], center[1], sigma);
+        let bottom = gaussian_axis_mass(midpoint[1], y1, center[1], sigma);
+        let weights = [left * top, right * top, left * bottom, right * bottom];
         let total = weights.iter().sum::<f64>();
         if !total.is_finite() || total <= 0.0 {
             return Err(precision(
