@@ -555,6 +555,45 @@ fn immutable_monochrome_text_casts_from_transparent_foreground_after_cache_loss(
 }
 
 #[test]
+fn narrow_continuous_gaussian_uses_neutral_geometry_not_cell_average() {
+    let Some(context) = context() else {
+        return;
+    };
+    let scene = group(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            0.03,
+            0.03,
+            0.20,
+            0.20,
+        )],
+        vec![effect(
+            0.0,
+            0.0,
+            0.025,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let result = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F-GAUSS-01 exact normalized cutoff on a subsample caster",
+    );
+    // Independent continuous kernel oracle: only the first of sixteen 4x4
+    // sample centers intersects the 3sigma support. Its full
+    // [.05,.20]^2 Gaussian footprint lies inside [.03,.23]^2, giving
+    // EXACT alpha=1 at that sample, and alpha=0 at the other fifteen.
+    // Physical output premul alpha=1/16; linear red=1/16 converts to
+    // ~71 in sRGB, straight output alpha ~16.
+    pixel_near(pixel(&result, 0, 0), [71, 0, 0, 16]);
+    assert_eq!(pixel(&result, 2, 0), [0, 0, 0, 0]);
+}
+
+#[test]
 fn finite_gaussian_shadow_retains_continuous_coverage_across_two_gpu_tiles() {
     let Some(context) = context() else { return };
     let composition = group(
