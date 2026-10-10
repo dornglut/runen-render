@@ -292,6 +292,60 @@ fn shadows_preserve_nontransparent_caller_pixels_and_exact_completion_evidence()
 }
 
 #[test]
+fn signed_euclidean_disk_spread_has_gpu_erosion_and_non_square_dilation() {
+    let Some(context) = context() else {
+        return;
+    };
+    let source = vec![caster(
+        Render2dColorRgba8::TRANSPARENT,
+        10.0,
+        10.0,
+        16.0,
+        16.0,
+    )];
+    let eroded = group(
+        source.clone(),
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            -2.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let eroded_image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &eroded,
+        &Render2dResourceBindings::default(),
+        "F3F signed negative disk GPU",
+    );
+    pixel_near(pixel(&eroded_image, 18, 18), [255, 0, 0, 255]);
+    assert_eq!(pixel(&eroded_image, 11, 18), [0, 0, 0, 0]);
+    let dilated = group(
+        source,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            2.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let dilated_image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &dilated,
+        &Render2dResourceBindings::default(),
+        "F3F positive Euclidean disk GPU",
+    );
+    pixel_near(pixel(&dilated_image, 26, 18), [255, 0, 0, 255]);
+    assert_eq!(pixel(&dilated_image, 27, 27), [0, 0, 0, 0]);
+}
+
+#[test]
 fn zero_alpha_image_bytes_and_item_opacity_still_cast_from_resolved_destination() {
     let Some(context) = context() else {
         return;
