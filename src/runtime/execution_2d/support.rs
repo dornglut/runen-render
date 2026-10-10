@@ -1457,8 +1457,12 @@ mod tests {
         let mesh = NeutralMesh {
             units_per_parent_logical_unit: 1.0,
             triangles: vec![
-                [-0.25, -0.5], [0.175, -0.5], [0.175, 0.75],
-                [-0.25, -0.5], [0.175, 0.75], [-0.25, 0.75],
+                [-0.25, -0.5],
+                [0.175, -0.5],
+                [0.175, 0.75],
+                [-0.25, -0.5],
+                [0.175, 0.75],
+                [-0.25, 0.75],
             ],
             bounds: [-0.25, -0.5, 0.175, 0.75],
         };
@@ -1473,6 +1477,21 @@ mod tests {
         let analytic = 0.569_848_438_488_548_7;
         let actual = coverage.values[y * coverage.width + x];
         assert!((actual - analytic).abs() < 1.0e-8, "{actual}");
+    }
+
+    #[test]
+    fn oblique_triangle_integral_matches_independent_adaptive_reference() {
+        let triangle = [
+            [-3.308_716_152_350_335_4, 2.973_430_464_862_749_6],
+            [-0.651_481_506_714_978_8, -3.001_405_350_983_398],
+            [1.624_245_650_140_160_5, -1.490_622_465_767_189_4],
+        ];
+        let value = gaussian_union_sample(&triangle, [0.0, 0.0], 1.0, &mut 0, &[5])
+            .unwrap();
+        // Independent adaptive y-quadrature + analytic Gaussian x-erf
+        // evaluation, partitioned at triangle vertices (not 16x16 GL).
+        let reference = 0.449_875_362_999_087_37;
+        assert!((value - reference).abs() < 1.0e-8, "{value}");
     }
 
     #[test]
