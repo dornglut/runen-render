@@ -1055,16 +1055,8 @@ mod tests {
             Render2dAffineTransform::IDENTITY,
         );
         let mut clip_work_used = 0;
-        let clipped = intersect_clips(
-            &mesh,
-            &[clip],
-            1,
-            &[1],
-            4.0,
-            1_048_576,
-            &mut clip_work_used,
-        )
-        .unwrap();
+        let clipped =
+            intersect_clips(&mesh, &[clip], 1, &[1], 4.0, 1_048_576, &mut clip_work_used).unwrap();
         let coverage = super::super::support::prepare_untranslated_shadow_coverage(
             &clipped,
             0.0,
