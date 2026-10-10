@@ -450,6 +450,177 @@ pub(super) struct NeutralCoverage {
  * Unlike point samples or summed triangle areas, this computes the UNION:
  * overlapping stroke triangles cannot inflate neutral coverage.
  */
+/// Single geometric source of truth for continuous neutral triangle-union
+/// cross-sections. The area and Gaussian integrators consume exactly the same
+/// clipped contours, topology-change events and disjoint horizontal intervals.
+/// Only their smooth integration weights differ.
+struct NeutralUnionSweep {
+    active: Vec<[[f64; 2]; 3]>,
+    events: Vec<f64>,
+    x0: f64,
+    x1: f64,
+    fully_covered: bool,
+}
+
+impl NeutralUnionSweep {
+    fn new(
+        triangles: &[[f64; 2]],
+        bounds: [f64; 4],
+        work_multiplier: usize,
+        work: &mut usize,
+        path: &[usize],
+    ) -> Result<Self, crate::execution_2d::Render2dExecutionError> {
+        use crate::execution_2d::Render2dSampleSpaceError;
+        let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+        let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+        let [x0, y0, x1, y1] = bounds;
+        if !bounds.iter().all(|v| v.is_finite()) || x0 >= x1 || y0 >= y1
+            || !triangles.len().is_multiple_of(3)
+        {
+            return Err(precision("neutral scanline union bounds or triangle payload invalid"));
+        }
+        let mut active = Vec::<[[f64; 2]; 3]>::new();
+        for tri in triangles.as_chunks::<3>().0 {
+            let xs = [tri[0][0], tri[1][0], tri[2][0]];
+            let ys = [tri[0][1], tri[1][1], tri[2][1]];
+            if xs.iter().copied().fold(f64::INFINITY, f64::min) >= x1
+                || xs.iter().copied().fold(f64::NEG_INFINITY, f64::max) <= x0
+                || ys.iter().copied().fold(f64::INFINITY, f64::min) >= y1
+                || ys.iter().copied().fold(f64::NEG_INFINITY, f64::max) <= y0
+                || orient(tri[0], tri[1], tri[2]) == 0.0
+            {
+                continue;
+            }
+            // One convex triangle containing the whole integration window
+            // proves union coverage of its interior, independent of siblings.
+            if [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].iter().all(|&p| {
+                let a = orient(tri[0], tri[1], p);
+                let b = orient(tri[1], tri[2], p);
+                let c = orient(tri[2], tri[0], p);
+                (a >= 0.0 && b >= 0.0 && c >= 0.0)
+                    || (a <= 0.0 && b <= 0.0 && c <= 0.0)
+            }) {
+                return Ok(Self {
+                    active: Vec::new(),
+                    events: vec![y0, y1],
+                    x0,
+                    x1,
+                    fully_covered: true,
+                });
+            }
+            active.try_reserve(1)
+                .map_err(|_| resource("neutral scanline triangle allocation failed"))?;
+            active.push(*tri);
+        }
+        let charge = active.len().checked_pow(3)
+            .and_then(|n| n.checked_mul(work_multiplier))
+            .ok_or_else(|| resource("neutral scanline arrangement work overflow"))?;
+        *work = work.checked_add(charge)
+            .ok_or_else(|| resource("aggregate neutral scanline work overflow"))?;
+        if *work > 134_217_728 {
+            return Err(resource("neutral scanline arrangement exceeds bounded work"));
+        }
+        let mut events = vec![y0, y1];
+        let mut edges = Vec::new();
+        edges.try_reserve(active.len().checked_mul(3)
+            .ok_or_else(|| resource("neutral scanline edges overflow"))?)
+            .map_err(|_| resource("neutral scanline edge allocation failed"))?;
+        for triangle in &active {
+            for i in 0..3 {
+                let a = triangle[i];
+                let b = triangle[(i + 1) % 3];
+                edges.push((a, b));
+                if a[1] > y0 && a[1] < y1 {
+                    events.push(a[1]);
+                }
+                if a[0] != b[0] {
+                    for x in [x0, x1] {
+                        let t = (x - a[0]) / (b[0] - a[0]);
+                        if t > 0.0 && t < 1.0 {
+                            let y = (b[1] - a[1]).mul_add(t, a[1]);
+                            if y > y0 && y < y1 {
+                                events.push(y);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // The union's interval ordering changes only at real edge crossings.
+        for i in 0..edges.len() {
+            let (a, b) = edges[i];
+            let r = [b[0] - a[0], b[1] - a[1]];
+            for &(c, d) in edges.iter().skip(i + 1) {
+                let v = [d[0] - c[0], d[1] - c[1]];
+                let divisor = r[0].mul_add(v[1], -r[1] * v[0]);
+                if divisor == 0.0 {
+                    continue;
+                }
+                let difference = [c[0] - a[0], c[1] - a[1]];
+                let t = difference[0].mul_add(v[1], -difference[1] * v[0]) / divisor;
+                let u = difference[0].mul_add(r[1], -difference[1] * r[0]) / divisor;
+                if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
+                    let y = r[1].mul_add(t, a[1]);
+                    if y > y0 && y < y1 {
+                        events.push(y);
+                    }
+                }
+            }
+        }
+        events.sort_by(|a, b| a.total_cmp(b));
+        events.dedup();
+        Ok(Self { active, events, x0, x1, fully_covered: false })
+    }
+
+    /// Disjoint union intervals of immutable triangle interiors at this y.
+    /// A single topology and clipping implementation feeds both integrators.
+    fn intervals(
+        &self,
+        y: f64,
+        path: &[usize],
+    ) -> Result<Vec<[f64; 2]>, crate::execution_2d::Render2dExecutionError> {
+        use crate::execution_2d::Render2dSampleSpaceError;
+        let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+        let mut segments = Vec::<[f64; 2]>::new();
+        segments.try_reserve_exact(self.active.len())
+            .map_err(|_| resource("neutral union row allocation failed"))?;
+        for triangle in &self.active {
+            let mut min_x = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            for i in 0..3 {
+                let a = triangle[i];
+                let b = triangle[(i + 1) % 3];
+                if (a[1] <= y && y < b[1]) || (b[1] <= y && y < a[1]) {
+                    let x = (b[0] - a[0]).mul_add((y - a[1]) / (b[1] - a[1]), a[0]);
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                }
+            }
+            let start = min_x.max(self.x0);
+            let end = max_x.min(self.x1);
+            if end > start {
+                segments.push([start, end]);
+            }
+        }
+        segments.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        let mut merged = Vec::<[f64; 2]>::new();
+        merged.try_reserve_exact(segments.len())
+            .map_err(|_| resource("neutral union intervals allocation failed"))?;
+        for [start, end] in segments {
+            if let Some(last) = merged.last_mut() {
+                if start <= last[1] {
+                    last[1] = last[1].max(end);
+                    continue;
+                }
+            }
+            merged.push([start, end]);
+        }
+        Ok(merged)
+    }
+}
+
+/// Exact polygon-union area of one bounded unit lattice cell, independent of
+/// final paint alpha and repeated tessellation triangle overlaps.
 fn area_sample(
     triangles: &[[f64; 2]],
     x0: f64,
@@ -457,132 +628,20 @@ fn area_sample(
     work: &mut usize,
     path: &[usize],
 ) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
-    use crate::execution_2d::Render2dSampleSpaceError;
-    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
-    let x1 = x0 + 1.0;
-    let y1 = y0 + 1.0;
-    let mut active = Vec::<[[f64; 2]; 3]>::new();
-    for tri in triangles.as_chunks::<3>().0 {
-        let xs = [tri[0][0], tri[1][0], tri[2][0]];
-        let ys = [tri[0][1], tri[1][1], tri[2][1]];
-        if xs.iter().copied().fold(f64::INFINITY, f64::min) >= x1
-            || xs.iter().copied().fold(f64::NEG_INFINITY, f64::max) <= x0
-            || ys.iter().copied().fold(f64::INFINITY, f64::min) >= y1
-            || ys.iter().copied().fold(f64::NEG_INFINITY, f64::max) <= y0
-            || orient(tri[0], tri[1], tri[2]) == 0.0
-        {
-            continue;
-        }
-        active
-            .try_reserve(1)
-            .map_err(|_| resource("neutral area triangle allocation failed"))?;
-        active.push(*tri);
+    let sweep = NeutralUnionSweep::new(
+        triangles, [x0, y0, x0 + 1.0, y0 + 1.0], 8, work, path,
+    )?;
+    if sweep.fully_covered {
+        return Ok(1.0);
     }
-    if active.is_empty() {
-        return Ok(0.0);
-    }
-    // Admission bounds the cubic arrangement sweep even for maximally
-    // overlapping tessellated strokes.
-    let work_units = active
-        .len()
-        .checked_pow(3)
-        .and_then(|v| v.checked_mul(8))
-        .ok_or_else(|| resource("neutral area sweep cost overflow"))?;
-    *work = work
-        .checked_add(work_units)
-        .ok_or_else(|| resource("neutral area sweep work overflow"))?;
-    if *work > 134_217_728 {
-        return Err(resource("neutral area sweep exceeds bounded work"));
-    }
-    let mut edges = Vec::new();
-    let mut events = vec![y0, y1];
-    for triangle in &active {
-        // Fully covered unit cells have exact coverage one, no sweep needed.
-        if [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].iter().all(|&p| {
-            let a = orient(triangle[0], triangle[1], p);
-            let b = orient(triangle[1], triangle[2], p);
-            let c = orient(triangle[2], triangle[0], p);
-            (a >= 0.0 && b >= 0.0 && c >= 0.0) || (a <= 0.0 && b <= 0.0 && c <= 0.0)
-        }) {
-            return Ok(1.0);
-        }
-        for i in 0..3 {
-            let a = triangle[i];
-            let b = triangle[(i + 1) % 3];
-            edges.push((a, b));
-            if a[1] > y0 && a[1] < y1 {
-                events.push(a[1]);
-            }
-            if a[0] != b[0] {
-                for x in [x0, x1] {
-                    let t = (x - a[0]) / (b[0] - a[0]);
-                    if t > 0.0 && t < 1.0 {
-                        let y = (b[1] - a[1]).mul_add(t, a[1]);
-                        if y > y0 && y < y1 {
-                            events.push(y);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    for i in 0..edges.len() {
-        let (a, b) = edges[i];
-        let r = [b[0] - a[0], b[1] - a[1]];
-        for &(c, d) in edges.iter().skip(i + 1) {
-            let s = [d[0] - c[0], d[1] - c[1]];
-            let denominator = r[0].mul_add(s[1], -r[1] * s[0]);
-            if denominator == 0.0 {
-                continue;
-            }
-            let q = [c[0] - a[0], c[1] - a[1]];
-            let t = q[0].mul_add(s[1], -q[1] * s[0]) / denominator;
-            let u = q[0].mul_add(r[1], -q[1] * r[0]) / denominator;
-            if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
-                let y = r[1].mul_add(t, a[1]);
-                if y > y0 && y < y1 {
-                    events.push(y);
-                }
-            }
-        }
-    }
-    events.sort_by(|a, b| a.total_cmp(b));
-    events.dedup();
     let mut area = 0.0;
-    for interval in events.windows(2) {
-        let height = interval[1] - interval[0];
+    for slab in sweep.events.windows(2) {
+        let height = slab[1] - slab[0];
         if height <= 0.0 {
             continue;
         }
-        let y = interval[0] + height * 0.5;
-        let mut segments = Vec::<[f64; 2]>::new();
-        for triangle in &active {
-            let mut min_x = f64::INFINITY;
-            let mut max_x = f64::NEG_INFINITY;
-            for i in 0..3 {
-                let a = triangle[i];
-                let b = triangle[(i + 1) % 3];
-                if (a[1] <= y && y < b[1]) || (b[1] <= y && y < a[1]) {
-                    let t = (y - a[1]) / (b[1] - a[1]);
-                    let x = (b[0] - a[0]).mul_add(t, a[0]);
-                    min_x = min_x.min(x);
-                    max_x = max_x.max(x);
-                }
-            }
-            let left = min_x.max(x0);
-            let right = max_x.min(x1);
-            if right > left {
-                segments.push([left, right]);
-            }
-        }
-        segments.sort_by(|a, b| a[0].total_cmp(&b[0]));
-        let mut left = x0;
-        let mut width = 0.0;
-        for [start, end] in segments {
-            let next = end.max(left);
-            width += (next - left.max(start)).max(0.0);
-            left = next;
-        }
+        let y = slab[0] + height * 0.5;
+        let width = sweep.intervals(y, path)?.iter().map(|[a, b]| b - a).sum::<f64>();
         area += width * height;
     }
     Ok(area.clamp(0.0, 1.0))
@@ -681,106 +740,20 @@ fn gaussian_union_sample(
     path: &[usize],
 ) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
-    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
     let cutoff = sigma * 3.0;
-    let [x0, y0] = [center[0] - cutoff, center[1] - cutoff];
-    let [x1, y1] = [center[0] + cutoff, center[1] + cutoff];
-    if ![x0, x1, y0, y1].iter().all(|v| v.is_finite()) || x0 >= x1 || y0 >= y1 {
-        return Err(precision("continuous Gaussian window loses f64 precision"));
+    let sweep = NeutralUnionSweep::new(
+        triangles,
+        [center[0] - cutoff, center[1] - cutoff, center[0] + cutoff, center[1] + cutoff],
+        16 * 16,
+        work,
+        path,
+    )?;
+    if sweep.fully_covered {
+        return Ok(1.0);
     }
-    let mut active = Vec::<[[f64; 2]; 3]>::new();
-    for tri in triangles.as_chunks::<3>().0 {
-        let xs = [tri[0][0], tri[1][0], tri[2][0]];
-        let ys = [tri[0][1], tri[1][1], tri[2][1]];
-        if xs.iter().copied().fold(f64::INFINITY, f64::min) >= x1
-            || xs.iter().copied().fold(f64::NEG_INFINITY, f64::max) <= x0
-            || ys.iter().copied().fold(f64::INFINITY, f64::min) >= y1
-            || ys.iter().copied().fold(f64::NEG_INFINITY, f64::max) <= y0
-            || orient(tri[0], tri[1], tri[2]) == 0.0
-        {
-            continue;
-        }
-        // Entire finite Gaussian window lies inside one true triangle.
-        // The normalized continuous convolution is exactly unity.
-        if [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].iter().all(|&p| {
-            let a = orient(tri[0], tri[1], p);
-            let b = orient(tri[1], tri[2], p);
-            let c = orient(tri[2], tri[0], p);
-            (a >= 0.0 && b >= 0.0 && c >= 0.0) || (a <= 0.0 && b <= 0.0 && c <= 0.0)
-        }) {
-            return Ok(1.0);
-        }
-        active
-            .try_reserve(1)
-            .map_err(|_| resource("continuous Gaussian triangle admission failed"))?;
-        active.push(*tri);
-    }
-    if active.is_empty() {
-        return Ok(0.0);
-    }
-    let cost = active
-        .len()
-        .checked_pow(3)
-        .and_then(|count| count.checked_mul(16 * 16))
-        .ok_or_else(|| resource("continuous Gaussian arrangement work overflow"))?;
-    *work = work
-        .checked_add(cost)
-        .ok_or_else(|| resource("aggregate continuous Gaussian work overflow"))?;
-    if *work > 134_217_728 {
-        return Err(resource(
-            "continuous Gaussian arrangement exceeds bounded work",
-        ));
-    }
-    let mut edges = Vec::new();
-    let mut events = vec![y0, y1];
-    for triangle in &active {
-        for i in 0..3 {
-            let a = triangle[i];
-            let b = triangle[(i + 1) % 3];
-            edges.push((a, b));
-            if a[1] > y0 && a[1] < y1 {
-                events.push(a[1]);
-            }
-            if a[0] != b[0] {
-                for x in [x0, x1] {
-                    let t = (x - a[0]) / (b[0] - a[0]);
-                    if t > 0.0 && t < 1.0 {
-                        let y = (b[1] - a[1]).mul_add(t, a[1]);
-                        if y > y0 && y < y1 {
-                            events.push(y);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // Any two contour edges exchanging horizontal order change the union
-    // formula. Partition at their actual crossings, not sample-grid edges.
-    for i in 0..edges.len() {
-        let (a, b) = edges[i];
-        let r = [b[0] - a[0], b[1] - a[1]];
-        for &(c, d) in edges.iter().skip(i + 1) {
-            let q = [d[0] - c[0], d[1] - c[1]];
-            let divisor = r[0].mul_add(q[1], -r[1] * q[0]);
-            if divisor == 0.0 {
-                continue;
-            }
-            let difference = [c[0] - a[0], c[1] - a[1]];
-            let t = difference[0].mul_add(q[1], -difference[1] * q[0]) / divisor;
-            let u = difference[0].mul_add(r[1], -difference[1] * r[0]) / divisor;
-            if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
-                let y = r[1].mul_add(t, a[1]);
-                if y > y0 && y < y1 {
-                    events.push(y);
-                }
-            }
-        }
-    }
-    events.sort_by(|a, b| a.total_cmp(b));
-    events.dedup();
     let mut total = 0.0;
-    for interval in events.windows(2) {
+    for interval in sweep.events.windows(2) {
         let half_y = (interval[1] - interval[0]) * 0.5;
         if half_y <= 0.0 {
             continue;
@@ -790,41 +763,17 @@ fn gaussian_union_sample(
             let y = node_y.mul_add(half_y, mid_y);
             let z = (y - center[1]) / sigma;
             let gy = (-0.5 * z * z).exp();
-            let mut intervals = Vec::<[f64; 2]>::new();
-            for tri in &active {
-                let mut left = f64::INFINITY;
-                let mut right = f64::NEG_INFINITY;
-                for i in 0..3 {
-                    let a = tri[i];
-                    let b = tri[(i + 1) % 3];
-                    if (a[1] <= y && y < b[1]) || (b[1] <= y && y < a[1]) {
-                        let x = (b[0] - a[0]).mul_add((y - a[1]) / (b[1] - a[1]), a[0]);
-                        left = left.min(x);
-                        right = right.max(x);
-                    }
-                }
-                let clipped = [left.max(x0), right.min(x1)];
-                if clipped[1] > clipped[0] {
-                    intervals.push(clipped);
-                }
-            }
-            intervals.sort_by(|a, b| a[0].total_cmp(&b[0]));
-            let mut current = x0;
             let mut row = 0.0;
-            for [left, right] in intervals {
-                let begin = left.max(current);
-                if right > begin {
-                    let half_x = (right - begin) * 0.5;
-                    let mid_x = begin + half_x;
-                    let mut integral = 0.0;
-                    for (&node_x, &weight_x) in GAUSS_NODES.iter().zip(GAUSS_WEIGHTS.iter()) {
-                        let x = node_x.mul_add(half_x, mid_x);
-                        let z = (x - center[0]) / sigma;
-                        integral += weight_x * (-0.5 * z * z).exp();
-                    }
-                    row += half_x * integral;
+            for [begin, right] in sweep.intervals(y, path)? {
+                let half_x = (right - begin) * 0.5;
+                let mid_x = begin + half_x;
+                let mut integral = 0.0;
+                for (&node_x, &weight_x) in GAUSS_NODES.iter().zip(GAUSS_WEIGHTS.iter()) {
+                    let x = node_x.mul_add(half_x, mid_x);
+                    let z = (x - center[0]) / sigma;
+                    integral += weight_x * (-0.5 * z * z).exp();
                 }
-                current = current.max(right);
+                row += half_x * integral;
             }
             total += weight_y * half_y * gy * row;
         }
@@ -832,9 +781,7 @@ fn gaussian_union_sample(
     let normalizer = sigma * GAUSS_3SIGMA_NORMALIZER;
     let alpha = total / (normalizer * normalizer);
     if !alpha.is_finite() || !(-1.0e-9..=1.0 + 1.0e-9).contains(&alpha) {
-        return Err(precision(
-            "continuous Gaussian union integral is not normalized",
-        ));
+        return Err(precision("continuous Gaussian union integral is not normalized"));
     }
     Ok(alpha.clamp(0.0, 1.0))
 }
