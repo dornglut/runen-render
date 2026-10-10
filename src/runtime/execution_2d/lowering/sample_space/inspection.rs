@@ -201,7 +201,7 @@ pub(super) fn inspect(
     for (event_index, event) in plan.events.iter().enumerate() {
         match event {
             scene::Event::BeginGroup { group, path, .. } => {
-                if !group.shadows().is_empty() {
+                if path.len() > 1 && !group.shadows().is_empty() {
                     let kind = Render2dUnsupportedContent::Shadows {
                         root_index: path[0],
                     };

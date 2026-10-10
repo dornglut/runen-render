@@ -199,6 +199,7 @@ impl Render2dExecutionState {
             &plan,
             bindings,
             &occurrences,
+            &resolved_fields,
         )?;
         for (resource_id, value) in observed_updates {
             let previous = self.observed.insert(resource_id, value);
@@ -251,7 +252,10 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
                 (root_index, *item, *to_root)
             }
             scene::Event::BeginGroup { path, group, .. } => {
-                if !group.shadows().is_empty() {
+                // Direct-root F3F effects use the existing F3E compositor.
+                // Nested effects still reject explicitly until their exact
+                // parent-frame geometry and ancestor support propagate.
+                if path.len() > 1 && !group.shadows().is_empty() {
                     let kind = Render2dUnsupportedContent::Shadows {
                         root_index: path[0],
                     };
