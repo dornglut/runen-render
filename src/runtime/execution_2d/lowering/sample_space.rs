@@ -179,6 +179,9 @@ pub(in crate::runtime::execution_2d) fn lower(
     glyphs_by_event: &BTreeMap<usize, Vec<super::GlyphOccurrence>>,
     fields: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
 ) -> Result<Vec<GpuRenderOperation>, Render2dExecutionError> {
+    // Do not realize even the visible paint tessellation of an invocation
+    // whose authored shadow cardinality is already inadmissible.
+    let admitted_effects = shadow::admit_effect_count(plan)?;
     let Inspected {
         items,
         mut group_bounds,
@@ -187,7 +190,7 @@ pub(in crate::runtime::execution_2d) fn lower(
     } = inspect(plan, target, bindings, glyphs_by_event)?;
     // This work comes from the SAME borrowed F1 painter tree as the visible
     // F3E items, but never from their clipped/colorized physical footprints.
-    let shadow_groups = shadow::prepare(plan, bindings, fields, target)?;
+    let shadow_groups = shadow::prepare(plan, bindings, fields, target, admitted_effects)?;
     for (event, effects) in &shadow_groups {
         for effect in effects {
             if !effect.group_visible || effect.color[3] == 0.0 {

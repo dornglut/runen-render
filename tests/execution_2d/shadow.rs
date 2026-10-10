@@ -727,6 +727,48 @@ fn excess_authored_shadows_fail_before_caller_work_and_executor_remains_reusable
         } if path == [1]
     ));
 
+    // Cardinality must also precede ordinary F3E paint inspection: this
+    // first root item has a finite affine whose Frobenius scale is not
+    // representable as a physical vector tessellation. Paint inspection
+    // would report the first item's precision error if it ran too early.
+    let oversized_paint = Render2dEntry::item(Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 1.0, 1.0).unwrap()),
+            brush: Render2dBrush::solid(Render2dColorRgba8::WHITE),
+        },
+        Render2dAffineTransform::new(1.0e308, 0.0, 0.0, 1.0e308, 0.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+    ));
+    let paint_before_effect_limit = Render2dComposition::new(vec![
+        oversized_paint,
+        Render2dEntry::group(Render2dGroup::new(
+            caster.clone(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![red; 257],
+        )),
+    ])
+    .unwrap();
+    let paint_priority = match executor.prepare(
+        &context,
+        &paint_before_effect_limit,
+        &bindings,
+        &target,
+    ) {
+        Ok(_) => panic!("shadow count must preempt costly physical paint inspection"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        paint_priority,
+        Render2dExecutionError::SampleSpace {
+            kind: runen_render::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+            path: Some(path),
+            ..
+        } if path == [1]
+    ));
+
     // Neither failure can publish partial GPU work or poison subsequent
     // executor identity. The next valid composition retains the caller's
     // exact preexisting blue pixel and source-over order.

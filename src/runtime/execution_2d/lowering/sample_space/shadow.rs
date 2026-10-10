@@ -92,15 +92,10 @@ fn output_bounds(
     Ok((bounds[0] < bounds[2] && bounds[1] < bounds[3]).then_some(bounds))
 }
 
-/// Independent F1 shadows each derive from the same immutable pre-shadow C.
-/// This preflight runs before caller-target GPU work and retains exact authored
-/// event paths; it is never a reinterpreted public support ontology.
-pub(super) fn prepare(
-    plan: &scene::Plan<'_>,
-    bindings: &Render2dResourceBindings,
-    field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
-    target: &AdmittedTarget,
-) -> Result<ShadowGroups, Render2dExecutionError> {
+/// Validate the complete borrowed F1 plan's authored effects BEFORE paint
+/// inspection, tessellation and source-neutral morphology can allocate.
+/// The first over-budget owner keeps its exact F1 path.
+pub(super) fn admit_effect_count(plan: &scene::Plan<'_>) -> Result<usize, Render2dExecutionError> {
     // Admit the total authored effect cardinality before materializing any
     // source-neutral geometry or running any morphology/convolution. Checking
     // group-by-group during preparation permits an inadmissible later sibling
@@ -120,7 +115,20 @@ pub(super) fn prepare(
             ));
         }
     }
-    if authored_effects == 0 {
+    Ok(authored_effects)
+}
+
+/// Independent F1 shadows each derive from the same immutable pre-shadow C.
+/// This preflight runs before caller-target GPU work and retains exact authored
+/// event paths; it is never a reinterpreted public support ontology.
+pub(super) fn prepare(
+    plan: &scene::Plan<'_>,
+    bindings: &Render2dResourceBindings,
+    field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
+    target: &AdmittedTarget,
+    admitted_effects: usize,
+) -> Result<ShadowGroups, Render2dExecutionError> {
+    if admitted_effects == 0 {
         return Ok(BTreeMap::new());
     }
     let sample_scale = target.raster_scale() * f64::from(SAMPLES);
