@@ -154,7 +154,13 @@ fn invisible_root_shadows_skip_halo_work_but_opaque_siblings_still_fail_prefligh
     let (_, target) = target("F3F alpha-neutral no-paint halo admission");
     let huge_transparent = group(
         caster.clone(),
-        vec![effect(0.0, 0.0, 500.0, 0.0, Render2dColorRgba8::TRANSPARENT)],
+        vec![effect(
+            0.0,
+            0.0,
+            500.0,
+            0.0,
+            Render2dColorRgba8::TRANSPARENT,
+        )],
         1.0,
     );
     assert!(

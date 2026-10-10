@@ -168,8 +168,8 @@ pub(super) fn prepare(
             }
             scene::Event::Item { .. } => continue,
         };
-        let paintable = paintable_ancestors.last().copied().unwrap_or(true)
-            && group.opacity().get() > 0.0;
+        let paintable =
+            paintable_ancestors.last().copied().unwrap_or(true) && group.opacity().get() > 0.0;
         paintable_ancestors.push(paintable);
         if group.shadows().is_empty() {
             continue;
