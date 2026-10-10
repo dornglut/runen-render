@@ -914,6 +914,183 @@ fn dilated_triangles_miss_cell(triangles: &[[f64; 2]], rectangle: [f64; 4], radi
     })
 }
 
+/// One interval of the triangle-union *exterior boundary*, not the
+/// original tessellation edges. Interior diagonals and overlapping strokes
+/// are removed before computing continuous negative Euclidean spread.
+type UnionBoundaryEdge = [[f64; 2]; 2];
+
+fn oriented_triangle_contains_outward(
+    tri: &[[f64; 2]; 3],
+    p: [f64; 2],
+    outward: [f64; 2],
+) -> bool {
+    let area = orient(tri[0], tri[1], tri[2]);
+    if area == 0.0 {
+        return false;
+    }
+    let sign = area.signum();
+    for side in 0..3 {
+        let a = tri[side];
+        let b = tri[(side + 1) % 3];
+        let edge = [b[0] - a[0], b[1] - a[1]];
+        let half_plane = sign * orient(a, b, p);
+        if half_plane < 0.0 {
+            return false;
+        }
+        if half_plane == 0.0 {
+            let derivative = sign * edge[0].mul_add(outward[1], -(edge[1] * outward[0]));
+            if derivative <= 0.0 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Extract the exact exposed line segments of a bounded triangle union.
+/// Every source edge is split at triangle-edge crossings, including collinear
+/// overlaps. A segment is retained precisely when infinitesimal motion to
+/// its source triangle's outward side is NOT contained in another triangle.
+/// This preserves genuine outer and hole boundaries but removes tessellation
+/// diagonals, coincident interior edges and overlapping stroke triangles.
+/// Unsupported floating-point crossings reject rather than guessing.
+fn union_exterior_boundary(
+    triangles: &[[f64; 2]],
+    path: &[usize],
+) -> Result<Vec<UnionBoundaryEdge>, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+    if !triangles.len().is_multiple_of(3)
+        || !triangles.iter().flatten().all(|c| c.is_finite())
+    {
+        return Err(precision("continuous erosion triangle payload invalid"));
+    }
+    let count = triangles.len() / 3;
+    const MAX_BOUNDARY_OPERATIONS: usize = 16_777_216;
+    let pairs = triangles.len().checked_mul(triangles.len()).ok_or_else(|| {
+        resource("continuous erosion boundary intersection admission overflow")
+    })?;
+    if pairs > MAX_BOUNDARY_OPERATIONS {
+        return Err(resource("continuous erosion boundary arrangement exceeds bounded work"));
+    }
+    let tris = triangles.as_chunks::<3>().0;
+    let mut boundary = Vec::new();
+    let mut work = pairs;
+    for (i, tri) in tris.iter().enumerate() {
+        let area = orient(tri[0], tri[1], tri[2]);
+        if !area.is_finite() {
+            return Err(precision("continuous erosion triangle area is not representable"));
+        }
+        if area == 0.0 {
+            continue;
+        }
+        for e in 0..3 {
+            let a = tri[e];
+            let b = tri[(e + 1) % 3];
+            let edge = [b[0] - a[0], b[1] - a[1]];
+            let length_squared = edge[0].mul_add(edge[0], edge[1] * edge[1]);
+            if !length_squared.is_finite() || length_squared == 0.0 {
+                return Err(precision("continuous erosion has collapsed boundary edge"));
+            }
+            let mut intervals = vec![0.0, 1.0];
+            for (j, other) in tris.iter().enumerate() {
+                if i == j || orient(other[0], other[1], other[2]) == 0.0 {
+                    continue;
+                }
+                for k in 0..3 {
+                    let c = other[k];
+                    let d = other[(k + 1) % 3];
+                    let v = [d[0] - c[0], d[1] - c[1]];
+                    let divisor = edge[0].mul_add(v[1], -(edge[1] * v[0]));
+                    let difference = [c[0] - a[0], c[1] - a[1]];
+                    if divisor != 0.0 {
+                        let t = difference[0].mul_add(v[1], -(difference[1] * v[0])) / divisor;
+                        let u = difference[0].mul_add(edge[1], -(difference[1] * edge[0])) / divisor;
+                        if !t.is_finite() || !u.is_finite() {
+                            return Err(precision("continuous erosion edge crossing lost precision"));
+                        }
+                        if t > 0.0 && t < 1.0 && (0.0..=1.0).contains(&u) {
+                            intervals.push(t);
+                        }
+                    } else if orient(a, b, c) == 0.0 && orient(a, b, d) == 0.0 {
+                        for p in [c, d] {
+                            let t = (p[0] - a[0]).mul_add(edge[0], (p[1] - a[1]) * edge[1])
+                                / length_squared;
+                            if !t.is_finite() {
+                                return Err(precision("continuous erosion collinear crossing lost precision"));
+                            }
+                            if t > 0.0 && t < 1.0 {
+                                intervals.push(t);
+                            }
+                        }
+                    }
+                }
+            }
+            intervals.sort_by(f64::total_cmp);
+            intervals.dedup();
+            let outward = if area > 0.0 {
+                [edge[1], -edge[0]]
+            } else {
+                [-edge[1], edge[0]]
+            };
+            for interval in intervals.windows(2) {
+                if interval[0] >= interval[1] {
+                    continue;
+                }
+                work = work.checked_add(tris.len()).ok_or_else(|| {
+                    resource("continuous erosion exposed-edge work overflow")
+                })?;
+                if work > MAX_BOUNDARY_OPERATIONS {
+                    return Err(resource("continuous erosion exposed-edge classification exceeds budget"));
+                }
+                let t = (interval[0] + interval[1]) * 0.5;
+                let p = [edge[0].mul_add(t, a[0]), edge[1].mul_add(t, a[1])];
+                if tris.iter().enumerate().any(|(j, other)| {
+                    j != i && oriented_triangle_contains_outward(other, p, outward)
+                }) {
+                    continue;
+                }
+                let endpoints = [
+                    [
+                        edge[0].mul_add(interval[0], a[0]),
+                        edge[1].mul_add(interval[0], a[1]),
+                    ],
+                    [
+                        edge[0].mul_add(interval[1], a[0]),
+                        edge[1].mul_add(interval[1], a[1]),
+                    ],
+                ];
+                if !endpoints.iter().flatten().all(|v| v.is_finite()) {
+                    return Err(precision("continuous erosion boundary endpoint invalid"));
+                }
+                boundary.try_reserve(1).map_err(|_| {
+                    resource("continuous erosion exposed-edge allocation failed")
+                })?;
+                boundary.push(endpoints);
+            }
+        }
+    }
+    if !triangles.is_empty() && boundary.is_empty() {
+        return Err(precision("continuous erosion cannot certify exterior boundary"));
+    }
+    Ok(boundary)
+}
+
+fn union_signed_interior_distance(
+    triangles: &[[f64; 2]],
+    boundary: &[UnionBoundaryEdge],
+    p: [f64; 2],
+) -> f64 {
+    let inside = neutral_union_distance(triangles, p) == 0.0;
+    let nearest = boundary
+        .iter()
+        .map(|&[a, b]| distance_squared_to_segment(p, a, b))
+        .fold(f64::INFINITY, f64::min)
+        .sqrt();
+    if inside { nearest } else { -nearest }
+}
+
 /// Deterministic high-order integration of one clipped Gaussian axis.
 /// All intervals lie inside the finite 3sigma support; 16-point quadrature
 /// on this smooth interval can be checked independently against erf.
@@ -943,10 +1120,11 @@ fn gaussian_axis_mass(a: f64, b: f64, center: f64, sigma: f64) -> f64 {
 /// membership with absolute error <= 1/4096, otherwise this path rejects
 /// with a typed precision/resource failure. No discrete source-mask
 /// inference, box dilation or unknown-as-zero approximation is admitted.
-fn continuous_positive_spread_sample(
+fn continuous_signed_spread_sample(
     triangles: &[[f64; 2]],
+    boundary: Option<&[UnionBoundaryEdge]>,
     center: [f64; 2],
-    radius: f64,
+    signed_spread: f64,
     sigma: f64,
     work: &mut usize,
     path: &[usize],
@@ -954,7 +1132,12 @@ fn continuous_positive_spread_sample(
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
-    if !radius.is_finite() || radius <= 0.0 || !sigma.is_finite() || sigma < 0.0 {
+    if !signed_spread.is_finite() || signed_spread == 0.0 || !sigma.is_finite() || sigma < 0.0
+        || (signed_spread < 0.0 && boundary.is_none()) {
+        return Err(precision("continuous signed spread integration parameters are invalid"));
+    }
+    let radius = signed_spread.abs();
+    if !radius.is_finite() || radius == 0.0 {
         return Err(precision(
             "continuous positive spread integration parameters are invalid",
         ));
@@ -999,25 +1182,43 @@ fn continuous_positive_spread_sample(
             ));
         }
         let [x0, y0, x1, y1] = cell.bounds;
-        if dilated_triangles_miss_cell(triangles, cell.bounds, radius) {
+        if signed_spread > 0.0 && dilated_triangles_miss_cell(triangles, cell.bounds, radius) {
             continue;
         }
-        if one_dilated_triangle_contains_cell(triangles, cell.bounds, radius) {
+        if signed_spread > 0.0
+            && one_dilated_triangle_contains_cell(triangles, cell.bounds, radius)
+        {
             covered += cell.mass;
             continue;
         }
         let midpoint = [(x0 + x1) * 0.5, (y0 + y1) * 0.5];
         let half_diagonal = ((x1 - x0) * 0.5).hypot((y1 - y0) * 0.5);
-        let distance = neutral_union_distance(triangles, midpoint);
+        // Signed Euclidean distance to the actual union exterior, not to
+        // individual triangle edges: internal seams are NOT erosion holes.
+        let distance = if let Some(edges) = boundary {
+            union_signed_interior_distance(triangles, edges, midpoint)
+        } else {
+            neutral_union_distance(triangles, midpoint)
+        };
         if !distance.is_finite() {
             return Err(precision("continuous spread distance is not representable"));
         }
-        if distance + half_diagonal <= radius {
-            covered += cell.mass;
-            continue;
-        }
-        if distance > radius + half_diagonal {
-            continue;
+        if signed_spread > 0.0 {
+            if distance + half_diagonal <= radius {
+                covered += cell.mass;
+                continue;
+            }
+            if distance > radius + half_diagonal {
+                continue;
+            }
+        } else {
+            if distance - half_diagonal >= radius {
+                covered += cell.mass;
+                continue;
+            }
+            if distance + half_diagonal < radius {
+                continue;
+            }
         }
         if cell.depth >= MAX_DEPTH
             || midpoint[0] <= x0
@@ -1093,7 +1294,7 @@ fn continuous_positive_spread_sample(
 /// separate; no paint alpha or sampled geometry defines F1 support.
 fn rasterize_continuous_shadow_coverage(
     mesh: &NeutralMesh,
-    positive_spread: f64,
+    signed_spread: f64,
     sigma: f64,
     scale: f64,
     path: &[usize],
@@ -1101,16 +1302,16 @@ fn rasterize_continuous_shadow_coverage(
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
-    let Some(grid) = rasterize_mesh_with_positive_spread(mesh, scale, positive_spread, path)?
+    let Some(grid) = rasterize_mesh_with_positive_spread(mesh, scale, signed_spread.max(0.0), path)?
     else {
         return Ok(None);
     };
-    let physical_spread = positive_spread * scale;
+    let physical_spread = signed_spread * scale;
     let physical_sigma = sigma * scale;
     let cutoff = physical_sigma * 3.0;
     if !physical_sigma.is_finite()
         || physical_sigma < 0.0
-        || (physical_sigma == 0.0 && positive_spread == 0.0)
+        || (physical_sigma == 0.0 && signed_spread == 0.0)
         || !cutoff.is_finite()
         || cutoff.ceil() > f64::from(MAX_GAUSSIAN_RADIUS_SAMPLES)
     {
@@ -1178,6 +1379,13 @@ fn rasterize_continuous_shadow_coverage(
             ));
         }
     }
+    // Extract continuous union exterior once before the per-sample signed
+    // distance queries. Positive dilation does not need this extra topology.
+    let erosion_boundary = if signed_spread < 0.0 {
+        Some(union_exterior_boundary(&triangles, path)?)
+    } else {
+        None
+    };
     let mut values = filled(area, 0.0_f64, path)?;
     let mut work = 0_usize;
     for row in 0..height {
@@ -1186,9 +1394,10 @@ fn rasterize_continuous_shadow_coverage(
                 (origin_x as f64 + as_f64(column)) + 0.5,
                 (origin_y as f64 + as_f64(row)) + 0.5,
             ];
-            values[row * width + column] = if positive_spread > 0.0 {
-                continuous_positive_spread_sample(
+            values[row * width + column] = if signed_spread != 0.0 {
+                continuous_signed_spread_sample(
                     &triangles,
+                    erosion_boundary.as_deref(),
                     center,
                     physical_spread,
                     physical_sigma,
@@ -1450,34 +1659,26 @@ pub(super) fn prepare_untranslated_shadow_coverage(
             path,
         );
     }
-    // Negative spread still has a separate bounded lattice approximation.
-    // Never treat empty eroded center samples as proof of empty continuous
-    // support; only the geometric complete-erosion certificate above may
-    // return None without independent continuous morphology evidence.
-    let Some(source) = rasterize_neutral_mesh(mesh, samples_per_logical_unit, path)? else {
-        return Ok(None);
-    };
-    let physical_spread = spread * samples_per_logical_unit;
-    if !physical_spread.is_finite() {
+    // Continuous negative Euclidean erosion uses the boundary-certified
+    // signed distance and the same deterministic mass/area integration as
+    // positive spread. An all-zero sampled result is NOT proof that the true
+    // eroded support is empty; only the bounding extent certificate above
+    // can return None, otherwise reject with a truthful precision outcome.
+    let coverage = rasterize_continuous_shadow_coverage(
+        mesh,
+        spread,
+        sigma,
+        samples_per_logical_unit,
+        path,
+    )?;
+    if coverage.as_ref().is_some_and(|c| c.values.iter().all(|v| *v == 0.0)) {
         return Err(mask_failure(
             path,
             Render2dSampleSpaceError::PrecisionLimit,
-            "shadow spread exceeds finite sample coordinates",
+            "continuous erosion support cannot be proved empty from zero output-cell coverage",
         ));
     }
-    let spread_mask = signed_euclidean_spread(&source, physical_spread, path)?;
-    if spread_mask.samples.iter().all(|sample| *sample == 0) {
-        // Empty center samples alone are insufficient evidence that the
-        // continuous eroded source is empty. The independently certifiable
-        // complete erosion case has already returned before mask allocation.
-        return Err(mask_failure(
-            path,
-            Render2dSampleSpaceError::PrecisionLimit,
-            "continuous negative-spread support cannot be disproven by empty center samples",
-        ));
-    }
-    let kernel = gaussian_kernel(sigma, samples_per_logical_unit, path)?;
-    blur_neutral_mask(&spread_mask, &kernel, path).map(Some)
+    Ok(coverage)
 }
 
 /// Signed Euclidean disk morphology on a *disposable* aligned binary grid.
@@ -1617,8 +1818,9 @@ mod tests {
             [0.7, 4.0],
         ];
         let mut work = 0_usize;
-        let actual = continuous_positive_spread_sample(
+        let actual = continuous_signed_spread_sample(
             &rectangle,
+            None,
             [0.5, 0.5],
             0.06,
             0.1,
@@ -1630,6 +1832,48 @@ mod tests {
         assert!((actual - independent_cdf).abs() <= 1.0 / 2048.0);
         assert!((actual - 0.04).abs() > 0.03);
         assert!(work > 0);
+    }
+
+    #[test]
+    fn negative_continuous_erosion_of_one_square_preserves_exact_subcell_area() {
+        // A [0,1]^2 continuous square eroded by a disk of radius .2 is
+        // exactly [.2,.8]^2. At 4x sample density, four x/y sample cells
+        // have fractions [.2,1,1,.2]. The caller pixel has area .36,
+        // NOT the sampled-center distance-transform's opaque 1.0.
+        let rect = [
+            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0],
+            [0.0, 0.0], [4.0, 4.0], [0.0, 4.0],
+        ];
+        let boundary = union_exterior_boundary(&rect, &[4, 2]).unwrap();
+        let mut work = 0_usize;
+        let a = continuous_signed_spread_sample(
+            &rect, Some(&boundary), [0.5, 0.5], -0.8, 0.0, &mut work, &[4, 2],
+        ).unwrap();
+        assert!((a - 0.2).abs() < 1.0 / 2048.0);
+        let interior = continuous_signed_spread_sample(
+            &rect, Some(&boundary), [1.5, 1.5], -0.8, 0.0, &mut work, &[4, 2],
+        ).unwrap();
+        assert!((interior - 1.0).abs() < 1.0 / 2048.0);
+    }
+
+    #[test]
+    fn erosion_union_boundary_removes_internal_diagonals_and_shared_seams() {
+        let left = [
+            [0.0, 0.0], [1.0, 0.0], [1.0, 1.0],
+            [0.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+        ];
+        let right = [
+            [1.0, 0.0], [2.0, 0.0], [2.0, 1.0],
+            [1.0, 0.0], [2.0, 1.0], [1.0, 1.0],
+        ];
+        let triangles = [left, right].concat();
+        let boundary = union_exterior_boundary(&triangles, &[8, 3]).unwrap();
+        // The center seam at x=1 is internal; the nearest true union
+        // boundary at (1,.5) is .5 away, not zero.
+        assert!((union_signed_interior_distance(&triangles, &boundary, [1.0, 0.5]) - 0.5).abs() < 1e-9);
+        let duplicate = [triangles.clone(), triangles.clone()].concat();
+        let repeated = union_exterior_boundary(&duplicate, &[8, 3]).unwrap();
+        assert!((union_signed_interior_distance(&duplicate, &repeated, [1.0, 0.5]) - 0.5).abs() < 1e-9);
     }
 
     #[test]
@@ -1647,8 +1891,9 @@ mod tests {
             [10.0, 26.0],
         ];
         let mut work = 0_usize;
-        let actual = continuous_positive_spread_sample(
+        let actual = continuous_signed_spread_sample(
             &rectangle,
+            None,
             [27.5, 27.5],
             2.0,
             0.0,
@@ -1665,7 +1910,7 @@ mod tests {
         let tri = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
         let mut work = 0_usize;
         assert!(matches!(
-            continuous_positive_spread_sample(&tri, [0.5, 0.5], -0.01, 0.2, &mut work, &[9, 1]),
+            continuous_signed_spread_sample(&tri, None, [0.5, 0.5], -0.01, 0.2, &mut work, &[9, 1]),
             Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
                 kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
                 path: Some(path),
