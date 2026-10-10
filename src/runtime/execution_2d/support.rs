@@ -824,11 +824,202 @@ fn gaussian_union_sample(
     Ok(alpha.clamp(0.0, 1.0))
 }
 
+/// A deterministic highest-uncertainty-first subdivision cell. `mass`
+/// is normalized positive Gaussian measure, never paint or sampled alpha.
+#[derive(Clone, Copy, Debug)]
+struct SpreadGaussianCell {
+    bounds: [f64; 4],
+    mass: f64,
+    depth: u8,
+}
+
+impl PartialEq for SpreadGaussianCell {
+    fn eq(&self, other: &Self) -> bool {
+        self.mass == other.mass && self.bounds == other.bounds && self.depth == other.depth
+    }
+}
+impl Eq for SpreadGaussianCell {}
+impl PartialOrd for SpreadGaussianCell {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for SpreadGaussianCell {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.mass
+            .total_cmp(&other.mass)
+            .then_with(|| self.depth.cmp(&other.depth))
+            .then_with(|| self.bounds[0].total_cmp(&other.bounds[0]))
+            .then_with(|| self.bounds[1].total_cmp(&other.bounds[1]))
+    }
+}
+
+/// Euclidean distance to the immutable union of nondegenerate triangles.
+/// The distance to a *union* is one-Lipschitz, allowing conservative
+/// inside/outside certification over each integration rectangle.
+fn neutral_union_distance(triangles: &[[f64; 2]], p: [f64; 2]) -> f64 {
+    let mut closest = f64::INFINITY;
+    for tri in triangles.as_chunks::<3>().0 {
+        if orient(tri[0], tri[1], tri[2]) == 0.0 {
+            continue;
+        }
+        let ab = orient(tri[0], tri[1], p);
+        let bc = orient(tri[1], tri[2], p);
+        let ca = orient(tri[2], tri[0], p);
+        if (ab >= 0.0 && bc >= 0.0 && ca >= 0.0)
+            || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0)
+        {
+            return 0.0;
+        }
+        closest = closest.min(distance_squared_to_segment(p, tri[0], tri[1]));
+        closest = closest.min(distance_squared_to_segment(p, tri[1], tri[2]));
+        closest = closest.min(distance_squared_to_segment(p, tri[2], tri[0]));
+    }
+    closest.sqrt()
+}
+
+/// Deterministic high-order integration of one clipped Gaussian axis.
+/// All intervals lie inside the finite 3sigma support; 16-point quadrature
+/// on this smooth interval can be checked independently against erf.
+fn gaussian_axis_mass(a: f64, b: f64, center: f64, sigma: f64) -> f64 {
+    let half = (b - a) * 0.5;
+    let midpoint = a + half;
+    let integral = GAUSS_NODES
+        .iter()
+        .zip(GAUSS_WEIGHTS)
+        .map(|(&node, weight)| {
+            let z = (node.mul_add(half, midpoint) - center) / sigma;
+            weight * (-0.5 * z * z).exp()
+        })
+        .sum::<f64>();
+    integral * half / (sigma * GAUSS_3SIGMA_NORMALIZER)
+}
+
+/// Continuous positive-Euclidean-spread Gaussian at one correlated sample.
+///
+/// A distance-to-union query certifies an entire cell inside if d(center)+
+/// half_diagonal <= radius, or outside if d(center)-half_diagonal > radius.
+/// Unclassified Gaussian *probability mass* is bisected in both axes, always
+/// refining the largest uncertain cell first. The final midpoint estimate is
+/// therefore bracketed by independently computed lower/upper geometry
+/// membership with absolute error <= 1/4096, otherwise this path rejects
+/// with a typed precision/resource failure. No discrete source-mask
+/// inference, box dilation or unknown-as-zero approximation is admitted.
+fn positive_spread_gaussian_sample(
+    triangles: &[[f64; 2]],
+    center: [f64; 2],
+    radius: f64,
+    sigma: f64,
+    work: &mut usize,
+    path: &[usize],
+) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+    if !radius.is_finite() || radius <= 0.0 || !sigma.is_finite() || sigma <= 0.0 {
+        return Err(precision("continuous positive spread Gaussian parameters are invalid"));
+    }
+    const MAX_GLOBAL_SPREAD_WORK: usize = 16_777_216;
+    const MAX_SAMPLE_CELLS: usize = 32_768;
+    const MAX_DEPTH: u8 = 22;
+    const UNCERTAIN_MASS_TARGET: f64 = 1.0 / 2048.0;
+    let cutoff = 3.0 * sigma;
+    let bounds = [
+        center[0] - cutoff,
+        center[1] - cutoff,
+        center[0] + cutoff,
+        center[1] + cutoff,
+    ];
+    if !bounds.iter().all(|v| v.is_finite())
+        || bounds[0] >= bounds[2]
+        || bounds[1] >= bounds[3]
+    {
+        return Err(precision("continuous spread Gaussian domain cannot be resolved"));
+    }
+    let mut pending = std::collections::BinaryHeap::new();
+    pending.push(SpreadGaussianCell {
+        bounds,
+        mass: 1.0,
+        depth: 0,
+    });
+    let mut unknown = 1.0_f64;
+    let mut covered = 0.0_f64;
+    let mut visited = 0_usize;
+    while unknown > UNCERTAIN_MASS_TARGET {
+        let cell = pending.pop().ok_or_else(|| {
+            precision("continuous positive spread Gaussian uncertainty lost its queue")
+        })?;
+        unknown -= cell.mass;
+        visited += 1;
+        *work = work.checked_add(triangles.len() / 3).ok_or_else(|| {
+            resource("continuous positive spread Gaussian geometry-work overflow")
+        })?;
+        if visited > MAX_SAMPLE_CELLS || *work > MAX_GLOBAL_SPREAD_WORK {
+            return Err(resource("continuous positive spread Gaussian exceeds bounded work"));
+        }
+        let [x0, y0, x1, y1] = cell.bounds;
+        let midpoint = [(x0 + x1) * 0.5, (y0 + y1) * 0.5];
+        let half_diagonal = ((x1 - x0) * 0.5).hypot((y1 - y0) * 0.5);
+        let distance = neutral_union_distance(triangles, midpoint);
+        if !distance.is_finite() {
+            return Err(precision("continuous spread distance is not representable"));
+        }
+        if distance + half_diagonal <= radius {
+            covered += cell.mass;
+            continue;
+        }
+        if distance > radius + half_diagonal {
+            continue;
+        }
+        if cell.depth >= MAX_DEPTH || midpoint[0] <= x0 || midpoint[0] >= x1
+            || midpoint[1] <= y0 || midpoint[1] >= y1
+        {
+            return Err(precision(
+                "continuous spread Gaussian cannot certify the required coverage tolerance",
+            ));
+        }
+        let quadrants = [
+            [x0, y0, midpoint[0], midpoint[1]],
+            [midpoint[0], y0, x1, midpoint[1]],
+            [x0, midpoint[1], midpoint[0], y1],
+            [midpoint[0], midpoint[1], x1, y1],
+        ];
+        let mut weights = [0.0_f64; 4];
+        for (weight, region) in weights.iter_mut().zip(&quadrants) {
+            *weight = gaussian_axis_mass(region[0], region[2], center[0], sigma)
+                * gaussian_axis_mass(region[1], region[3], center[1], sigma);
+        }
+        let total = weights.iter().sum::<f64>();
+        if !total.is_finite() || total <= 0.0 {
+            return Err(precision("continuous spread Gaussian subdivision mass vanished"));
+        }
+        // Preserve the exact parent's normalized mass under floating-point
+        // quadrature; child partition cannot invent or lose Gaussian mass.
+        for (region, weight) in quadrants.into_iter().zip(weights) {
+            let mass = cell.mass * (weight / total);
+            if mass > 0.0 {
+                pending.push(SpreadGaussianCell {
+                    bounds: region,
+                    mass,
+                    depth: cell.depth + 1,
+                });
+                unknown += mass;
+            }
+        }
+    }
+    let alpha = covered + unknown * 0.5;
+    if !alpha.is_finite() || !(-1.0e-9..=1.0 + 1.0e-9).contains(&alpha) {
+        return Err(precision("continuous spread Gaussian mass is not normalized"));
+    }
+    Ok(alpha.clamp(0.0, 1.0))
+}
+
 /// Sample the immutable *continuous* indicator/Gaussian convolution on the
 /// exact correlated output lattice, before any ancestor affine or opacity.
 /// This solves sub-lattice Gaussian casters without sampled-mask inference.
 fn rasterize_gaussian_coverage(
     mesh: &NeutralMesh,
+    positive_spread: f64,
     sigma: f64,
     scale: f64,
     path: &[usize],
@@ -836,9 +1027,10 @@ fn rasterize_gaussian_coverage(
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
-    let Some(grid) = rasterize_neutral_mesh(mesh, scale, path)? else {
+    let Some(grid) = rasterize_mesh_with_positive_spread(mesh, scale, positive_spread, path)? else {
         return Ok(None);
     };
+    let physical_spread = positive_spread * scale;
     let physical_sigma = sigma * scale;
     let cutoff = physical_sigma * 3.0;
     if !physical_sigma.is_finite()
@@ -918,8 +1110,18 @@ fn rasterize_gaussian_coverage(
                 (origin_x as f64 + as_f64(column)) + 0.5,
                 (origin_y as f64 + as_f64(row)) + 0.5,
             ];
-            values[row * width + column] =
-                gaussian_union_sample(&triangles, center, physical_sigma, &mut work, path)?;
+            values[row * width + column] = if positive_spread > 0.0 {
+                positive_spread_gaussian_sample(
+                    &triangles,
+                    center,
+                    physical_spread,
+                    physical_sigma,
+                    &mut work,
+                    path,
+                )?
+            } else {
+                gaussian_union_sample(&triangles, center, physical_sigma, &mut work, path)?
+            };
         }
     }
     Ok(Some(NeutralCoverage {
@@ -1153,9 +1355,18 @@ pub(super) fn prepare_untranslated_shadow_coverage(
     // correlated lattice centers. Gaussian convolution preserves that mass.
     if spread == 0.0 {
         if sigma > 0.0 {
-            return rasterize_gaussian_coverage(mesh, sigma, samples_per_logical_unit, path);
+            return rasterize_gaussian_coverage(mesh, 0.0, sigma, samples_per_logical_unit, path);
         }
         return rasterize_area_coverage(mesh, samples_per_logical_unit, path);
+    }
+    if spread > 0.0 && sigma > 0.0 {
+        return rasterize_gaussian_coverage(
+            mesh,
+            spread,
+            sigma,
+            samples_per_logical_unit,
+            path,
+        );
     }
     // Positive spread evaluates distance from the original geometry at each
     // sample. Seed-then-dilate would falsely erase thin off-phase casters.
@@ -1391,6 +1602,50 @@ pub(super) fn signed_euclidean_spread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuous_positive_spread_gaussian_matches_independent_rectangle_cdf() {
+        // A 0.01-wide neutral caster is dilated by 0.015 parent units;
+        // the output sample lies outside that dilation, but its finite
+        // Gaussian footprint includes the full dilated vertical stripe.
+        // The old area-cell/discrete-kernel implementation returned 0.04.
+        let rectangle = [
+            [0.7, 0.0],
+            [0.74, 0.0],
+            [0.74, 4.0],
+            [0.7, 0.0],
+            [0.74, 4.0],
+            [0.7, 4.0],
+        ];
+        let mut work = 0_usize;
+        let actual = positive_spread_gaussian_sample(
+            &rectangle,
+            [0.5, 0.5],
+            0.06,
+            0.1,
+            &mut work,
+            &[3, 2],
+        )
+        .expect("bounded continuous Euclidean Gaussian integration");
+        let independent_cdf = 0.079_621_723_618_115_15_f64;
+        assert!((actual - independent_cdf).abs() <= 1.0 / 2048.0);
+        assert!((actual - 0.04).abs() > 0.03);
+        assert!(work > 0);
+    }
+
+    #[test]
+    fn continuous_spread_gaussian_rejects_invalid_params_without_alpha_fabrication() {
+        let tri = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let mut work = 0_usize;
+        assert!(matches!(
+            positive_spread_gaussian_sample(&tri, [0.5, 0.5], -0.01, 0.2, &mut work, &[9, 1]),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [9, 1]
+        ));
+    }
 
     #[test]
     fn continuous_gaussian_reference_retains_full_interior_when_sample_cell_is_partial() {
