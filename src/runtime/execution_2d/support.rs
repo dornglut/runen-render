@@ -1290,7 +1290,8 @@ fn continuous_signed_spread_sample(
         // The conservative exterior-box pass may be followed by a signed
         // distance pass over the SAME boundary, so charge both traversals.
         // A geometry-cache optimization never weakens aggregate admission.
-        let boundary_visits = boundary.map_or(0, <[UnionBoundaryEdge]>::len)
+        let boundary_visits = boundary
+            .map_or(0, <[UnionBoundaryEdge]>::len)
             .checked_mul(2)
             .ok_or_else(|| resource("continuous signed spread boundary-work overflow"))?;
         let classification_cost = (triangles.len() / 3)
@@ -2160,16 +2161,32 @@ mod tests {
     #[test]
     fn generic_erosion_far_from_exterior_certificate_never_uses_aabb_as_source() {
         let rectangle = [
-            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0],
-            [0.0, 0.0], [4.0, 4.0], [0.0, 4.0],
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 4.0],
+            [0.0, 0.0],
+            [4.0, 4.0],
+            [0.0, 4.0],
         ];
         let boundary = union_exterior_boundary(&rectangle, &[7]).unwrap();
-        assert!(eroded_cell_far_from_exterior(&boundary, [1.0, 1.0, 2.0, 2.0], 0.5));
-        assert!(!eroded_cell_far_from_exterior(&boundary, [0.0, 1.0, 1.0, 2.0], 0.5));
+        assert!(eroded_cell_far_from_exterior(
+            &boundary,
+            [1.0, 1.0, 2.0, 2.0],
+            0.5
+        ));
+        assert!(!eroded_cell_far_from_exterior(
+            &boundary,
+            [0.0, 1.0, 1.0, 2.0],
+            0.5
+        ));
         // The certificate only proves distance from exposed edges. A cell
         // outside the shape can be far too, so its midpoint still decides
         // its membership; this must never infer filled bounding-box area.
-        assert!(eroded_cell_far_from_exterior(&boundary, [6.0, 6.0, 7.0, 7.0], 0.5));
+        assert!(eroded_cell_far_from_exterior(
+            &boundary,
+            [6.0, 6.0, 7.0, 7.0],
+            0.5
+        ));
         assert!(neutral_union_distance(&rectangle, [6.5, 6.5]) > 0.0);
     }
 
