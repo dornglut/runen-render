@@ -1874,7 +1874,9 @@ mod tests {
             &[4, 2],
         )
         .unwrap();
-        assert!((a - 0.2).abs() < 1.0 / 2048.0);
+        // Both axes meet the lower eroded boundary in this corner cell:
+        // intersected widths are .2 × .2, hence exact area .04.
+        assert!((a - 0.04).abs() < 1.0 / 2048.0);
         let interior = continuous_signed_spread_sample(
             &rect,
             Some(&boundary),
@@ -1918,6 +1920,57 @@ mod tests {
         assert!(
             (union_signed_interior_distance(&duplicate, &repeated, [1.0, 0.5]) - 0.5).abs() < 1e-9
         );
+    }
+
+    #[test]
+    fn continuous_erosion_preserves_hole_boundaries_and_signed_exterior() {
+        // Four neutral rectangular regions leave the open central hole
+        // (1,2)x(1,2). A distance query from its center must have NEGATIVE
+        // sign, even though the union bounding rectangle is [0,3]^2.
+        let rect = |x: f64, y: f64, w: f64, h: f64| {
+            [
+                [x, y], [x + w, y], [x + w, y + h],
+                [x, y], [x + w, y + h], [x, y + h],
+            ]
+        };
+        let triangles = [
+            rect(0.0, 0.0, 3.0, 1.0),
+            rect(0.0, 2.0, 3.0, 1.0),
+            rect(0.0, 1.0, 1.0, 1.0),
+            rect(2.0, 1.0, 1.0, 1.0),
+        ].concat();
+        let boundary = union_exterior_boundary(&triangles, &[9, 1]).unwrap();
+        let hole = union_signed_interior_distance(&triangles, &boundary, [1.5, 1.5]);
+        let interior = union_signed_interior_distance(&triangles, &boundary, [0.5, 1.5]);
+        assert!((hole + 0.5).abs() < 1e-9, "{hole}");
+        assert!((interior - 0.5).abs() < 1e-9, "{interior}");
+        let mut work = 0_usize;
+        let alpha = continuous_signed_spread_sample(
+            &triangles, Some(&boundary), [1.5, 1.5], -0.1, 0.0,
+            &mut work, &[9, 1],
+        ).unwrap();
+        // Remaining uncertain mass is bounded, not silently interpreted
+        // as exactly zero. A near-zero representative is acceptable here.
+        assert!(alpha <= 1.0 / 2048.0, "{alpha}");
+    }
+
+    #[test]
+    fn continuous_negative_spread_with_gaussian_preserves_fully_covered_interior() {
+        // The sigma=.025 truncated domain around (.5,.5) stays entirely
+        // inside the .2-eroded unit square. Its alpha must normalize to 1,
+        // independent of how the square is triangulated or duplicated.
+        let rect = [
+            [0.0, 0.0], [1.0, 0.0], [1.0, 1.0],
+            [0.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+        ];
+        let triangles = [rect, rect].concat();
+        let boundary = union_exterior_boundary(&triangles, &[7, 1]).unwrap();
+        let mut work = 0_usize;
+        let value = continuous_signed_spread_sample(
+            &triangles, Some(&boundary), [0.5, 0.5], -0.2, 0.025,
+            &mut work, &[7, 1],
+        ).unwrap();
+        assert!((value - 1.0).abs() <= 1.0 / 2048.0, "{value}");
     }
 
     #[test]
@@ -2230,14 +2283,17 @@ mod tests {
             ],
             bounds: [0.01, 0.01, 0.02, 0.02],
         };
-        assert!(matches!(
-            prepare_untranslated_shadow_coverage(&mesh, -0.001, 0.5, 4.0, &[5, 1]),
-            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
-                kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
-                path: Some(path),
-                ..
-            }) if path == [5, 1]
-        ));
+        // Eroding the real [.01,.02]^2 caster by .001 leaves the
+        // nonempty [.011,.019]^2 support, despite the empty center grid.
+        // Once its exact exterior is known, the old fail-closed fallback
+        // is no longer the correct conformance expectation.
+        let tiny = prepare_untranslated_shadow_coverage(&mesh, -0.001, 0.5, 4.0, &[5, 1])
+            .unwrap()
+            .expect("bounded continuous erosion retains the tiny caster");
+        assert!(
+            tiny.values.iter().any(|value| *value > 0.0),
+            "real eroded geometry must retain measurable blurred support"
+        );
         assert!(
             prepare_untranslated_shadow_coverage(&mesh, -0.006, 0.5, 4.0, &[5, 2])
                 .unwrap()
