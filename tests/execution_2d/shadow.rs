@@ -624,6 +624,13 @@ fn nested_convex_signed_disk_erosion_is_exact_before_ancestor_shear() {
     // y=[14,15] is entirely IN; pixel [32,33] y=[14,15]
     // is entirely OUT of the eroded region but intersects original C.
     pixel_near(pixel(&output, 35, 14), [255, 0, 0, 255]);
+    // Exact sheared inset boundary at y=14+t is x=33+0.5*t.
+    // Within pixel [33,34]x[14,15] the covered horizontal width
+    // is 1-0.5*t, yielding integral area 0.75. This is a continuous
+    // Euclidean-inset + affine coverage oracle, not a sampled mask.
+    // Straight sRGB red=255 premultiplied in linear light by 0.75
+    // resolves to sRGB red≈225 and unorm alpha≈191.
+    pixel_near(pixel(&output, 33, 14), [225, 0, 0, 191]);
     assert_eq!(pixel(&output, 32, 14), [0, 0, 0, 0]);
 }
 
