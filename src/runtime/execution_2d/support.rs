@@ -866,9 +866,7 @@ fn neutral_union_distance(triangles: &[[f64; 2]], p: [f64; 2]) -> f64 {
         let ab = orient(tri[0], tri[1], p);
         let bc = orient(tri[1], tri[2], p);
         let ca = orient(tri[2], tri[0], p);
-        if (ab >= 0.0 && bc >= 0.0 && ca >= 0.0)
-            || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0)
-        {
+        if (ab >= 0.0 && bc >= 0.0 && ca >= 0.0) || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0) {
             return 0.0;
         }
         closest = closest.min(distance_squared_to_segment(p, tri[0], tri[1]));
@@ -917,7 +915,9 @@ fn positive_spread_gaussian_sample(
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
     if !radius.is_finite() || radius <= 0.0 || !sigma.is_finite() || sigma <= 0.0 {
-        return Err(precision("continuous positive spread Gaussian parameters are invalid"));
+        return Err(precision(
+            "continuous positive spread Gaussian parameters are invalid",
+        ));
     }
     const MAX_GLOBAL_SPREAD_WORK: usize = 16_777_216;
     const MAX_SAMPLE_CELLS: usize = 32_768;
@@ -930,11 +930,10 @@ fn positive_spread_gaussian_sample(
         center[0] + cutoff,
         center[1] + cutoff,
     ];
-    if !bounds.iter().all(|v| v.is_finite())
-        || bounds[0] >= bounds[2]
-        || bounds[1] >= bounds[3]
-    {
-        return Err(precision("continuous spread Gaussian domain cannot be resolved"));
+    if !bounds.iter().all(|v| v.is_finite()) || bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
+        return Err(precision(
+            "continuous spread Gaussian domain cannot be resolved",
+        ));
     }
     let mut pending = std::collections::BinaryHeap::new();
     pending.push(SpreadGaussianCell {
@@ -955,7 +954,9 @@ fn positive_spread_gaussian_sample(
             resource("continuous positive spread Gaussian geometry-work overflow")
         })?;
         if visited > MAX_SAMPLE_CELLS || *work > MAX_GLOBAL_SPREAD_WORK {
-            return Err(resource("continuous positive spread Gaussian exceeds bounded work"));
+            return Err(resource(
+                "continuous positive spread Gaussian exceeds bounded work",
+            ));
         }
         let [x0, y0, x1, y1] = cell.bounds;
         let midpoint = [(x0 + x1) * 0.5, (y0 + y1) * 0.5];
@@ -971,8 +972,11 @@ fn positive_spread_gaussian_sample(
         if distance > radius + half_diagonal {
             continue;
         }
-        if cell.depth >= MAX_DEPTH || midpoint[0] <= x0 || midpoint[0] >= x1
-            || midpoint[1] <= y0 || midpoint[1] >= y1
+        if cell.depth >= MAX_DEPTH
+            || midpoint[0] <= x0
+            || midpoint[0] >= x1
+            || midpoint[1] <= y0
+            || midpoint[1] >= y1
         {
             return Err(precision(
                 "continuous spread Gaussian cannot certify the required coverage tolerance",
@@ -991,7 +995,9 @@ fn positive_spread_gaussian_sample(
         }
         let total = weights.iter().sum::<f64>();
         if !total.is_finite() || total <= 0.0 {
-            return Err(precision("continuous spread Gaussian subdivision mass vanished"));
+            return Err(precision(
+                "continuous spread Gaussian subdivision mass vanished",
+            ));
         }
         // Preserve the exact parent's normalized mass under floating-point
         // quadrature; child partition cannot invent or lose Gaussian mass.
@@ -1009,7 +1015,9 @@ fn positive_spread_gaussian_sample(
     }
     let alpha = covered + unknown * 0.5;
     if !alpha.is_finite() || !(-1.0e-9..=1.0 + 1.0e-9).contains(&alpha) {
-        return Err(precision("continuous spread Gaussian mass is not normalized"));
+        return Err(precision(
+            "continuous spread Gaussian mass is not normalized",
+        ));
     }
     Ok(alpha.clamp(0.0, 1.0))
 }
@@ -1027,7 +1035,8 @@ fn rasterize_gaussian_coverage(
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
-    let Some(grid) = rasterize_mesh_with_positive_spread(mesh, scale, positive_spread, path)? else {
+    let Some(grid) = rasterize_mesh_with_positive_spread(mesh, scale, positive_spread, path)?
+    else {
         return Ok(None);
     };
     let physical_spread = positive_spread * scale;
@@ -1360,13 +1369,7 @@ pub(super) fn prepare_untranslated_shadow_coverage(
         return rasterize_area_coverage(mesh, samples_per_logical_unit, path);
     }
     if spread > 0.0 && sigma > 0.0 {
-        return rasterize_gaussian_coverage(
-            mesh,
-            spread,
-            sigma,
-            samples_per_logical_unit,
-            path,
-        );
+        return rasterize_gaussian_coverage(mesh, spread, sigma, samples_per_logical_unit, path);
     }
     // Positive spread evaluates distance from the original geometry at each
     // sample. Seed-then-dilate would falsely erase thin off-phase casters.
@@ -1618,15 +1621,9 @@ mod tests {
             [0.7, 4.0],
         ];
         let mut work = 0_usize;
-        let actual = positive_spread_gaussian_sample(
-            &rectangle,
-            [0.5, 0.5],
-            0.06,
-            0.1,
-            &mut work,
-            &[3, 2],
-        )
-        .expect("bounded continuous Euclidean Gaussian integration");
+        let actual =
+            positive_spread_gaussian_sample(&rectangle, [0.5, 0.5], 0.06, 0.1, &mut work, &[3, 2])
+                .expect("bounded continuous Euclidean Gaussian integration");
         let independent_cdf = 0.079_621_723_618_115_15_f64;
         assert!((actual - independent_cdf).abs() <= 1.0 / 2048.0);
         assert!((actual - 0.04).abs() > 0.03);
