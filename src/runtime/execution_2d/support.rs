@@ -1760,7 +1760,11 @@ fn rasterize_continuous_shadow_coverage(
     // Nonrectangular erosion still requires the actual exposed union
     // boundary. Positive dilation and certified rectangular erosion do not.
     let erosion_boundary = if signed_spread < 0.0 && inset.is_none() {
-        Some(union_exterior_boundary(&triangles, path, Some(aggregate_work))?)
+        Some(union_exterior_boundary(
+            &triangles,
+            path,
+            Some(aggregate_work),
+        )?)
     } else {
         None
     };
