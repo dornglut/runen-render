@@ -195,3 +195,30 @@ Timing/trace values are environmental illustrations, not stable acceptance thres
 A deliberately conservative preflight formula uses **(2N−1)²** as the maximum number of induced grid cells and **4(2N−1)²** as a safe upper bound on enumerated per-cell exposed segments. Before any arrangement allocation, reject inputs whose bounds exceed **example-only** caps of 10,000 cells or 40,000 boundary segments. At N=64, these bounds are **16,129 cells / 64,516 segments** so the example gate rejects *although the actual shape only generates 3,136 inside cells and 4,352 exposed segments*. This illustrates both a legitimate deterministic rejection and the **loss of admissible useful workloads from overly pessimistic admission**. These caps are **NOT** accepted F1/F3F limits and may not be silently adopted into renderer production.
 
 **Critical decision consequence:** An exact **compositional region** is a semantic capability, not a license to build a full dense arrangement for every frame. A credible production proposal must bound graph construction, expose region emptiness without sample heuristics, support reuse and incremental update, spatially accelerate closest-boundary/cell queries, account for *cumulative* per-effect and per-invocation work, and distinguish exact/uncertain/unsupported **before** modifying any caller target. SDF acceleration, segment BVHs, hierarchical tiling and analytic symbolic simplification remain hypotheses to benchmark **on identical F1 workloads**. This experiment only falsifies naïve unindexed geometry and overly confident fast-path claims; it does not select one production algorithm.
+
+## Indexed exact region versus certified signed-field fallback (indexed_exact_region.py)
+
+Run from the repository root:
+
+~~~sh
+python3 research/rr86/indexed_exact_region.py
+~~~
+
+This experiment **critically challenges the default SDF-first performance assumption**. It uses the *identical exposed-boundary segments* from the previous orthogonal CSG reference and crosshatch inputs, but builds a private **axis-aligned BVH** over those segments. Each BVH node stores its segment extent, an exact lower bound on point-to-box Euclidean distance, and deterministic median-split children; queries prune nodes whose distance lower bound exceeds the nearest distance already proven. Final signs still derive from the exact compositional region membership. Every output is checked against the **independent full-segment-scan Euclidean oracle**, with absolute true-distance difference below **1e-12** in all tested samples. It is **not a production general-path/curve/glyph BVH or renderer integration**, and no source or semantic authority changed.
+
+### One independently executed Python-stdlib run
+
+| Crosshatch rectangle leaves | Exposed segments | Exact full scan (841 queries) | Exact BVH query (841) | BVH construction |
+|---:|---:|---:|---:|---:|
+| 8 | 96 | 26.81 ms | 8.71 ms | 0.30 ms |
+| 16 | 320 | 86.00 ms | 11.79 ms | 1.26 ms |
+| 32 | 1,152 | 306.42 ms | 15.82 ms | 5.36 ms |
+| 64 | 4,352 | **1,186.91 ms** | **22.32 ms** | **23.83 ms** |
+
+At 64 leaves, brute exact performed **3,660,032** potential segment-distance tests, indexed exact actually evaluated **8,797**. Both classified **all 841 points identically**, with every true continuous signed-distance value within 1e-12. The BVH build times exclude the **dense arrangement construction** already measured in the previous scaling experiment; combined cold cost is larger than this table's build column.
+
+**Crucial correct-candidate comparison:** Run the field certificate and use this SAME indexed exact oracle whenever uncertain. At N=64, the exact indexed path costs **22.32 ms** for 841 queries; the certifier+BVH method takes **26.02 ms** for negative spread −0.025 (288 fallbacks) and **32.03 ms** for positive +0.05 (549 fallbacks). In this corpus the **SDF-assisted fast path is 17–44% slower** than querying properly indexed exact geometry directly. At smaller N it sometimes helps, demonstrating a cost-dependent crossover rather than a universal dominance claim. A naive min/max SDF without exact fallback remains semantically wrong on related cases and is not an admissible comparator.
+
+These one-run Python measurements are **not native timings** and no variance/confidence interval, GPU workload, warm GPU residency, full F1 composition, blur integration, stroke/curve, mutable reuse, actual peak-live resource audit or complete preflight was measured. BVH worst-case may still visit every leaf under overlapping bounds; its split sorting and immutable build are not optimal. The main remaining preprocessing reference is O(n³) worst-case due to the dense orthogonal arrangement. **No accepted production migration** is justified from these results.
+
+**Revised design hypothesis:** RunenRender's private geometry authority should be **representation-neutral, region/capability-first**, capable of choosing indexed exact geometry *or* certified field acceleration only when each is eligible and measured cheaper for an admitted workload. Do not make SDF evaluation the mandatory query entry point. This is more consistent with the accepted #23 replaceable-realization contract and does not impose an unnecessary fast-field dependency on cases where exact indexed queries dominate.
