@@ -12,6 +12,7 @@ Requires only Python 3 standard library; not F1/Rust/Vulkan conformance.
 from __future__ import annotations
 
 from math import erf, hypot, sqrt
+from statistics import median
 from time import perf_counter
 
 # (left, bottom, right, top) in one logical frame.
@@ -185,6 +186,48 @@ def gaussian_independent_csg(expr,p,sigma):
                for sign,r in inclusion_exclusion_terms(expr))
 
 
+def compare_warm_query_cost(expr, segments, probes, spread, runs=5):
+    """Python-only relative cost: identical queries, same truth target.
+
+    This is not representative native CPU/GPU performance. Deliberately
+    excludes arrangement preparation and all real rendering work.
+    """
+    def field_only(p):
+        return naive_csg_field(expr, p) <= spread
+
+    def exact_only(p):
+        return exact_signed_distance(expr,segments,p) <= spread
+
+    def field_with_certified_fallback(p):
+        field=naive_csg_field(expr,p)
+        certificate=partial_certificate(field,spread)
+        return (exact_signed_distance(expr,segments,p) <= spread
+                if certificate is None else certificate)
+
+    def measure(func):
+        samples=[]
+        count=None
+        for _ in range(runs):
+            started=perf_counter()
+            tally=sum(1 for p in probes if func(p))
+            samples.append(perf_counter()-started)
+            if count is None:
+                count=tally
+            assert count==tally
+        return median(samples),count
+
+    naive_time,naive_true=measure(field_only)
+    exact_time,exact_true=measure(exact_only)
+    hybrid_time,hybrid_true=measure(field_with_certified_fallback)
+    assert hybrid_true==exact_true
+    print(f"  PYTHON WARM ONLY spread={spread:+.2f}, points={len(probes)}: "
+          f"naive_true={naive_true}, exact_true={exact_true}, "
+          f"naive_ms={1000*naive_time:.2f}, exact_ms={1000*exact_time:.2f}, "
+          f"certified_hybrid_ms={1000*hybrid_time:.2f} "
+          f"(excludes preparation, not comparable to Rust/GPU)")
+    return naive_time, exact_time, hybrid_time
+
+
 def one_case(name, expr):
     cells, segments = arrangement(expr)
     assert cells and segments, name
@@ -223,6 +266,8 @@ def one_case(name, expr):
             assert -1.e-12 <= alpha <= 1.+1.e-12, (name,p,sigma,alpha)
             independent = gaussian_independent_csg(expr,p,sigma)
             assert abs(alpha-independent) <= 1.e-12, (name,p,sigma,alpha,independent)
+    compare_warm_query_cost(expr,segments,probes,-0.45)
+    compare_warm_query_cost(expr,segments,probes,+0.12)
     print(f"{name}: leaves={len(list(leaves(expr)))} inside_cells={len(cells)} "
           f"boundary_segments={len(segments)} probes={len(probes)} "
           f"python_ref_wall_s={wall:.3f} (NOT a Rust/GPU benchmark)")
