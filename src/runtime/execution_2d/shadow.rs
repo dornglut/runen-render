@@ -617,7 +617,13 @@ mod tests {
             bounds: [0.0, 0.0, 1.0, 1.0],
         };
         let mut retained = empty_mesh();
-        append(&mut retained, &source, Render2dAffineTransform::IDENTITY, &[3]).unwrap();
+        append(
+            &mut retained,
+            &source,
+            Render2dAffineTransform::IDENTITY,
+            &[3],
+        )
+        .unwrap();
         let before = retained.triangles.clone();
         let too_large = Render2dAffineTransform::translation(1.0e17, 0.0).unwrap();
         assert!(matches!(
@@ -628,12 +634,17 @@ mod tests {
                 ..
             }) if path == [3, 7]
         ));
-        assert_eq!(retained.triangles, before, "failed geometry preflight is atomic");
-        let rank_deficient =
-            Render2dAffineTransform::new(1.0, 0.0, 2.0, 0.0, 0.0, 0.0).unwrap();
+        assert_eq!(
+            retained.triangles, before,
+            "failed geometry preflight is atomic"
+        );
+        let rank_deficient = Render2dAffineTransform::new(1.0, 0.0, 2.0, 0.0, 0.0, 0.0).unwrap();
         let mut empty = empty_mesh();
         append(&mut empty, &source, rank_deficient, &[3, 8]).unwrap();
-        assert!(empty.triangles.is_empty(), "mathematically singular 2D fill has no area");
+        assert!(
+            empty.triangles.is_empty(),
+            "mathematically singular 2D fill has no area"
+        );
     }
 
     #[test]
