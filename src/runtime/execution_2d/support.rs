@@ -919,11 +919,7 @@ fn dilated_triangles_miss_cell(triangles: &[[f64; 2]], rectangle: [f64; 4], radi
 /// are removed before computing continuous negative Euclidean spread.
 type UnionBoundaryEdge = [[f64; 2]; 2];
 
-fn oriented_triangle_contains_outward(
-    tri: &[[f64; 2]; 3],
-    p: [f64; 2],
-    outward: [f64; 2],
-) -> bool {
+fn oriented_triangle_contains_outward(tri: &[[f64; 2]; 3], p: [f64; 2], outward: [f64; 2]) -> bool {
     let area = orient(tri[0], tri[1], tri[2]);
     if area == 0.0 {
         return false;
@@ -961,17 +957,18 @@ fn union_exterior_boundary(
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
-    if !triangles.len().is_multiple_of(3)
-        || !triangles.iter().flatten().all(|c| c.is_finite())
-    {
+    if !triangles.len().is_multiple_of(3) || !triangles.iter().flatten().all(|c| c.is_finite()) {
         return Err(precision("continuous erosion triangle payload invalid"));
     }
     const MAX_BOUNDARY_OPERATIONS: usize = 16_777_216;
-    let pairs = triangles.len().checked_mul(triangles.len()).ok_or_else(|| {
-        resource("continuous erosion boundary intersection admission overflow")
-    })?;
+    let pairs = triangles
+        .len()
+        .checked_mul(triangles.len())
+        .ok_or_else(|| resource("continuous erosion boundary intersection admission overflow"))?;
     if pairs > MAX_BOUNDARY_OPERATIONS {
-        return Err(resource("continuous erosion boundary arrangement exceeds bounded work"));
+        return Err(resource(
+            "continuous erosion boundary arrangement exceeds bounded work",
+        ));
     }
     let tris = triangles.as_chunks::<3>().0;
     let mut boundary = Vec::new();
@@ -979,7 +976,9 @@ fn union_exterior_boundary(
     for (i, tri) in tris.iter().enumerate() {
         let area = orient(tri[0], tri[1], tri[2]);
         if !area.is_finite() {
-            return Err(precision("continuous erosion triangle area is not representable"));
+            return Err(precision(
+                "continuous erosion triangle area is not representable",
+            ));
         }
         if area == 0.0 {
             continue;
@@ -1005,9 +1004,12 @@ fn union_exterior_boundary(
                     let difference = [c[0] - a[0], c[1] - a[1]];
                     if divisor != 0.0 {
                         let t = difference[0].mul_add(v[1], -(difference[1] * v[0])) / divisor;
-                        let u = difference[0].mul_add(edge[1], -(difference[1] * edge[0])) / divisor;
+                        let u =
+                            difference[0].mul_add(edge[1], -(difference[1] * edge[0])) / divisor;
                         if !t.is_finite() || !u.is_finite() {
-                            return Err(precision("continuous erosion edge crossing lost precision"));
+                            return Err(precision(
+                                "continuous erosion edge crossing lost precision",
+                            ));
                         }
                         if t > 0.0 && t < 1.0 && (0.0..=1.0).contains(&u) {
                             intervals.push(t);
@@ -1017,7 +1019,9 @@ fn union_exterior_boundary(
                             let t = (p[0] - a[0]).mul_add(edge[0], (p[1] - a[1]) * edge[1])
                                 / length_squared;
                             if !t.is_finite() {
-                                return Err(precision("continuous erosion collinear crossing lost precision"));
+                                return Err(precision(
+                                    "continuous erosion collinear crossing lost precision",
+                                ));
                             }
                             if t > 0.0 && t < 1.0 {
                                 intervals.push(t);
@@ -1037,11 +1041,13 @@ fn union_exterior_boundary(
                 if interval[0] >= interval[1] {
                     continue;
                 }
-                work = work.checked_add(tris.len()).ok_or_else(|| {
-                    resource("continuous erosion exposed-edge work overflow")
-                })?;
+                work = work
+                    .checked_add(tris.len())
+                    .ok_or_else(|| resource("continuous erosion exposed-edge work overflow"))?;
                 if work > MAX_BOUNDARY_OPERATIONS {
-                    return Err(resource("continuous erosion exposed-edge classification exceeds budget"));
+                    return Err(resource(
+                        "continuous erosion exposed-edge classification exceeds budget",
+                    ));
                 }
                 let t = (interval[0] + interval[1]) * 0.5;
                 let p = [edge[0].mul_add(t, a[0]), edge[1].mul_add(t, a[1])];
@@ -1063,15 +1069,17 @@ fn union_exterior_boundary(
                 if !endpoints.iter().flatten().all(|v| v.is_finite()) {
                     return Err(precision("continuous erosion boundary endpoint invalid"));
                 }
-                boundary.try_reserve(1).map_err(|_| {
-                    resource("continuous erosion exposed-edge allocation failed")
-                })?;
+                boundary
+                    .try_reserve(1)
+                    .map_err(|_| resource("continuous erosion exposed-edge allocation failed"))?;
                 boundary.push(endpoints);
             }
         }
     }
     if !triangles.is_empty() && boundary.is_empty() {
-        return Err(precision("continuous erosion cannot certify exterior boundary"));
+        return Err(precision(
+            "continuous erosion cannot certify exterior boundary",
+        ));
     }
     Ok(boundary)
 }
@@ -1131,9 +1139,15 @@ fn continuous_signed_spread_sample(
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
-    if !signed_spread.is_finite() || signed_spread == 0.0 || !sigma.is_finite() || sigma < 0.0
-        || (signed_spread < 0.0 && boundary.is_none()) {
-        return Err(precision("continuous signed spread integration parameters are invalid"));
+    if !signed_spread.is_finite()
+        || signed_spread == 0.0
+        || !sigma.is_finite()
+        || sigma < 0.0
+        || (signed_spread < 0.0 && boundary.is_none())
+    {
+        return Err(precision(
+            "continuous signed spread integration parameters are invalid",
+        ));
     }
     let radius = signed_spread.abs();
     if !radius.is_finite() || radius == 0.0 {
