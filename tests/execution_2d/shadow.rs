@@ -470,7 +470,13 @@ fn continuous_negative_euclidean_erosion_uses_actual_subpixel_area() {
     // red sRGB round(255*(1.055*.36^(1/2.4)-.055))=162.
     // Center-grid negative distance would incorrectly keep all 16 samples.
     let composition = group(
-        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 1.0, 1.0)],
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            1.0,
+            1.0,
+        )],
         vec![effect(
             0.0,
             0.0,

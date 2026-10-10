@@ -1175,9 +1175,9 @@ fn continuous_signed_spread_sample(
         let classification_cost = (triangles.len() / 3)
             .checked_add(boundary.map_or(0, <[UnionBoundaryEdge]>::len))
             .ok_or_else(|| resource("continuous signed spread classification work overflow"))?;
-        *work = work.checked_add(classification_cost).ok_or_else(|| {
-            resource("continuous signed spread geometry-work overflow")
-        })?;
+        *work = work
+            .checked_add(classification_cost)
+            .ok_or_else(|| resource("continuous signed spread geometry-work overflow"))?;
         if visited > MAX_SAMPLE_CELLS || *work > MAX_GLOBAL_SPREAD_WORK {
             return Err(resource(
                 "continuous positive spread Gaussian exceeds bounded work",
@@ -1187,8 +1187,7 @@ fn continuous_signed_spread_sample(
         if signed_spread > 0.0 && dilated_triangles_miss_cell(triangles, cell.bounds, radius) {
             continue;
         }
-        if signed_spread > 0.0
-            && one_dilated_triangle_contains_cell(triangles, cell.bounds, radius)
+        if signed_spread > 0.0 && one_dilated_triangle_contains_cell(triangles, cell.bounds, radius)
         {
             covered += cell.mass;
             continue;
@@ -1304,7 +1303,8 @@ fn rasterize_continuous_shadow_coverage(
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
-    let Some(grid) = rasterize_mesh_with_positive_spread(mesh, scale, signed_spread.max(0.0), path)?
+    let Some(grid) =
+        rasterize_mesh_with_positive_spread(mesh, scale, signed_spread.max(0.0), path)?
     else {
         return Ok(None);
     };
@@ -1666,14 +1666,12 @@ pub(super) fn prepare_untranslated_shadow_coverage(
     // positive spread. An all-zero sampled result is NOT proof that the true
     // eroded support is empty; only the bounding extent certificate above
     // can return None, otherwise reject with a truthful precision outcome.
-    let coverage = rasterize_continuous_shadow_coverage(
-        mesh,
-        spread,
-        sigma,
-        samples_per_logical_unit,
-        path,
-    )?;
-    if coverage.as_ref().is_some_and(|c| c.values.iter().all(|v| *v == 0.0)) {
+    let coverage =
+        rasterize_continuous_shadow_coverage(mesh, spread, sigma, samples_per_logical_unit, path)?;
+    if coverage
+        .as_ref()
+        .is_some_and(|c| c.values.iter().all(|v| *v == 0.0))
+    {
         return Err(mask_failure(
             path,
             Render2dSampleSpaceError::PrecisionLimit,
@@ -1843,39 +1841,69 @@ mod tests {
         // have fractions [.2,1,1,.2]. The caller pixel has area .36,
         // NOT the sampled-center distance-transform's opaque 1.0.
         let rect = [
-            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0],
-            [0.0, 0.0], [4.0, 4.0], [0.0, 4.0],
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 4.0],
+            [0.0, 0.0],
+            [4.0, 4.0],
+            [0.0, 4.0],
         ];
         let boundary = union_exterior_boundary(&rect, &[4, 2]).unwrap();
         let mut work = 0_usize;
         let a = continuous_signed_spread_sample(
-            &rect, Some(&boundary), [0.5, 0.5], -0.8, 0.0, &mut work, &[4, 2],
-        ).unwrap();
+            &rect,
+            Some(&boundary),
+            [0.5, 0.5],
+            -0.8,
+            0.0,
+            &mut work,
+            &[4, 2],
+        )
+        .unwrap();
         assert!((a - 0.2).abs() < 1.0 / 2048.0);
         let interior = continuous_signed_spread_sample(
-            &rect, Some(&boundary), [1.5, 1.5], -0.8, 0.0, &mut work, &[4, 2],
-        ).unwrap();
+            &rect,
+            Some(&boundary),
+            [1.5, 1.5],
+            -0.8,
+            0.0,
+            &mut work,
+            &[4, 2],
+        )
+        .unwrap();
         assert!((interior - 1.0).abs() < 1.0 / 2048.0);
     }
 
     #[test]
     fn erosion_union_boundary_removes_internal_diagonals_and_shared_seams() {
         let left = [
-            [0.0, 0.0], [1.0, 0.0], [1.0, 1.0],
-            [0.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 1.0],
         ];
         let right = [
-            [1.0, 0.0], [2.0, 0.0], [2.0, 1.0],
-            [1.0, 0.0], [2.0, 1.0], [1.0, 1.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [1.0, 0.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
         ];
         let triangles = [left, right].concat();
         let boundary = union_exterior_boundary(&triangles, &[8, 3]).unwrap();
         // The center seam at x=1 is internal; the nearest true union
         // boundary at (1,.5) is .5 away, not zero.
-        assert!((union_signed_interior_distance(&triangles, &boundary, [1.0, 0.5]) - 0.5).abs() < 1e-9);
+        assert!(
+            (union_signed_interior_distance(&triangles, &boundary, [1.0, 0.5]) - 0.5).abs() < 1e-9
+        );
         let duplicate = [triangles.clone(), triangles.clone()].concat();
         let repeated = union_exterior_boundary(&duplicate, &[8, 3]).unwrap();
-        assert!((union_signed_interior_distance(&duplicate, &repeated, [1.0, 0.5]) - 0.5).abs() < 1e-9);
+        assert!(
+            (union_signed_interior_distance(&duplicate, &repeated, [1.0, 0.5]) - 0.5).abs() < 1e-9
+        );
     }
 
     #[test]
