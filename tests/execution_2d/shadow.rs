@@ -511,6 +511,59 @@ fn zero_alpha_image_bytes_and_item_opacity_still_cast_from_resolved_destination(
 }
 
 #[test]
+fn excess_authored_shadows_fail_before_caller_work_and_executor_remains_reusable() {
+    let Some(context) = context() else {
+        return;
+    };
+    let (texture, target) = target("F3F bounded shadow admission caller target");
+    let mut executor = Render2dExecutor::new();
+    let caster = vec![caster(
+        Render2dColorRgba8::TRANSPARENT,
+        10.0,
+        10.0,
+        16.0,
+        16.0,
+    )];
+    let red = effect(
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        Render2dColorRgba8::new(255, 0, 0, 128),
+    );
+    let bindings = Render2dResourceBindings::default();
+    let inadmissible = group(caster.clone(), vec![red; 257], 1.0);
+    let failure = match executor.prepare(&context, &inadmissible, &bindings, &target) {
+        Ok(_) => panic!("257 shadow effects must not prepare GPU work"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        failure,
+        Render2dExecutionError::SampleSpace {
+            kind: runen_render::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+            path: Some(path),
+            ..
+        } if path == [0]
+    ));
+
+    // The failed invocation cannot publish a partial GPU contribution or
+    // poison subsequent executor identity; caller owns the clear, and the
+    // next valid contribution blends into that exact prior-blue target.
+    let valid = group(caster, vec![red], 1.0);
+    let image = execute_inline(
+        &context,
+        &mut executor,
+        &valid,
+        &bindings,
+        &texture,
+        &target,
+        Some([0.0, 0.0, 1.0, 1.0]),
+    );
+    pixel_near(pixel(&image, 16, 16), [188, 0, 187, 255]);
+    assert_eq!(pixel(&image, 7, 16), [0, 0, 255, 255]);
+}
+
+#[test]
 fn positive_destination_with_zero_area_image_source_crop_still_casts_exact_shadow() {
     let Some(context) = context() else {
         return;
@@ -528,9 +581,7 @@ fn positive_destination_with_zero_area_image_source_crop_still_casts_exact_shado
         Render2dRect::new(10.0, 10.0, 16.0, 16.0).unwrap(),
     );
     let item = Render2dEntry::item(Render2dItem::new(
-        Render2dPrimitive::Image(
-            Render2dImagePrimitive::new(id, extent, vec![patch]).unwrap(),
-        ),
+        Render2dPrimitive::Image(Render2dImagePrimitive::new(id, extent, vec![patch]).unwrap()),
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::OPAQUE,
