@@ -295,8 +295,10 @@ fn gaussian_square_support(
 /// copy of the exact geometric C and may be propagated through ancestor
 /// affines. A nested positive-sigma, zero-spread shadow derives the exact
 /// finite square Minkowski union in its immediate-parent frame. Nonzero
-/// nested signed disk morphology still rejects without a compositional
-/// Euclidean region evaluator; neither sampled alpha nor AABBs stand in.
+/// nested convex negative disk spread uses a mathematically certified
+/// polygonal Euclidean inset before its optional Gaussian support square.
+/// Positive disk spread and uncertified nonconvex erosions still reject;
+/// neither sampled alpha nor AABBs stand in.
 pub(super) fn group_child_sources(
     plan: &scene::Plan<'_>,
     bindings: &Render2dResourceBindings,
@@ -308,6 +310,7 @@ pub(super) fn group_child_sources(
     let mut sources = BTreeMap::new();
     let mut retained_vertices = 0_usize;
     let mut clip_work_used = 0_usize;
+    let mut convex_erosion_work_used = 0_usize;
     for (index, event) in plan.events.iter().enumerate() {
         match event {
             scene::Event::BeginGroup { path, group, .. } => {
@@ -367,7 +370,7 @@ pub(super) fn group_child_sources(
                             .group
                             .shadows()
                             .iter()
-                            .any(|shadow| shadow.spread() != 0.0)
+                            .any(|shadow| shadow.spread() > 0.0)
                         {
                             return Err(super::unsupported_at(
                                 &frame.path,
@@ -388,6 +391,37 @@ pub(super) fn group_child_sources(
                             &frame.path,
                         )?;
                         for shadow in frame.group.shadows() {
+                            // A convex union has an EXACT Euclidean inward
+                            // disk offset as another polygon. Nonconvex/hole
+                            // unions remain typed unsupported, not "empty".
+                            let erosion = if shadow.spread() < 0.0 {
+                                let certified = super::support::certified_convex_erosion_mesh(
+                                    &in_parent,
+                                    -shadow.spread(),
+                                    &frame.path,
+                                    &mut convex_erosion_work_used,
+                                )?
+                                .ok_or_else(|| {
+                                    super::unsupported_at(
+                                        &frame.path,
+                                        Render2dUnsupportedContent::Shadows {
+                                            root_index: frame.path[0],
+                                        },
+                                    )
+                                })?;
+                                charge_vertices(
+                                    &mut retained_vertices,
+                                    certified.triangles.len(),
+                                    &frame.path,
+                                )?;
+                                Some(certified)
+                            } else {
+                                None
+                            };
+                            let caster = erosion.as_ref().unwrap_or(&in_parent);
+                            if caster.triangles.is_empty() {
+                                continue;
+                            }
                             let offset = Render2dAffineTransform::translation(
                                 shadow.offset_x(),
                                 shadow.offset_y(),
@@ -397,14 +431,14 @@ pub(super) fn group_child_sources(
                             })?;
                             charge_vertices(
                                 &mut retained_vertices,
-                                in_parent.triangles.len(),
+                                caster.triangles.len(),
                                 &frame.path,
                             )?;
                             if shadow.sigma() == 0.0 {
-                                append(&mut completed, &in_parent, offset, &frame.path)?;
+                                append(&mut completed, caster, offset, &frame.path)?;
                             } else {
                                 let mut shifted = empty_mesh();
-                                append(&mut shifted, &in_parent, offset, &frame.path)?;
+                                append(&mut shifted, caster, offset, &frame.path)?;
                                 let square = gaussian_square_support(
                                     &shifted,
                                     shadow.sigma() * 3.0,

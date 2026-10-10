@@ -583,6 +583,133 @@ fn nested_finite_gaussian_integrates_parent_kernel_under_ancestor_shear() {
 }
 
 #[test]
+fn nested_convex_signed_disk_erosion_is_exact_before_ancestor_shear() {
+    let Some(context) = context() else { return };
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0, 10.0, 10.0, 10.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0, 0.0, 0.0, -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F nested exact convex Euclidean erosion under shear",
+    );
+    // Exact C ⊖ disk(1) for square [10,20]^2 is [11,19]^2.
+    // Ancestor root x=2*parent_x+.5*parent_y+4: pixel [35,36]
+    // y=[14,15] is entirely IN; pixel [32,33] y=[14,15]
+    // is entirely OUT of the eroded region but intersects original C.
+    pixel_near(pixel(&output, 35, 14), [255, 0, 0, 255]);
+    assert_eq!(pixel(&output, 32, 14), [0, 0, 0, 0]);
+}
+
+#[test]
+fn nested_convex_erosion_gaussian_integrates_in_its_parent_frame() {
+    let Some(context) = context() else { return };
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0, 10.0, 10.0, 10.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0, 0.0, 0.1, -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F nested convex erosion then finite Gaussian under shear",
+    );
+    // Exact eroded C = [11,19]^2. Finite normalized sigma=.1
+    // has 3sigma=.3 parent-coordinate cutoff on each axis.
+    // All inverse-mapped points in root pixel [35,36]×[14,15]
+    // lie >.3 INSIDE that eroded region. Those in [31,32]×[14,15]
+    // lie >.3 OUTSIDE its left boundary.
+    pixel_near(pixel(&output, 35, 14), [255, 0, 0, 255]);
+    assert_eq!(pixel(&output, 31, 14), [0, 0, 0, 0]);
+}
+
+#[test]
+fn nested_nonconvex_disk_erosion_rejects_with_authored_path_before_gpu_work() {
+    let Some(context) = context() else { return };
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 4.0, 2.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 12.0, 2.0, 2.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0, 0.0, 0.0, -0.25,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let (texture, target) = target("F3F nonconvex nested signed erosion rejects atomically");
+    let mut executor = Render2dExecutor::new();
+    let result = executor.prepare(
+        &context,
+        &scene,
+        &Render2dResourceBindings::default(),
+        &target,
+    );
+    let failure = match result {
+        Ok(_) => panic!("nonconvex disk erosion cannot become a convex rectangle"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        failure,
+        Render2dExecutionError::UnsupportedEntry {
+            path,
+            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
+                root_index: 0,
+            },
+        } if path == [0, 0]
+    ));
+    drop(texture);
+}
+
+#[test]
 fn invisible_nested_gaussian_expands_exact_neutral_support_for_ancestor() {
     let Some(context) = context() else { return };
     let nested = Render2dEntry::group(Render2dGroup::new(

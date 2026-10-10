@@ -1456,6 +1456,110 @@ fn certified_convex_eroded_union(
     Ok(Some(output))
 }
 
+/// Certify a renderer-private nested *negative* Euclidean spread as exact
+/// disposable triangles. Only a geometrically certified convex source union
+/// admits polygonal disk erosion; nonconvex, holed or otherwise uncertified
+/// unions return None and MUST NOT be treated as empty or approximated.
+/// Some(empty mesh) is an independently certified fully erased region.
+///
+/// All coordinates are converted into the effect owner's immediate-parent
+/// logical frame. This does not establish a new semantic representation or
+/// reuse sampled alpha as geometry.
+pub(super) fn certified_convex_erosion_mesh(
+    source: &NeutralMesh,
+    radius: f64,
+    path: &[usize],
+    aggregate_work: &mut usize,
+) -> Result<Option<NeutralMesh>, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    if !radius.is_finite() || radius <= 0.0 {
+        return Err(precision("nested convex erosion radius is not representable"));
+    }
+    if !source.units_per_parent_logical_unit.is_finite()
+        || source.units_per_parent_logical_unit <= 0.0
+        || !source.triangles.len().is_multiple_of(3)
+    {
+        return Err(precision("nested convex erosion source is unrepresentable"));
+    }
+    let mut result = NeutralMesh {
+        units_per_parent_logical_unit: 1.0,
+        triangles: Vec::new(),
+        bounds: [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+    };
+    if source.triangles.is_empty() {
+        return Ok(Some(result));
+    }
+    let mut triangles = filled(source.triangles.len(), [0.0_f64; 2], path)?;
+    for (out, &[x, y]) in triangles.iter_mut().zip(&source.triangles) {
+        *out = [
+            x / source.units_per_parent_logical_unit,
+            y / source.units_per_parent_logical_unit,
+        ];
+        if !out.iter().all(|coord| coord.is_finite()) {
+            return Err(precision("nested convex erosion normalization lost precision"));
+        }
+    }
+    // A rectangle is certified from the WHOLE triangle union, not its AABB.
+    // Its Euclidean disk erosion is exactly an inset rectangle. This common
+    // class avoids an otherwise redundant quadratic exposed-edge arrangement.
+    let derived = if let Some(rect) = certified_axis_aligned_rectangle(&triangles) {
+        charge_shadow_preparation_work(aggregate_work, triangles.len(), path)?;
+        let [x0, y0, x1, y1] = rect;
+        let bounds = [x0 + radius, y0 + radius, x1 - radius, y1 - radius];
+        if !bounds.iter().all(|coordinate| coordinate.is_finite()) {
+            return Err(precision("nested certified rectangle erosion lost precision"));
+        }
+        if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
+            Vec::new()
+        } else {
+            let [x0, y0, x1, y1] = bounds;
+            vec![
+                [x0, y0], [x1, y0], [x0, y1],
+                [x1, y0], [x1, y1], [x0, y1],
+            ]
+        }
+    } else {
+        let boundary = union_exterior_boundary(&triangles, path, Some(aggregate_work))?;
+        let Some(derived) = certified_convex_eroded_union(
+            &triangles,
+            &boundary,
+            radius,
+            path,
+            Some(aggregate_work),
+        )? else {
+            return Ok(None);
+        };
+        derived
+    };
+    if derived.len() > MAX_NEUTRAL_MASK_SAMPLES {
+        return Err(resource("nested convex erosion mesh exceeds bounded vertices"));
+    }
+    result
+        .triangles
+        .try_reserve_exact(derived.len())
+        .map_err(|_| resource("nested convex erosion output allocation failed"))?;
+    for triangle in derived.as_chunks::<3>().0 {
+        if orient(triangle[0], triangle[1], triangle[2]) == 0.0 {
+            continue;
+        }
+        for &point in triangle {
+            result.bounds[0] = result.bounds[0].min(point[0]);
+            result.bounds[1] = result.bounds[1].min(point[1]);
+            result.bounds[2] = result.bounds[2].max(point[0]);
+            result.bounds[3] = result.bounds[3].max(point[1]);
+            result.triangles.push(point);
+        }
+    }
+    Ok(Some(result))
+}
+
 /// Certify that the complete triangle UNION is exactly one axis-aligned
 /// rectangle. Each nondegenerate triangle must use three distinct rectangle
 /// corners; two triangles missing opposite corners cover the whole rectangle.

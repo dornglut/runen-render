@@ -230,12 +230,41 @@ pub(super) fn prepare(
                 })?;
             let mut shifted = geometry_support::empty_mesh();
             geometry_support::append(&mut shifted, source, offset, path)?;
+            // A certified negative Euclidean disk erosion has EXACT convex
+            // polygonal geometry, so carry that into the already-owned
+            // parent-frame continuous Gaussian / identity evaluator.
+            // Nonconvex unions fail closed during neutral-source admission.
+            let erosion = if parent_affine.is_some() && effect.spread() < 0.0 {
+                Some(
+                    support::certified_convex_erosion_mesh(
+                        &shifted,
+                        -effect.spread(),
+                        path,
+                        &mut aggregate_coverage_work,
+                    )?
+                    .ok_or_else(|| {
+                        crate::runtime::execution_2d::unsupported_at(
+                            path,
+                            crate::execution_2d::Render2dUnsupportedContent::Shadows {
+                                root_index: path[0],
+                            },
+                        )
+                    })?,
+                )
+            } else {
+                None
+            };
+            let caster = erosion.as_ref().unwrap_or(&shifted);
+            if caster.triangles.is_empty() {
+                continue;
+            }
+            let remaining_spread = if erosion.is_some() { 0.0 } else { effect.spread() };
             // A nested finite Gaussian must be evaluated at each inverse-
             // mapped ROOT sample in the group's immediate-parent frame.
             // Projecting triangles and then applying root-axis sigma changes
             // the convolution under shear/nonuniform ancestor affine.
             let coverage = if let Some(ancestor) = parent_affine {
-                if effect.sigma() > 0.0 && effect.spread() == 0.0 {
+                if effect.sigma() > 0.0 && remaining_spread == 0.0 {
                     let [a, b, c, d, _, _] = ancestor.components();
                     let determinant = a.mul_add(d, -(b * c));
                     if determinant == 0.0 {
@@ -245,7 +274,7 @@ pub(super) fn prepare(
                         continue;
                     }
                     support::affine_parent_gaussian_coverage_admitted(
-                        &shifted,
+                        caster,
                         effect.sigma(),
                         ancestor,
                         envelope,
@@ -255,10 +284,10 @@ pub(super) fn prepare(
                     )?
                 } else {
                     let mut projected = geometry_support::empty_mesh();
-                    geometry_support::append(&mut projected, &shifted, ancestor, path)?;
+                    geometry_support::append(&mut projected, caster, ancestor, path)?;
                     support::prepare_shadow_coverage_admitted(
                         &projected,
-                        effect.spread(),
+                        remaining_spread,
                         effect.sigma(),
                         sample_scale,
                         path,
@@ -267,8 +296,8 @@ pub(super) fn prepare(
                 }
             } else {
                 support::prepare_shadow_coverage_admitted(
-                    &shifted,
-                    effect.spread(),
+                    caster,
+                    remaining_spread,
                     effect.sigma(),
                     sample_scale,
                     path,
