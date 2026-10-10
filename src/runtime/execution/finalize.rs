@@ -21,10 +21,10 @@ use super::state::DeterministicTemporalHistoryUseStorage;
 use crate::admission::{AdmittedRenderPlan, RenderOutputDestination};
 use crate::request::RenderOutputValue;
 use runen_gpu::{
-    GpuBufferRegion, GpuBufferTextureLayout, GpuCopyOperation, GpuExportKey, GpuExportRelationship,
-    GpuInitialCoverage, GpuReadbackOperation, GpuResourceAccessIntent, GpuResourceProvenance,
-    GpuResourceRef, GpuTextureAccessResource, GpuTextureCopyRegion, GpuTextureFormat,
-    GpuWorkFragment, GpuWorkOutput,
+    GpuBufferCoverage, GpuBufferRegion, GpuBufferTextureLayout, GpuCopyOperation, GpuExportKey,
+    GpuExportRelationship, GpuInitialCoverage, GpuReadbackOperation, GpuResourceAccessIntent,
+    GpuResourceProvenance, GpuResourceRef, GpuTextureAccessResource, GpuTextureCopyRegion,
+    GpuTextureFormat, GpuWorkFragment, GpuWorkOutput,
 };
 
 pub(super) struct LoweredDeterministicOutput {
@@ -43,6 +43,7 @@ struct VerificationReadbackOperations {
 struct PreparedDestination {
     copy: GpuCopyOperation,
     gpu_output: Option<GpuWorkOutput>,
+    availability_output: Option<GpuWorkOutput>,
     radiance_output: Option<PreparedDeterministicRadianceOutput>,
 }
 
@@ -141,19 +142,25 @@ fn temporal_execution_evidence(
     })
 }
 
+/// Correlated physical producer inputs for one finalized output occurrence.
+struct PreparedDestinationSources<'a> {
+    primary: &'a PreparedPrimaryPass,
+    temporal: &'a PreparedTemporalPass,
+}
+
 fn prepare_destination(
     admitted: &AdmittedRenderPlan,
     resolved: ResolvedOutputContext<'_>,
     packed: &PackedOutput,
     temporal_state: &PreparedTemporalState,
     requested_coverage: Option<&PreparedRequestedCoverage>,
-    primary: &PreparedPrimaryPass,
+    sources: PreparedDestinationSources<'_>,
     intent: DeterministicObservationIntent,
 ) -> Result<PreparedDestination, RenderDeterministicLoweringError> {
     match resolved.admitted_output.binding().destination() {
         RenderOutputDestination::ScalarBuffer(destination) => {
             let copy = GpuCopyOperation::buffer_to_buffer(
-                GpuBufferRegion::whole(&primary.canonical_output)
+                GpuBufferRegion::whole(&sources.primary.canonical_output)
                     .map_err(|error| gpu_work_operation("scalar source region", error))?,
                 GpuBufferRegion::whole(destination)
                     .map_err(|error| gpu_work_operation("scalar destination region", error))?,
@@ -162,6 +169,7 @@ fn prepare_destination(
             Ok(PreparedDestination {
                 copy,
                 gpu_output: None,
+                availability_output: None,
                 radiance_output: None,
             })
         }
@@ -169,16 +177,19 @@ fn prepare_destination(
             let (copy_source, row_bytes) = if let Some(history) = temporal_state.history.as_ref() {
                 match &history.storage {
                     DeterministicTemporalHistoryUseStorage::Static {
-                        handle,
-                        row_stride_words,
-                        ..
+                        row_stride_words, ..
                     } => {
+                        let fallback = sources.temporal.static_fallback.as_ref().ok_or(
+                            RenderDeterministicLoweringError::OutputCorrelationChanged {
+                                output_index: resolved.output_index,
+                            },
+                        )?;
                         let row_bytes = row_stride_words
                             .checked_mul(u32::try_from(WORD_BYTES).expect("word bytes fit u32"))
                             .ok_or(RenderDeterministicLoweringError::SizeOverflow {
                                 field: "temporal history row bytes",
                             })?;
-                        (handle, row_bytes)
+                        (&fallback.resolved, row_bytes)
                     }
                     DeterministicTemporalHistoryUseStorage::Camera { .. } => {
                         let row_bytes = packed.texture_row_bytes.ok_or(
@@ -186,7 +197,7 @@ fn prepare_destination(
                                 output_index: resolved.output_index,
                             },
                         )?;
-                        (&primary.canonical_output, row_bytes)
+                        (&sources.primary.canonical_output, row_bytes)
                     }
                 }
             } else {
@@ -195,7 +206,7 @@ fn prepare_destination(
                         output_index: resolved.output_index,
                     },
                 )?;
-                (&primary.canonical_output, row_bytes)
+                (&sources.primary.canonical_output, row_bytes)
             };
             let source = GpuBufferTextureLayout::new(copy_source, 0, row_bytes, 0)
                 .map_err(|error| gpu_work_operation("lattice source layout", error))?;
@@ -231,11 +242,58 @@ fn prepare_destination(
                 .map_err(|error| gpu_work_authoring("radiance output coverage", error))?;
                 let output = GpuWorkOutput::new(relationship.clone(), coverage)
                     .map_err(|error| gpu_work_authoring("radiance output relationship", error))?;
+                let availability = sources
+                    .temporal
+                    .static_fallback
+                    .as_ref()
+                    .map(|fallback| {
+                        let relationship = GpuExportRelationship::new(
+                            GpuResourceRef::Buffer(fallback.availability.clone()),
+                            GpuExportKey::new(format!(
+                                "runenrender.maintained.radiance.graph.{}.output.{}.availability",
+                                resolved.graph_wiring_namespace, resolved.output_index
+                            ))
+                            .map_err(|error| {
+                                gpu_resource_descriptor("radiance availability export key", error)
+                            })?,
+                            GpuResourceAccessIntent::ReadWrite,
+                            GpuResourceProvenance::new(
+                                fallback.availability.descriptor().common().label().clone(),
+                                None,
+                                None,
+                            ),
+                        );
+                        let coverage = GpuInitialCoverage::buffer(
+                            &fallback.availability,
+                            [GpuBufferCoverage::dense(
+                                GpuBufferRegion::whole(&fallback.availability)
+                                    .map_err(|error| {
+                                        gpu_work_operation("availability buffer range", error)
+                                    })?
+                                    .range(),
+                            )],
+                        )
+                        .map_err(|error| {
+                            gpu_work_authoring("availability buffer coverage", error)
+                        })?;
+                        let gpu_output = GpuWorkOutput::new(relationship.clone(), coverage)
+                            .map_err(|error| {
+                                gpu_work_authoring("availability output relationship", error)
+                            })?;
+                        Ok::<_, RenderDeterministicLoweringError>((gpu_output, relationship))
+                    })
+                    .transpose()?;
+                let (availability_output, availability_relationship) = match availability {
+                    Some((output, relationship)) => (Some(output), Some(relationship)),
+                    None => (None, None),
+                };
                 Some((
                     output,
+                    availability_output,
                     PreparedDeterministicRadianceOutput {
                         output_index: resolved.output_index,
                         relationship,
+                        availability_relationship,
                         temporal_evidence: temporal_execution_evidence(
                             admitted,
                             resolved,
@@ -247,13 +305,16 @@ fn prepare_destination(
             } else {
                 None
             };
-            let (gpu_output, radiance_output) = match composable {
-                Some((output, correlation)) => (Some(output), Some(correlation)),
-                None => (None, None),
+            let (gpu_output, availability_output, radiance_output) = match composable {
+                Some((output, availability, correlation)) => {
+                    (Some(output), availability, Some(correlation))
+                }
+                None => (None, None, None),
             };
             Ok(PreparedDestination {
                 copy,
                 gpu_output,
+                availability_output,
                 radiance_output,
             })
         }
@@ -330,17 +391,34 @@ fn build_output_fragment(
                     coverage.compute,
                 )?;
             }
+            let fallback_compute = if let Some(fallback) = temporal_pass.static_fallback {
+                for (index, clear) in fallback.clears.into_iter().enumerate() {
+                    work.operation(format!("clear temporal fallback carrier {index}"), clear)?;
+                }
+                Some(fallback.compute)
+            } else {
+                None
+            };
             if let Some(upload) = temporal_pass.camera_parameter_upload {
                 work.operation("upload camera reprojection parameters", upload)?;
             }
             if let Some(reconstruction) = temporal_pass.reconstruction_compute {
                 work.compute("reconstruct deterministic footprint output", reconstruction)?;
             }
+            if let Some(fallback) = fallback_compute {
+                work.compute(
+                    "resolve phase-aligned current radiance and availability",
+                    fallback,
+                )?;
+            }
             work.operation(
                 "copy reconstructed output to admitted destination",
                 destination.copy,
             )?;
             if let Some(output) = destination.gpu_output {
+                work.add_output(output)?;
+            }
+            if let Some(output) = destination.availability_output {
                 work.add_output(output)?;
             }
             if let Some(readbacks) = verification {
@@ -379,7 +457,10 @@ pub(super) fn finalize_output(
         packed,
         temporal_state,
         requested_coverage.as_ref(),
-        &primary,
+        PreparedDestinationSources {
+            primary: &primary,
+            temporal: &temporal,
+        },
         intent,
     )?;
     let verification = prepare_verification_readbacks(intent, resolved.output_index, &primary)?;

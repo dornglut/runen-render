@@ -1,14 +1,15 @@
 use super::super::program::{
     CAMERA_REPROJECTION_REVISION,
-    abi::{WORKGROUP_SIZE, camera, temporal},
+    abi::{WORKGROUP_SIZE, camera, header, temporal},
     retained_camera_reprojection_source, retained_maintained_evaluator_source,
-    retained_temporal_reconstruction_source,
+    retained_temporal_fallback_source, retained_temporal_reconstruction_source,
 };
 use super::WORD_BYTES;
 use super::errors::{
     RenderDeterministicLoweringError, gpu_program_contract, gpu_resource_descriptor,
     gpu_transfer_preparation, gpu_work_operation, map_maintained_program_build_error,
 };
+use super::layout::temporal_fallback_layout;
 use super::output_context::{PreparedTemporalState, ResolvedOutputContext};
 use super::packing::{PackedOutput, pack_matrix3, pack_vec3, positive_f32_bits};
 use super::state::{
@@ -41,6 +42,121 @@ pub(super) struct PreparedPrimaryPass {
 pub(super) struct PreparedTemporalPass {
     pub(super) camera_parameter_upload: Option<GpuUploadOperation>,
     pub(super) reconstruction_compute: Option<GpuComputeOperation>,
+    pub(super) static_fallback: Option<PreparedStaticFallback>,
+}
+
+/// A private phase-aligned output and correlated dense availability carrier.
+///
+/// These resources are fully rewritten for the exact output occurrence and are
+/// never part of retained history. A value 0 means unresolved, 1 a compatible
+/// static estimator, and 2 a provisional current-phase sample.
+pub(super) struct PreparedStaticFallback {
+    pub(super) resolved: GpuBufferHandle,
+    pub(super) availability: GpuBufferHandle,
+    pub(super) phase_presence: GpuBufferHandle,
+    pub(super) clears: Vec<GpuClearOperation>,
+    pub(super) compute: GpuComputeOperation,
+}
+
+fn prepare_static_fallback(
+    packed: &PackedOutput,
+    resolved: ResolvedOutputContext<'_>,
+    primary: &PreparedPrimaryPass,
+    history: &GpuBufferHandle,
+    sample_counts: &GpuBufferHandle,
+    resources: &mut DeterministicResourceCache,
+) -> Result<PreparedStaticFallback, RenderDeterministicLoweringError> {
+    let width = packed.input_words[header::REQUESTED_WIDTH];
+    let height = packed.input_words[header::REQUESTED_HEIGHT];
+    let layout = temporal_fallback_layout(
+        resolved.output_index,
+        (width, height),
+        resolved
+            .bytes_per_row_alignment
+            .ok_or(RenderDeterministicLoweringError::MissingBytesPerRowAlignment)?,
+        resolved.max_storage_buffer_binding_size,
+        resolved.max_buffer_size,
+    )?;
+    if history.descriptor().size_bytes() != layout.resolved_bytes {
+        return Err(RenderDeterministicLoweringError::OutputCorrelationChanged {
+            output_index: resolved.output_index,
+        });
+    }
+    let count = layout.cell_count;
+    let resolved_bytes = layout.resolved_bytes;
+    let availability_bytes = layout.availability_bytes;
+    // Reuse continuity-local logical identities, not per-frame GPU handles.
+    // The retained history buffers remain disjoint from all three scratch carriers.
+    let descriptions = [
+        (DeterministicBufferKind::TemporalProvisional, resolved_bytes),
+        (
+            DeterministicBufferKind::TemporalPhasePresence,
+            availability_bytes,
+        ),
+        (
+            DeterministicBufferKind::TemporalAvailability,
+            availability_bytes,
+        ),
+    ];
+    let handles = descriptions
+        .into_iter()
+        .map(|(kind, bytes)| {
+            resources.buffer(
+                resolved.output_index,
+                kind,
+                GpuBufferDescriptor::ordinary_owned(
+                    format!("RunenRender output {} {kind:?}", resolved.output_index),
+                    GpuResourceLifetime::Transient,
+                    GpuReconstruction::SourceBacked,
+                    bytes,
+                    [
+                        GpuBufferUsage::Storage,
+                        GpuBufferUsage::CopyDestination,
+                        GpuBufferUsage::CopySource,
+                    ],
+                    GpuBufferInitialization::Uninitialized,
+                )
+                .map_err(|error| {
+                    gpu_resource_descriptor("temporal fallback buffer descriptor", error)
+                })?,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let clears = handles
+        .iter()
+        .map(|handle| {
+            GpuClearOperation::buffer_zero(
+                GpuBufferRegion::whole(handle)
+                    .map_err(|error| gpu_work_operation("temporal fallback clear region", error))?,
+            )
+            .map_err(|error| gpu_work_operation("temporal fallback clear", error))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let source = retained_temporal_fallback_source().map_err(map_maintained_program_build_error)?;
+    let pipeline = GpuComputePipelineDescriptor::ordinary(source, "main")
+        .map_err(|error| gpu_program_contract("temporal fallback pipeline", error))?;
+    let bindings = pipeline
+        .runtime_bindings([
+            GpuRuntimeBindingValue::whole_buffer(0, 0, &primary.input),
+            GpuRuntimeBindingValue::whole_buffer(0, 1, history),
+            GpuRuntimeBindingValue::whole_buffer(0, 2, sample_counts),
+            GpuRuntimeBindingValue::whole_buffer(0, 3, &handles[0]),
+            GpuRuntimeBindingValue::whole_buffer(0, 4, &handles[1]),
+            GpuRuntimeBindingValue::whole_buffer(0, 5, &handles[2]),
+        ])
+        .map_err(|error| gpu_program_contract("temporal fallback bindings", error))?;
+    let dispatch =
+        deterministic_dispatch_size(count, resolved.max_compute_workgroups_per_dimension)?;
+    let compute = GpuComputeOperation::new(pipeline, bindings, GpuDispatchIntent::direct(dispatch))
+        .map_err(|error| gpu_work_operation("temporal fallback compute", error))?;
+    Ok(PreparedStaticFallback {
+        resolved: handles[0].clone(),
+        phase_presence: handles[1].clone(),
+        availability: handles[2].clone(),
+        clears,
+        compute,
+    })
 }
 
 pub(super) struct PreparedOutputPasses {
@@ -243,6 +359,7 @@ pub(super) fn prepare_temporal_pass(
         return Ok(PreparedTemporalPass {
             camera_parameter_upload: None,
             reconstruction_compute: None,
+            static_fallback: None,
         });
     };
 
@@ -252,6 +369,14 @@ pub(super) fn prepare_temporal_pass(
             sample_counts,
             ..
         } => {
+            let fallback = prepare_static_fallback(
+                packed,
+                resolved,
+                primary,
+                handle,
+                sample_counts,
+                resources,
+            )?;
             let source = retained_temporal_reconstruction_source()
                 .map_err(map_maintained_program_build_error)?;
             let pipeline = GpuComputePipelineDescriptor::ordinary(source, "main")
@@ -263,6 +388,8 @@ pub(super) fn prepare_temporal_pass(
                     GpuRuntimeBindingValue::whole_buffer(0, 2, &primary.definedness),
                     GpuRuntimeBindingValue::whole_buffer(0, 3, handle),
                     GpuRuntimeBindingValue::whole_buffer(0, 4, sample_counts),
+                    GpuRuntimeBindingValue::whole_buffer(0, 5, &fallback.resolved),
+                    GpuRuntimeBindingValue::whole_buffer(0, 6, &fallback.phase_presence),
                 ])
                 .map_err(|error| {
                     gpu_program_contract("temporal reconstruction runtime bindings", error)
@@ -280,6 +407,7 @@ pub(super) fn prepare_temporal_pass(
             Ok(PreparedTemporalPass {
                 camera_parameter_upload: None,
                 reconstruction_compute: Some(compute),
+                static_fallback: Some(fallback),
             })
         }
         DeterministicTemporalHistoryUseStorage::Camera {
@@ -363,6 +491,7 @@ pub(super) fn prepare_temporal_pass(
             Ok(PreparedTemporalPass {
                 camera_parameter_upload: Some(parameter_upload),
                 reconstruction_compute: Some(compute),
+                static_fallback: None,
             })
         }
     }

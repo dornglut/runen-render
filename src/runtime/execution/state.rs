@@ -7,7 +7,7 @@ use crate::field_input::RenderFieldSemanticInputBinding;
 use crate::request::{
     RenderObservationSpec, RenderOutputSpec, RenderPerspectiveObservation, RenderSamplingSupport,
 };
-use crate::scene::RenderSceneRevision;
+use crate::scene::RenderSceneSnapshot;
 use crate::space_time::RenderTimeInterval;
 use crate::surface_input::RenderSurfaceSemanticInputBinding;
 use runen_gpu::{
@@ -46,6 +46,9 @@ pub(super) enum DeterministicBufferKind {
     CoverageStatusScratch,
     CoverageDepthScratch,
     CoverageHitScratch,
+    TemporalProvisional,
+    TemporalPhasePresence,
+    TemporalAvailability,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +64,7 @@ pub(super) enum DeterministicTemporalObservationCompatibility {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DeterministicTemporalSignature {
-    pub(super) scene_revision: RenderSceneRevision,
+    pub(super) scene: RenderSceneSnapshot,
     pub(super) observation: DeterministicTemporalObservationCompatibility,
     pub(super) output: RenderOutputSpec,
     pub(super) semantic_inputs: Vec<RenderSurfaceSemanticInputBinding>,
@@ -373,7 +376,7 @@ impl DeterministicResourceCache {
                     GpuResourceLifetime::Retained,
                     GpuReconstruction::SourceBacked,
                     byte_len,
-                    [GpuBufferUsage::Storage],
+                    [GpuBufferUsage::Storage, GpuBufferUsage::CopySource],
                     GpuBufferInitialization::Zeroed,
                 )
                 .map_err(|error| {
@@ -476,6 +479,39 @@ pub(super) fn temporal_evaluation_extent_supported(
         && evaluation_extent.1 <= requested_extent.1
         && u64::from(evaluation_extent.0) * 2 >= u64::from(requested_extent.0)
         && u64::from(evaluation_extent.1) * 2 >= u64::from(requested_extent.1)
+}
+
+/// The maintained WGSL uses f32 (not rational) coordinates to scatter each
+/// evaluation sample to a requested cell. An injective mapping is a prerequisite
+/// for race-free scatter and for bounding current-only fallback by N - M.
+///
+/// Validate the *same* expression/rounding stages as the shader on both axes
+/// for both phase offsets. Any alias fails admission, rather than relying on an
+/// invalid mathematical real-number assumption for large near-native extents.
+/// Bound the host-side scan independently of the potentially huge lattice area.
+pub(super) fn temporal_phase_mapping_is_injective(
+    requested_extent: (u32, u32),
+    evaluation_extent: (u32, u32),
+) -> bool {
+    fn axis(requested: u32, evaluation: u32) -> bool {
+        if requested == 0 || evaluation == 0 || requested > 65_536 {
+            return false;
+        }
+        for offset in [0.25_f32, 0.75_f32] {
+            let mut prior = None;
+            for index in 0..evaluation {
+                let mapped = (((index as f32 + offset) * requested as f32) / evaluation as f32)
+                    .floor() as u32;
+                let mapped = mapped.min(requested - 1);
+                if prior.is_some_and(|prior| mapped <= prior) {
+                    return false;
+                }
+                prior = Some(mapped);
+            }
+        }
+        true
+    }
+    axis(requested_extent.0, evaluation_extent.0) && axis(requested_extent.1, evaluation_extent.1)
 }
 
 pub(super) fn temporal_observation_compatibility(

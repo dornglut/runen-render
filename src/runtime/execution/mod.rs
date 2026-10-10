@@ -23,7 +23,8 @@ use super::program::{
     MAINTAINED_EVALUATOR_REVISION, TEMPORAL_RECONSTRUCTION_REVISION, TEMPORAL_RECONSTRUCTION_WGSL,
     abi::{camera, temporal},
     build_maintained_program_sources, retained_camera_reprojection_source,
-    retained_maintained_evaluator_source, retained_temporal_reconstruction_source,
+    retained_maintained_evaluator_source, retained_temporal_fallback_source,
+    retained_temporal_reconstruction_source,
 };
 use super::program::{RenderMaintainedProgramBuildError, RenderRunenShaderCompilationError};
 #[cfg(test)]
@@ -38,8 +39,6 @@ use crate::request::{
     RenderSamplingSupport,
 };
 use crate::scene::RenderObjectId;
-#[cfg(test)]
-use crate::scene::RenderSceneRevision;
 #[cfg(test)]
 use crate::surface_input::RenderSurfaceSemanticInputBinding;
 use crate::surface_input::RenderSurfaceSemanticInputGeneration;
@@ -87,7 +86,7 @@ mod submission;
 
 pub use lifecycle::{
     PreparedDeterministicRadianceOutput, PreparedDeterministicRender, RenderObjectIdentityDecoder,
-    RenderTemporalExecutionEvidence, SubmittedDeterministicRender,
+    RenderRadianceCellAvailability, RenderTemporalExecutionEvidence, SubmittedDeterministicRender,
 };
 pub use prepare::{
     prepare_deterministic_render, submit_deterministic_render,
@@ -117,6 +116,7 @@ use state::{
     DeterministicBufferKind, DeterministicTemporalHistorySelection,
     DeterministicTemporalHistoryUseStorage, DeterministicTemporalSignature,
     temporal_evaluation_extent_supported, temporal_observation_compatibility,
+    temporal_phase_mapping_is_injective,
 };
 
 #[cfg(test)]

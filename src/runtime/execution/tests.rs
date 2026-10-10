@@ -336,7 +336,7 @@ fn temporal_signature(source_generation: u64) -> DeterministicTemporalSignature 
     .with_generation(RenderSurfaceSemanticInputGeneration::new(source_generation));
 
     DeterministicTemporalSignature {
-        scene_revision: RenderSceneRevision::INITIAL,
+        scene: crate::scene::RenderSceneStore::new().snapshot(),
         observation: temporal_observation_compatibility(observation, false),
         output,
         semantic_inputs: vec![binding],
@@ -685,7 +685,7 @@ fn camera_compatibility_key_retains_every_non_pose_dependency() {
     update.insert(object);
     store.commit(update).expect("advance test scene revision");
     let mut changed_scene = baseline.clone();
-    changed_scene.scene_revision = store.snapshot().revision();
+    changed_scene.scene = store.snapshot();
     assert_ne!(changed_scene, baseline);
 }
 
@@ -1520,4 +1520,82 @@ fn maintained_execution_has_no_string_flattening_gpu_authoring_bucket() {
     );
     assert!(!source.contains(concat!("gpu_", "authoring(")));
     assert!(!source.contains(concat!("RunenGpu", "Authoring")));
+}
+
+#[test]
+fn temporal_phase_scatter_injectivity_proves_the_real_f32_mapping_and_rejects_aliases() {
+    // The finite requested evaluator does not use ideal rational coordinates.
+    // A near-native large f32 lattice can map two primary invocations to the
+    // same requested cell; admission must fail rather than race two writes.
+    assert!(!temporal_phase_mapping_is_injective(
+        (18_646, 1),
+        (18_645, 1)
+    ));
+    assert!(!temporal_phase_mapping_is_injective(
+        (65_537, 1),
+        (32_769, 1)
+    ));
+    assert!(temporal_phase_mapping_is_injective(
+        (1920, 1080),
+        (1440, 810)
+    ));
+    assert!(temporal_phase_mapping_is_injective(
+        (1920, 1080),
+        (1280, 720)
+    ));
+    assert!(temporal_phase_mapping_is_injective(
+        (1920, 1080),
+        (960, 540)
+    ));
+    for width in 1..=17_u32 {
+        for height in 1..=13_u32 {
+            for ew in width.div_ceil(2)..=width {
+                for eh in height.div_ceil(2)..=height {
+                    assert!(
+                        temporal_phase_mapping_is_injective((width, height), (ew, eh)),
+                        "all four f32 phases must inject on the adversarial small lattice"
+                    );
+                    for phase in 0..4_u32 {
+                        let offset_x = if phase == 1 || phase == 3 {
+                            0.75_f32
+                        } else {
+                            0.25_f32
+                        };
+                        let offset_y = if phase >= 2 { 0.75_f32 } else { 0.25_f32 };
+                        let mut mapped = std::collections::BTreeSet::new();
+                        for y in 0..eh {
+                            for x in 0..ew {
+                                let rx = ((((x as f32 + offset_x) * width as f32) / ew as f32)
+                                    .floor() as u32)
+                                    .min(width - 1);
+                                let ry = ((((y as f32 + offset_y) * height as f32) / eh as f32)
+                                    .floor() as u32)
+                                    .min(height - 1);
+                                assert!(mapped.insert((rx, ry)), "phase scatter aliases");
+                            }
+                        }
+                        assert_eq!(
+                            (width as usize * height as usize) - mapped.len(),
+                            (width as usize * height as usize) - (ew as usize * eh as usize),
+                            "N-M is a bound only after the actual phase mapping injects"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn phase_fallback_shader_source_uses_the_maintained_scene_query() {
+    let source = retained_temporal_fallback_source()
+        .expect("fallback must compile through RunenShader and admit through RunenGPU");
+    let second = retained_temporal_fallback_source().unwrap();
+    assert!(source.is_same_record(&second));
+    let shader = crate::runtime::program::TEMPORAL_FALLBACK_WGSL.as_str();
+    assert!(shader.contains("fn nearest_hit("));
+    assert!(shader.contains("fn direct_radiance("));
+    assert!(shader.contains("fn current_phase_radiance("));
+    assert!(shader.contains("fn unresolved("));
+    assert!(shader.contains("phase_visited_words[cell]"));
 }

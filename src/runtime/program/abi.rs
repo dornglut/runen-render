@@ -79,6 +79,24 @@ pub(crate) mod temporal {
     pub(crate) const PHASE_COUNT: u32 = 4;
 }
 
+pub(crate) mod temporal_fallback {
+    pub(crate) const REVISION: u64 = 1;
+    // Rust tests independently check the exact shader/provisional ABI. The
+    // production classification is the public RenderRadianceCellAvailability
+    // enum; avoid a second active numeric authority in release builds.
+    #[cfg(test)]
+    pub(crate) const UNRESOLVED_RADIANCE_BITS: u32 = 0x7fc0_0000;
+    #[cfg(test)]
+    pub(crate) const UNRESOLVED: u32 = 0;
+    #[cfg(test)]
+    pub(crate) const COMPATIBLE_HISTORY: u32 = 1;
+    #[cfg(test)]
+    pub(crate) const CURRENT_PHASE: u32 = 2;
+    // Combined provisional output, per-phase presence and per-cell availability.
+    // This explicit policy is not a public renderer quality control.
+    pub(crate) const MAX_PER_OUTPUT_SCRATCH_BYTES: u64 = 256 * 1024 * 1024;
+}
+
 pub(crate) mod requested_coverage {
     pub(crate) const POLICY_REVISION: u32 = 1;
 }
@@ -129,8 +147,8 @@ mod tests {
     use crate::runtime::carrier;
     use crate::runtime::program::{
         CAMERA_REPROJECTION_REVISION, CAMERA_REPROJECTION_WGSL, EVALUATOR_WGSL,
-        MAINTAINED_EVALUATOR_REVISION, SCENE_QUERY_WGSL, TEMPORAL_RECONSTRUCTION_REVISION,
-        TEMPORAL_RECONSTRUCTION_WGSL,
+        MAINTAINED_EVALUATOR_REVISION, SCENE_QUERY_WGSL, TEMPORAL_FALLBACK_REVISION,
+        TEMPORAL_FALLBACK_WGSL, TEMPORAL_RECONSTRUCTION_REVISION, TEMPORAL_RECONSTRUCTION_WGSL,
     };
 
     fn indexed(name: &str, index: usize) -> String {
@@ -177,6 +195,15 @@ mod tests {
                     header::REQUESTED_HEIGHT,
                     header::TEMPORAL_PHASE,
                     header::TEMPORAL_HISTORY_AGE,
+                    header::TEMPORAL_HISTORY_ROW_STRIDE,
+                ][..],
+            ),
+            (
+                TEMPORAL_FALLBACK_WGSL.as_str(),
+                &[
+                    header::REQUESTED_WIDTH,
+                    header::REQUESTED_HEIGHT,
+                    header::TEMPORAL_PHASE,
                     header::TEMPORAL_HISTORY_ROW_STRIDE,
                 ][..],
             ),
@@ -279,7 +306,15 @@ mod tests {
     #[test]
     fn program_and_policy_revisions_are_explicit() {
         assert_eq!(MAINTAINED_EVALUATOR_REVISION, 3);
-        assert_eq!(TEMPORAL_RECONSTRUCTION_REVISION, 2);
+        assert_eq!(TEMPORAL_RECONSTRUCTION_REVISION, 3);
+        assert_eq!(TEMPORAL_FALLBACK_REVISION, temporal_fallback::REVISION);
+        assert!(TEMPORAL_FALLBACK_WGSL.contains(&format!(
+            "const UNRESOLVED_RADIANCE_BITS: u32 = {}u;",
+            temporal_fallback::UNRESOLVED_RADIANCE_BITS
+        )));
+        assert!(TEMPORAL_FALLBACK_WGSL.contains("availability_words[cell] = 0u;"));
+        assert!(TEMPORAL_FALLBACK_WGSL.contains("availability_words[cell] = 1u;"));
+        assert!(TEMPORAL_FALLBACK_WGSL.contains("availability_words[cell] = 2u;"));
         assert_eq!(CAMERA_REPROJECTION_REVISION, 3);
         assert_eq!(requested_coverage::POLICY_REVISION, 1);
         assert_eq!(temporal::SEQUENCE_REVISION, 1);

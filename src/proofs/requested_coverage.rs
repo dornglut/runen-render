@@ -210,7 +210,19 @@ fn observe(
                 work.operation(node.label().as_str(), node.operation().clone())?;
             }
             for output in fragment.outputs() {
-                work.add_output(output.clone())?;
+                // This GPU readback oracle appends its observations *after*
+                // production, changing the observed buffer's final access
+                // from storage ReadWrite to copy Read. Its real export was
+                // already authored and separately validated by production
+                // submissions; do not attach that now-stale final-access
+                // declaration to this augmented, readback-only proof graph.
+                let observed_buffer_export = match output.relationship().resource() {
+                    GpuResourceRef::Buffer(buffer) => handles.contains(buffer),
+                    _ => false,
+                };
+                if !observed_buffer_export {
+                    work.add_output(output.clone())?;
+                }
             }
         }
         for (index, readback) in readbacks.into_iter().enumerate() {
@@ -1030,4 +1042,940 @@ fn requested_coverage_uses_current_scene_state_even_with_unchanged_surface_gener
         "scene transform must form fresh requested depth without a surface-generation change"
     );
     assert!(current[1].contains(&2));
+}
+
+#[test]
+fn phase_aligned_fallback_gpu_matches_same_phase_full_requested_evaluator() {
+    use crate::runtime::program::abi::temporal_fallback;
+    let Some(context) = context() else { return };
+    for requested in [(8_u32, 8_u32), (7, 5), (9, 1), (1, 9)] {
+        let profile = |numerator: u32, denominator: u32| {
+            (
+                ((requested.0 * numerator) / denominator).max(requested.0.div_ceil(2)),
+                ((requested.1 * numerator) / denominator).max(requested.1.div_ceil(2)),
+            )
+        };
+        for evaluation in [profile(3, 4), profile(2, 3), profile(1, 2)] {
+            if evaluation == requested {
+                continue;
+            }
+            let fixture = fixture(requested, 0.0, 0.0, 9);
+            let mut cache = DeterministicResourceCache::default();
+            let mut identities = None;
+            for phase in 0..4 {
+                let native = evaluate(
+                    &context,
+                    packed(
+                        &fixture,
+                        &context,
+                        phase,
+                        MaintainedExecutionKind::Semantic(
+                            fixture.request.outputs()[0].spec().value(),
+                        ),
+                    ),
+                );
+                let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+                    admit(&fixture, &context),
+                    &context,
+                    &mut cache,
+                    Some((0, evaluation)),
+                    false,
+                )
+                .expect("admitted sub-native fallback");
+                let radiance = prepared.radiance_output(0).unwrap();
+                let evidence = radiance.temporal_execution_evidence().unwrap();
+                assert_eq!(evidence.phase, phase);
+                assert!(!evidence.camera_reprojection_eligible);
+                assert!(radiance.availability_export_relationship().is_some());
+                assert!(
+                    radiance
+                        .availability_import(GpuResourceProvenance::new(
+                            radiance
+                                .texture()
+                                .unwrap()
+                                .descriptor()
+                                .common()
+                                .label()
+                                .clone(),
+                            None,
+                            None
+                        ))
+                        .is_some()
+                );
+                assert!(
+                    prepared
+                        .work_set()
+                        .fragments()
+                        .iter()
+                        .flat_map(|fragment| fragment.nodes())
+                        .all(|node| node.kind() != GpuWorkNodeKind::Readback),
+                    "ordinary fallback may not introduce per-frame CPU readback"
+                );
+                let get = |kind| cache.buffers[&(0, kind)].clone();
+                let resolved = get(DeterministicBufferKind::TemporalProvisional);
+                let availability = get(DeterministicBufferKind::TemporalAvailability);
+                let visited = get(DeterministicBufferKind::TemporalPhasePresence);
+                let (history, counts) = match &cache.temporal_histories[&0].storage {
+                    DeterministicTemporalStorage::Static {
+                        handle,
+                        sample_counts,
+                        ..
+                    } => (handle.clone(), sample_counts.clone()),
+                    _ => panic!("sub-native uses finite static estimator"),
+                };
+                let current_identifiers = [
+                    resolved.diagnostic_identity(),
+                    availability.diagnostic_identity(),
+                    visited.diagnostic_identity(),
+                ];
+                assert_eq!(
+                    current_identifiers.iter().collect::<BTreeSet<_>>().len(),
+                    3,
+                    "distinct non-aliased output, presence, availability carriers"
+                );
+                if let Some(prior) = identities {
+                    assert_eq!(prior, current_identifiers, "no per-frame buffer IDs");
+                }
+                identities = Some(current_identifiers);
+                let observations = observe(
+                    &context,
+                    prepared.work_set().fragments().to_vec(),
+                    &[resolved, availability, visited, counts, history],
+                );
+                let stride = observations[0].len() / requested.1 as usize;
+                assert_eq!(observations[1].len(), (requested.0 * requested.1) as usize);
+                assert_eq!(observations[2].len(), observations[1].len());
+                assert_eq!(
+                    observations[2].iter().filter(|state| **state != 0).count(),
+                    (evaluation.0 * evaluation.1) as usize,
+                    "every primary sample must map to a distinct requested cell"
+                );
+                for (cell, availability) in observations[1].iter().copied().enumerate() {
+                    let x = cell % requested.0 as usize;
+                    let y = cell / requested.0 as usize;
+                    let physical = y * stride + x;
+                    let bits = observations[0][physical];
+                    let historical = observations[4][physical];
+                    let count = observations[3][physical];
+                    assert!(availability <= temporal_fallback::CURRENT_PHASE);
+                    match availability {
+                        temporal_fallback::UNRESOLVED => {
+                            assert_eq!(bits, temporal_fallback::UNRESOLVED_RADIANCE_BITS);
+                            assert_eq!(
+                                native[1][cell], 0,
+                                "same-phase unresolved must be genuinely undefined"
+                            );
+                        }
+                        temporal_fallback::COMPATIBLE_HISTORY => {
+                            assert_ne!(count, 0);
+                            assert_ne!(count, u32::MAX);
+                            assert_eq!(bits, historical);
+                            assert!(f32::from_bits(bits).is_finite());
+                        }
+                        temporal_fallback::CURRENT_PHASE => {
+                            assert_eq!(native[1][cell], 1);
+                            assert_eq!(
+                                bits, native[0][physical],
+                                "fallback is the maintained *same phase* direct radiance ray"
+                            );
+                            assert!(f32::from_bits(bits).is_finite());
+                        }
+                        _ => unreachable!(),
+                    }
+                    if phase == 0 && observations[2][cell] == 0 {
+                        assert_eq!(
+                            count, 0,
+                            "provisional current-only reconstruction never populates history"
+                        );
+                    }
+                }
+                cache.reconcile_temporal_outputs(true);
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_field_current_fallback_is_never_silent_background_black() {
+    use crate::runtime::program::abi::temporal_fallback;
+    let Some(context) = context() else { return };
+    for input in [
+        constant_field(2.0),
+        constant_field(0.0),
+        constant_field(0.001),
+    ] {
+        let (fixture, fields) = field_fixture(input, Some(55));
+        let mut cache = DeterministicResourceCache::default();
+        let native = evaluate(
+            &context,
+            packed_admitted(
+                &admit_inputs(&fixture, &fields, &context),
+                &context,
+                0,
+                MaintainedExecutionKind::Semantic(fixture.request.outputs()[0].spec().value()),
+            ),
+        );
+        let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+            admit_inputs(&fixture, &fields, &context),
+            &context,
+            &mut cache,
+            Some((0, (4, 4))),
+            false,
+        )
+        .unwrap();
+        let handles = [
+            cache.buffers[&(0, DeterministicBufferKind::TemporalProvisional)].clone(),
+            cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone(),
+        ];
+        let observations = observe(&context, prepared.work_set().fragments().to_vec(), &handles);
+        let stride = observations[0].len() / 8;
+        for (cell, availability) in observations[1].iter().copied().enumerate() {
+            let physical = cell / 8 * stride + cell % 8;
+            if native[1][cell] == 0 {
+                assert_eq!(availability, temporal_fallback::UNRESOLVED);
+                assert_eq!(
+                    observations[0][physical],
+                    temporal_fallback::UNRESOLVED_RADIANCE_BITS,
+                    "invalid shading/query is not a known-zero miss"
+                );
+            } else {
+                assert_eq!(availability, temporal_fallback::CURRENT_PHASE);
+                assert_eq!(observations[0][physical], native[0][physical]);
+            }
+        }
+        cache.reconcile_temporal_outputs(true);
+    }
+}
+
+#[test]
+fn phase_fallback_prepared_but_abandoned_does_not_certify_history() {
+    let Some(context) = context() else { return };
+    let fixture = fixture((7, 5), 0.0, 0.0, 12);
+    let mut cache = DeterministicResourceCache::default();
+    let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&fixture, &context),
+        &context,
+        &mut cache,
+        Some((0, (4, 3))),
+        false,
+    )
+    .unwrap();
+    let first = prepared
+        .radiance_output(0)
+        .unwrap()
+        .temporal_execution_evidence()
+        .unwrap()
+        .clone();
+    assert_eq!(first.phase, 0);
+    assert!(first.history_reset);
+    drop(prepared);
+    cache.reconcile_temporal_outputs(false);
+    let next = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&fixture, &context),
+        &context,
+        &mut cache,
+        Some((0, (4, 3))),
+        false,
+    )
+    .unwrap();
+    let second = next
+        .radiance_output(0)
+        .unwrap()
+        .temporal_execution_evidence()
+        .unwrap();
+    assert_eq!(second.phase, 0);
+    assert_eq!(second.history_age, 0);
+    assert!(second.history_reset);
+    assert_ne!(second.history_generation, first.history_generation);
+}
+
+fn fixture_with_directional_illumination(
+    extent: (u32, u32),
+    light_direction: [f64; 3],
+) -> MaintainedExecutionFixture {
+    use crate::appearance::RenderDirectionalEmitter;
+    use crate::participation::RenderObjectParticipation;
+    use crate::scene::{RenderSceneStore, RenderSceneUpdate};
+    let mut result = fixture(extent, 0.0, 0.0, 32);
+    let original = result.scene.object_ids()[0];
+    let state = result.scene.object_state(original).unwrap().clone();
+    let participation = result.scene.object_participation(original).unwrap().clone();
+    let mut store = RenderSceneStore::new();
+
+    let object = store.allocate_object_id().unwrap();
+    assert_eq!(object, original);
+    let mut insert = RenderSceneUpdate::new();
+    insert.insert_with_state(object, state.clone());
+    store.commit(insert).unwrap();
+    assert_eq!(
+        store.allocate_representation_id(object).unwrap(),
+        result.semantic_inputs[0].representation_id()
+    );
+    let mut attach = RenderSceneUpdate::new();
+    attach.replace_participation(object, participation);
+    store.commit(attach).unwrap();
+
+    let light = store.allocate_object_id().unwrap();
+    let mut insert = RenderSceneUpdate::new();
+    insert.insert_with_state(light, state);
+    store.commit(insert).unwrap();
+    let mut attach = RenderSceneUpdate::new();
+    attach.replace_participation(
+        light,
+        RenderObjectParticipation::from_representations([])
+            .unwrap()
+            .with_emitter(Some(
+                RenderDirectionalEmitter::new(light_direction, 550e-9, std::f64::consts::PI)
+                    .unwrap(),
+            )),
+    );
+    store.commit(attach).unwrap();
+    result.scene = store.snapshot();
+    result
+}
+
+#[test]
+fn gpu_current_fallback_uses_actual_illumination_not_only_identical_depth() {
+    use crate::runtime::program::abi::temporal_fallback;
+    let Some(context) = context() else { return };
+    let requested = (16_u32, 16_u32);
+    let evaluation = (8_u32, 8_u32);
+    let fixtures = [
+        fixture_with_directional_illumination(requested, [0.0, 0.0, 1.0]),
+        fixture_with_directional_illumination(requested, [0.0, 0.0, -1.0]),
+    ];
+    let mut expected = Vec::new();
+    let mut produced = Vec::new();
+    for fixture in &fixtures {
+        let reference = evaluate(
+            &context,
+            packed(
+                fixture,
+                &context,
+                0,
+                MaintainedExecutionKind::Semantic(fixture.request.outputs()[0].spec().value()),
+            ),
+        );
+        let mut cache = DeterministicResourceCache::default();
+        let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+            admit(fixture, &context),
+            &context,
+            &mut cache,
+            Some((0, evaluation)),
+            false,
+        )
+        .unwrap();
+        let handles = [
+            cache.buffers[&(0, DeterministicBufferKind::TemporalProvisional)].clone(),
+            cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone(),
+            cache.buffers[&(0, DeterministicBufferKind::TemporalPhasePresence)].clone(),
+        ];
+        let results = observe(&context, prepared.work_set().fragments().to_vec(), &handles);
+        assert_eq!(results[1].len(), 256);
+        assert_eq!(
+            results[2].iter().filter(|state| **state != 0).count(),
+            (evaluation.0 * evaluation.1) as usize
+        );
+        let stride = results[0].len() / requested.1 as usize;
+        for cell in 0..256_usize {
+            let physical = (cell / requested.0 as usize) * stride + cell % requested.0 as usize;
+            if reference[1][cell] == 1 {
+                assert_eq!(results[1][cell], temporal_fallback::CURRENT_PHASE);
+                assert_eq!(
+                    results[0][physical], reference[0][physical],
+                    "real WGSL fallback shading must equal the same-phase full evaluator"
+                );
+            } else {
+                assert_eq!(results[1][cell], temporal_fallback::UNRESOLVED);
+                assert_eq!(
+                    results[0][physical],
+                    temporal_fallback::UNRESOLVED_RADIANCE_BITS
+                );
+            }
+        }
+        cache.reconcile_temporal_outputs(true);
+        expected.push(reference);
+        produced.push(results);
+    }
+    // Illumination is the only changed semantic variable; all primary
+    // hit/depth evidence must remain identical, but current radiance differs.
+    assert_eq!(expected[0][1], expected[1][1]);
+    assert_eq!(expected[0][3], expected[1][3]);
+    assert_eq!(expected[0][4], expected[1][4]);
+    assert!(
+        expected[0][0]
+            .iter()
+            .zip(&expected[1][0])
+            .any(|(lit, dark)| { f32::from_bits(*lit) > 0.0 && f32::from_bits(*dark) == 0.0 }),
+        "the GPU scene must prove genuinely illuminated versus unlit geometry"
+    );
+    assert!(
+        produced[0][0]
+            .iter()
+            .zip(&produced[1][0])
+            .any(|(lit, dark)| { f32::from_bits(*lit) > 0.0 && f32::from_bits(*dark) == 0.0 }),
+        "actual current-only fallback must reflect illumination differences"
+    );
+}
+
+#[test]
+fn equal_numeric_scene_revisions_do_not_certify_different_illumination_histories() {
+    let Some(context) = context() else { return };
+    let first_fixture = fixture_with_directional_illumination((8, 8), [0.0, 0.0, 1.0]);
+    let second_fixture = fixture_with_directional_illumination((8, 8), [0.0, 0.0, -1.0]);
+    assert_eq!(
+        first_fixture.scene.revision(),
+        second_fixture.scene.revision()
+    );
+    assert_ne!(first_fixture.scene, second_fixture.scene);
+    let mut cache = DeterministicResourceCache::default();
+    let first = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&first_fixture, &context),
+        &context,
+        &mut cache,
+        Some((0, (4, 4))),
+        false,
+    )
+    .unwrap();
+    let previous = first
+        .radiance_output(0)
+        .unwrap()
+        .temporal_execution_evidence()
+        .unwrap()
+        .clone();
+    let availability = cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
+    let result = observe(
+        &context,
+        first.work_set().fragments().to_vec(),
+        &[availability],
+    );
+    assert!(result[0].contains(&2));
+    cache.reconcile_temporal_outputs(true);
+    let second = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&second_fixture, &context),
+        &context,
+        &mut cache,
+        Some((0, (4, 4))),
+        false,
+    )
+    .unwrap();
+    let current = second
+        .radiance_output(0)
+        .unwrap()
+        .temporal_execution_evidence()
+        .unwrap();
+    assert!(
+        current.history_reset,
+        "distinct emitter facts reject same-revision history"
+    );
+    assert_eq!(current.phase, 0);
+    assert_eq!(current.history_age, 0);
+    assert_ne!(current.history_generation, previous.history_generation);
+}
+
+/// Exercise two independent renderer continuities on the same Vulkan context.
+/// A compatible view must retain its phase while an unrelated view invalidates
+/// its source generation or camera pose. Every reset must produce only truthful
+/// same-phase values, never stale retained radiance.
+#[test]
+fn phase_fallback_gpu_isolates_views_and_resets_incompatible_sources_and_cameras() {
+    use crate::runtime::program::abi::temporal_fallback;
+    let Some(context) = context() else { return };
+    let mut caches = [
+        DeterministicResourceCache::default(),
+        DeterministicResourceCache::default(),
+    ];
+    let mut generations = [None::<u64>, None::<u64>];
+    // (view, camera_x, sphere_x, source_generation, expected_phase, reset)
+    let steps = [
+        (0_usize, 0.0, 0.0, 9_u64, 0, true),
+        (1, 0.5, 0.0, 9, 0, true),
+        (0, 0.0, 0.0, 9, 1, false),
+        (0, 0.0, 0.0, 9, 2, false),
+        (1, 0.5, 0.0, 9, 1, false),
+        (0, 0.0, 0.0, 9, 3, false),
+        (0, 0.0, 0.0, 9, 0, false),   // Completed four-phase wrap.
+        (0, 0.0, 40.0, 10, 0, true),  // New surface generation.
+        (1, 0.5, 0.0, 9, 2, false),   // Independent view remains compatible.
+        (0, 0.75, 40.0, 10, 0, true), // Sub-native camera movement.
+    ];
+    for (view, camera_x, sphere_x, source_generation, expected_phase, reset) in steps {
+        let scene = fixture((8, 8), camera_x, sphere_x, source_generation);
+        let reference = evaluate(
+            &context,
+            packed(
+                &scene,
+                &context,
+                expected_phase,
+                MaintainedExecutionKind::Semantic(scene.request.outputs()[0].spec().value()),
+            ),
+        );
+        let cache = &mut caches[view];
+        let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+            admit(&scene, &context),
+            &context,
+            cache,
+            Some((0, (4, 4))),
+            false,
+        )
+        .expect("independent-view fallback preparation");
+        let output = prepared.radiance_output(0).unwrap();
+        assert!(output.availability_export_relationship().is_some());
+        let evidence = output.temporal_execution_evidence().unwrap();
+        assert_eq!(evidence.phase, expected_phase);
+        assert_eq!(evidence.history_reset, reset);
+        assert!(!evidence.camera_reprojection_eligible);
+        if let Some(previous) = generations[view] {
+            assert_eq!(
+                evidence.history_generation != previous,
+                reset,
+                "only this view's incompatible semantic state may reset it"
+            );
+        }
+        generations[view] = Some(evidence.history_generation);
+        let resolved = cache.buffers[&(0, DeterministicBufferKind::TemporalProvisional)].clone();
+        let availability =
+            cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
+        let counts = match &cache.temporal_histories[&0].storage {
+            DeterministicTemporalStorage::Static { sample_counts, .. } => sample_counts.clone(),
+            _ => panic!("sub-native view needs static history"),
+        };
+        let observed = observe(
+            &context,
+            prepared.work_set().fragments().to_vec(),
+            &[resolved, availability, counts],
+        );
+        let stride = observed[0].len() / 8;
+        assert_eq!(observed[1].len(), 64);
+        for cell in 0..64 {
+            let physical = cell / 8 * stride + cell % 8;
+            let state = observed[1][cell];
+            let value = observed[0][physical];
+            if reference[1][cell] == 0 {
+                assert_eq!(state, temporal_fallback::UNRESOLVED);
+                assert_eq!(value, temporal_fallback::UNRESOLVED_RADIANCE_BITS);
+            } else if reset {
+                assert_eq!(
+                    state,
+                    temporal_fallback::CURRENT_PHASE,
+                    "reset cannot reuse an incompatible estimator"
+                );
+                assert_eq!(value, reference[0][physical]);
+            } else {
+                match state {
+                    temporal_fallback::CURRENT_PHASE => {
+                        assert_eq!(value, reference[0][physical]);
+                    }
+                    temporal_fallback::COMPATIBLE_HISTORY => {
+                        assert!(observed[2][physical] > 0);
+                        assert_ne!(observed[2][physical], u32::MAX);
+                        assert!(f32::from_bits(value).is_finite());
+                    }
+                    _ => panic!("available current radiance cannot become unresolved"),
+                }
+            }
+            if sphere_x == 40.0 && state == temporal_fallback::CURRENT_PHASE {
+                assert_eq!(
+                    value,
+                    0.0_f32.to_bits(),
+                    "a current background miss must overwrite old foreground radiance"
+                );
+            }
+        }
+        cache.reconcile_temporal_outputs(true);
+    }
+}
+
+/// A shadow blocker is never on the camera's primary center rays, but lies on
+/// the sphere's positive-cosine directional-light ray. Consequently the
+/// primary depth stays identical while the evaluated surface radiance changes.
+fn directional_shadow_fixture(extent: (u32, u32)) -> MaintainedExecutionFixture {
+    use crate::admission::{
+        RenderRepresentationAvailabilityFact, RenderRepresentationAvailabilityState,
+    };
+    use crate::appearance::RenderDiffuseMaterial;
+    use crate::participation::{RenderMaterialAssignment, RenderObjectParticipation};
+    use crate::representation::{
+        RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION, RENDER_SURFACE_QUERY_PROTOCOL_REVISION,
+        RenderOrientedSurfaceProtocolEvidence, RenderRepresentationRecord,
+        RenderSurfaceProtocolEvidence,
+    };
+    use crate::scene::{RenderSceneStore, RenderSceneUpdate};
+    use crate::space_time::RenderSpatialCoverage;
+    use crate::surface_input::RenderSurfaceSemanticInputRequirement;
+
+    let mut fixture = fixture_with_directional_illumination(extent, [1.0, 0.0, 1.0]);
+    let original = fixture.scene.clone();
+    let mut store = RenderSceneStore::new();
+    // Retain exactly the semantic scene facts (including the original emitter)
+    // and their object/representation identities before inserting the occluder.
+    for object in original.object_ids() {
+        let copy = store.allocate_object_id().unwrap();
+        assert_eq!(copy, object);
+        let mut insert = RenderSceneUpdate::new();
+        insert.insert_with_state(copy, original.object_state(object).unwrap().clone());
+        store.commit(insert).unwrap();
+        let participation = original.object_participation(object).unwrap().clone();
+        for representation in participation.representations() {
+            assert_eq!(
+                store.allocate_representation_id(copy).unwrap(),
+                representation.id()
+            );
+        }
+        let mut attach = RenderSceneUpdate::new();
+        attach.replace_participation(copy, participation);
+        store.commit(attach).unwrap();
+    }
+    let original_sphere = original.object_ids()[0];
+    let blocker = store.allocate_object_id().unwrap();
+    let mut insert = RenderSceneUpdate::new();
+    insert.insert_with_state(
+        blocker,
+        original.object_state(original_sphere).unwrap().clone(),
+    );
+    store.commit(insert).unwrap();
+    let representation_id = store.allocate_representation_id(blocker).unwrap();
+    let protocol = RenderSurfaceProtocolEvidence::exact(RENDER_SURFACE_QUERY_PROTOCOL_REVISION)
+        .unwrap()
+        .with_oriented_surface(
+            RenderOrientedSurfaceProtocolEvidence::exact(
+                RENDER_ORIENTED_SURFACE_QUERY_PROTOCOL_REVISION,
+            )
+            .unwrap(),
+        )
+        .with_semantic_input_requirement(RenderSurfaceSemanticInputRequirement::current());
+    let representation = RenderRepresentationRecord::builder(
+        representation_id,
+        RenderSpatialCoverage::unbounded(),
+        RenderTemporalSupport::unbounded(),
+    )
+    .surface_query(Some(protocol))
+    .build()
+    .unwrap();
+    let participation = RenderObjectParticipation::from_representations([representation])
+        .unwrap()
+        .with_material_assignment(Some(RenderMaterialAssignment::new(
+            RenderDiffuseMaterial::new(0.5).unwrap(),
+        )));
+    let mut attach = RenderSceneUpdate::new();
+    attach.replace_participation(blocker, participation);
+    store.commit(attach).unwrap();
+    // The reused object transform translates local z by -3. Thus this sphere
+    // is centered at world (1.5, 0, -0.5), on the shadow ray from the front
+    // surface of the original unit sphere centered at world (0, 0, -3).
+    fixture.semantic_inputs.push(
+        RenderSurfaceSemanticInputBinding::new(
+            representation_id,
+            RenderSurfaceSemanticInput::sphere(
+                [1.5, 0.0, 2.5],
+                0.7,
+                RenderTemporalSupport::unbounded(),
+            )
+            .unwrap(),
+        )
+        .with_generation(RenderSurfaceSemanticInputGeneration::new(9)),
+    );
+    fixture
+        .availability
+        .push(RenderRepresentationAvailabilityFact::new(
+            representation_id,
+            RenderRepresentationAvailabilityState::Available,
+        ));
+    fixture.scene = store.snapshot();
+    fixture
+}
+
+#[test]
+fn gpu_phase_fallback_preserves_hard_shadow_radiance_with_same_primary_geometry() {
+    use crate::runtime::program::abi::temporal_fallback;
+    let Some(context) = context() else { return };
+    let requested = (32_u32, 32_u32);
+    let bare = fixture_with_directional_illumination(requested, [1.0, 0.0, 1.0]);
+    let blocked = directional_shadow_fixture(requested);
+    let mut observations = Vec::new();
+    for fixture in [&bare, &blocked] {
+        let native = evaluate(
+            &context,
+            packed(
+                fixture,
+                &context,
+                0,
+                MaintainedExecutionKind::Semantic(fixture.request.outputs()[0].spec().value()),
+            ),
+        );
+        let mut cache = DeterministicResourceCache::default();
+        let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+            admit(fixture, &context),
+            &context,
+            &mut cache,
+            Some((0, (16, 16))),
+            false,
+        )
+        .expect("admitted fallback with real occluder");
+        let resolved = cache.buffers[&(0, DeterministicBufferKind::TemporalProvisional)].clone();
+        let availability =
+            cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
+        let actual = observe(
+            &context,
+            prepared.work_set().fragments().to_vec(),
+            &[resolved, availability],
+        );
+        cache.reconcile_temporal_outputs(true);
+        observations.push((native, actual));
+    }
+    let stride = observations[0].1[0].len() / requested.1 as usize;
+    let mut proven_shadow_cells = 0;
+    for cell in 0..(requested.0 * requested.1) as usize {
+        let physical = (cell / requested.0 as usize) * stride + cell % requested.0 as usize;
+        let first = &observations[0].0;
+        let shadowed = &observations[1].0;
+        if first[1][cell] != 1
+            || shadowed[1][cell] != 1
+            || first[3][physical] != shadowed[3][physical]
+            || first[4][physical * 4] != shadowed[4][physical * 4]
+            || first[0][physical] == shadowed[0][physical]
+        {
+            continue;
+        }
+        assert!(
+            f32::from_bits(first[0][physical]) > f32::from_bits(shadowed[0][physical]),
+            "the occluder must lower, not invent, same-depth direct radiance"
+        );
+        for (native, actual) in &observations {
+            assert_eq!(actual[1][cell], temporal_fallback::CURRENT_PHASE);
+            assert_eq!(
+                actual[0][physical], native[0][physical],
+                "actual Vulkan fallback must match maintained same-phase shading"
+            );
+        }
+        proven_shadow_cells += 1;
+    }
+    assert!(
+        proven_shadow_cells > 0,
+        "GPU fixture must actually produce differing hard shadows at identical primary depth"
+    );
+}
+
+/// Submit the *unmodified* ordinary producer, including both authored exports.
+/// Readback oracles may legally replace a buffer's final access and therefore
+/// cannot establish that the original GPU graph's availability export works.
+#[test]
+fn phase_fallback_unmodified_gpu_work_exports_radiance_and_availability_together() {
+    let Some(context) = context() else { return };
+    let fixture = fixture((8, 8), 0.0, 0.0, 31);
+    let mut cache = DeterministicResourceCache::default();
+    let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&fixture, &context),
+        &context,
+        &mut cache,
+        Some((0, (4, 4))),
+        false,
+    )
+    .unwrap();
+    let first = prepared.radiance_output(0).unwrap();
+    assert_eq!(first.temporal_execution_evidence().unwrap().phase, 0);
+    let radiance_export = first.export_relationship();
+    let availability_export = first.availability_export_relationship().unwrap();
+    assert_ne!(
+        radiance_export.export_key(),
+        availability_export.export_key()
+    );
+    let fragments = prepared.work_set().fragments().to_vec();
+    assert_eq!(fragments.len(), 1);
+    let outputs = fragments[0].outputs();
+    assert_eq!(
+        outputs.len(),
+        2,
+        "texture and dense availability must share one work fragment"
+    );
+    let exported_keys = outputs
+        .iter()
+        .map(|output| output.relationship().export_key())
+        .collect::<Vec<_>>();
+    assert!(exported_keys.contains(&radiance_export.export_key()));
+    assert!(exported_keys.contains(&availability_export.export_key()));
+    assert!(
+        fragments
+            .iter()
+            .flat_map(|fragment| fragment.nodes())
+            .all(|node| node.kind() != GpuWorkNodeKind::Readback),
+        "ordinary work must not read back availability to certify it"
+    );
+    let submission = pollster::block_on(context.submit_work(
+        "ordinary current radiance and availability outputs",
+        fragments,
+    ))
+    .expect("production graph with both exports must submit");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        context.progress();
+        if matches!(submission.status(), GpuSubmissionStatus::Completed) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "unmodified dual-export GPU submission did not complete"
+        );
+        std::thread::yield_now();
+    }
+    cache.reconcile_temporal_outputs(true);
+    let next = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&fixture, &context),
+        &context,
+        &mut cache,
+        Some((0, (4, 4))),
+        false,
+    )
+    .unwrap();
+    let evidence = next
+        .radiance_output(0)
+        .unwrap()
+        .temporal_execution_evidence()
+        .unwrap();
+    assert_eq!(evidence.phase, 1);
+    assert_eq!(evidence.history_age, 1);
+    assert!(!evidence.history_reset);
+}
+
+/// A fresh Vulkan context must not certify any old GPU-context history or
+/// reuse a formerly submitted phase as a current sample on the new device.
+#[test]
+fn phase_fallback_gpu_context_reconstruction_resets_current_evidence() {
+    use crate::runtime::program::abi::temporal_fallback;
+    let Some(first_context) = context() else {
+        return;
+    };
+    let fixture = fixture((8, 8), 0.0, 0.0, 41);
+    let mut cache = DeterministicResourceCache::default();
+    let mut previous_generation = None;
+    for phase in 0..2 {
+        let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+            admit(&fixture, &first_context),
+            &first_context,
+            &mut cache,
+            Some((0, (4, 4))),
+            false,
+        )
+        .unwrap();
+        let evidence = prepared
+            .radiance_output(0)
+            .unwrap()
+            .temporal_execution_evidence()
+            .unwrap();
+        assert_eq!(evidence.phase, phase);
+        previous_generation = Some(evidence.history_generation);
+        let availability =
+            cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
+        let result = observe(
+            &first_context,
+            prepared.work_set().fragments().to_vec(),
+            &[availability],
+        );
+        assert!(result[0].contains(&temporal_fallback::CURRENT_PHASE));
+        cache.reconcile_temporal_outputs(true);
+    }
+    drop(first_context);
+    cache.reset_for_context_change();
+    let Some(second_context) = context() else {
+        return;
+    };
+    let native = evaluate(
+        &second_context,
+        packed(
+            &fixture,
+            &second_context,
+            0,
+            MaintainedExecutionKind::Semantic(fixture.request.outputs()[0].spec().value()),
+        ),
+    );
+    let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&fixture, &second_context),
+        &second_context,
+        &mut cache,
+        Some((0, (4, 4))),
+        false,
+    )
+    .unwrap();
+    let evidence = prepared
+        .radiance_output(0)
+        .unwrap()
+        .temporal_execution_evidence()
+        .unwrap();
+    assert_eq!(evidence.phase, 0);
+    assert_eq!(evidence.history_age, 0);
+    assert!(evidence.history_reset);
+    assert!(evidence.history_generation > previous_generation.unwrap());
+    let resolved = cache.buffers[&(0, DeterministicBufferKind::TemporalProvisional)].clone();
+    let availability = cache.buffers[&(0, DeterministicBufferKind::TemporalAvailability)].clone();
+    let observed = observe(
+        &second_context,
+        prepared.work_set().fragments().to_vec(),
+        &[resolved, availability],
+    );
+    let stride = observed[0].len() / 8;
+    for cell in 0..64 {
+        let physical = cell / 8 * stride + cell % 8;
+        if native[1][cell] == 0 {
+            assert_eq!(observed[1][cell], temporal_fallback::UNRESOLVED);
+            assert_eq!(
+                observed[0][physical],
+                temporal_fallback::UNRESOLVED_RADIANCE_BITS
+            );
+        } else {
+            assert_eq!(observed[1][cell], temporal_fallback::CURRENT_PHASE);
+            assert_eq!(observed[0][physical], native[0][physical]);
+        }
+    }
+    cache.reconcile_temporal_outputs(true);
+}
+
+#[test]
+fn oversized_fallback_is_rejected_before_retained_gpu_identity_allocation() {
+    let Some(context) = context() else {
+        return;
+    };
+    // A logical 6144-square texture is admitted without submitting or
+    // allocating it physically. Its three fallback carriers together exceed
+    // the documented per-output scratch budget.
+    let oversized = fixture((6144, 6144), 0.0, 0.0, 73);
+    let mut cache = DeterministicResourceCache::default();
+    let error = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&oversized, &context),
+        &context,
+        &mut cache,
+        Some((0, (3072, 3072))),
+        false,
+    )
+    .expect_err("oversized fallback scratch must fail before GPU submission");
+    assert!(matches!(
+        error,
+        RenderDeterministicExecutionError::Lowering(
+            RenderDeterministicLoweringError::TemporalFallbackScratchBudgetExceeded {
+                output_index: 0,
+                required_bytes,
+                budget_bytes,
+            }
+        ) if required_bytes > budget_bytes
+    ));
+    assert!(
+        cache.temporal_histories.is_empty() && cache.buffers.is_empty(),
+        "failed preflight must not allocate retained history or scratch identities"
+    );
+    let admitted = fixture((8, 8), 0.0, 0.0, 74);
+    let prepared = super::prepare_deterministic_render_with_cache_and_evaluation(
+        admit(&admitted, &context),
+        &context,
+        &mut cache,
+        Some((0, (4, 4))),
+        false,
+    )
+    .expect("subsequent admitted ordinary work must remain clean");
+    let evidence = prepared
+        .radiance_output(0)
+        .unwrap()
+        .temporal_execution_evidence()
+        .unwrap();
+    assert_eq!(evidence.phase, 0);
+    assert_eq!(evidence.history_age, 0);
+    assert!(evidence.history_reset);
 }
