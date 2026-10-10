@@ -931,7 +931,9 @@ fn gaussian_axis_mass(a: f64, b: f64, center: f64, sigma: f64) -> f64 {
     integral * half / (sigma * GAUSS_3SIGMA_NORMALIZER)
 }
 
-/// Continuous positive-Euclidean-spread Gaussian at one correlated sample.
+/// Continuous positive Euclidean spread at one correlated sample. The
+/// positive-sigma finite Gaussian uses its normalized probability footprint;
+/// sigma=0 uses exact uniform unit-cell integration of the identity blur.
 ///
 /// A distance-to-union query certifies an entire cell inside if d(center)+
 /// half_diagonal <= radius, or outside if d(center)-half_diagonal > radius.
@@ -941,7 +943,7 @@ fn gaussian_axis_mass(a: f64, b: f64, center: f64, sigma: f64) -> f64 {
 /// membership with absolute error <= 1/4096, otherwise this path rejects
 /// with a typed precision/resource failure. No discrete source-mask
 /// inference, box dilation or unknown-as-zero approximation is admitted.
-fn positive_spread_gaussian_sample(
+fn continuous_positive_spread_sample(
     triangles: &[[f64; 2]],
     center: [f64; 2],
     radius: f64,
@@ -952,16 +954,16 @@ fn positive_spread_gaussian_sample(
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
-    if !radius.is_finite() || radius <= 0.0 || !sigma.is_finite() || sigma <= 0.0 {
+    if !radius.is_finite() || radius <= 0.0 || !sigma.is_finite() || sigma < 0.0 {
         return Err(precision(
-            "continuous positive spread Gaussian parameters are invalid",
+            "continuous positive spread integration parameters are invalid",
         ));
     }
     const MAX_GLOBAL_SPREAD_WORK: usize = 16_777_216;
     const MAX_SAMPLE_CELLS: usize = 32_768;
     const MAX_DEPTH: u8 = 22;
     const UNCERTAIN_MASS_TARGET: f64 = 1.0 / 2048.0;
-    let cutoff = 3.0 * sigma;
+    let cutoff = if sigma > 0.0 { 3.0 * sigma } else { 0.5 };
     let bounds = [
         center[0] - cutoff,
         center[1] - cutoff,
@@ -1036,10 +1038,24 @@ fn positive_spread_gaussian_sample(
         // Four quadrants have only two unique x and two unique y
         // integrals. Reuse each one instead of evaluating the same smooth
         // Gaussian axis four times at every subdivision.
-        let left = gaussian_axis_mass(x0, midpoint[0], center[0], sigma);
-        let right = gaussian_axis_mass(midpoint[0], x1, center[0], sigma);
-        let top = gaussian_axis_mass(y0, midpoint[1], center[1], sigma);
-        let bottom = gaussian_axis_mass(midpoint[1], y1, center[1], sigma);
+        let (left, right, top, bottom) = if sigma > 0.0 {
+            (
+                gaussian_axis_mass(x0, midpoint[0], center[0], sigma),
+                gaussian_axis_mass(midpoint[0], x1, center[0], sigma),
+                gaussian_axis_mass(y0, midpoint[1], center[1], sigma),
+                gaussian_axis_mass(midpoint[1], y1, center[1], sigma),
+            )
+        } else {
+            // The sigma-zero kernel is the identity. Physical 4x coverage
+            // integrates its exact geometric indicator over the associated
+            // unit sample cell, as for the established zero-spread area path.
+            (
+                midpoint[0] - x0,
+                x1 - midpoint[0],
+                midpoint[1] - y0,
+                y1 - midpoint[1],
+            )
+        };
         let weights = [left * top, right * top, left * bottom, right * bottom];
         let total = weights.iter().sum::<f64>();
         if !total.is_finite() || total <= 0.0 {
@@ -1091,7 +1107,8 @@ fn rasterize_gaussian_coverage(
     let physical_sigma = sigma * scale;
     let cutoff = physical_sigma * 3.0;
     if !physical_sigma.is_finite()
-        || physical_sigma <= 0.0
+        || physical_sigma < 0.0
+        || (physical_sigma == 0.0 && positive_spread == 0.0)
         || !cutoff.is_finite()
         || cutoff.ceil() > f64::from(MAX_GAUSSIAN_RADIUS_SAMPLES)
     {
@@ -1168,7 +1185,7 @@ fn rasterize_gaussian_coverage(
                 (origin_y as f64 + as_f64(row)) + 0.5,
             ];
             values[row * width + column] = if positive_spread > 0.0 {
-                positive_spread_gaussian_sample(
+                continuous_positive_spread_sample(
                     &triangles,
                     center,
                     physical_spread,
@@ -1416,108 +1433,27 @@ pub(super) fn prepare_untranslated_shadow_coverage(
         }
         return rasterize_area_coverage(mesh, samples_per_logical_unit, path);
     }
-    if spread > 0.0 && sigma > 0.0 {
+    if spread > 0.0 {
         return rasterize_gaussian_coverage(mesh, spread, sigma, samples_per_logical_unit, path);
     }
-    // Positive spread evaluates distance from the original geometry at each
-    // sample. Seed-then-dilate would falsely erase thin off-phase casters.
-    // Negative spread retains the bounded binary distance-transform path.
+    // Negative spread still has a separate bounded lattice approximation.
+    // Never treat empty eroded center samples as proof of empty continuous
+    // support; only the geometric complete-erosion certificate above may
+    // return None without independent continuous morphology evidence.
     let Some(source) =
-        rasterize_mesh_with_positive_spread(mesh, samples_per_logical_unit, spread.max(0.0), path)?
+        rasterize_neutral_mesh(mesh, samples_per_logical_unit, path)?
     else {
         return Ok(None);
     };
-    let spread_mask = if spread > 0.0 {
-        source
-    } else {
-        let physical_spread = spread * samples_per_logical_unit;
-        if !physical_spread.is_finite() {
-            return Err(mask_failure(
-                path,
-                Render2dSampleSpaceError::PrecisionLimit,
-                "shadow spread exceeds finite sample coordinates",
-            ));
-        }
-        signed_euclidean_spread(&source, physical_spread, path)?
-    };
-    if spread > 0.0 {
-        // Positive disk dilation contains every point of the original
-        // continuous geometry. Combining the true covered area with disk
-        // membership never loses off-phase sub-sample casters, including a
-        // radius smaller than half a sample interval. Union by maximum:
-        // overlapping triangles and a coincident distance hit cannot inflate
-        // sample coverage above one.
-        let Some(source_area) = rasterize_area_coverage(mesh, samples_per_logical_unit, path)?
-        else {
-            return Ok(None);
-        };
-        let mut values = filled(spread_mask.samples.len(), 0.0_f64, path)?;
-        for (dest, sample) in values.iter_mut().zip(&spread_mask.samples) {
-            *dest = f64::from(*sample) / 255.0;
-        }
-        let mut coverage = NeutralCoverage {
-            origin_x: spread_mask.origin_x,
-            origin_y: spread_mask.origin_y,
-            width: spread_mask.width,
-            height: spread_mask.height,
-            values,
-        };
-        for y in 0..source_area.height {
-            for x in 0..source_area.width {
-                let physical_x = source_area
-                    .origin_x
-                    .checked_add(i64::try_from(x).expect("bounded area column"))
-                    .ok_or_else(|| {
-                        mask_failure(
-                            path,
-                            Render2dSampleSpaceError::PrecisionLimit,
-                            "neutral support x sample phase overflow",
-                        )
-                    })?;
-                let physical_y = source_area
-                    .origin_y
-                    .checked_add(i64::try_from(y).expect("bounded area row"))
-                    .ok_or_else(|| {
-                        mask_failure(
-                            path,
-                            Render2dSampleSpaceError::PrecisionLimit,
-                            "neutral support y sample phase overflow",
-                        )
-                    })?;
-                let column = physical_x
-                    .checked_sub(coverage.origin_x)
-                    .and_then(|delta| usize::try_from(delta).ok())
-                    .ok_or_else(|| {
-                        mask_failure(
-                            path,
-                            Render2dSampleSpaceError::PrecisionLimit,
-                            "neutral positive spread lost its source-area x halo",
-                        )
-                    })?;
-                let row = physical_y
-                    .checked_sub(coverage.origin_y)
-                    .and_then(|delta| usize::try_from(delta).ok())
-                    .ok_or_else(|| {
-                        mask_failure(
-                            path,
-                            Render2dSampleSpaceError::PrecisionLimit,
-                            "neutral positive spread lost its source-area y halo",
-                        )
-                    })?;
-                if column >= coverage.width || row >= coverage.height {
-                    return Err(mask_failure(
-                        path,
-                        Render2dSampleSpaceError::PrecisionLimit,
-                        "neutral positive spread cannot contain the source area",
-                    ));
-                }
-                let output = &mut coverage.values[row * coverage.width + column];
-                *output = output.max(source_area.values[y * source_area.width + x]);
-            }
-        }
-        let kernel = gaussian_kernel(sigma, samples_per_logical_unit, path)?;
-        return blur_neutral_coverage(&coverage, &kernel, path).map(Some);
+    let physical_spread = spread * samples_per_logical_unit;
+    if !physical_spread.is_finite() {
+        return Err(mask_failure(
+            path,
+            Render2dSampleSpaceError::PrecisionLimit,
+            "shadow spread exceeds finite sample coordinates",
+        ));
     }
+    let spread_mask = signed_euclidean_spread(&source, physical_spread, path)?;
     if spread_mask.samples.iter().all(|sample| *sample == 0) {
         // Empty center samples alone are insufficient evidence that the
         // continuous eroded source is empty. The independently certifiable
@@ -1670,7 +1606,7 @@ mod tests {
         ];
         let mut work = 0_usize;
         let actual =
-            positive_spread_gaussian_sample(&rectangle, [0.5, 0.5], 0.06, 0.1, &mut work, &[3, 2])
+            continuous_positive_spread_sample(&rectangle, [0.5, 0.5], 0.06, 0.1, &mut work, &[3, 2])
                 .expect("bounded continuous Euclidean Gaussian integration");
         let independent_cdf = 0.079_621_723_618_115_15_f64;
         assert!((actual - independent_cdf).abs() <= 1.0 / 2048.0);
@@ -1679,11 +1615,39 @@ mod tests {
     }
 
     #[test]
+    fn positive_disk_identity_blur_matches_independent_circular_corner_area() {
+        // A 16x16 rectangle expanded by a radius-two Euclidean disk has
+        // a true circular corner at (26,26). Cell [27,28]^2 receives the
+        // exact area integral int_{1}^{sqrt(3)} (sqrt(4-x*x)-1) dx.
+        // Closed-form area: 0.31514674362772044 (unit cell).
+        let rectangle = [
+            [10.0, 10.0],
+            [26.0, 10.0],
+            [26.0, 26.0],
+            [10.0, 10.0],
+            [26.0, 26.0],
+            [10.0, 26.0],
+        ];
+        let mut work = 0_usize;
+        let actual = continuous_positive_spread_sample(
+            &rectangle,
+            [27.5, 27.5],
+            2.0,
+            0.0,
+            &mut work,
+            &[6, 2],
+        )
+        .expect("bounded continuous Euclidean identity-blur coverage");
+        assert!((actual - 0.315_146_743_627_720_44).abs() <= 1.0 / 2048.0);
+        assert!((actual - 0.375).abs() > 0.04);
+    }
+
+    #[test]
     fn continuous_spread_gaussian_rejects_invalid_params_without_alpha_fabrication() {
         let tri = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
         let mut work = 0_usize;
         assert!(matches!(
-            positive_spread_gaussian_sample(&tri, [0.5, 0.5], -0.01, 0.2, &mut work, &[9, 1]),
+            continuous_positive_spread_sample(&tri, [0.5, 0.5], -0.01, 0.2, &mut work, &[9, 1]),
             Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
                 kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
                 path: Some(path),

@@ -453,10 +453,12 @@ fn signed_euclidean_disk_spread_has_gpu_erosion_and_non_square_dilation() {
         "F3F positive Euclidean disk GPU",
     );
     pixel_near(pixel(&dilated_image, 26, 18), [255, 0, 0, 255]);
-    // The x/y sample coordinates are 27 + {1,3,5,7}/8. Exactly 6
-    // of the 16 center distances to the square corner (26,26) are <= 2.
-    // A box-spread approximation would color all sixteen.
-    pixel_near(pixel(&dilated_image, 27, 27), [165, 0, 0, 96]);
+    // Independently integrate the Euclidean disk at corner (26,26)
+    // over pixel [27,28]^2: area int_1^sqrt(3) (sqrt(4-x*x)-1) dx
+    // = 0.31514674362772044. Premultiplied red encodes to sRGB 152;
+    // linear alpha to 80. Earlier binary 4x center hits gave 6/16
+    // (sRGB 165, alpha 96), a visible non-continuous approximation.
+    pixel_near(pixel(&dilated_image, 27, 27), [152, 0, 0, 80]);
 }
 
 #[test]
