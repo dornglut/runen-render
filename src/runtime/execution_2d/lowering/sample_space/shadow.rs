@@ -110,6 +110,15 @@ pub(super) fn prepare(
         let scene::Event::BeginGroup { group, path, .. } = event else {
             continue;
         };
+        authored_effects = authored_effects
+            .checked_add(group.shadows().len())
+            .ok_or_else(|| shadow_resource(path, "shadow effect count overflow"))?;
+        if authored_effects > MAX_AUTHORED_SHADOWS {
+            return Err(shadow_resource(
+                path,
+                "authored shadows exceed bounded effect admission",
+            ));
+        }
     }
     if authored_effects == 0 {
         return Ok(BTreeMap::new());
@@ -139,15 +148,6 @@ pub(super) fn prepare(
         };
         if group.shadows().is_empty() {
             continue;
-        }
-        authored_effects = authored_effects
-            .checked_add(group.shadows().len())
-            .ok_or_else(|| shadow_resource(path, "shadow effect count overflow"))?;
-        if authored_effects > MAX_AUTHORED_SHADOWS {
-            return Err(shadow_resource(
-                path,
-                "authored shadows exceed bounded effect admission",
-            ));
         }
         let source = sources
             .get(&index)
