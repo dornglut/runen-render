@@ -1431,12 +1431,24 @@ pub(super) fn prepare_untranslated_shadow_coverage(
     // correlated lattice centers. Gaussian convolution preserves that mass.
     if spread == 0.0 {
         if sigma > 0.0 {
-            return rasterize_continuous_shadow_coverage(mesh, 0.0, sigma, samples_per_logical_unit, path);
+            return rasterize_continuous_shadow_coverage(
+                mesh,
+                0.0,
+                sigma,
+                samples_per_logical_unit,
+                path,
+            );
         }
         return rasterize_area_coverage(mesh, samples_per_logical_unit, path);
     }
     if spread > 0.0 {
-        return rasterize_continuous_shadow_coverage(mesh, spread, sigma, samples_per_logical_unit, path);
+        return rasterize_continuous_shadow_coverage(
+            mesh,
+            spread,
+            sigma,
+            samples_per_logical_unit,
+            path,
+        );
     }
     // Negative spread still has a separate bounded lattice approximation.
     // Never treat empty eroded center samples as proof of empty continuous
