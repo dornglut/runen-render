@@ -689,13 +689,18 @@ fn gaussian_union_sample(
     if active.is_empty() {
         return Ok(0.0);
     }
-    let cost = active.len().checked_pow(3)
+    let cost = active
+        .len()
+        .checked_pow(3)
         .and_then(|count| count.checked_mul(16 * 16))
         .ok_or_else(|| resource("continuous Gaussian arrangement work overflow"))?;
-    *work = work.checked_add(cost)
+    *work = work
+        .checked_add(cost)
         .ok_or_else(|| resource("aggregate continuous Gaussian work overflow"))?;
     if *work > 134_217_728 {
-        return Err(resource("continuous Gaussian arrangement exceeds bounded work"));
+        return Err(resource(
+            "continuous Gaussian arrangement exceeds bounded work",
+        ));
     }
     let mut edges = Vec::new();
     let mut events = vec![y0, y1];
@@ -797,7 +802,9 @@ fn gaussian_union_sample(
     let normalizer = sigma * GAUSS_3SIGMA_NORMALIZER;
     let alpha = total / (normalizer * normalizer);
     if !alpha.is_finite() || !(-1.0e-9..=1.0 + 1.0e-9).contains(&alpha) {
-        return Err(precision("continuous Gaussian union integral is not normalized"));
+        return Err(precision(
+            "continuous Gaussian union integral is not normalized",
+        ));
     }
     Ok(alpha.clamp(0.0, 1.0))
 }
@@ -819,38 +826,61 @@ fn rasterize_gaussian_coverage(
     };
     let physical_sigma = sigma * scale;
     let cutoff = physical_sigma * 3.0;
-    if !physical_sigma.is_finite() || physical_sigma <= 0.0
-        || !cutoff.is_finite() || cutoff.ceil() > f64::from(MAX_GAUSSIAN_RADIUS_SAMPLES)
+    if !physical_sigma.is_finite()
+        || physical_sigma <= 0.0
+        || !cutoff.is_finite()
+        || cutoff.ceil() > f64::from(MAX_GAUSSIAN_RADIUS_SAMPLES)
     {
-        return Err(resource("continuous Gaussian window exceeds bounded sample halo"));
+        return Err(resource(
+            "continuous Gaussian window exceeds bounded sample halo",
+        ));
     }
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let pad = cutoff.ceil() as usize;
-    let width = grid.width.checked_add(pad.checked_mul(2)
-        .ok_or_else(|| resource("continuous Gaussian width halo overflow"))?)
+    let width = grid
+        .width
+        .checked_add(
+            pad.checked_mul(2)
+                .ok_or_else(|| resource("continuous Gaussian width halo overflow"))?,
+        )
         .ok_or_else(|| resource("continuous Gaussian width overflow"))?;
-    let height = grid.height.checked_add(pad.checked_mul(2)
-        .ok_or_else(|| resource("continuous Gaussian height halo overflow"))?)
+    let height = grid
+        .height
+        .checked_add(
+            pad.checked_mul(2)
+                .ok_or_else(|| resource("continuous Gaussian height halo overflow"))?,
+        )
         .ok_or_else(|| resource("continuous Gaussian height overflow"))?;
-    let area = width.checked_mul(height)
+    let area = width
+        .checked_mul(height)
         .ok_or_else(|| resource("continuous Gaussian area overflow"))?;
     if area > MAX_NEUTRAL_MASK_SAMPLES {
-        return Err(resource("continuous Gaussian coverage exceeds bounded sample area"));
+        return Err(resource(
+            "continuous Gaussian coverage exceeds bounded sample area",
+        ));
     }
     let offset = i64::try_from(pad).map_err(|_| resource("continuous Gaussian halo overflow"))?;
-    let origin_x = grid.origin_x.checked_sub(offset)
+    let origin_x = grid
+        .origin_x
+        .checked_sub(offset)
         .ok_or_else(|| precision("continuous Gaussian x sample phase overflow"))?;
-    let origin_y = grid.origin_y.checked_sub(offset)
+    let origin_y = grid
+        .origin_y
+        .checked_sub(offset)
         .ok_or_else(|| precision("continuous Gaussian y sample phase overflow"))?;
     let to_samples = scale / mesh.units_per_parent_logical_unit;
     if !to_samples.is_finite() || to_samples <= 0.0 {
-        return Err(precision("continuous Gaussian triangle projection is invalid"));
+        return Err(precision(
+            "continuous Gaussian triangle projection is invalid",
+        ));
     }
     let mut triangles = filled(mesh.triangles.len(), [0.0; 2], path)?;
     for (dst, &[x, y]) in triangles.iter_mut().zip(&mesh.triangles) {
         *dst = [x * to_samples, y * to_samples];
         if !dst.iter().all(|v| v.is_finite()) {
-            return Err(precision("continuous Gaussian triangle projection lost precision"));
+            return Err(precision(
+                "continuous Gaussian triangle projection lost precision",
+            ));
         }
     }
     let mut values = filled(area, 0.0_f64, path)?;
@@ -1339,7 +1369,9 @@ mod tests {
     fn continuous_gaussian_reference_retains_full_interior_when_sample_cell_is_partial() {
         let mut rect = Vec::new();
         let points = [[0.03, 0.03], [0.23, 0.03], [0.23, 0.23], [0.03, 0.23]];
-        rect.extend([points[0], points[1], points[2], points[0], points[2], points[3]]);
+        rect.extend([
+            points[0], points[1], points[2], points[0], points[2], points[3],
+        ]);
         let mesh = NeutralMesh {
             units_per_parent_logical_unit: 1.0,
             triangles: rect,
@@ -1363,8 +1395,12 @@ mod tests {
         let mesh = NeutralMesh {
             units_per_parent_logical_unit: 1.0,
             triangles: vec![
-                [-1.0, -1.0], [0.125, -1.0], [0.125, 1.0],
-                [-1.0, -1.0], [0.125, 1.0], [-1.0, 1.0],
+                [-1.0, -1.0],
+                [0.125, -1.0],
+                [0.125, 1.0],
+                [-1.0, -1.0],
+                [0.125, 1.0],
+                [-1.0, 1.0],
             ],
             bounds: [-1.0, -1.0, 0.125, 1.0],
         };
@@ -1374,7 +1410,10 @@ mod tests {
         let col = usize::try_from(-once.origin_x).unwrap();
         let row = usize::try_from(-once.origin_y).unwrap();
         let sample = once.values[row * once.width + col];
-        assert!((sample - 0.5).abs() < 1.0e-8, "half-plane Gaussian {sample}");
+        assert!(
+            (sample - 0.5).abs() < 1.0e-8,
+            "half-plane Gaussian {sample}"
+        );
         let mut duplicate = mesh;
         duplicate.triangles.extend_from_within(..);
         let twice = prepare_untranslated_shadow_coverage(&duplicate, 0.0, 0.025, 4.0, &[4])
@@ -1494,7 +1533,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let total = area.values.iter().sum::<f64>();
-        assert!((total - 0.0016).abs() < 1.0e-10);
+        // Independently evaluated separable truncated-Gaussian integral:
+        // erf((edge-center)/(sqrt(2)*sigma)) per axis, summed on the
+        // correlated integer sample lattice. Convolution is not forced
+        // to conserve area exactly under point sampling.
+        let analytic_reference = 0.001_600_812_911_921_821_8;
+        assert!((total - analytic_reference).abs() < 1.0e-8, "{total}");
         let off_phase_spread =
             prepare_untranslated_shadow_coverage(&mesh, 0.001, 0.5, 4.0, &[6, 8])
                 .unwrap()
