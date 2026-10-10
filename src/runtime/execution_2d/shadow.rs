@@ -210,7 +210,10 @@ fn gaussian_square_support(
         .checked_mul(10)
         .ok_or_else(|| resource(path, "nested Gaussian support growth overflow"))?;
     if largest > MAX_NEUTRAL_VERTICES {
-        return Err(resource(path, "nested Gaussian support growth exceeds geometry budget"));
+        return Err(resource(
+            path,
+            "nested Gaussian support growth exceeds geometry budget",
+        ));
     }
     let mut expanded = empty_mesh();
     expanded
@@ -1047,7 +1050,10 @@ mod tests {
         };
         assert!(contains([1.0, 1.0]));
         assert!(contains([2.3, 0.2]));
-        assert!(!contains([2.4, 2.4]), "the extent is not geometric membership");
+        assert!(
+            !contains([2.4, 2.4]),
+            "the extent is not geometric membership"
+        );
     }
 
     #[test]

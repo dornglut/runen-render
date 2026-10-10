@@ -534,7 +534,13 @@ fn nested_zero_kernel_shadow_maps_through_sheared_ancestor_before_paint() {
 fn nested_finite_gaussian_integrates_parent_kernel_under_ancestor_shear() {
     let Some(context) = context() else { return };
     let nested = Render2dEntry::group(Render2dGroup::new(
-        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 10.0)],
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::OPAQUE,
@@ -580,17 +586,17 @@ fn nested_finite_gaussian_integrates_parent_kernel_under_ancestor_shear() {
 fn invisible_nested_gaussian_expands_exact_neutral_support_for_ancestor() {
     let Some(context) = context() else { return };
     let nested = Render2dEntry::group(Render2dGroup::new(
-        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 10.0)],
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::TRANSPARENT,
-        vec![effect(
-            0.0,
-            0.0,
-            0.5,
-            0.0,
-            Render2dColorRgba8::TRANSPARENT,
-        )],
+        vec![effect(0.0, 0.0, 0.5, 0.0, Render2dColorRgba8::TRANSPARENT)],
     ));
     let outer = Render2dEntry::group(Render2dGroup::new(
         vec![nested],

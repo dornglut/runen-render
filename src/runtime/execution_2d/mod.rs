@@ -257,12 +257,7 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
                 // continuous parent-frame kernel by inverse mapping.
                 // Nonzero nested signed DISK spread still rejects before
                 // F2 preparation until its region geometry is proven.
-                if path.len() > 1
-                    && group
-                        .shadows()
-                        .iter()
-                        .any(|shadow| shadow.spread() != 0.0)
-                {
+                if path.len() > 1 && group.shadows().iter().any(|shadow| shadow.spread() != 0.0) {
                     let kind = Render2dUnsupportedContent::Shadows {
                         root_index: path[0],
                     };

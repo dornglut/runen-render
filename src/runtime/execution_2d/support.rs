@@ -890,10 +890,14 @@ pub(super) fn affine_parent_gaussian_coverage_admitted(
         || determinant == 0.0
         || !parent_to_root.components().iter().all(|x| x.is_finite())
     {
-        return Err(precision("nested Gaussian parent affine or kernel is unrepresentable"));
+        return Err(precision(
+            "nested Gaussian parent affine or kernel is unrepresentable",
+        ));
     }
     if (3.0 * physical_sigma).ceil() > f64::from(MAX_GAUSSIAN_RADIUS_SAMPLES) {
-        return Err(resource("nested parent-frame Gaussian window exceeds bounded halo"));
+        return Err(resource(
+            "nested parent-frame Gaussian window exceeds bounded halo",
+        ));
     }
     let scaled = root_envelope.map(|v| v * scale);
     if !scaled.iter().all(|x| x.is_finite())
@@ -901,7 +905,9 @@ pub(super) fn affine_parent_gaussian_coverage_admitted(
         || scaled[0] >= scaled[2]
         || scaled[1] >= scaled[3]
     {
-        return Err(precision("nested Gaussian root sample extent cannot be represented"));
+        return Err(precision(
+            "nested Gaussian root sample extent cannot be represented",
+        ));
     }
     #[allow(
         clippy::cast_possible_truncation,
@@ -922,14 +928,18 @@ pub(super) fn affine_parent_gaussian_coverage_admitted(
         .checked_mul(height)
         .ok_or_else(|| resource("nested Gaussian root area overflow"))?;
     if area == 0 || area > MAX_NEUTRAL_MASK_SAMPLES {
-        return Err(resource("nested Gaussian root sample grid exceeds bounded area"));
+        return Err(resource(
+            "nested Gaussian root sample grid exceeds bounded area",
+        ));
     }
     let triangles_count = source.triangles.len() / 3;
     let scan_work = area
         .checked_mul(triangles_count)
         .ok_or_else(|| resource("nested Gaussian neutral scan overflow"))?;
     if scan_work > 16_777_216 {
-        return Err(resource("nested Gaussian neutral scan exceeds bounded work"));
+        return Err(resource(
+            "nested Gaussian neutral scan exceeds bounded work",
+        ));
     }
     charge_shadow_preparation_work(aggregate_work, scan_work, path)?;
     let conversion = scale / source.units_per_parent_logical_unit;
@@ -940,7 +950,9 @@ pub(super) fn affine_parent_gaussian_coverage_admitted(
     for (destination, &[x, y]) in triangles.iter_mut().zip(&source.triangles) {
         *destination = [x * conversion, y * conversion];
         if !destination.iter().all(|v| v.is_finite()) {
-            return Err(precision("nested Gaussian source projection lost precision"));
+            return Err(precision(
+                "nested Gaussian source projection lost precision",
+            ));
         }
     }
     let mut values = filled(area, 0.0_f64, path)?;
