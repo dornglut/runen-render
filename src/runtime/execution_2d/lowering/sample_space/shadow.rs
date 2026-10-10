@@ -9,6 +9,9 @@ use crate::runtime::execution_2d::{
 };
 use std::sync::Arc;
 
+// Retained floating neutral support is separate from per-tile source-backed
+// GPU uploads; both are aggregate limits across one immutable contribution.
+const MAX_SHADOW_COVERAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SHADOW_MASK_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_AUTHORED_SHADOWS: usize = 256;
 const FORMAT: GpuTextureFormat = GpuTextureFormat::R32Float;
@@ -109,6 +112,7 @@ pub(super) fn prepare(
     )?;
     let mut groups = BTreeMap::new();
     let mut authored_effects = 0_usize;
+    let mut retained_coverage_bytes = 0_u64;
     for (index, event) in plan.events.iter().enumerate() {
         let scene::Event::BeginGroup { group, path, .. } = event else {
             continue;
@@ -153,6 +157,15 @@ pub(super) fn prepare(
             )? else {
                 continue;
             };
+            let bytes = u64::try_from(coverage.values.len())
+                .ok()
+                .and_then(|count| count.checked_mul(8))
+                .ok_or_else(|| shadow_resource(path, "shadow floating coverage bytes overflow"))?;
+            retained_coverage_bytes = retained_coverage_bytes.checked_add(bytes)
+                .ok_or_else(|| shadow_resource(path, "aggregate shadow coverage bytes overflow"))?;
+            if retained_coverage_bytes > MAX_SHADOW_COVERAGE_BYTES {
+                return Err(shadow_resource(path, "retained neutral coverage exceeds bounded memory"));
+            }
             let bounds = output_bounds(&coverage, target, path)?;
             prepared.push(PreparedShadow {
                 color,
