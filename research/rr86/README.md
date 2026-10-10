@@ -123,3 +123,42 @@ The comparison uses cheap but *incorrect as true distance* fields: min(primitive
 The differences persist at pointwise **continuous** Gaussian coverage—not merely at SDF texture resolution, a missed pixel phase or root-space blur error. A renderer must distinguish a signed field with correct Boolean membership from **true Euclidean distance to the exposed boundary** before applying general erosion/dilation. A certified implicit/region evaluator can still deliver the correct result, and exact algebraic special cases (dilation distributes over union; erosion over intersection) remain valid.
 
 **Limits:** these are analytic point probes with artificial adversarial parameters (one sigma is extremely small), not measured visible output pixels at a specified canvas/raster resolution, not a benchmark, and not an admitted production F1 realization. Their proof does not cover arbitrary Béziers, intrinsic glyphs, complete nested compositions or numerical error in an actual GPU kernel. Do not use them as a substitute for #81 end-to-end F3F or #86 measured implementation comparison.
+
+## Orthogonal CSG independent reference (orthogonal_csg_reference.py)
+
+Run from repository root:
+
+~~~sh
+python3 research/rr86/orthogonal_csg_reference.py
+~~~
+
+**Independent Python 3 stdlib investigation (not F1/Rust/Vulkan implementation).** Five bounded source-neutral geometric cases with axis-aligned rectangle leaves, nested union, intersection/clips, *difference/holes*, and nested mixed CSG. The script constructs the **exact induced arrangement** of rectangle coordinate edges, derives exposed orthogonal boundary segments from actual inside/outside neighboring cells, and computes continuous true Euclidean signed distance to the exposed segments. This exact-region evaluator is **independent** of the nested Boolean candidate min/max/max(a,-b) signed-value field being falsified.
+
+An optional field certificate uses a proven 1-Lipschitz signed-value **lower bound to boundary distance**. It can decide some point membership after signed disk morphology, but must return unknown (uncertain) in remaining cases and refine using the geometric oracle. The reference is exact only for the selected orthogonal rectilinear geometry; it is **not** a general Bezier, stroke, glyph or GPU renderer.
+
+### Executed corpus and findings
+
+For **5 scenes × 1,794 deterministic points × 5 spread values (-0.45, -0.2, 0, +0.12, +0.45) = 44,850 classifications**:
+
+| Scene | Naive Boolean SDF threshold mismatches (all spreads) | Independent geometry |
+|---|---:|---|
+| Cross union | 14 | Exposed edges of concave union |
+| Cross union clipped by a rectangle | 38 | Intersection of CSG and structural clip |
+| Rectangle with an interior rectangular hole | 0 | Outer and hole boundaries |
+| Nested union ∩ clip, then difference of hole | 24 | Nested multiple Boolean operations |
+| Two offset rectangles intersected | 10 | Intersection edge/corner distances |
+| **Total** | **86** | **44,850 classifications** |
+
+The scalar **conservative certification** issued **38,969 definite decisions**, none incorrect versus exposed-boundary oracle; **5,881 cases (13.1%) were uncertain** and needed an exact geometric fallback. All 5,881 reference fallbacks agreed; this is a bounded observed corpus, not a formal correctness proof for arbitrary expressions, floating precision, or degenerate boundaries. A zero-error row for one shape/radius is not a universal exactness claim.
+
+### Separate zero-spread Gaussian reference
+
+For positive sigma, the exact convolution over the **rectilinear Boolean shape** is derived independently **twice**: (1) sum product-of-erf normalized finite Gaussian integrals over disjoint arrangement cells, and (2) recursively expand the Boolean indicator using *signed inclusion-exclusion* over intersections of original rectangles, then integrate each algebraic rectangle term. Across five scenes, two sigmas (0.05 and 0.3), and four observation points, both methods agreed to **1e-12 absolute tolerance**. They use different geometric constructions. This is exactly the accepted *finite separable 3-sigma* Gaussian kernel at **zero spread**; after nonzero disk spread the boundaries are curved and these rectilinear formulas are **not** sufficient. Do not cite this as a full signed-spread Gaussian proof.
+
+### Work/cost boundaries
+
+The reference arrangement uses unique leaf rectangle coordinates, yielding up to **O(n²) cells** before any physical query, even if few final boundary segments remain. Its point-to-segment distance oracle scans **all exposed segments per query**; for these specific five scenes there were 4–24 segments. Signed inclusion-exclusion may produce **exponentially many algebraic terms in nested Boolean depth**, independently of the cell-based method. Field evaluation scales with expression size/depth but may require extensive fallback: 5,881 uncertain of 44,850 classifications in this corpus, not necessarily a favorable performance tradeoff.
+
+The wall durations printed by the script time this Python reference loop while **computing both candidate and oracle on every point**; they do **not** compare separate candidate implementations, cannot establish an SDF speedup, and are not Rust/native GPU measurements. The implementation intentionally has no production memory, work-node, atlas, transformation, or clip-resource admission. Any adoption requires bounded peak-live work/memory, the actual F1 execution and Vulkan comparison, and independently calibrated error envelopes.
+
+**Critical conclusion:** Even after moving beyond simple overlapping disks to nested clipping and holes, a compositional region with a certified signed-value fast path and explicit exact fallback preserves these checked semantics. This is more evidence for a **region/capability-first** *hypothesis*, not for exclusive raster SDF authority or a final redesign decision.
