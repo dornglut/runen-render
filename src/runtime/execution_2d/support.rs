@@ -851,6 +851,8 @@ impl Ord for SpreadGaussianCell {
             .then_with(|| self.depth.cmp(&other.depth))
             .then_with(|| self.bounds[0].total_cmp(&other.bounds[0]))
             .then_with(|| self.bounds[1].total_cmp(&other.bounds[1]))
+            .then_with(|| self.bounds[2].total_cmp(&other.bounds[2]))
+            .then_with(|| self.bounds[3].total_cmp(&other.bounds[3]))
     }
 }
 
