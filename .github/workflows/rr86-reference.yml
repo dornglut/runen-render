@@ -67,6 +67,14 @@ jobs:
         run: |
           set -euo pipefail
           python3 --version
+          python3 -B - <<'PY'
+          from pathlib import Path
+          scripts = sorted(Path('research/rr86').glob('*.py'))
+          assert len(scripts) == 6, (len(scripts), scripts)
+          for script in scripts:
+              compile(script.read_bytes(), str(script), 'exec')
+          print(f'Preflight compiled {len(scripts)} independent Python scripts')
+          PY
           python3 -B research/rr86/field_certificates.py
           python3 -B research/rr86/nested_affine_gaussian.py
           python3 -B research/rr86/nested_boolean_blur.py

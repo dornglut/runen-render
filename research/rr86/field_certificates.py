@@ -112,7 +112,7 @@ def reference_checks():
 
     # Certifiers must never contradict the analytic reference.
     examined = certain = uncertain = 0
-    for op ("union", "intersection"):
+    for op in ("union", "intersection"):
         for spread in (-0.6, -0.2, 0.0, 0.031, 0.2, 0.6):
             for iy in range(-40, 41):
                 for ix in range(-55, 56):
