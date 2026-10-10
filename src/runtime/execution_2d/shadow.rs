@@ -65,6 +65,27 @@ fn charge_vertices(
     Ok(())
 }
 
+/// Aggregate geometric clip-pair work is owned by one contribution, not by
+/// individual item, group, or clipping invocation. Like vertex retention, this
+/// budget is charged before expensive triangle intersections allocate storage.
+fn charge_clip_work(
+    used: &mut usize,
+    count: usize,
+    path: &[usize],
+) -> Result<(), Render2dExecutionError> {
+    let next = used
+        .checked_add(count)
+        .ok_or_else(|| resource(path, "neutral clip accumulation overflow"))?;
+    if next > MAX_NEUTRAL_CLIP_WORK {
+        return Err(resource(
+            path,
+            "neutral clip triangle intersection work exceeds aggregate admission",
+        ));
+    }
+    *used = next;
+    Ok(())
+}
+
 struct SourceFrame<'a> {
     begin_event: usize,
     path: Vec<usize>,
@@ -88,6 +109,7 @@ fn neutral_item(
     field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
+    clip_work_used: &mut usize,
 ) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
     let root_index = path[0];
     let result = match item.primitive() {
@@ -158,6 +180,7 @@ fn neutral_item(
         path,
         scales.geometry_sample_scale,
         max_buffer_bytes,
+        clip_work_used,
     )?;
     Ok((!clipped.triangles.is_empty()).then_some(clipped))
 }
@@ -180,6 +203,7 @@ pub(super) fn group_child_sources(
     let mut active = Vec::<SourceFrame<'_>>::new();
     let mut sources = BTreeMap::new();
     let mut retained_vertices = 0_usize;
+    let mut clip_work_used = 0_usize;
     for (index, event) in plan.events.iter().enumerate() {
         match event {
             scene::Event::BeginGroup { path, group, .. } => {
@@ -194,9 +218,15 @@ pub(super) fn group_child_sources(
                 if active.is_empty() {
                     continue;
                 }
-                if let Some(mesh) =
-                    neutral_item(item, path, bindings, field_sets, scales, max_buffer_bytes)?
-                {
+                if let Some(mesh) = neutral_item(
+                    item,
+                    path,
+                    bindings,
+                    field_sets,
+                    scales,
+                    max_buffer_bytes,
+                    &mut clip_work_used,
+                )? {
                     charge_vertices(&mut retained_vertices, mesh.triangles.len(), path)?;
                     append(
                         &mut active.last_mut().expect("active source group").child_source,
@@ -287,6 +317,7 @@ pub(super) fn group_child_sources(
                     &frame.path,
                     scales.geometry_sample_scale,
                     max_buffer_bytes,
+                    &mut clip_work_used,
                 )?;
                 // Retain pristine C only after all nested geometric clip
                 // reads have completed. Ownership transfers without cloning
@@ -556,6 +587,7 @@ pub(super) fn intersect_clips(
     path: &[usize],
     resolution: f64,
     max_buffer_bytes: u64,
+    clip_work_used: &mut usize,
 ) -> Result<NeutralMesh, Render2dExecutionError> {
     if clips.is_empty() || source.triangles.is_empty() {
         let mut result = empty_mesh();
@@ -569,7 +601,6 @@ pub(super) fn intersect_clips(
         Render2dAffineTransform::IDENTITY,
         path,
     )?;
-    let mut work = 0_usize;
     for clip in clips {
         let item = Render2dItem::new(
             Render2dPrimitive::Fill {
@@ -596,15 +627,7 @@ pub(super) fn intersect_clips(
         let cost = (current.triangles.len() / 3)
             .checked_mul(clip_local.triangles.len() / 3)
             .ok_or_else(|| resource(path, "neutral conjunctive clip work overflow"))?;
-        work = work
-            .checked_add(cost)
-            .ok_or_else(|| resource(path, "neutral clip accumulation overflow"))?;
-        if work > MAX_NEUTRAL_CLIP_WORK {
-            return Err(resource(
-                path,
-                "neutral clip triangle intersection work exceeds admission",
-            ));
-        }
+        charge_clip_work(clip_work_used, cost, path)?;
         for source in current.triangles.as_chunks::<3>().0 {
             for clipping in clip_local.triangles.as_chunks::<3>().0 {
                 let polygon = triangle_intersection(
@@ -965,6 +988,55 @@ mod tests {
     }
 
     #[test]
+    fn clip_intersection_admission_is_contribution_wide_and_failure_is_atomic() {
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let clip = Render2dClip::new(
+            Render2dShape::rect(Render2dRect::new(0.0, 0.0, 1.0, 1.0).unwrap()),
+            Render2dAffineTransform::IDENTITY,
+        );
+        // A rectangle has two triangles; one input triangle therefore
+        // contributes two independently charged triangle-pair inspections.
+        let one_clip_cost = 2;
+        let mut used = MAX_NEUTRAL_CLIP_WORK - one_clip_cost;
+        let first = intersect_clips(
+            &source,
+            std::slice::from_ref(&clip),
+            0,
+            &[0, 0],
+            4.0,
+            1_048_576,
+            &mut used,
+        )
+        .unwrap();
+        assert!(!first.triangles.is_empty());
+        assert_eq!(used, MAX_NEUTRAL_CLIP_WORK);
+        assert!(matches!(
+            intersect_clips(
+                &source,
+                &[clip],
+                0,
+                &[0, 1],
+                4.0,
+                1_048_576,
+                &mut used,
+            ),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [0, 1]
+        ));
+        assert_eq!(
+            used, MAX_NEUTRAL_CLIP_WORK,
+            "failed admission never consumes further work budget"
+        );
+    }
+
+    #[test]
     fn transparent_parent_space_shape_and_clip_retain_only_intersection() {
         let support = Render2dItem::new(
             Render2dPrimitive::Fill {
@@ -982,7 +1054,17 @@ mod tests {
             Render2dShape::rect(Render2dRect::new(2.0, 1.0, 2.0, 2.0).unwrap()),
             Render2dAffineTransform::IDENTITY,
         );
-        let clipped = intersect_clips(&mesh, &[clip], 1, &[1], 4.0, 1_048_576).unwrap();
+        let mut clip_work_used = 0;
+        let clipped = intersect_clips(
+            &mesh,
+            &[clip],
+            1,
+            &[1],
+            4.0,
+            1_048_576,
+            &mut clip_work_used,
+        )
+        .unwrap();
         let coverage = super::super::support::prepare_untranslated_shadow_coverage(
             &clipped,
             0.0,
