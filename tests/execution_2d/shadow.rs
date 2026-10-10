@@ -693,6 +693,45 @@ fn narrow_continuous_gaussian_uses_neutral_geometry_not_cell_average() {
 }
 
 #[test]
+fn positive_euclidean_spread_convolves_continuous_geometry_on_actual_gpu() {
+    let Some(context) = context() else { return };
+    // The center of correlated subpixel (.125,.125) is inside the Gaussian
+    // footprint of a 0.1-wide neutral caster after disk dilation +0.015.
+    // Independent normalized finite-Gaussian integral across that footprint
+    // is (Phi(3)-Phi(-1.6))/(Phi(3)-Phi(-3)) = 0.94640591323.
+    // Only one of four x sample columns contributes, all four y rows do.
+    // The expected premultiplied physical pixel alpha is 0.94640591323/4,
+    // yielding alpha=60 and linear-red->sRGB=134 at 8-bit resolve.
+    // The old cell-area/discrete-kernel path gave alpha about 26 instead.
+    let composition = group(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            0.1,
+            0.0,
+            0.1,
+            1.0,
+        )],
+        vec![effect(
+            0.0,
+            0.0,
+            0.025,
+            0.015,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F continuous positive spread Gaussian external readback",
+    );
+    pixel_near(pixel(&image, 0, 0), [134, 0, 0, 60]);
+    assert_eq!(pixel(&image, 2, 0), [0, 0, 0, 0]);
+}
+
+#[test]
 fn finite_gaussian_shadow_retains_continuous_coverage_across_two_gpu_tiles() {
     let Some(context) = context() else { return };
     let composition = group(
