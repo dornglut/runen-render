@@ -292,6 +292,47 @@ fn shadows_preserve_nontransparent_caller_pixels_and_exact_completion_evidence()
 }
 
 #[test]
+fn nonuniform_group_transform_applies_before_parent_frame_euclidean_spread() {
+    let Some(context) = context() else {
+        return;
+    };
+    let child = caster(
+        Render2dColorRgba8::TRANSPARENT,
+        4.0,
+        10.0,
+        4.0,
+        8.0,
+    );
+    let group = Render2dGroup::new(
+        vec![child],
+        Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    );
+    let tree = Render2dComposition::new(vec![Render2dEntry::group(group)]).unwrap();
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &tree,
+        &Render2dResourceBindings::default(),
+        "F3F parent-frame positive spread after scale",
+    );
+    // Child geometry [4,8] is mapped to [8,16] BEFORE spread(+1).
+    // Parent-frame shadow reaches [7,17], NOT [6,18], which would
+    // result from spreading in the child frame and scaling afterwards.
+    pixel_near(pixel(&image, 7, 14), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 6, 14), [0, 0, 0, 0]);
+    assert_eq!(pixel(&image, 17, 14), [0, 0, 0, 0]);
+}
+
+#[test]
 fn signed_euclidean_disk_spread_has_gpu_erosion_and_non_square_dilation() {
     let Some(context) = context() else {
         return;
