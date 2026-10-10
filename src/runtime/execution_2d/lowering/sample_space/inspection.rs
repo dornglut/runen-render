@@ -202,13 +202,7 @@ pub(super) fn inspect(
     let mut retained_vector_vertices = 0usize;
     for (event_index, event) in plan.events.iter().enumerate() {
         match event {
-            scene::Event::BeginGroup { group, path, .. } => {
-                if path.len() > 1 && !group.shadows().is_empty() {
-                    let kind = Render2dUnsupportedContent::Shadows {
-                        root_index: path[0],
-                    };
-                    return Err(crate::runtime::execution_2d::unsupported_at(path, kind));
-                }
+            scene::Event::BeginGroup { .. } => {
                 depth += 1;
                 peak = peak.max(depth);
                 active_groups.push(items.len());

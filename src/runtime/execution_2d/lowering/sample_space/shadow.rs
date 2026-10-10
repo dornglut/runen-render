@@ -151,7 +151,12 @@ pub(super) fn prepare(
     let mut groups = BTreeMap::new();
     let mut retained_coverage_bytes = 0_u64;
     for (index, event) in plan.events.iter().enumerate() {
-        let scene::Event::BeginGroup { group, path, .. } = event else {
+        let scene::Event::BeginGroup {
+            group,
+            path,
+            parent_to_root,
+        } = event
+        else {
             continue;
         };
         if group.shadows().is_empty() {
@@ -166,11 +171,30 @@ pub(super) fn prepare(
             .map_err(|_| shadow_resource(path, "shadow preparation list allocation failed"))?;
         for effect in group.shadows() {
             let color = linear_color(effect.color());
-            // The independently derived reach bound is in THIS group's
-            // immediate-parent frame. The only currently admitted pixel
-            // lowering is a direct-root group: its parent IS the root.
-            let Some(envelope) = geometry_support::shadow_envelope(source, *effect, path)? else {
+            // Build the effect in its immediate-parent frame first.
+            // Zero spread and zero blur commute with ancestor affine
+            // projection, so a nested translated C remains exact triangles.
+            // Nonzero nested kernels reject in group_child_sources rather
+            // than being incorrectly applied in root space.
+            let Some(parent_envelope) =
+                geometry_support::shadow_envelope(source, *effect, path)?
+            else {
                 continue;
+            };
+            let parent_affine = if path.len() > 1 {
+                let [a, b, c, d, tx, ty] = parent_to_root.coefficients();
+                Some(
+                    Render2dAffineTransform::new(a, b, c, d, tx, ty).map_err(|_| {
+                        shadow_precision(path, "nested shadow ancestor affine is unrepresentable")
+                    })?,
+                )
+            } else {
+                None
+            };
+            let envelope = if let Some(ancestor) = parent_affine {
+                geometry_support::transform_envelope(parent_envelope, ancestor, path)?
+            } else {
+                parent_envelope
             };
             let canvas = target.canvas();
             if envelope[2] <= 0.0
@@ -186,8 +210,15 @@ pub(super) fn prepare(
                 })?;
             let mut shifted = geometry_support::empty_mesh();
             geometry_support::append(&mut shifted, source, offset, path)?;
+            let mut projected = geometry_support::empty_mesh();
+            let raster_source = if let Some(ancestor) = parent_affine {
+                geometry_support::append(&mut projected, &shifted, ancestor, path)?;
+                &projected
+            } else {
+                &shifted
+            };
             let Some(coverage) = support::prepare_untranslated_shadow_coverage(
-                &shifted,
+                raster_source,
                 effect.spread(),
                 effect.sigma(),
                 sample_scale,

@@ -17,7 +17,7 @@ use crate::composition_2d::{
     Render2dPrimitive, Render2dResourceBindings, Render2dResourceId, Render2dResourceValue,
 };
 use crate::execution_2d::{
-    Render2dSampleSpaceError, Render2dTargetAdmissionError, Render2dUnsupportedContent,
+    Render2dSampleSpaceError, Render2dTargetAdmissionError,
 };
 use crate::runtime::execution_2d::{
     clip as clip_geometry,
@@ -191,7 +191,19 @@ pub(in crate::runtime::execution_2d) fn lower(
     // This work comes from the SAME borrowed F1 painter tree as the visible
     // F3E items, but never from their clipped/colorized physical footprints.
     let shadow_groups = shadow::prepare(plan, bindings, fields, target, admitted_effects)?;
-    for (event, effects) in &shadow_groups {
+    // Immutable borrowed paths index just the authored group nodes. Each
+    // visible shadow can widen at most its 64 semantic ancestors, rather
+    // than scanning a potentially million-entry F1 plan per effect.
+    let group_events = plan
+        .events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| match event {
+            scene::Event::BeginGroup { path, .. } => Some((path.as_slice(), index)),
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    for effects in shadow_groups.values() {
         for effect in effects {
             if !effect.group_visible || effect.color[3] == 0.0 {
                 continue;
@@ -201,15 +213,22 @@ pub(in crate::runtime::execution_2d) fn lower(
                 bounds[dimension] = bounds[dimension].min(b[dimension]);
                 bounds[dimension + 2] = bounds[dimension + 2].max(b[dimension + 2]);
             }
-            let old = group_bounds[*event];
-            group_bounds[*event] = Some(old.map_or(b, |existing| {
-                [
-                    existing[0].min(b[0]),
-                    existing[1].min(b[1]),
-                    existing[2].max(b[2]),
-                    existing[3].max(b[3]),
-                ]
-            }));
+            // The effect's own owner and every containing group need this
+            // conservative bound, never as neutral geometric membership.
+            for depth in 1..=effect.path.len() {
+                let Some(&index) = group_events.get(&effect.path[..depth]) else {
+                    continue;
+                };
+                let old = group_bounds[index];
+                group_bounds[index] = Some(old.map_or(b, |existing| {
+                    [
+                        existing[0].min(b[0]),
+                        existing[1].min(b[1]),
+                        existing[2].max(b[2]),
+                        existing[3].max(b[3]),
+                    ]
+                }));
+            }
         }
     }
     if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {

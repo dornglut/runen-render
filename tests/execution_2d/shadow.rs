@@ -367,6 +367,98 @@ fn transparent_nested_child_group_keeps_neutral_support_for_outer_shadow() {
 }
 
 #[test]
+fn nested_zero_kernel_shadow_maps_through_sheared_ancestor_before_paint() {
+    let Some(context) = context() else {
+        return;
+    };
+    let caster = caster(Render2dColorRgba8::TRANSPARENT, 2.0, 10.0, 4.0, 6.0);
+    let nested = Render2dEntry::group(Render2dGroup::new(
+        vec![caster],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            5.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![nested],
+        Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 5.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F nested zero-kernel shadow under shear",
+    );
+    // Child C x=[2,6], shadow offset +5 -> [7,11] in its parent,
+    // then ancestor x'=2x+0.5y+5. At y=13 shadow x=[25.5,33.5].
+    pixel_near(pixel(&output, 29, 13), [255, 0, 0, 255]);
+    assert_eq!(pixel(&output, 22, 13), [0, 0, 0, 0]);
+    assert_eq!(pixel(&output, 36, 13), [0, 0, 0, 0]);
+}
+
+#[test]
+fn transparent_nested_shadow_support_reaches_ancestor_after_own_clip() {
+    let Some(context) = context() else {
+        return;
+    };
+    let clip = Render2dClip::new(
+        Render2dShape::rect(Render2dRect::new(7.0, 10.0, 2.0, 6.0).unwrap()),
+        Render2dAffineTransform::IDENTITY,
+    );
+    let nested = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(Render2dColorRgba8::TRANSPARENT, 2.0, 10.0, 4.0, 6.0)],
+        Render2dAffineTransform::IDENTITY,
+        vec![clip],
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(
+            5.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::TRANSPARENT,
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![nested],
+        Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 5.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 255, 0, 255),
+        )],
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F alpha-neutral nested support after clip",
+    );
+    // The nested clip removes original C [2,6] and keeps only the
+    // transparent effect C+5 intersected with [7,9]. Ancestor
+    // x'=2x+0.5y+5 maps it to [25.5,29.5] at y=13.
+    pixel_near(pixel(&output, 27, 13), [0, 255, 0, 255]);
+    assert_eq!(pixel(&output, 22, 13), [0, 0, 0, 0]);
+    assert_eq!(pixel(&output, 32, 13), [0, 0, 0, 0]);
+}
+
+#[test]
 fn fractional_parent_offset_retains_correlated_half_pixel_phase() {
     let Some(context) = context() else {
         return;

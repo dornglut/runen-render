@@ -166,10 +166,10 @@ fn neutral_item(
 /// frame, with no root flattening, pixel-alpha sampling or final canvas cull.
 ///
 /// The result identifies each SHADOW-BEARING group's one pre-shadow C source
-/// by its BeginGroup event index. A shadow-bearing nested group cannot yet
-/// be propagated to an ancestor: returning an explicit unsupported error is
-/// mandatory until its own expanded effect geometry is representable. This
-/// method never substitutes the child's original geometry for that effect.
+/// by its BeginGroup event index. A nested zero-kernel shadow is a translated
+/// copy of the exact geometric C and may be propagated through ancestor
+/// affines. Other nested kernels remain typed unsupported, never substituted
+/// with the child's original geometry or conservative envelopes.
 pub(super) fn group_child_sources(
     plan: &scene::Plan<'_>,
     bindings: &Render2dResourceBindings,
@@ -220,22 +220,68 @@ pub(super) fn group_child_sources(
                     in_parent.triangles.len(),
                     &frame.path,
                 )?;
+                // Every shadow independently consumes pre-shadow C. For
+                // nested zero-kernel shadows that support is precisely C
+                // translated in THIS group's parent frame, even if its
+                // shadow color and group opacity are completely transparent.
+                // No envelope/AABB is promoted to geometric membership.
+                let nested = !active.is_empty();
+                let mut completed = empty_mesh();
                 if !frame.group.shadows().is_empty() {
-                    // C is before this group's own clips; those must later
-                    // clip completed shadow+children output exactly once.
-                    if !active.is_empty() {
-                        return Err(super::unsupported_at(
+                    if nested {
+                        if frame
+                            .group
+                            .shadows()
+                            .iter()
+                            .any(|shadow| shadow.spread() != 0.0 || shadow.sigma() != 0.0)
+                        {
+                            return Err(super::unsupported_at(
+                                &frame.path,
+                                Render2dUnsupportedContent::Shadows {
+                                    root_index: frame.path[0],
+                                },
+                            ));
+                        }
+                        charge_vertices(
+                            &mut retained_vertices,
+                            in_parent.triangles.len(),
                             &frame.path,
-                            Render2dUnsupportedContent::Shadows {
-                                root_index: frame.path[0],
-                            },
-                        ));
+                        )?;
+                        append(
+                            &mut completed,
+                            &in_parent,
+                            Render2dAffineTransform::IDENTITY,
+                            &frame.path,
+                        )?;
+                        for shadow in frame.group.shadows() {
+                            let offset = Render2dAffineTransform::translation(
+                                shadow.offset_x(),
+                                shadow.offset_y(),
+                            )
+                            .map_err(|_| {
+                                precision(&frame.path, "nested shadow offset is not representable")
+                            })?;
+                            charge_vertices(
+                                &mut retained_vertices,
+                                in_parent.triangles.len(),
+                                &frame.path,
+                            )?;
+                            append(&mut completed, &in_parent, offset, &frame.path)?;
+                        }
                     }
                     sources.insert(frame.begin_event, in_parent);
-                    continue;
+                    if !nested {
+                        // The root group's own shadow+children color is
+                        // merged by F3E; no ancestor needs its neutral output.
+                        continue;
+                    }
                 }
                 let clipped = intersect_clips(
-                    &in_parent,
+                    if frame.group.shadows().is_empty() {
+                        &in_parent
+                    } else {
+                        &completed
+                    },
                     frame.group.clips(),
                     frame.path[0],
                     &frame.path,
