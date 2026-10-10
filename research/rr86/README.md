@@ -38,7 +38,7 @@ A `min/max` of exact primitive signed-distance fields is still correctly signed 
 | Two-disk intersection | +0.031 | 2 / 12,705 (false inside) | 12,479 | 226 | 0 |
 | Two-disk intersection | −0.200 | 0 / 12,705 | 11,577 | 1,128 | 0 |
 
-The script additionally asserts every *non-uncertain* certificate against its analytic boundary oracle for `2 × 6 × 81 × 111 = 107,892` classifications; the exact count is deliberately not part of the scientific claim. The two measured scan regimes are illustrative, **not** a representative workload, quality acceptance threshold or runtime speed comparison; the reported wall time is Python-only, non-calibrated, and MUST NOT be extrapolated to Rust/GPU.
+The script examines **107,892** deterministic reference positions (2 Boolean operations × 6 spread radii × 81 × 111 grid points). Of these, **87,736 definite certificates** were checked against the independent geometric oracle; **20,156 positions were uncertain**, not counted as verified classifications. The harness prints these counts; numerical edge cases are explicitly part of the method. The two measured scan regimes are illustrative, **not** a representative workload, quality acceptance threshold or runtime speed comparison; the reported wall time is Python-only, non-calibrated, and MUST NOT be extrapolated to Rust/GPU.
 
 ## Architectural consequences and limits
 

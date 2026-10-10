@@ -111,15 +111,22 @@ def reference_checks():
     assert certify_using_1_lipschitz(p, "intersection", 0.031) is None
 
     # Certifiers must never contradict the analytic reference.
-    for op in ("union", "intersection"):
+    examined = certain = uncertain = 0
+    for op ("union", "intersection"):
         for spread in (-0.6, -0.2, 0.0, 0.031, 0.2, 0.6):
             for iy in range(-40, 41):
                 for ix in range(-55, 56):
                     p = (ix / 40.0, iy / 40.0)
                     cert = certify_using_1_lipschitz(p, op, spread)
+                    examined += 1
+                    if cert is None:
+                        uncertain += 1
+                    else:
+                        certain += 1
                     if cert is not None:
                         expected = predict_exact(p, op, spread)
                         assert cert == expected, (op, spread, p, cert, expected)
+    return examined, certain, uncertain
 
 
 def scan_case(op, spread):
@@ -151,7 +158,9 @@ def scan_case(op, spread):
 
 
 if __name__ == "__main__":
-    reference_checks()
+    checked = reference_checks()
+    print(f"Independent reference: {checked[0]} points examined; "
+          f"{checked[1]} definite certificates checked; {checked[2]} uncertain")
     print("RR86 exact exposed-arc CSG oracle; Python stdlib; 10 Oct 2026")
     for op, spread in (("union", -0.6), ("union", 0.2),
                        ("intersection", 0.031), ("intersection", -0.2)):
