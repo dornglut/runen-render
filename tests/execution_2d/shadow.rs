@@ -462,6 +462,36 @@ fn signed_euclidean_disk_spread_has_gpu_erosion_and_non_square_dilation() {
 }
 
 #[test]
+fn continuous_negative_euclidean_erosion_uses_actual_subpixel_area() {
+    let Some(context) = context() else { return };
+    // C=[10,11]^2, r=-.2, sigma=0. Its exact eroded support is
+    // [10.2,10.8]^2, of area .36 in logical pixel [10,11]^2.
+    // Independent linear-premul resolve: alpha round(255*.36)=92,
+    // red sRGB round(255*(1.055*.36^(1/2.4)-.055))=162.
+    // Center-grid negative distance would incorrectly keep all 16 samples.
+    let composition = group(
+        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 1.0, 1.0)],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            -0.2,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F continuous negative disk erosion GPU subcell area",
+    );
+    pixel_near(pixel(&image, 10, 10), [162, 0, 0, 92]);
+    assert_eq!(pixel(&image, 9, 10), [0, 0, 0, 0]);
+}
+
+#[test]
 fn zero_alpha_image_bytes_and_item_opacity_still_cast_from_resolved_destination() {
     let Some(context) = context() else {
         return;

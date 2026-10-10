@@ -966,7 +966,6 @@ fn union_exterior_boundary(
     {
         return Err(precision("continuous erosion triangle payload invalid"));
     }
-    let count = triangles.len() / 3;
     const MAX_BOUNDARY_OPERATIONS: usize = 16_777_216;
     let pairs = triangles.len().checked_mul(triangles.len()).ok_or_else(|| {
         resource("continuous erosion boundary intersection admission overflow")
@@ -1173,8 +1172,11 @@ fn continuous_signed_spread_sample(
         })?;
         unknown -= cell.mass;
         visited += 1;
-        *work = work.checked_add(triangles.len() / 3).ok_or_else(|| {
-            resource("continuous positive spread Gaussian geometry-work overflow")
+        let classification_cost = (triangles.len() / 3)
+            .checked_add(boundary.map_or(0, <[UnionBoundaryEdge]>::len))
+            .ok_or_else(|| resource("continuous signed spread classification work overflow"))?;
+        *work = work.checked_add(classification_cost).ok_or_else(|| {
+            resource("continuous signed spread geometry-work overflow")
         })?;
         if visited > MAX_SAMPLE_CELLS || *work > MAX_GLOBAL_SPREAD_WORK {
             return Err(resource(
