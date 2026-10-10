@@ -627,8 +627,42 @@ fn rasterize_area_coverage(
 /// Fixed 16-point Gauss-Legendre rule. On an interval no wider than the
 /// truncated 6σ kernel footprint its smooth Gaussian integrand has rapid,
 /// reproducible convergence; contour/topology changes are explicitly split.
-const GAUSS_NODES: [f64; 16] = [-0.9894009349916499, -0.9445750230732326, -0.8656312023878318, -0.755404408355003, -0.6178762444026438, -0.45801677765722737, -0.2816035507792589, -0.09501250983763744, 0.09501250983763744, 0.2816035507792589, 0.45801677765722737, 0.6178762444026438, 0.755404408355003, 0.8656312023878318, 0.9445750230732326, 0.9894009349916499];
-const GAUSS_WEIGHTS: [f64; 16] = [0.027152459411754176, 0.062253523938647456, 0.0951585116824926, 0.12462897125553407, 0.1495959888165767, 0.16915651939500265, 0.18260341504492364, 0.1894506104550686, 0.1894506104550686, 0.18260341504492364, 0.16915651939500265, 0.1495959888165767, 0.12462897125553407, 0.0951585116824926, 0.062253523938647456, 0.027152459411754176];
+const GAUSS_NODES: [f64; 16] = [
+    -0.9894009349916499,
+    -0.9445750230732326,
+    -0.8656312023878318,
+    -0.755404408355003,
+    -0.6178762444026438,
+    -0.45801677765722737,
+    -0.2816035507792589,
+    -0.09501250983763744,
+    0.09501250983763744,
+    0.2816035507792589,
+    0.45801677765722737,
+    0.6178762444026438,
+    0.755404408355003,
+    0.8656312023878318,
+    0.9445750230732326,
+    0.9894009349916499,
+];
+const GAUSS_WEIGHTS: [f64; 16] = [
+    0.027152459411754176,
+    0.062253523938647456,
+    0.0951585116824926,
+    0.12462897125553407,
+    0.1495959888165767,
+    0.16915651939500265,
+    0.18260341504492364,
+    0.1894506104550686,
+    0.1894506104550686,
+    0.18260341504492364,
+    0.16915651939500265,
+    0.1495959888165767,
+    0.12462897125553407,
+    0.0951585116824926,
+    0.062253523938647456,
+    0.027152459411754176,
+];
 /// Analytic 1D integral of exp(-u²/2), u ∈ [-3, 3].
 const GAUSS_3SIGMA_NORMALIZER: f64 = 2.499_860_889_483_094_7;
 
@@ -652,9 +686,7 @@ fn gaussian_union_sample(
     let cutoff = sigma * 3.0;
     let [x0, y0] = [center[0] - cutoff, center[1] - cutoff];
     let [x1, y1] = [center[0] + cutoff, center[1] + cutoff];
-    if ![x0, x1, y0, y1].iter().all(|v| v.is_finite())
-        || x0 >= x1 || y0 >= y1
-    {
+    if ![x0, x1, y0, y1].iter().all(|v| v.is_finite()) || x0 >= x1 || y0 >= y1 {
         return Err(precision("continuous Gaussian window loses f64 precision"));
     }
     let mut active = Vec::<[[f64; 2]; 3]>::new();
@@ -671,18 +703,16 @@ fn gaussian_union_sample(
         }
         // Entire finite Gaussian window lies inside one true triangle.
         // The normalized continuous convolution is exactly unity.
-        if [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
-            .iter().all(|&p| {
-                let a = orient(tri[0], tri[1], p);
-                let b = orient(tri[1], tri[2], p);
-                let c = orient(tri[2], tri[0], p);
-                (a >= 0.0 && b >= 0.0 && c >= 0.0)
-                    || (a <= 0.0 && b <= 0.0 && c <= 0.0)
-            })
-        {
+        if [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].iter().all(|&p| {
+            let a = orient(tri[0], tri[1], p);
+            let b = orient(tri[1], tri[2], p);
+            let c = orient(tri[2], tri[0], p);
+            (a >= 0.0 && b >= 0.0 && c >= 0.0) || (a <= 0.0 && b <= 0.0 && c <= 0.0)
+        }) {
             return Ok(1.0);
         }
-        active.try_reserve(1)
+        active
+            .try_reserve(1)
             .map_err(|_| resource("continuous Gaussian triangle admission failed"))?;
         active.push(*tri);
     }
