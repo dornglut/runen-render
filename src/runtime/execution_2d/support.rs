@@ -1157,18 +1157,28 @@ fn certified_convex_eroded_union(
     let triangle_count = triangles.len() / 3;
     let clipping_edges = m
         .checked_mul(3)
-        .and_then(|n| m.checked_mul(m.saturating_sub(1)).and_then(|q| q.checked_div(2)).and_then(|q| n.checked_add(q)))
+        .and_then(|n| {
+            m.checked_mul(m.saturating_sub(1))
+                .and_then(|q| q.checked_div(2))
+                .and_then(|q| n.checked_add(q))
+        })
         .ok_or_else(|| resource("convex erosion clipping work overflow"))?;
     let work = m
         .checked_mul(triangles.len())
-        .and_then(|n| clipping_edges.checked_mul(triangle_count).and_then(|q| n.checked_add(q)))
+        .and_then(|n| {
+            clipping_edges
+                .checked_mul(triangle_count)
+                .and_then(|q| n.checked_add(q))
+        })
         .ok_or_else(|| resource("convex erosion supporting-plane work overflow"))?;
     let retained_vertices = m
         .checked_add(1)
         .and_then(|n| n.checked_mul(triangles.len()))
         .ok_or_else(|| resource("convex erosion output size overflow"))?;
     if work > 16_777_216 || retained_vertices > MAX_NEUTRAL_MASK_SAMPLES {
-        return Err(resource("convex erosion supporting-plane work exceeds admission"));
+        return Err(resource(
+            "convex erosion supporting-plane work exceeds admission",
+        ));
     }
     let mut planes = Vec::new();
     planes
@@ -1253,7 +1263,9 @@ fn certified_convex_eroded_union(
             let tri = [polygon[0], polygon[i], polygon[i + 1]];
             let area = orient(tri[0], tri[1], tri[2]);
             if !area.is_finite() {
-                return Err(precision("convex erosion output triangle area lost precision"));
+                return Err(precision(
+                    "convex erosion output triangle area lost precision",
+                ));
             }
             if area == 0.0 {
                 continue;
@@ -1263,7 +1275,9 @@ fn certified_convex_eroded_union(
                 .checked_add(3)
                 .ok_or_else(|| resource("convex erosion triangle count overflow"))?;
             if size > MAX_NEUTRAL_MASK_SAMPLES {
-                return Err(resource("convex erosion triangle retention exceeds admission"));
+                return Err(resource(
+                    "convex erosion triangle retention exceeds admission",
+                ));
             }
             output
                 .try_reserve(3)
@@ -2200,7 +2214,10 @@ mod tests {
         // Convex Euclidean erosion narrows each slanted edge by r*sqrt(1.25)
         // in the x-.5*y coordinates and each horizontal edge by r.
         let independent_area = (4.0 - 1.25_f64.sqrt()) * 3.0;
-        assert!((total - independent_area).abs() < 1.0e-8, "{total} vs {independent_area}");
+        assert!(
+            (total - independent_area).abs() < 1.0e-8,
+            "{total} vs {independent_area}"
+        );
 
         // A concave L has an exposed notch boundary inside its convex hull.
         // Its inner boundary cannot be promoted to a global supporting line.
