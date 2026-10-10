@@ -333,6 +333,82 @@ fn nonuniform_group_transform_applies_before_parent_frame_euclidean_spread() {
 }
 
 #[test]
+fn transparent_nested_child_group_keeps_neutral_support_for_outer_shadow() {
+    let Some(context) = context() else {
+        return;
+    };
+    let nested = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            16.0,
+            16.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        Vec::new(),
+    ));
+    let tree = group(
+        vec![nested],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &tree,
+        &Render2dResourceBindings::default(),
+        "F3F zero-opacity nested child retained as parent caster",
+    );
+    pixel_near(pixel(&output, 18, 18), [255, 0, 0, 255]);
+    assert_eq!(pixel(&output, 8, 18), [0, 0, 0, 0]);
+}
+
+#[test]
+fn fractional_parent_offset_retains_correlated_half_pixel_phase() {
+    let Some(context) = context() else {
+        return;
+    };
+    let tree = group(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            8.0,
+            8.0,
+        )],
+        vec![effect(
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &tree,
+        &Render2dResourceBindings::default(),
+        "F3F fractional parent frame translation",
+    );
+    // The x=10 pixel has two of four correlated x sub-samples covered,
+    // each of its four y sub-samples covered. Alpha is exactly 8/16;
+    // premultiplied linear red 0.5 encodes to sRGB 188.
+    pixel_near(pixel(&output, 10, 14), [188, 0, 0, 128]);
+    assert_eq!(pixel(&output, 9, 14), [0, 0, 0, 0]);
+}
+
+#[test]
 fn signed_euclidean_disk_spread_has_gpu_erosion_and_non_square_dilation() {
     let Some(context) = context() else {
         return;
