@@ -630,11 +630,11 @@ impl NeutralUnionSweep {
             .try_reserve_exact(segments.len())
             .map_err(|_| resource("neutral union intervals allocation failed"))?;
         for [start, end] in segments {
-            if let Some(last) = merged.last_mut() {
-                if start <= last[1] {
-                    last[1] = last[1].max(end);
-                    continue;
-                }
+            if let Some(last) = merged.last_mut()
+                && start <= last[1]
+            {
+                last[1] = last[1].max(end);
+                continue;
             }
             merged.push([start, end]);
         }
