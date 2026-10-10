@@ -233,8 +233,10 @@ pub(super) fn visible(shadow: &PreparedShadow, tile: [u32; 4]) -> bool {
 
 /// Admission includes EACH immutable per-tile uploaded texture, not just one
 /// reusable scratch handle that cannot in fact be overwritten in-flight.
-/// Return the exact count of admitted visible shadow draws so the owning
-/// 4x compositor can charge its ONE aggregate replay/operation budget.
+/// Return the exact *work* for every admitted visible shadow: one draw node
+/// plus all 4x mask samples written to its source-backed upload. The existing
+/// compositor charges this alongside authored painter-tree replay. The
+/// separate byte/node limits remain independent physical-resource ceilings.
 pub(super) fn admit_tile_uploads(
     shadows: &ShadowGroups,
     target: &AdmittedTarget,
@@ -253,7 +255,14 @@ pub(super) fn admit_tile_uploads(
         .ok_or_else(|| failure("shadow per-tile upload extent overflow"))?;
     let origin_x = bounds[0] / side * side;
     let origin_y = bounds[1] / side * side;
+    let sample_visits = u64::from(dimension)
+        .checked_mul(u64::from(dimension))
+        .ok_or_else(|| failure("shadow tile sample visit count overflow"))?;
+    let per_upload_work = sample_visits
+        .checked_add(1)
+        .ok_or_else(|| failure("shadow tile upload/work addition overflow"))?;
     let mut total_bytes = 0_u64;
+    let mut total_work = 0_u64;
     let mut count = 0_usize;
     for row in 0..u64::from((bounds[3] - origin_y).div_ceil(side)) {
         for col in 0..u64::from((bounds[2] - origin_x).div_ceil(side)) {
@@ -280,6 +289,9 @@ pub(super) fn admit_tile_uploads(
                 count = count
                     .checked_add(1)
                     .ok_or_else(|| shadow_resource(&shadow.path, "shadow upload node overflow"))?;
+                total_work = total_work
+                    .checked_add(per_upload_work)
+                    .ok_or_else(|| shadow_resource(&shadow.path, "shadow sample visits overflow"))?;
                 if total_bytes > MAX_SHADOW_MASK_UPLOAD_BYTES || count > MAX_OPERATIONS / 2 {
                     return Err(shadow_resource(
                         &shadow.path,
@@ -289,8 +301,7 @@ pub(super) fn admit_tile_uploads(
             }
         }
     }
-    u64::try_from(count)
-        .map_err(|_| failure("shadow tile draw count cannot fit aggregate work budget"))
+    Ok(total_work)
 }
 
 /// Source-backed R32Float mask: every 4x physical sample receives the ONE

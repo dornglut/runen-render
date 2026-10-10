@@ -162,7 +162,7 @@ pub(super) fn admit_tile_work(
     plan_events: usize,
     items: &[Option<PreparedItem>],
     tiles: u64,
-    shadow_nodes: u64,
+    shadow_work: u64,
 ) -> Result<(), Render2dExecutionError> {
     let mut units = u64::try_from(plan_events).map_err(|_| failure("tile event count overflow"))?;
     for item in items.iter().flatten() {
@@ -177,7 +177,7 @@ pub(super) fn admit_tile_work(
     }
     let total = units
         .checked_mul(tiles)
-        .and_then(|replay| replay.checked_add(shadow_nodes))
+        .and_then(|replay| replay.checked_add(shadow_work))
         .ok_or_else(|| failure("aggregate tile and shadow work count overflow"))?;
     if total > MAX_TILE_WORK_UNITS {
         return Err(failure(

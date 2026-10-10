@@ -245,12 +245,12 @@ pub(in crate::runtime::execution_2d) fn lower(
     if tile_count > MAX_TILES {
         return Err(failure("sample-space tile count exceeds bounded budget"));
     }
-    // All authored shadow draws share this compositor's operation/work
-    // budget; independent upload-byte admission alone is insufficient.
-    // Count each visible per-tile shadow exactly once before any GPU
-    // resource or caller-target operation is prepared.
-    let shadow_nodes = shadow::admit_tile_uploads(&shadow_groups, target, side, bounds)?;
-    admit_tile_work(plan.events.len(), &items, tile_count, shadow_nodes)?;
+    // Each shadow draw emits one GPU work node AND expands an immutable 4x
+    // source-backed mask over every tile sample cell. Both resource traversal
+    // and per-sample upload preparation share this compiler's replay budget.
+    // Account for both before constructing any GPU resource or target work.
+    let shadow_work = shadow::admit_tile_uploads(&shadow_groups, target, side, bounds)?;
+    admit_tile_work(plan.events.len(), &items, tile_count, shadow_work)?;
 
     let dimension = side * SAMPLES;
     let physical = [dimension, dimension];
@@ -916,7 +916,9 @@ mod tile_budget_tests {
         ));
         assert!(admit_tile_work(usize::MAX, &[], u64::MAX, 0).is_err());
         // Previously admitted as independent replay and shadow budgets,
-        // although their combined work exceeds the one compiler budget.
+        // although their combined sample visits and draws exceed the one
+        // compiler budget. The last scalar is actual shadow work, not just
+        // the number of authored shadows.
         assert!(matches!(
             admit_tile_work(1024, &[], MAX_TILE_WORK_UNITS / 1024, 1),
             Err(Render2dExecutionError::SampleSpace {
@@ -926,6 +928,17 @@ mod tile_budget_tests {
         ));
         assert!(admit_tile_work(1, &[], 1, MAX_TILE_WORK_UNITS - 1).is_ok());
         assert!(admit_tile_work(1, &[], 1, u64::MAX).is_err());
+        // One full 1024x1024 4x mask upload visits 1,048,576 sample cells
+        // and contributes one draw. Mask uploads are not one CPU work unit.
+        let upload = u64::from(1024_u32) * u64::from(1024_u32) + 1;
+        assert!(admit_tile_work(100, &[], 1, upload).is_ok());
+        assert!(matches!(
+            admit_tile_work(100, &[], 1, MAX_TILE_WORK_UNITS),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
     }
 
     #[test]
