@@ -634,6 +634,9 @@ fn area_sample(
     if sweep.fully_covered {
         return Ok(1.0);
     }
+    if sweep.active.is_empty() {
+        return Ok(0.0);
+    }
     let mut area = 0.0;
     for slab in sweep.events.windows(2) {
         let height = slab[1] - slab[0];
@@ -751,6 +754,9 @@ fn gaussian_union_sample(
     )?;
     if sweep.fully_covered {
         return Ok(1.0);
+    }
+    if sweep.active.is_empty() {
+        return Ok(0.0);
     }
     let mut total = 0.0;
     for interval in sweep.events.windows(2) {
