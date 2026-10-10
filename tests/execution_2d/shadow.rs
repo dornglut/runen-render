@@ -498,6 +498,37 @@ fn continuous_negative_euclidean_erosion_uses_actual_subpixel_area() {
 }
 
 #[test]
+fn continuous_negative_erosion_gaussian_preserves_normalized_inner_samples() {
+    let Some(context) = context() else { return };
+    // Erosion of [10,11]^2 by r=.2 is exactly [10.2,10.8]^2.
+    // With sigma=.025 and the independent finite 3σ cutoff=.075,
+    // correlated samples at x/y=.375,.625 have entirely covered kernel
+    // footprints; samples at .125,.875 have zero area intersection.
+    // Exactly four of sixteen sample contributions survive: alpha=.25,
+    // linear-premul red .25 => sRGB 137 and unorm alpha 64.
+    let composition = group(
+        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 1.0, 1.0)],
+        vec![effect(
+            0.0,
+            0.0,
+            0.025,
+            -0.2,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F continuous negative erosion finite Gaussian normalization",
+    );
+    pixel_near(pixel(&output, 10, 10), [137, 0, 0, 64]);
+    assert_eq!(pixel(&output, 9, 10), [0, 0, 0, 0]);
+}
+
+#[test]
 fn zero_alpha_image_bytes_and_item_opacity_still_cast_from_resolved_destination() {
     let Some(context) = context() else {
         return;

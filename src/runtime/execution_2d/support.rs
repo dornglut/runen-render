@@ -16,11 +16,13 @@ pub(super) struct NeutralMesh {
 
 const MAX_GAUSSIAN_RADIUS_SAMPLES: u32 = 512;
 
+/// Historical finite truncated-Gaussian sampled-kernel comparator for
+/// deterministic conformance ONLY; production uses continuous integration.
 /// Private finite truncated-Gaussian *physical* kernel. These weights approximate
 /// the F1 continuous convolution in a chosen group-parent sample frame; the
 /// caller must independently bound complete sample-work and halo allocations.
+#[cfg(test)]
 #[derive(Debug)]
-#[allow(dead_code, reason = "awaiting F3F group lowering")]
 pub(super) struct GaussianKernel {
     pub(super) radius: usize,
     /// Normalized symmetrical weights indexed by absolute sample offset.
@@ -33,7 +35,7 @@ pub(super) struct GaussianKernel {
 /// `sample_scale` is physical 4x samples per **group-parent logical unit**,
 /// before any ancestor affine. Applying these weights after flattening an
 /// ancestor's shear/non-uniform scale would violate F1 morphology frames.
-#[allow(dead_code, reason = "awaiting F3F group lowering")]
+#[cfg(test)]
 pub(super) fn gaussian_kernel(
     sigma: f64,
     sample_scale: f64,
@@ -1438,7 +1440,7 @@ fn rasterize_continuous_shadow_coverage(
 /// The kernel is the normalized discrete approximation of the accepted F1
 /// continuous truncated reference, with an explicit finite, complete halo.
 /// Every allocation and worst-case sample tap is admitted before execution.
-#[allow(dead_code, reason = "awaiting unified F3F painter integration")]
+#[cfg(test)]
 fn blur_neutral_coverage(
     input: &NeutralCoverage,
     kernel: &GaussianKernel,
@@ -1572,9 +1574,10 @@ fn blur_neutral_coverage(
     })
 }
 
-/// Retains the discrete binary-mask convolution for physical morphology and
-/// legacy discrete conformance. The area-aware source path shares the same
-/// bounded separable kernel and sample phase without u8 quantization.
+/// Test-only historical sampled-mask comparison. The production F1 shadow
+/// path reconstructs continuous neutral geometry and never samples cached
+/// binary alpha as effect authority.
+#[cfg(test)]
 pub(super) fn blur_neutral_mask(
     input: &NeutralMask,
     kernel: &GaussianKernel,
