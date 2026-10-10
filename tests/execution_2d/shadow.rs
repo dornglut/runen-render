@@ -296,13 +296,7 @@ fn nonuniform_group_transform_applies_before_parent_frame_euclidean_spread() {
     let Some(context) = context() else {
         return;
     };
-    let child = caster(
-        Render2dColorRgba8::TRANSPARENT,
-        4.0,
-        10.0,
-        4.0,
-        8.0,
-    );
+    let child = caster(Render2dColorRgba8::TRANSPARENT, 4.0, 10.0, 4.0, 8.0);
     let group = Render2dGroup::new(
         vec![child],
         Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap(),
