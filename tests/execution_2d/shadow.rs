@@ -686,6 +686,47 @@ fn excess_authored_shadows_fail_before_caller_work_and_executor_remains_reusable
         } if path == [1]
     ));
 
+    // Distinguish TRUE preflight cardinality from a late error after
+    // spending the first sibling's geometry/morphology budget. Its sigma is
+    // individually unadmittable; a late count would report path [0], while
+    // invocation-wide effect admission MUST reject 1+256 at path [1]
+    // without even attempting the first Gaussian allocation.
+    let expensive_first = Render2dComposition::new(vec![
+        Render2dEntry::group(Render2dGroup::new(
+            caster.clone(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![effect(
+                0.0,
+                0.0,
+                500.0,
+                0.0,
+                Render2dColorRgba8::new(255, 0, 0, 128),
+            )],
+        )),
+        Render2dEntry::group(Render2dGroup::new(
+            caster.clone(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![red; 256],
+        )),
+    ])
+    .unwrap();
+    let prioritized_error = match executor.prepare(&context, &expensive_first, &bindings, &target) {
+        Ok(_) => panic!("aggregate effect count must precede expensive first-sibling preparation"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        prioritized_error,
+        Render2dExecutionError::SampleSpace {
+            kind: runen_render::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+            path: Some(path),
+            ..
+        } if path == [1]
+    ));
+
     // Neither failure can publish partial GPU work or poison subsequent
     // executor identity. The next valid composition retains the caller's
     // exact preexisting blue pixel and source-over order.
