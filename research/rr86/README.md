@@ -55,3 +55,34 @@ The script examines **107,892** deterministic reference positions (2 Boolean ope
 - [Vello architecture](https://github.com/linebender/vello/blob/main/ARCHITECTURE.md) illustrates an alternative path/coverage-based implementation; [msdfgen](https://github.com/Chlumsky/msdfgen) demonstrates distance-field finite range/resolution policy. Neither proves performance for RunenRender.
 
 **Disposition:** research-only, no parallel modifications to PR #85, no approval to close #81/#86/#38 or to replace the accepted #23 multi-representation architecture.
+
+## Parent-frame finite Gaussian and ancestor affine (nested_affine_gaussian.py)
+
+Run from repository root:
+
+~~~sh
+python3 research/rr86/nested_affine_gaussian.py
+~~~
+
+This is a **second independent CPU-only counterexample**, not a current RunenRender GPU test or a universal SDF implementation. Exact parameters: caster in the shadow's immediate-parent logical coordinates is the rectangle [0,2] × [0,0.5] (a local unit rectangle scaled (2,0.5)), with shadow offset (+0.2,-0.1), signed spread 0, sigma=0.25, and finite normalized separable Gaussian cutoff ±3*sigma = ±0.75 on each **parent** axis. An ancestor applies
+
+~~~text
+root_x = 1.8 * parent_x + 0.55 * parent_y + 0.4
+root_y = -0.35 * parent_x + 0.9 * parent_y - 0.25
+~~~
+
+The correct root sample first inverse-maps to the owning **parent** frame; exact coverage for an axis-aligned rectangle is the product of two normalized truncated-Gaussian error-function integrals. The correct neutral support is the affine image of the **parent-frame rectangle Minkowski-summed with the square** [-0.75,+0.75]² (a parallelogram in root coordinates), not an AABB in root-space.
+
+Two deliberately incorrect alternatives are independently evaluated:
+
+1. **Wrong support:** transformed unblurred caster's **root AABB** then expand it by ±0.75 root axes. This combines improper root-frame blur support **and** AABB-as-membership; the mismatch does not prove AABBs are inherently invalid as conservative culling bounds.
+2. **Wrong coverage:** transform the *actual rectangle to its exact root-space parallelogram*, then numerically convolve its indicator function with an unchanged isotropic separable Gaussian **in root axes**. The Simpson/root-y + analytic Gaussian/root-x integral uses the real convex polygon, **not** its AABB. Differences here are genuinely due to the wrong effect coordinate frame even with exact caster geometry.
+
+### Independently executed observations (Python stdlib)
+
+- **9,956** root queries (generated from a regular parent frame grid): the wrong root-AABB support had **690 false-negative** and **858 false-positive** membership decisions against the correct parent-square-first affine support.
+- Six numerical root-space blur probes: the incorrect root-isotropic Gaussian had absolute coverage differences of 0.014480709, 0.083293820, 0.050496318, 0.039908751, 0.085209608, and 0.004589784 relative to the correct parent-first exact rectangle coverage; maximum **≈0.085210 alpha**.
+- Wrong-root Simpson comparisons at 8,192 and 32,768 intervals differed by no more than **1.4e-8** for these six probes. This is an **empirical convergence observation, not a rigorous absolute integration error bound**.
+- Identity/affine-inverse round trips, coverage range [0,1], no alpha outside true finite support, sample totals and deliberate nonzero mismatches are checked by executable assertions.
+
+**Implications:** A compositional region/field evaluator may be entirely implicit and still produce correct samples by retaining an owning-frame transform and evaluating coverage there. An SDF value alone does not encode the normalized finite Gaussian integral. A GPU cache/field can accelerate a proven equivalent query, but moving morphology or blur into root space without transforming the structuring element/kernel breaks the immutable F1 law. Results are confined to an affine rectangle case with spread zero; still missing independently benchmarked nested Boolean/erosion, general paths, hardware-relevant cost and actual Vulkan candidate readback.
