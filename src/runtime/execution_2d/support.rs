@@ -2693,7 +2693,7 @@ mod tests {
             [0.0, 1.0],
         ];
         let triangles = [rect, rect].concat();
-        let boundary = union_exterior_boundary(&triangles, &[7, 1]).unwrap();
+        let boundary = union_exterior_boundary(&triangles, &[7, 1], None).unwrap();
         let mut work = 0_usize;
         let value = continuous_signed_spread_sample(
             &triangles,
