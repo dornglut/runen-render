@@ -624,6 +624,256 @@ fn rasterize_area_coverage(
     }))
 }
 
+/// Fixed 16-point Gauss-Legendre rule. On an interval no wider than the
+/// truncated 6σ kernel footprint its smooth Gaussian integrand has rapid,
+/// reproducible convergence; contour/topology changes are explicitly split.
+const GAUSS_NODES: [f64; 16] = [-0.9894009349916499, -0.9445750230732326, -0.8656312023878318, -0.755404408355003, -0.6178762444026438, -0.45801677765722737, -0.2816035507792589, -0.09501250983763744, 0.09501250983763744, 0.2816035507792589, 0.45801677765722737, 0.6178762444026438, 0.755404408355003, 0.8656312023878318, 0.9445750230732326, 0.9894009349916499];
+const GAUSS_WEIGHTS: [f64; 16] = [0.027152459411754176, 0.062253523938647456, 0.0951585116824926, 0.12462897125553407, 0.1495959888165767, 0.16915651939500265, 0.18260341504492364, 0.1894506104550686, 0.1894506104550686, 0.18260341504492364, 0.16915651939500265, 0.1495959888165767, 0.12462897125553407, 0.0951585116824926, 0.062253523938647456, 0.027152459411754176];
+/// Analytic 1D integral of exp(-u²/2), u ∈ [-3, 3].
+const GAUSS_3SIGMA_NORMALIZER: f64 = 2.499_860_889_483_094_7;
+
+/// Integrate the continuous normalized Gaussian over a UNION of triangle
+/// interiors, not cell-averaged alpha. A horizontal sweep partitions every
+/// triangle vertex / edge crossing; within each slab union-interval endpoints
+/// are affine in y. Both smooth integrations then use fixed Gaussian quadrature.
+///
+/// Physical integration is disposable; F1 immutable support geometry remains
+/// authoritative. Max active-arrangement work is charged before enumeration.
+fn gaussian_union_sample(
+    triangles: &[[f64; 2]],
+    center: [f64; 2],
+    sigma: f64,
+    work: &mut usize,
+    path: &[usize],
+) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+    let cutoff = sigma * 3.0;
+    let [x0, y0] = [center[0] - cutoff, center[1] - cutoff];
+    let [x1, y1] = [center[0] + cutoff, center[1] + cutoff];
+    if ![x0, x1, y0, y1].iter().all(|v| v.is_finite())
+        || x0 >= x1 || y0 >= y1
+    {
+        return Err(precision("continuous Gaussian window loses f64 precision"));
+    }
+    let mut active = Vec::<[[f64; 2]; 3]>::new();
+    for tri in triangles.as_chunks::<3>().0 {
+        let xs = [tri[0][0], tri[1][0], tri[2][0]];
+        let ys = [tri[0][1], tri[1][1], tri[2][1]];
+        if xs.iter().copied().fold(f64::INFINITY, f64::min) >= x1
+            || xs.iter().copied().fold(f64::NEG_INFINITY, f64::max) <= x0
+            || ys.iter().copied().fold(f64::INFINITY, f64::min) >= y1
+            || ys.iter().copied().fold(f64::NEG_INFINITY, f64::max) <= y0
+            || orient(tri[0], tri[1], tri[2]) == 0.0
+        {
+            continue;
+        }
+        // Entire finite Gaussian window lies inside one true triangle.
+        // The normalized continuous convolution is exactly unity.
+        if [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+            .iter().all(|&p| {
+                let a = orient(tri[0], tri[1], p);
+                let b = orient(tri[1], tri[2], p);
+                let c = orient(tri[2], tri[0], p);
+                (a >= 0.0 && b >= 0.0 && c >= 0.0)
+                    || (a <= 0.0 && b <= 0.0 && c <= 0.0)
+            })
+        {
+            return Ok(1.0);
+        }
+        active.try_reserve(1)
+            .map_err(|_| resource("continuous Gaussian triangle admission failed"))?;
+        active.push(*tri);
+    }
+    if active.is_empty() {
+        return Ok(0.0);
+    }
+    let cost = active.len().checked_pow(3)
+        .and_then(|count| count.checked_mul(16 * 16))
+        .ok_or_else(|| resource("continuous Gaussian arrangement work overflow"))?;
+    *work = work.checked_add(cost)
+        .ok_or_else(|| resource("aggregate continuous Gaussian work overflow"))?;
+    if *work > 134_217_728 {
+        return Err(resource("continuous Gaussian arrangement exceeds bounded work"));
+    }
+    let mut edges = Vec::new();
+    let mut events = vec![y0, y1];
+    for triangle in &active {
+        for i in 0..3 {
+            let a = triangle[i];
+            let b = triangle[(i + 1) % 3];
+            edges.push((a, b));
+            if a[1] > y0 && a[1] < y1 {
+                events.push(a[1]);
+            }
+            if a[0] != b[0] {
+                for x in [x0, x1] {
+                    let t = (x - a[0]) / (b[0] - a[0]);
+                    if t > 0.0 && t < 1.0 {
+                        let y = (b[1] - a[1]).mul_add(t, a[1]);
+                        if y > y0 && y < y1 {
+                            events.push(y);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Any two contour edges exchanging horizontal order change the union
+    // formula. Partition at their actual crossings, not sample-grid edges.
+    for i in 0..edges.len() {
+        let (a, b) = edges[i];
+        let r = [b[0] - a[0], b[1] - a[1]];
+        for &(c, d) in edges.iter().skip(i + 1) {
+            let q = [d[0] - c[0], d[1] - c[1]];
+            let divisor = r[0].mul_add(q[1], -r[1] * q[0]);
+            if divisor == 0.0 {
+                continue;
+            }
+            let difference = [c[0] - a[0], c[1] - a[1]];
+            let t = difference[0].mul_add(q[1], -difference[1] * q[0]) / divisor;
+            let u = difference[0].mul_add(r[1], -difference[1] * r[0]) / divisor;
+            if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
+                let y = r[1].mul_add(t, a[1]);
+                if y > y0 && y < y1 {
+                    events.push(y);
+                }
+            }
+        }
+    }
+    events.sort_by(|a, b| a.total_cmp(b));
+    events.dedup();
+    let mut total = 0.0;
+    for interval in events.windows(2) {
+        let half_y = (interval[1] - interval[0]) * 0.5;
+        if half_y <= 0.0 {
+            continue;
+        }
+        let mid_y = interval[0] + half_y;
+        for (&node_y, &weight_y) in GAUSS_NODES.iter().zip(GAUSS_WEIGHTS.iter()) {
+            let y = node_y.mul_add(half_y, mid_y);
+            let z = (y - center[1]) / sigma;
+            let gy = (-0.5 * z * z).exp();
+            let mut intervals = Vec::<[f64; 2]>::new();
+            for tri in &active {
+                let mut left = f64::INFINITY;
+                let mut right = f64::NEG_INFINITY;
+                for i in 0..3 {
+                    let a = tri[i];
+                    let b = tri[(i + 1) % 3];
+                    if (a[1] <= y && y < b[1]) || (b[1] <= y && y < a[1]) {
+                        let x = (b[0] - a[0]).mul_add((y - a[1]) / (b[1] - a[1]), a[0]);
+                        left = left.min(x);
+                        right = right.max(x);
+                    }
+                }
+                let clipped = [left.max(x0), right.min(x1)];
+                if clipped[1] > clipped[0] {
+                    intervals.push(clipped);
+                }
+            }
+            intervals.sort_by(|a, b| a[0].total_cmp(&b[0]));
+            let mut current = x0;
+            let mut row = 0.0;
+            for [left, right] in intervals {
+                let begin = left.max(current);
+                if right > begin {
+                    let half_x = (right - begin) * 0.5;
+                    let mid_x = begin + half_x;
+                    let mut integral = 0.0;
+                    for (&node_x, &weight_x) in GAUSS_NODES.iter().zip(GAUSS_WEIGHTS.iter()) {
+                        let x = node_x.mul_add(half_x, mid_x);
+                        let z = (x - center[0]) / sigma;
+                        integral += weight_x * (-0.5 * z * z).exp();
+                    }
+                    row += half_x * integral;
+                }
+                current = current.max(right);
+            }
+            total += weight_y * half_y * gy * row;
+        }
+    }
+    let normalizer = sigma * GAUSS_3SIGMA_NORMALIZER;
+    let alpha = total / (normalizer * normalizer);
+    if !alpha.is_finite() || !(-1.0e-9..=1.0 + 1.0e-9).contains(&alpha) {
+        return Err(precision("continuous Gaussian union integral is not normalized"));
+    }
+    Ok(alpha.clamp(0.0, 1.0))
+}
+
+/// Sample the immutable *continuous* indicator/Gaussian convolution on the
+/// exact correlated output lattice, before any ancestor affine or opacity.
+/// This solves sub-lattice Gaussian casters without sampled-mask inference.
+fn rasterize_gaussian_coverage(
+    mesh: &NeutralMesh,
+    sigma: f64,
+    scale: f64,
+    path: &[usize],
+) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+    let Some(grid) = rasterize_neutral_mesh(mesh, scale, path)? else {
+        return Ok(None);
+    };
+    let physical_sigma = sigma * scale;
+    let cutoff = physical_sigma * 3.0;
+    if !physical_sigma.is_finite() || physical_sigma <= 0.0
+        || !cutoff.is_finite() || cutoff.ceil() > f64::from(MAX_GAUSSIAN_RADIUS_SAMPLES)
+    {
+        return Err(resource("continuous Gaussian window exceeds bounded sample halo"));
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let pad = cutoff.ceil() as usize;
+    let width = grid.width.checked_add(pad.checked_mul(2)
+        .ok_or_else(|| resource("continuous Gaussian width halo overflow"))?)
+        .ok_or_else(|| resource("continuous Gaussian width overflow"))?;
+    let height = grid.height.checked_add(pad.checked_mul(2)
+        .ok_or_else(|| resource("continuous Gaussian height halo overflow"))?)
+        .ok_or_else(|| resource("continuous Gaussian height overflow"))?;
+    let area = width.checked_mul(height)
+        .ok_or_else(|| resource("continuous Gaussian area overflow"))?;
+    if area > MAX_NEUTRAL_MASK_SAMPLES {
+        return Err(resource("continuous Gaussian coverage exceeds bounded sample area"));
+    }
+    let offset = i64::try_from(pad).map_err(|_| resource("continuous Gaussian halo overflow"))?;
+    let origin_x = grid.origin_x.checked_sub(offset)
+        .ok_or_else(|| precision("continuous Gaussian x sample phase overflow"))?;
+    let origin_y = grid.origin_y.checked_sub(offset)
+        .ok_or_else(|| precision("continuous Gaussian y sample phase overflow"))?;
+    let to_samples = scale / mesh.units_per_parent_logical_unit;
+    if !to_samples.is_finite() || to_samples <= 0.0 {
+        return Err(precision("continuous Gaussian triangle projection is invalid"));
+    }
+    let mut triangles = filled(mesh.triangles.len(), [0.0; 2], path)?;
+    for (dst, &[x, y]) in triangles.iter_mut().zip(&mesh.triangles) {
+        *dst = [x * to_samples, y * to_samples];
+        if !dst.iter().all(|v| v.is_finite()) {
+            return Err(precision("continuous Gaussian triangle projection lost precision"));
+        }
+    }
+    let mut values = filled(area, 0.0_f64, path)?;
+    let mut work = 0_usize;
+    for row in 0..height {
+        for column in 0..width {
+            let center = [
+                (origin_x as f64 + as_f64(column)) + 0.5,
+                (origin_y as f64 + as_f64(row)) + 0.5,
+            ];
+            values[row * width + column] =
+                gaussian_union_sample(&triangles, center, physical_sigma, &mut work, path)?;
+        }
+    }
+    Ok(Some(NeutralCoverage {
+        origin_x,
+        origin_y,
+        width,
+        height,
+        values,
+    }))
+}
+
 /// Separable finite 3σ Gaussian-style convolution over the spread mask.
 /// The kernel is the normalized discrete approximation of the accepted F1
 /// continuous truncated reference, with an explicit finite, complete halo.
@@ -845,11 +1095,10 @@ pub(super) fn prepare_untranslated_shadow_coverage(
     // a real caster must not vanish merely because its area misses all
     // correlated lattice centers. Gaussian convolution preserves that mass.
     if spread == 0.0 {
-        let Some(coverage) = rasterize_area_coverage(mesh, samples_per_logical_unit, path)? else {
-            return Ok(None);
-        };
-        let kernel = gaussian_kernel(sigma, samples_per_logical_unit, path)?;
-        return blur_neutral_coverage(&coverage, &kernel, path).map(Some);
+        if sigma > 0.0 {
+            return rasterize_gaussian_coverage(mesh, sigma, samples_per_logical_unit, path);
+        }
+        return rasterize_area_coverage(mesh, samples_per_logical_unit, path);
     }
     // Positive spread evaluates distance from the original geometry at each
     // sample. Seed-then-dilate would falsely erase thin off-phase casters.
@@ -1085,6 +1334,54 @@ pub(super) fn signed_euclidean_spread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuous_gaussian_reference_retains_full_interior_when_sample_cell_is_partial() {
+        let mut rect = Vec::new();
+        let points = [[0.03, 0.03], [0.23, 0.03], [0.23, 0.23], [0.03, 0.23]];
+        rect.extend([points[0], points[1], points[2], points[0], points[2], points[3]]);
+        let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: rect,
+            bounds: [0.03, 0.03, 0.23, 0.23],
+        };
+        let result = prepare_untranslated_shadow_coverage(&mesh, 0.0, 0.025, 4.0, &[3, 9])
+            .unwrap()
+            .unwrap();
+        let col = usize::try_from(-result.origin_x).unwrap();
+        let row = usize::try_from(-result.origin_y).unwrap();
+        // At logical (.125,.125) the entire closed 3sigma window
+        // [.05,.20]^2 is inside the union. Exact normalized reference is 1.
+        let sample = result.values[row * result.width + col];
+        assert!((sample - 1.0).abs() < 1.0e-8, "F3F-GAUSS-01 {sample}");
+        // An area-cell-first discrete kernel would return (.2/.25)^2 = .64.
+        assert!((sample - 0.64).abs() > 0.3);
+    }
+
+    #[test]
+    fn continuous_gaussian_exact_half_plane_symmetry_and_overlap_union() {
+        let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [-1.0, -1.0], [0.125, -1.0], [0.125, 1.0],
+                [-1.0, -1.0], [0.125, 1.0], [-1.0, 1.0],
+            ],
+            bounds: [-1.0, -1.0, 0.125, 1.0],
+        };
+        let once = prepare_untranslated_shadow_coverage(&mesh, 0.0, 0.025, 4.0, &[4])
+            .unwrap()
+            .unwrap();
+        let col = usize::try_from(-once.origin_x).unwrap();
+        let row = usize::try_from(-once.origin_y).unwrap();
+        let sample = once.values[row * once.width + col];
+        assert!((sample - 0.5).abs() < 1.0e-8, "half-plane Gaussian {sample}");
+        let mut duplicate = mesh;
+        duplicate.triangles.extend_from_within(..);
+        let twice = prepare_untranslated_shadow_coverage(&duplicate, 0.0, 0.025, 4.0, &[4])
+            .unwrap()
+            .unwrap();
+        assert!((twice.values[row * twice.width + col] - sample).abs() < 1.0e-8);
+    }
 
     #[test]
     fn area_integral_unions_duplicate_and_overlapping_triangles() {
