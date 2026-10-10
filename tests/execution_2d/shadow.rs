@@ -292,6 +292,57 @@ fn shadows_preserve_nontransparent_caller_pixels_and_exact_completion_evidence()
 }
 
 #[test]
+fn zero_alpha_image_bytes_and_item_opacity_still_cast_from_resolved_destination() {
+    let Some(context) = context() else {
+        return;
+    };
+    use runen_render::composition_2d::{
+        Render2dImagePatch, Render2dImagePrimitive, Render2dImageResource,
+        Render2dImageSourceRect, Render2dPixelExtent,
+    };
+    let id = Render2dResourceId::new(915).unwrap();
+    let extent = Render2dPixelExtent::new(1, 1).unwrap();
+    let patch = Render2dImagePatch::new(
+        Render2dImageSourceRect::new(0.0, 0.0, 1.0, 1.0).unwrap(),
+        Render2dRect::new(10.0, 10.0, 16.0, 16.0).unwrap(),
+    );
+    let image = Render2dImagePrimitive::new(id, extent, vec![patch]).unwrap();
+    let item = Render2dEntry::item(Render2dItem::new(
+        Render2dPrimitive::Image(image),
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    ));
+    let bindings = Render2dResourceBindings::new(vec![Render2dResourceBinding::new(
+        id,
+        Render2dResourceValue::ImageRgba8Srgb(
+            Render2dImageResource::new(extent, vec![0, 0, 0, 0]).unwrap(),
+        ),
+    )])
+    .unwrap();
+    let composition = group(
+        vec![item],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+        1.0,
+    );
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &bindings,
+        "F3F RGBA-zero and item-alpha-zero image destination",
+    );
+    pixel_near(pixel(&output, 16, 16), [0, 0, 255, 255]);
+    assert_eq!(pixel(&output, 6, 16), [0, 0, 0, 0]);
+}
+
+#[test]
 fn immutable_monochrome_text_casts_from_transparent_foreground_after_cache_loss() {
     let Some(context) = context() else {
         return;
