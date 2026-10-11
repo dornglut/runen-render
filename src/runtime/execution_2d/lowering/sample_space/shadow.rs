@@ -271,9 +271,7 @@ pub(super) fn prepare(
             // positive disk or Gaussian in root axes after ancestor shear
             // changes the F1 semantics and is not admitted.
             let coverage = if let Some(ancestor) = parent_affine {
-                if remaining_spread >= 0.0
-                    && (effect.sigma() > 0.0 || remaining_spread > 0.0)
-                {
+                if remaining_spread >= 0.0 && (effect.sigma() > 0.0 || remaining_spread > 0.0) {
                     let [a, b, c, d, _, _] = ancestor.components();
                     let determinant = a.mul_add(d, -(b * c));
                     if determinant == 0.0 {

@@ -366,13 +366,10 @@ mod tests {
             Render2dAffineTransform::IDENTITY,
             Vec::new(),
             Render2dOpacity::OPAQUE,
-            vec![Render2dDropShadow::new(
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                Render2dColorRgba8::TRANSPARENT,
-            ).unwrap()],
+            vec![
+                Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+            ],
         );
         let tree = Render2dComposition::new(vec![Render2dEntry::group(outer)]).unwrap();
         let plan = scene::analyze(&tree).unwrap();
@@ -387,8 +384,7 @@ mod tests {
 
     #[test]
     fn nested_positive_zero_blur_without_ancestor_caster_passes_f2_preflight() {
-        let disk =
-            Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::WHITE).unwrap();
+        let disk = Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::WHITE).unwrap();
         let inner = Render2dEntry::group(Render2dGroup::new(
             Vec::new(),
             Render2dAffineTransform::IDENTITY,

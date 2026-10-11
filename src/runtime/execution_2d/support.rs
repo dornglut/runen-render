@@ -877,7 +877,8 @@ impl AffinePositiveDiskArea<'_> {
     ) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
         use crate::execution_2d::Render2dSampleSpaceError;
         let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
-        let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+        let precision =
+            |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
         const MAX_VISITS: usize = 32_768;
         const MAX_DEPTH: u8 = 22;
         const UNCERTAIN_MASS_TARGET: f64 = 1.0 / 2048.0;
@@ -887,7 +888,9 @@ impl AffinePositiveDiskArea<'_> {
             || !self.root_translation.iter().all(|v| v.is_finite())
             || !root_lower.iter().all(|v| v.is_finite())
         {
-            return Err(precision("affine disk sample parameters are unrepresentable"));
+            return Err(precision(
+                "affine disk sample parameters are unrepresentable",
+            ));
         }
         let mut pending = std::collections::BinaryHeap::new();
         pending
@@ -907,9 +910,9 @@ impl AffinePositiveDiskArea<'_> {
         let mut covered = 0.0_f64;
         let mut visited = 0_usize;
         while unknown > UNCERTAIN_MASS_TARGET {
-            let cell = pending.pop().ok_or_else(|| {
-                precision("affine disk area uncertainty lost its queue")
-            })?;
+            let cell = pending
+                .pop()
+                .ok_or_else(|| precision("affine disk area uncertainty lost its queue"))?;
             unknown -= cell.mass;
             visited = visited
                 .checked_add(1)
@@ -953,13 +956,10 @@ impl AffinePositiveDiskArea<'_> {
             }
             let mx = (x0 + x1) * 0.5;
             let my = (y0 + y1) * 0.5;
-            if cell.depth >= MAX_DEPTH
-                || mx <= x0
-                || mx >= x1
-                || my <= y0
-                || my >= y1
-            {
-                return Err(precision("affine disk area cannot certify coverage tolerance"));
+            if cell.depth >= MAX_DEPTH || mx <= x0 || mx >= x1 || my <= y0 || my >= y1 {
+                return Err(precision(
+                    "affine disk area cannot certify coverage tolerance",
+                ));
             }
             pending
                 .try_reserve(4)
@@ -1112,7 +1112,12 @@ pub(super) fn affine_parent_effect_coverage_admitted(
     }
     let disk_area = AffinePositiveDiskArea {
         triangles: &triangles,
-        inverse: [d / determinant, -c / determinant, -b / determinant, a / determinant],
+        inverse: [
+            d / determinant,
+            -c / determinant,
+            -b / determinant,
+            a / determinant,
+        ],
         root_translation: [tx * scale, ty * scale],
         radius: physical_spread,
     };
@@ -2672,6 +2677,77 @@ pub(super) fn signed_euclidean_spread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn affine_positive_disk_area_is_euclidean_and_preserves_sheared_quarter_pixel() {
+        let square = [
+            [2.0, 2.0],
+            [4.0, 2.0],
+            [2.0, 4.0],
+            [4.0, 2.0],
+            [4.0, 4.0],
+            [2.0, 4.0],
+        ];
+        let identity = AffinePositiveDiskArea {
+            triangles: &square,
+            inverse: [1.0, 0.0, 0.0, 1.0],
+            root_translation: [0.0, 0.0],
+            radius: 1.0,
+        };
+        let mut work = 0;
+        let corner = identity.sample([1.0, 1.0], &mut work, &[0]).unwrap();
+        // The positive disk outside a convex rectangular corner is one
+        // quarter circle. A square-expanded AABB would incorrectly give 1.
+        assert!((corner - std::f64::consts::FRAC_PI_4).abs() < 0.0004);
+        assert_eq!(identity.sample([0.0, 0.0], &mut work, &[0]).unwrap(), 0.0);
+        assert_eq!(identity.sample([3.0, 3.0], &mut work, &[0]).unwrap(), 1.0);
+        assert!(work > 0);
+
+        let parent_square = [
+            [10.0, 10.0],
+            [20.0, 10.0],
+            [10.0, 20.0],
+            [20.0, 10.0],
+            [20.0, 20.0],
+            [10.0, 20.0],
+        ];
+        // Root x=2*parent_x +.5*parent_y+4, root y=parent_y.
+        let sheared = AffinePositiveDiskArea {
+            triangles: &parent_square,
+            inverse: [0.5, -0.25, 0.0, 1.0],
+            root_translation: [4.0, 0.0],
+            radius: 1.0,
+        };
+        let area = sheared.sample([29.0, 15.0], &mut work, &[0]).unwrap();
+        assert!(
+            (area - 0.25).abs() < 0.0004,
+            "affine parallelogram cell is not a parent-axis square: {area}"
+        );
+    }
+
+    #[test]
+    fn affine_disk_area_work_exhaustion_is_typed_and_path_bearing() {
+        let triangles = [
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [0.0, 2.0],
+        ];
+        let area = AffinePositiveDiskArea {
+            triangles: &triangles,
+            inverse: [1.0, 0.0, 0.0, 1.0],
+            root_translation: [0.0, 0.0],
+            radius: 0.5,
+        };
+        let mut work = 16_777_216;
+        assert!(matches!(
+            area.sample([0.0, 0.0], &mut work, &[2, 1]),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [2, 1]
+        ));
+    }
 
     #[test]
     fn certified_nested_convex_erosion_uses_true_sheared_halfplanes_not_aabb() {

@@ -372,9 +372,12 @@ pub(super) fn group_child_sources(
                         let ancestor_shadow_caster = active
                             .iter()
                             .any(|ancestor| !ancestor.group.shadows().is_empty());
-                        if frame.group.shadows().iter().any(|shadow| {
-                            shadow.spread() > 0.0 && ancestor_shadow_caster
-                        }) {
+                        if frame
+                            .group
+                            .shadows()
+                            .iter()
+                            .any(|shadow| shadow.spread() > 0.0 && ancestor_shadow_caster)
+                        {
                             return Err(super::unsupported_at(
                                 &frame.path,
                                 Render2dUnsupportedContent::Shadows {
