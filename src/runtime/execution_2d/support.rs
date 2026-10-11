@@ -941,8 +941,7 @@ impl DiskAreaCellPolygon {
             return Some(output);
         }
         let signed = |p: [f64; 2]| {
-            (p[0] - origin[0]).mul_add(inward[0], (p[1] - origin[1]) * inward[1])
-                - radius
+            (p[0] - origin[0]).mul_add(inward[0], (p[1] - origin[1]) * inward[1]) - radius
         };
         for index in 0..self.len {
             let p = self.vertices[index];
@@ -1166,10 +1165,7 @@ fn certified_local_eroded_cell(
         } else {
             first = Some(edge);
         }
-        let direction = [
-            edge[1][0] - edge[0][0],
-            edge[1][1] - edge[0][1],
-        ];
+        let direction = [edge[1][0] - edge[0][0], edge[1][1] - edge[0][1]];
         let norm2 = direction[0].mul_add(direction[0], direction[1] * direction[1]);
         if !norm2.is_finite() || norm2 <= 0.0 {
             return None;
@@ -1199,10 +1195,9 @@ fn certified_local_eroded_cell(
         return None;
     }
     let normal = [-direction[1] / length, direction[0] / length];
-    let t = ((center[0] - edge[0][0]).mul_add(
-        direction[0],
-        (center[1] - edge[0][1]) * direction[1],
-    )) / (length * length);
+    let t = ((center[0] - edge[0][0])
+        .mul_add(direction[0], (center[1] - edge[0][1]) * direction[1]))
+        / (length * length);
     if !t.is_finite() || !(0.0..=1.0).contains(&t) {
         return None;
     }
@@ -1450,7 +1445,9 @@ impl AffineSignedDiskArea<'_> {
                 .checked_add(certificate_cost)
                 .ok_or_else(|| resource("nested eroded-cell certificate work overflow"))?;
             if *work > 16_777_216 {
-                return Err(resource("nested eroded-cell certificate exceeds bounded work"));
+                return Err(resource(
+                    "nested eroded-cell certificate exceeds bounded work",
+                ));
             }
             let [m00, m01, m10, m11] = self.inverse;
             let mapped = |root: [f64; 2]| {
@@ -1468,12 +1465,9 @@ impl AffineSignedDiskArea<'_> {
                 mapped([x, y + 1.0]),
             ])
             .ok_or_else(|| precision("nested eroded-cell affine mapping failed"))?;
-            if let Some(coverage) = certified_local_eroded_cell(
-                self.triangles,
-                exterior,
-                cell,
-                -self.radius,
-            ) {
+            if let Some(coverage) =
+                certified_local_eroded_cell(self.triangles, exterior, cell, -self.radius)
+            {
                 return Ok(coverage);
             }
         }
@@ -3496,18 +3490,8 @@ mod tests {
     #[test]
     fn concave_signed_erosion_uses_exact_exposed_edge_area_under_affine_shear() {
         let mut source = Vec::new();
-        for [x0, y0, x1, y1] in [
-            [10.0, 10.0, 20.0, 15.0],
-            [10.0, 15.0, 15.0, 20.0],
-        ] {
-            source.extend_from_slice(&[
-                [x0, y0],
-                [x1, y0],
-                [x0, y1],
-                [x1, y0],
-                [x1, y1],
-                [x0, y1],
-            ]);
+        for [x0, y0, x1, y1] in [[10.0, 10.0, 20.0, 15.0], [10.0, 15.0, 15.0, 20.0]] {
+            source.extend_from_slice(&[[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]]);
         }
         let mut work = 0;
         let exterior = union_exterior_boundary(&source, &[2], Some(&mut work)).unwrap();
