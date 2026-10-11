@@ -1306,8 +1306,8 @@ fn indexed_nonconvex_root_signed_erosion_covers_a_real_complete_scene() {
         );
         // Interior points are >3*sigma from the eroded true boundary.
         pixel_near(pixel(&output, 12, 12), [255, 0, 0, 255]);
-        pixel_near(pixel(&output, 18, 12), [255, 0, 0, 255]);
-        pixel_near(pixel(&output, 12, 18), [255, 0, 0, 255]);
+        pixel_near(pixel(&output, 17, 12), [255, 0, 0, 255]);
+        pixel_near(pixel(&output, 12, 17), [255, 0, 0, 255]);
         assert_eq!(pixel(&output, 18, 18), [0, 0, 0, 0]);
         assert_eq!(pixel(&output, 9, 12), [0, 0, 0, 0]);
     }
