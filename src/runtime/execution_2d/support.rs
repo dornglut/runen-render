@@ -1151,9 +1151,11 @@ impl AffineSignedDiskArea<'_> {
                 if inset[0] >= inset[2] || inset[1] >= inset[3] {
                     return Ok(0.0);
                 }
-                let clipped = polygon.clipped_rectangle(inset)
+                let clipped = polygon
+                    .clipped_rectangle(inset)
                     .ok_or_else(|| precision("inset rectangle cell clip lost precision"))?;
-                let area = clipped.area()
+                let area = clipped
+                    .area()
                     .ok_or_else(|| precision("inset rectangle cell area lost precision"))?;
                 return Ok((area / parent_cell_area).clamp(0.0, 1.0));
             }
@@ -1288,7 +1290,8 @@ impl AffineSignedDiskArea<'_> {
             let distance = if self.radius < 0.0 {
                 union_signed_interior_distance(
                     self.triangles,
-                    self.exterior.ok_or_else(|| precision("eroded union boundary missing"))?,
+                    self.exterior
+                        .ok_or_else(|| precision("eroded union boundary missing"))?,
                     point,
                 )
             } else {
@@ -1343,12 +1346,14 @@ impl AffineSignedDiskArea<'_> {
             if !corners.iter().flatten().all(|v| v.is_finite()) {
                 return Err(precision("affine disk corner projection lost precision"));
             }
-            if self.radius > 0.0 && self.triangles.as_chunks::<3>().0.iter().any(|tri| {
-                orient(tri[0], tri[1], tri[2]) != 0.0
-                    && corners
-                        .iter()
-                        .all(|&point| neutral_union_distance(tri, point) <= self.radius)
-            }) {
+            if self.radius > 0.0
+                && self.triangles.as_chunks::<3>().0.iter().any(|tri| {
+                    orient(tri[0], tri[1], tri[2]) != 0.0
+                        && corners
+                            .iter()
+                            .all(|&point| neutral_union_distance(tri, point) <= self.radius)
+                })
+            {
                 covered += cell.mass;
                 continue;
             }
@@ -1518,8 +1523,13 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             ));
         }
     }
-    let exterior = if signed_spread < 0.0 && certified_axis_aligned_rectangle(&triangles).is_none() {
-        Some(union_exterior_boundary(&triangles, path, Some(aggregate_work))?)
+    let exterior = if signed_spread < 0.0 && certified_axis_aligned_rectangle(&triangles).is_none()
+    {
+        Some(union_exterior_boundary(
+            &triangles,
+            path,
+            Some(aggregate_work),
+        )?)
     } else {
         None
     };
@@ -3234,14 +3244,7 @@ mod tests {
     fn nested_signed_affine_area_preserves_true_hole_boundary_not_triangle_seams() {
         let mut ring = Vec::new();
         let mut rectangle = |x0: f64, y0: f64, x1: f64, y1: f64| {
-            ring.extend_from_slice(&[
-                [x0, y0],
-                [x1, y0],
-                [x0, y1],
-                [x1, y0],
-                [x1, y1],
-                [x0, y1],
-            ]);
+            ring.extend_from_slice(&[[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]]);
         };
         rectangle(10.0, 10.0, 30.0, 17.0);
         rectangle(10.0, 23.0, 30.0, 30.0);
@@ -3259,7 +3262,10 @@ mod tests {
         };
         assert_eq!(eroded.sample([19.0, 18.0], &mut work, &[0]).unwrap(), 0.0);
         let hole_side = eroded.sample([23.0, 18.0], &mut work, &[0]).unwrap();
-        assert!(hole_side < 0.0004, "eroded hole boundary must move from x=23 to 24: {hole_side}");
+        assert!(
+            hole_side < 0.0004,
+            "eroded hole boundary must move from x=23 to 24: {hole_side}"
+        );
         let surviving = eroded.sample([25.0, 18.0], &mut work, &[0]).unwrap();
         assert!((surviving - 1.0).abs() < 0.0004);
     }

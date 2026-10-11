@@ -699,7 +699,10 @@ fn nested_nonconvex_negative_disk_preserves_exact_parent_frame_under_shear() {
         Vec::new(),
         Render2dOpacity::OPAQUE,
         vec![effect(
-            0.0, 0.0, 0.0, -1.0,
+            0.0,
+            0.0,
+            0.0,
+            -1.0,
             Render2dColorRgba8::new(255, 0, 0, 255),
         )],
     ));
