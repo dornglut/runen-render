@@ -955,6 +955,59 @@ fn two_ancestor_shadows_keep_independent_curved_caster_and_painter_order() {
     assert_eq!(pixel(&image, 7, 10), [0, 0, 0, 0]);
 }
 
+/// Independent four-layer physical-compositor reference for a rounded
+/// *transparent* child. At root pixel [9,9], the source is the intersection
+/// of each 0.25x0.25 physical cell with the Euclidean unit quarter-disk.
+/// For u,v in [0,1], each cell's coverage is
+/// 16 * integral( max(0, min(v1,sqrt(1-u²)) - v0) ) du.
+/// The antiderivative of sqrt(1-u²) is
+/// F(u) = (u*sqrt(1-u²) + asin(u))/2.
+/// For four identical translucent red shadows with alpha=64/255,
+/// the independent 4x4 reference is:
+/// A = sum_{16 cells} [1-(1-(64/255)*coverage_cell)^4]/16
+///   = 0.5530777966844838, linear premul red -> sRGB8 [196,0,0,141].
+/// Crucially, applying source-over to the *resolved* pi/4 coverage instead
+/// would give A=0.5844688787, and is NOT the accepted F3E 4x4 law.
+/// The full-inside pixel is 1-(1-64/255)^4 = 0.6852449206461124.
+#[test]
+fn four_translucent_curved_ancestor_shadows_composite_before_physical_resolve() {
+    let Some(context) = context() else { return };
+    let child = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)],
+    ));
+    let scene = group(
+        vec![child],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 64),
+        ); 4],
+        1.0,
+    );
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F four curved translucent shadows, subpixel source-over",
+    );
+    pixel_near(pixel(&image, 9, 9), [196, 0, 0, 141]);
+    pixel_near(pixel(&image, 15, 15), [216, 0, 0, 175]);
+    assert_eq!(pixel(&image, 8, 8), [0, 0, 0, 0]);
+}
+
 /// Exact convex morphology: (C plus B1) eroded by B0.5 equals C plus B0.5.
 /// At the bottom-left pixel [9,9], only the radius-0.5 quarter disk lies
 /// within the cell, so its area is pi/16=0.19634954084936207.
