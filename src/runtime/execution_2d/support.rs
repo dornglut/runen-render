@@ -967,7 +967,9 @@ impl AffinePositiveDiskArea<'_> {
                 .checked_add(certificate_work)
                 .ok_or_else(|| resource("affine disk convex certificate work overflow"))?;
             if *work > 16_777_216 {
-                return Err(resource("affine disk convex certificate exceeds bounded work"));
+                return Err(resource(
+                    "affine disk convex certificate exceeds bounded work",
+                ));
             }
             let corners = [
                 [point[0] - dx - ex, point[1] - dy - ey],
