@@ -151,9 +151,7 @@ impl<'a> OrthogonalExterior<'a> {
         let bands_count = y_events.len().saturating_sub(1);
         let max_inventory = bands_count.checked_mul(edges.len());
         let mut bands = None;
-        if bands_count > 0
-            && max_inventory.is_some_and(|n| n <= MAX_CACHED_CROSSINGS)
-        {
+        if bands_count > 0 && max_inventory.is_some_and(|n| n <= MAX_CACHED_CROSSINGS) {
             let preparation = max_inventory
                 .and_then(|n| n.checked_mul(levels + 2))
                 .ok_or_else(|| resource(path, "cached orthogonal crossing preparation overflow"))?;
@@ -602,7 +600,10 @@ mod tests {
                 assert!((a - b).abs() <= ERROR_TARGET);
             }
         }
-        assert!(cached_work < fallback_work, "shared band construction must amortize");
+        assert!(
+            cached_work < fallback_work,
+            "shared band construction must amortize"
+        );
     }
 
     #[test]
@@ -625,8 +626,18 @@ mod tests {
         assert_eq!(bands.at(&cached.y_events, 1.0), &[0.0, 10.0]);
         assert_eq!(bands.at(&cached.y_events, 5.0), &[0.0, 3.0, 7.0, 10.0]);
         assert_eq!(bands.at(&cached.y_events, 9.0), &[0.0, 10.0]);
-        assert_eq!(cached.area([4.0, 4.0, 5.0, 5.0], 0.5, &mut work, &[5]).unwrap(), 0.0);
-        assert_eq!(cached.area([1.0, 4.0, 2.0, 5.0], 0.5, &mut work, &[5]).unwrap(), 1.0);
+        assert_eq!(
+            cached
+                .area([4.0, 4.0, 5.0, 5.0], 0.5, &mut work, &[5])
+                .unwrap(),
+            0.0
+        );
+        assert_eq!(
+            cached
+                .area([1.0, 4.0, 2.0, 5.0], 0.5, &mut work, &[5])
+                .unwrap(),
+            1.0
+        );
     }
 
     #[test]
