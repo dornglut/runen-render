@@ -15,6 +15,7 @@ use std::{collections::BTreeMap, sync::Arc};
 const MAX_REGION_NODES: usize = 65_536;
 const MAX_REGION_DEPTH: usize = 512;
 const MAX_REGION_PATH_UNITS: usize = 1_048_576;
+const MAX_REGION_AFFINE_VERTEX_WORK: usize = 16_777_216;
 
 pub(super) struct NeutralRegion<'a> {
     kind: Kind<'a>,
@@ -68,6 +69,48 @@ fn unsupported(path: &[usize]) -> Render2dExecutionError {
     )
 }
 
+/// A direct mesh leaf can be projected more precisely than the corners of
+/// its AABB. The latter can overflow at a wholly unoccupied corner under
+/// extreme shear even if every original triangle vertex is representable.
+/// This remains a conservative reach envelope, NEVER a membership oracle.
+fn affine_leaf_envelope(
+    mesh: &support::NeutralMesh,
+    affine: Render2dAffineTransform,
+    path: &[usize],
+) -> Result<Option<[f64; 4]>, Render2dExecutionError> {
+    if mesh.triangles.is_empty() {
+        return Ok(None);
+    }
+    let scale = mesh.units_per_parent_logical_unit;
+    let [a, b, c, d, tx, ty] = affine.components();
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for &[x, y] in &mesh.triangles {
+        let x = x / scale;
+        let y = y / scale;
+        // Match the real polygonal materialization arithmetic exactly.
+        let point = [
+            a.mul_add(x, c.mul_add(y, tx)),
+            b.mul_add(x, d.mul_add(y, ty)),
+        ];
+        if !point.iter().all(|v| v.is_finite()) {
+            return Err(precision(
+                path,
+                "neutral-region affine leaf loses vertex representability",
+            ));
+        }
+        bounds[0] = bounds[0].min(point[0]);
+        bounds[1] = bounds[1].min(point[1]);
+        bounds[2] = bounds[2].max(point[0]);
+        bounds[3] = bounds[3].max(point[1]);
+    }
+    Ok(Some(bounds))
+}
+
 /// Conservative support reach derived from exact symbolic operators.
 /// An axis-aligned extent must NEVER be interpreted as region membership or
 /// Gaussian coverage. In particular, Clip may shrink but cannot enlarge its
@@ -109,10 +152,16 @@ fn region_envelope(
             }
             combined
         }
-        Kind::Affine { source, to_parent } => source
-            .envelope
-            .map(|bounds| shadow::transform_envelope(bounds, *to_parent, path))
-            .transpose()?,
+        Kind::Affine { source, to_parent } => {
+            if let Kind::Source(mesh) = &source.kind {
+                affine_leaf_envelope(mesh, *to_parent, path)?
+            } else {
+                source
+                    .envelope
+                    .map(|bounds| shadow::transform_envelope(bounds, *to_parent, path))
+                    .transpose()?
+            }
+        }
         Kind::Clip { source, .. } => source.envelope,
         Kind::Effect {
             source,
@@ -149,6 +198,7 @@ pub(super) struct NeutralRegionBuilder {
     nodes: usize,
     retained_path_units: usize,
     retained_vertices: usize,
+    affine_vertex_work: usize,
     pub(super) clip_work: usize,
     erosion_work: usize,
     materialized: BTreeMap<usize, Arc<support::NeutralMesh>>,
@@ -162,6 +212,7 @@ impl NeutralRegionBuilder {
             nodes: 0,
             retained_path_units: 0,
             retained_vertices: 0,
+            affine_vertex_work: 0,
             clip_work: 0,
             erosion_work: 0,
             materialized: BTreeMap::new(),
@@ -190,12 +241,32 @@ impl NeutralRegionBuilder {
                 "neutral support graph exceeds node/depth/path admission",
             ));
         }
-        // Validate every finite support reach before committing the node.
-        // This remains an envelope-only fact, even for unmaterializable
-        // positive disks and clipped compound regions.
+        // A tight direct-leaf projection visits its ACTUAL mesh vertices;
+        // admit that work invocation-wide rather than hiding an unbounded
+        // traversal behind a cached semantic-looking rectangle.
+        let visits = match &kind {
+            Kind::Affine { source, .. } => match &source.kind {
+                Kind::Source(mesh) => mesh.triangles.len(),
+                _ => 0,
+            },
+            _ => 0,
+        };
+        let affine_work = self
+            .affine_vertex_work
+            .checked_add(visits)
+            .ok_or_else(|| resource(path, "neutral affine reach work overflow"))?;
+        if affine_work > MAX_REGION_AFFINE_VERTEX_WORK {
+            return Err(resource(
+                path,
+                "neutral affine reach exceeds bounded whole-invocation work",
+            ));
+        }
+        // Validate every finite support reach before committing either graph
+        // or work admission. Curved region bounds remain reach-only.
         let envelope = region_envelope(&kind, path)?;
         self.nodes = next;
         self.retained_path_units = paths;
+        self.affine_vertex_work = affine_work;
         Ok(Arc::new(NeutralRegion {
             kind,
             path: path.to_vec(),
@@ -522,6 +593,49 @@ mod tests {
                 kind: Render2dUnsupportedContent::Shadows { root_index: 5 },
             }) if path == [5, 2]
         ));
+    }
+
+    #[test]
+    fn real_triangle_affine_reach_does_not_overflow_at_unoccupied_box_corner() {
+        let mut builder = builder();
+        let leaf = builder
+            .source(
+                support::NeutralMesh {
+                    units_per_parent_logical_unit: 1.0,
+                    triangles: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                    bounds: [0.0, 0.0, 1.0, 1.0],
+                },
+                &[9, 0],
+            )
+            .unwrap();
+        // The artificial AABB corner (1,1) gives MAX+MAX = infinity.
+        // None of the triangle's three REAL vertices has that coordinate.
+        let affine =
+            Render2dAffineTransform::new(f64::MAX, 0.0, f64::MAX, 1.0, 0.0, 0.0).unwrap();
+        let projected = builder.affine(leaf, affine, &[9, 1]).unwrap();
+        assert_eq!(projected.envelope, Some([0.0, 0.0, f64::MAX, 1.0]));
+        assert_eq!(builder.affine_vertex_work, 3);
+        let realized = builder.materialize(&projected).unwrap();
+        assert_eq!(realized.bounds, [0.0, 0.0, f64::MAX, 1.0]);
+        assert_eq!(realized.triangles.len(), 3);
+    }
+
+    #[test]
+    fn affine_vertex_budget_rejects_without_mutating_invocation_admission() {
+        let mut builder = builder();
+        let leaf = builder.source(triangle(), &[4, 0]).unwrap();
+        builder.affine_vertex_work = MAX_REGION_AFFINE_VERTEX_WORK - 2;
+        let before_nodes = builder.nodes;
+        assert!(matches!(
+            builder.affine(leaf, Render2dAffineTransform::IDENTITY, &[4, 1]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [4, 1]
+        ));
+        assert_eq!(builder.nodes, before_nodes);
+        assert_eq!(builder.affine_vertex_work, MAX_REGION_AFFINE_VERTEX_WORK - 2);
     }
 
     #[test]
