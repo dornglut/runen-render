@@ -2572,7 +2572,7 @@ fn rasterize_continuous_shadow_coverage(
     // reusing one boundary arrangement for this entire root shadow.
     // General/oblique shapes and finite Gaussian still use the existing
     // independent continuous integrator with typed resource rejection.
-    let orthogonal = if signed_spread < 0.0 && physical_sigma == 0.0 && convex_inset.is_none() {
+    let orthogonal = if signed_spread < 0.0 && convex_inset.is_none() {
         erosion_boundary
             .as_deref()
             .map(|boundary| OrthogonalExterior::new(boundary, path, aggregate_work))
@@ -2583,6 +2583,17 @@ fn rasterize_continuous_shadow_coverage(
     };
     let mut values = filled(area, 0.0_f64, path)?;
     for row in 0..height {
+        if let Some(orthogonal) = &orthogonal
+            && physical_sigma > 0.0
+        {
+            let center_y = (origin_y as f64 + as_f64(row)) + 0.5;
+            let row_values = orthogonal.gaussian_row(
+                center_y, origin_x as f64, width, -physical_spread,
+                physical_sigma, aggregate_work, path,
+            )?;
+            values[row * width..(row + 1) * width].copy_from_slice(&row_values);
+            continue;
+        }
         for column in 0..width {
             let center = [
                 (origin_x as f64 + as_f64(column)) + 0.5,

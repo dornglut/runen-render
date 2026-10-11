@@ -10,7 +10,7 @@
 //! capsule-slice extent over a bounded vertical interval. Best-first
 //! refinement stops ONLY when certified uncertainty is <= 1/2048 of
 //! cell area; no sampled-mask approximation is substituted.
-use super::{UnionBoundaryEdge, mask_failure};
+use super::{UnionBoundaryEdge, gaussian_axis_mass, mask_failure};
 use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 use std::collections::BinaryHeap;
 
@@ -398,6 +398,169 @@ impl<'a> OrthogonalExterior<'a> {
             lower,
             upper,
         })
+    }
+
+
+    /// Share exact exposed-boundary y sections across all x samples in a
+    /// physical row. Gaussian alpha is disposable numerical realization;
+    /// neither these intervals nor output values own semantic F1 support.
+    /// Split Gaussian integration at real exterior events and disk tangencies.
+    pub(super) fn gaussian_row(
+        &self, y: f64, origin_x: f64, width: usize, radius: f64,
+        sigma: f64, work: &mut usize, path: &[usize],
+    ) -> Result<Vec<f64>, Render2dExecutionError> {
+        let reach = 3.0 * sigma;
+        let y0 = y - reach;
+        let y1 = y + reach;
+        if !y.is_finite() || !origin_x.is_finite() || !radius.is_finite()
+            || radius <= 0.0 || !sigma.is_finite() || sigma <= 0.0
+            || !reach.is_finite() || !y0.is_finite() || !y1.is_finite()
+            || !(y0 < y1) || !((origin_x + width as f64).is_finite())
+            || width > super::MAX_NEUTRAL_MASK_SAMPLES
+        {
+            return Err(precision(path, "orthogonal Gaussian row is unrepresentable"));
+        }
+        let mut cuts = Vec::new();
+        cuts.try_reserve(self.y_events.len() * 3 + 2)
+            .map_err(|_| resource(path, "Gaussian y-event allocation failed"))?;
+        cuts.extend([y0, y1]);
+        for &e in &self.y_events {
+            for cut in [e - radius, e, e + radius] {
+                if cut > y0 && cut < y1 && cut.is_finite() {
+                    cuts.push(cut);
+                }
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup();
+        let mut values = Vec::new();
+        values.try_reserve_exact(width)
+            .map_err(|_| resource(path, "Gaussian row buffer allocation failed"))?;
+        values.resize(width, 0.0_f64);
+        let mut crossings = Vec::<f64>::new();
+        let mut forbidden = Vec::<[f64; 2]>::new();
+        let mut allowed = Vec::<[f64; 2]>::new();
+        crossings.try_reserve(self.edges.len())
+            .map_err(|_| resource(path, "Gaussian crossing allocation failed"))?;
+        forbidden.try_reserve(self.edges.len())
+            .map_err(|_| resource(path, "Gaussian capsule allocation failed"))?;
+        allowed.try_reserve(self.edges.len() + 1)
+            .map_err(|_| resource(path, "Gaussian interval allocation failed"))?;
+        let levels = (usize::BITS - self.edges.len().leading_zeros()) as usize + 1;
+        let section_charge = self.edges.len().checked_mul(
+            self.edges.len() + 3 * levels + 16
+        ).ok_or_else(|| resource(path, "Gaussian section work overflow"))?;
+
+        for pair in cuts.windows(2) {
+            let half = (pair[1] - pair[0]) * 0.5;
+            if !(half > 0.0) {
+                continue;
+            }
+            let middle = pair[0] + half;
+            charge(work, 32, path)?;
+            let mass_y = gaussian_axis_mass(pair[0], pair[1], y, sigma);
+            if !mass_y.is_finite() || mass_y < 0.0 {
+                return Err(precision(path, "Gaussian y mass is invalid"));
+            }
+            if mass_y == 0.0 {
+                continue;
+            }
+            // Normalize each slab's positive quadrature weights so fully
+            // covered interiors preserve the admitted truncated y mass.
+            let mut weights = [0.0; 16];
+            let mut weight_total = 0.0;
+            for (i, &node) in super::GAUSS_NODES.iter().enumerate() {
+                let sample_y = node.mul_add(half, middle);
+                let z = (sample_y - y) / sigma;
+                weights[i] = super::GAUSS_WEIGHTS[i] * (-0.5 * z * z).exp();
+                weight_total += weights[i];
+            }
+            if !weight_total.is_finite() || weight_total <= 0.0 {
+                return Err(precision(path, "Gaussian y quadrature is invalid"));
+            }
+            for (i, &weight) in weights.iter().enumerate() {
+                if weight == 0.0 {
+                    continue;
+                }
+                charge(work, section_charge, path)?;
+                let sample_y = super::GAUSS_NODES[i].mul_add(half, middle);
+                crossings.clear();
+                forbidden.clear();
+                allowed.clear();
+                for &[a, b] in self.edges {
+                    let (lo, hi, dy) = if a[0] == b[0] {
+                        let low = a[1].min(b[1]);
+                        let high = a[1].max(b[1]);
+                        if self.bands.is_none() && sample_y >= low && sample_y < high {
+                            crossings.push(a[0]);
+                        }
+                        (a[0], a[0], (low - sample_y).max(sample_y - high).max(0.0))
+                    } else {
+                        (a[0].min(b[0]), a[0].max(b[0]), (a[1] - sample_y).abs())
+                    };
+                    if let Some(delta) = Self::forbidden_extent(radius, dy, path)? {
+                        let left = lo - delta;
+                        let right = hi + delta;
+                        if !left.is_finite() || !right.is_finite() {
+                            return Err(precision(path, "Gaussian capsule coordinates overflow"));
+                        }
+                        forbidden.push([left, right]);
+                    }
+                }
+                let active: &[f64] = if let Some(bands) = &self.bands {
+                    bands.at(&self.y_events, sample_y)
+                } else {
+                    crossings.sort_by(f64::total_cmp);
+                    crossings.dedup();
+                    &crossings
+                };
+                if !active.len().is_multiple_of(2) {
+                    return Err(precision(path, "Gaussian exterior crossing parity invalid"));
+                }
+                forbidden.sort_by(|a, b| a[0].total_cmp(&b[0]));
+                for interval in active.as_chunks::<2>().0 {
+                    let mut cursor = interval[0];
+                    for &[left, right] in &forbidden {
+                        if right <= cursor || left >= interval[1] { continue; }
+                        if left > cursor {
+                            allowed.push([cursor, left.min(interval[1])]);
+                        }
+                        cursor = cursor.max(right).min(interval[1]);
+                        if cursor >= interval[1] { break; }
+                    }
+                    if cursor < interval[1] {
+                        allowed.push([cursor, interval[1]]);
+                    }
+                }
+                let y_mass = mass_y * weight / weight_total;
+                for (column, value) in values.iter_mut().enumerate() {
+                    charge(work, 1, path)?;
+                    let sample_x = origin_x + column as f64 + 0.5;
+                    let window = [sample_x - reach, sample_x + reach];
+                    let mut x_mass = 0.0;
+                    for &[left, right] in &allowed {
+                        charge(work, 1, path)?;
+                        let start = left.max(window[0]);
+                        let end = right.min(window[1]);
+                        if start >= end { continue; }
+                        if start <= window[0] && end >= window[1] {
+                            x_mass = 1.0;
+                            break;
+                        }
+                        charge(work, 16, path)?;
+                        x_mass += gaussian_axis_mass(start, end, sample_x, sigma);
+                    }
+                    *value += y_mass * x_mass.min(1.0);
+                }
+            }
+        }
+        for value in &mut values {
+            if !value.is_finite() || !(-1.0e-8..=1.0 + 1.0e-8).contains(value) {
+                return Err(precision(path, "Gaussian row coverage not normalized"));
+            }
+            *value = value.clamp(0.0, 1.0);
+        }
+        Ok(values)
     }
 
     /// Certified continuous area over one actual physical sample cell.
