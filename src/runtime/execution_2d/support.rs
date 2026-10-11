@@ -861,10 +861,16 @@ fn gaussian_union_sample(
 /// footprints, not the parent's spread or normalized Gaussian:
 /// inverse-map each root sample to its parent before continuous integration.
 /// An extent is only allocation/reach admission, never a region mask.
+/// Private physical kernel for one owning parent-frame effect. A single
+/// parameter keeps spread and blur together without minting semantic state.
+pub(super) struct ParentEffectKernel {
+    pub(super) positive_spread: f64,
+    pub(super) sigma: f64,
+}
+
 pub(super) fn affine_parent_effect_coverage_admitted(
     source: &NeutralMesh,
-    positive_spread: f64,
-    sigma: f64,
+    kernel: ParentEffectKernel,
     parent_to_root: crate::composition_2d::Render2dAffineTransform,
     root_envelope: [f64; 4],
     scale: f64,
@@ -872,6 +878,10 @@ pub(super) fn affine_parent_effect_coverage_admitted(
     aggregate_work: &mut usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
+    let ParentEffectKernel {
+        positive_spread,
+        sigma,
+    } = kernel;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     if source.triangles.is_empty() {

@@ -280,8 +280,10 @@ pub(super) fn prepare(
                     }
                     support::affine_parent_effect_coverage_admitted(
                         caster,
-                        remaining_spread,
-                        effect.sigma(),
+                        support::ParentEffectKernel {
+                            positive_spread: remaining_spread,
+                            sigma: effect.sigma(),
+                        },
                         ancestor,
                         envelope,
                         sample_scale,
