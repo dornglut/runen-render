@@ -1353,86 +1353,34 @@ fn orthogonal_root_hole_erodes_from_both_exterior_boundaries_on_vulkan() {
     assert_eq!(pixel(&image, 9, 20), [0, 0, 0, 0]);
 }
 
-/*
- * RR-F3F-NS02 Gaussian admission PROBES, not positive conformance.
- *
- * Both tests must exercise the complete 64x64 scene independently, even if
- * its current evaluator exceeds the unchanged whole-scene work admission.
- * A typed, before-work ResourceLimit is a valid provisional outcome only
- * while #81 remains draft. It MUST be removed as an allowed outcome before
- * final F3F acceptance; a green probe is NOT evidence of Gaussian support.
- *
- * Independent mathematical reference: erode the true orthogonal union by
- * radius 1. Across each constant-topology horizontal strip, its occupied
- * x-intervals have endpoints consisting of straight segments and the
- * circle arcs sqrt(1 - (y - corner_y)^2). Integrate each x interval against
- * the normalized, truncated 3sigma Gaussian using its erf antiderivative;
- * integrate the resulting piecewise y function independently. Averaging
- * the 16 globally correlated sample centers in the specified corner pixel
- * gives alpha ~= 0.22752904084766 at sigma=0.1 for both these shapes.
- * Linear premultiplied red then resolves to sRGB8 [131, 0, 0, 58].
- */
-fn probe_orthogonal_finite_gaussian(
+/// Independent corner, full-interior and hole/outside readback requirements.
+/// F3F may not accept a ResourceLimit for these ordinary finite-Gaussian
+/// workload classes: every test below requires a real completed Vulkan render.
+fn assert_orthogonal_finite_gaussian_on_vulkan(
     composition: &Render2dComposition,
     corner: [u32; 2],
+    interior: [u32; 2],
+    exterior: [u32; 2],
     label: &str,
 ) {
     let Some(context) = context() else { return };
-    let bindings = Render2dResourceBindings::default();
-    let (_, target) = target(label);
-    let mut executor = Render2dExecutor::new();
-    match executor.prepare(&context, composition, &bindings, &target) {
-        Ok(prepared) => {
-            assert!(
-                prepared.has_render_work(),
-                "a visible, nonempty finite-Gaussian effect must author work"
-            );
-            let image = execute(&context, &mut executor, composition, &bindings, label);
-            pixel_near(pixel(&image, corner[0], corner[1]), [131, 0, 0, 58]);
-        }
-        Err(Render2dExecutionError::SampleSpace {
-            kind: runen_render::execution_2d::Render2dSampleSpaceError::ResourceLimit,
-            path: Some(path),
-            ..
-        }) if path == [0] => {
-            // A resource failure is NOT acceptance of this ordinary class.
-            // The absence of a prepared contribution prevents publication of
-            // partial GPU work. A later independent valid request must still
-            // prepare on this same executor.
-            let ordinary = group(
-                vec![caster(
-                    Render2dColorRgba8::TRANSPARENT,
-                    10.0,
-                    10.0,
-                    2.0,
-                    2.0,
-                )],
-                vec![effect(
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    Render2dColorRgba8::new(255, 0, 0, 255),
-                )],
-                1.0,
-            );
-            assert!(
-                executor
-                    .prepare(&context, &ordinary, &bindings, &target)
-                    .expect("a rejected Gaussian cannot poison subsequent execution")
-                    .has_render_work()
-            );
-        }
-        Err(error) => panic!(
-            "{label}: only independently verified GPU output or exact owner-path ResourceLimit is admissible in the feasibility probe: {error}"
-        ),
-    }
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        composition,
+        &Render2dResourceBindings::default(),
+        label,
+    );
+    // Analytic normalized finite 3sigma Gaussian integration over the
+    // radius-1 Euclidean-eroded orthogonal union gives alpha=0.22752904
+    // for the 16 correlated 4x4 samples at this fractional corner.
+    pixel_near(pixel(&image, corner[0], corner[1]), [131, 0, 0, 58]);
+    pixel_near(pixel(&image, interior[0], interior[1]), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, exterior[0], exterior[1]), [0, 0, 0, 0]);
 }
 
 #[test]
-fn finite_gaussian_concave_l_has_independent_oracle_or_typed_preflight_rejection() {
-    // Existing certified sigma-zero L source, independently repeated here at
-    // sigma=.1 rather than sharing control flow with the ring probe.
+fn finite_gaussian_concave_l_must_render_independent_oracle_on_vulkan() {
     let composition = group(
         vec![
             caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 5.0),
@@ -1447,13 +1395,17 @@ fn finite_gaussian_concave_l_has_independent_oracle_or_typed_preflight_rejection
         )],
         1.0,
     );
-    probe_orthogonal_finite_gaussian(&composition, [14, 14], "F3F NS02 L sigma .1 feasibility");
+    assert_orthogonal_finite_gaussian_on_vulkan(
+        &composition,
+        [14, 14],
+        [12, 12],
+        [18, 18],
+        "F3F NS02 L Gaussian actual Vulkan",
+    );
 }
 
 #[test]
-fn finite_gaussian_holed_ring_has_independent_oracle_or_typed_preflight_rejection() {
-    // The ring is an independent invocation; prior combined failing tests
-    // never reached it because the L exhausted preparation first.
+fn finite_gaussian_holed_ring_must_render_independent_oracle_on_vulkan() {
     let composition = group(
         vec![
             caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 20.0, 6.0),
@@ -1470,10 +1422,12 @@ fn finite_gaussian_holed_ring_has_independent_oracle_or_typed_preflight_rejectio
         )],
         1.0,
     );
-    probe_orthogonal_finite_gaussian(
+    assert_orthogonal_finite_gaussian_on_vulkan(
         &composition,
         [15, 15],
-        "F3F NS02 holed ring sigma .1 feasibility",
+        [13, 20],
+        [20, 20],
+        "F3F NS02 ring Gaussian actual Vulkan",
     );
 }
 
