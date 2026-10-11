@@ -2,12 +2,12 @@
 //! linear-premultiplied 4x4 sample compositor. No separate color renderer,
 //! sampled source alpha, shader module, scene owner or direct WGPU backend.
 use super::*;
+use crate::composition_2d::Render2dDropShadow;
 use crate::runtime::execution_2d::{
     field::{FieldSetKey, ResourceFields},
     shadow as geometry_support,
     support::{self, NeutralCoverage},
 };
-use crate::composition_2d::Render2dDropShadow;
 use std::sync::Arc;
 
 // Retained floating neutral support is separate from per-tile source-backed
