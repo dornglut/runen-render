@@ -745,13 +745,21 @@ mod tests {
             inspected_root,
             "the actual root caster must be inspected before materialization"
         );
-        assert!(matches!(
-            result,
-            Err(Render2dExecutionError::UnsupportedEntry {
-                path,
-                kind: Render2dUnsupportedContent::Shadows { root_index: 0 },
-            }) if path == [0, 0]
-        ));
+        let sources = result.expect("qualified C union disk must reach the ancestor");
+        let Some(shadow::NeutralCaster::RoundedRectangle {
+            rectangle,
+            radius,
+            curved_owner,
+        }) = sources.get(&0)
+        else {
+            panic!("the root must carry one exact qualified rounded caster");
+        };
+        assert_eq!(*radius, 1.0);
+        assert_eq!(curved_owner, &[0, 0]);
+        let rect = support::certified_axis_aligned_rectangle(&rectangle.triangles)
+            .expect("the child C is still a complete physical rectangle");
+        let scale = rectangle.units_per_parent_logical_unit;
+        assert_eq!(rect.map(|v| v / scale), [10.0, 10.0, 20.0, 20.0]);
     }
 
     #[test]
