@@ -516,7 +516,7 @@ impl NeutralRegion<'_> {
             {
                 source.rectangle()
             }
-            Kind::Clip { source, clips } if clips.is_empty() => source.rectangle(),
+            Kind::Clip { source, clips: [] } => source.rectangle(),
             Kind::Union(children) if children.len() == 1 => children[0].rectangle(),
             _ => None,
         }
@@ -559,7 +559,7 @@ impl NeutralRegion<'_> {
             {
                 source.point_certificate(point)
             }
-            Kind::Clip { source, clips } if clips.is_empty() => source.point_certificate(point),
+            Kind::Clip { source, clips: [] } => source.point_certificate(point),
             Kind::Effect { source, shadow } if shadow.spread() > 0.0 && shadow.sigma() == 0.0 => {
                 let Some([x0, y0, x1, y1]) = source.rectangle() else {
                     return PointCertificate::Unknown;
