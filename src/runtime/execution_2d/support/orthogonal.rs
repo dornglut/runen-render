@@ -474,8 +474,17 @@ impl<'a> OrthogonalExterior<'a> {
         forbidden
             .try_reserve(self.edges.len())
             .map_err(|_| resource(path, "Gaussian capsule allocation failed"))?;
+        // At most one original interior span per crossing pair plus one
+        // retained segment per exposed forbidden interval endpoint. Reserve
+        // the complete bounded inventory before any infallible Vec::push.
+        let max_intervals = self
+            .edges
+            .len()
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(|| resource(path, "Gaussian interval inventory overflow"))?;
         allowed
-            .try_reserve(self.edges.len() + 1)
+            .try_reserve_exact(max_intervals)
             .map_err(|_| resource(path, "Gaussian interval allocation failed"))?;
         let levels = (usize::BITS - self.edges.len().leading_zeros()) as usize + 1;
         let section_charge = self
