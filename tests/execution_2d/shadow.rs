@@ -985,17 +985,8 @@ fn four_translucent_curved_ancestor_shadows_composite_before_physical_resolve() 
         Render2dOpacity::TRANSPARENT,
         vec![effect(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)],
     ));
-    let scene = group(
-        vec![child],
-        vec![effect(
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            Render2dColorRgba8::new(255, 0, 0, 64),
-        ); 4],
-        1.0,
-    );
+    let translucent = effect(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(255, 0, 0, 64));
+    let scene = group(vec![child], vec![translucent; 4], 1.0);
     let image = execute(
         &context,
         &mut Render2dExecutor::new(),
