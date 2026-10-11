@@ -21,6 +21,8 @@ use crate::execution_2d::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+mod region;
+
 const MAX_NEUTRAL_VERTICES: usize = 1_048_576;
 const MAX_NEUTRAL_CLIP_WORK: usize = 16_777_216;
 
@@ -90,8 +92,9 @@ struct SourceFrame<'a> {
     begin_event: usize,
     path: Vec<usize>,
     group: &'a crate::composition_2d::Render2dGroup,
-    /// All children are in this group's LOCAL frame, without opacity.
-    child_source: NeutralMesh,
+    /// Structural source-neutral support in this group's LOCAL frame.
+    /// No ancestor completion, opacity or disk morphology has been flattened.
+    children: Vec<Arc<region::NeutralRegion<'a>>>,
 }
 
 /// Immutable F2 glyph-field quality and F3F disposable geometric sample
@@ -287,33 +290,28 @@ fn gaussian_square_support(
     Ok(expanded)
 }
 
-/// Derives F1 group child geometry in each attached group's immediate-parent
-/// frame, with no root flattening, pixel-alpha sampling or final canvas cull.
+/// Derives source-neutral F1 group support in each immediate-parent frame,
+/// independent of color alpha, materialization details or final-target culling.
 ///
-/// The result identifies each SHADOW-BEARING group's one pre-shadow C source
-/// by its BeginGroup event index. A nested zero-kernel shadow is a translated
-/// copy of the exact geometric C and may be propagated through ancestor
-/// affines. A nested positive-sigma, zero-spread shadow derives the exact
-/// finite square Minkowski union in its immediate-parent frame. Nonzero
-/// nested convex negative disk spread uses a mathematically certified
-/// polygonal Euclidean inset before its optional Gaussian support square.
-/// A nested positive disk is painted with continuous Gaussian or root-cell
-/// area integration only when NO ancestor shadow needs its curved support.
-/// Other positive disk caster dependencies and
-/// uncertified nonconvex erosions reject; neither sampled alpha nor AABBs
-/// stand in for curved caster geometry.
-pub(super) fn group_child_sources(
-    plan: &scene::Plan<'_>,
+/// Every shadow-bearing group's pre-shadow C is materialized once for the
+/// unchanged F3E correlated compositor. Descendant completion is represented
+/// by a bounded immutable DAG: only certified polygonal operations are lowered
+/// to triangles, with shared pristine sources and typed unsupported curved
+/// propagation. A positive disk is never silently replaced with child C,
+/// an axis-aligned bound, cached alpha or an approximate distance field.
+///
+/// Retaining graph operations here is a structural cutover, NOT admission of
+/// previously unsupported mixed signed morphology or repeated curved effects.
+pub(super) fn group_child_sources<'a>(
+    plan: &scene::Plan<'a>,
     bindings: &Render2dResourceBindings,
     field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
-) -> Result<BTreeMap<usize, NeutralMesh>, Render2dExecutionError> {
-    let mut active = Vec::<SourceFrame<'_>>::new();
+) -> Result<BTreeMap<usize, Arc<NeutralMesh>>, Render2dExecutionError> {
+    let mut active = Vec::<SourceFrame<'a>>::new();
     let mut sources = BTreeMap::new();
-    let mut retained_vertices = 0_usize;
-    let mut clip_work_used = 0_usize;
-    let mut convex_erosion_work_used = 0_usize;
+    let mut graph = region::NeutralRegionBuilder::new(scales, max_buffer_bytes);
     for (index, event) in plan.events.iter().enumerate() {
         match event {
             scene::Event::BeginGroup { path, group, .. } => {
@@ -321,7 +319,7 @@ pub(super) fn group_child_sources(
                     begin_event: index,
                     path: path.clone(),
                     group,
-                    child_source: empty_mesh(),
+                    children: Vec::new(),
                 });
             }
             scene::Event::Item { path, item, .. } => {
@@ -335,179 +333,79 @@ pub(super) fn group_child_sources(
                     field_sets,
                     scales,
                     max_buffer_bytes,
-                    &mut clip_work_used,
+                    &mut graph.clip_work,
                 )? {
-                    charge_vertices(&mut retained_vertices, mesh.triangles.len(), path)?;
-                    append(
-                        &mut active.last_mut().expect("active source group").child_source,
-                        &mesh,
-                        Render2dAffineTransform::IDENTITY,
-                        path,
-                    )?;
+                    let leaf = graph.source(mesh, path)?;
+                    active.last_mut().expect("active source group").children.push(leaf);
                 }
             }
             scene::Event::EndGroup => {
                 let frame = active.pop().expect("F1 balanced group plan");
-                let mut in_parent = empty_mesh();
-                append(
-                    &mut in_parent,
-                    &frame.child_source,
+                let children = graph.union(frame.children, &frame.path)?;
+                // A group first maps its entire local C into its immediate
+                // parent frame. Only THEN do its Euclidean disk, offset and
+                // finite Gaussian square operators act in that parent frame.
+                let in_parent = graph.affine(
+                    children,
                     frame.group.local_to_parent(),
                     &frame.path,
                 )?;
-                charge_vertices(
-                    &mut retained_vertices,
-                    in_parent.triangles.len(),
-                    &frame.path,
-                )?;
-                // Every shadow independently consumes pre-shadow C. For
-                // nested zero-kernel shadows that support is precisely C
-                // translated in THIS group's parent frame, even if its
-                // shadow color and group opacity are completely transparent.
-                // No envelope/AABB is promoted to geometric membership.
                 let nested = !active.is_empty();
-                let mut completed = empty_mesh();
                 if !frame.group.shadows().is_empty() {
-                    if nested {
-                        let ancestor_shadow_caster = active
-                            .iter()
-                            .any(|ancestor| !ancestor.group.shadows().is_empty());
-                        if frame
-                            .group
-                            .shadows()
-                            .iter()
-                            .any(|shadow| shadow.spread() > 0.0 && ancestor_shadow_caster)
-                        {
-                            return Err(super::unsupported_at(
-                                &frame.path,
-                                Render2dUnsupportedContent::Shadows {
-                                    root_index: frame.path[0],
-                                },
-                            ));
-                        }
-                        charge_vertices(
-                            &mut retained_vertices,
-                            in_parent.triangles.len(),
-                            &frame.path,
-                        )?;
-                        append(
-                            &mut completed,
-                            &in_parent,
-                            Render2dAffineTransform::IDENTITY,
-                            &frame.path,
-                        )?;
-                        for shadow in frame.group.shadows() {
-                            if shadow.spread() > 0.0 {
-                                // Its own parent-frame continuous Gaussian
-                                // or inverse-affine root-cell area is prepared
-                                // by sample_space::shadow. No
-                                // ancestor shadow consumes its curved support
-                                // (certified by the structural gate above);
-                                // do not promote raw C or a bound to that
-                                // unevaluated disk region.
-                                continue;
-                            }
-                            // A convex union has an EXACT Euclidean inward
-                            // disk offset as another polygon. Nonconvex/hole
-                            // unions remain typed unsupported, not "empty".
-                            let erosion = if shadow.spread() < 0.0 {
-                                let certified = super::support::certified_convex_erosion_mesh(
-                                    &in_parent,
-                                    -shadow.spread(),
-                                    &frame.path,
-                                    &mut convex_erosion_work_used,
-                                )?
-                                .ok_or_else(|| {
-                                    super::unsupported_at(
-                                        &frame.path,
-                                        Render2dUnsupportedContent::Shadows {
-                                            root_index: frame.path[0],
-                                        },
-                                    )
-                                })?;
-                                charge_vertices(
-                                    &mut retained_vertices,
-                                    certified.triangles.len(),
-                                    &frame.path,
-                                )?;
-                                Some(certified)
-                            } else {
-                                None
-                            };
-                            let caster = erosion.as_ref().unwrap_or(&in_parent);
-                            if caster.triangles.is_empty() {
-                                continue;
-                            }
-                            let offset = Render2dAffineTransform::translation(
-                                shadow.offset_x(),
-                                shadow.offset_y(),
-                            )
-                            .map_err(|_| {
-                                precision(&frame.path, "nested shadow offset is not representable")
-                            })?;
-                            charge_vertices(
-                                &mut retained_vertices,
-                                caster.triangles.len(),
-                                &frame.path,
-                            )?;
-                            if shadow.sigma() == 0.0 {
-                                append(&mut completed, caster, offset, &frame.path)?;
-                            } else {
-                                let mut shifted = empty_mesh();
-                                append(&mut shifted, caster, offset, &frame.path)?;
-                                let square = gaussian_square_support(
-                                    &shifted,
-                                    shadow.sigma() * 3.0,
-                                    &frame.path,
-                                )?;
-                                charge_vertices(
-                                    &mut retained_vertices,
-                                    square.triangles.len(),
-                                    &frame.path,
-                                )?;
-                                append(
-                                    &mut completed,
-                                    &square,
-                                    Render2dAffineTransform::IDENTITY,
-                                    &frame.path,
-                                )?;
-                            }
-                        }
-                    }
+                    let source = graph.materialize(&in_parent)?;
+                    sources.insert(frame.begin_event, source);
                     if !nested {
-                        // The root group's own shadow+children color is
-                        // merged by F3E; no ancestor needs its neutral output.
-                        sources.insert(frame.begin_event, in_parent);
+                        // A root group has no ancestor caster consumer. Its
+                        // paint shadows are already owned by the same F3E
+                        // compositor, not by this neutral support graph.
                         continue;
                     }
                 }
-                let clipped = intersect_clips(
-                    if frame.group.shadows().is_empty() {
-                        &in_parent
-                    } else {
-                        &completed
-                    },
-                    frame.group.clips(),
-                    frame.path[0],
-                    &frame.path,
-                    scales.geometry_sample_scale,
-                    max_buffer_bytes,
-                    &mut clip_work_used,
-                )?;
-                // Retain pristine C only after all nested geometric clip
-                // reads have completed. Ownership transfers without cloning
-                // neutral triangles or double-charging aggregate memory.
-                if !frame.group.shadows().is_empty() {
-                    sources.insert(frame.begin_event, in_parent);
+                if !nested {
+                    continue;
                 }
+                let mut components = vec![Arc::clone(&in_parent)];
+                if !frame.group.shadows().is_empty() {
+                    let ancestor_shadow_caster = active
+                        .iter()
+                        .any(|ancestor| !ancestor.group.shadows().is_empty());
+                    if frame.group.shadows().iter().any(|effect| {
+                        effect.spread() > 0.0 && ancestor_shadow_caster
+                    }) {
+                        // Keep the prior exact path of the unrepresented
+                        // curved caster. A consuming ancestor MUST NOT see
+                        // the raw C in place of this disk expression.
+                        return Err(super::unsupported_at(
+                            &frame.path,
+                            Render2dUnsupportedContent::Shadows {
+                                root_index: frame.path[0],
+                            },
+                        ));
+                    }
+                    components
+                        .try_reserve(frame.group.shadows().len())
+                        .map_err(|_| resource(&frame.path, "neutral effect graph allocation failed"))?;
+                    for &effect in frame.group.shadows() {
+                        let effect_region =
+                            graph.effect(Arc::clone(&in_parent), effect, &frame.path)?;
+                        if effect.spread() <= 0.0 {
+                            // Preserve the existing admitted subset: convex
+                            // negative erosion, zero spread and Gaussian
+                            // support must actually qualify now. A negative
+                            // nonconvex caster still fails with its owner path,
+                            // even when no ancestor would paint from it.
+                            graph.materialize(&effect_region)?;
+                        }
+                        // Positive disks remain symbolic only when no shadowed
+                        // ancestor consumes their curved support; their own
+                        // continuous paint path remains unchanged.
+                        components.push(effect_region);
+                    }
+                }
+                let completed = graph.union(components, &frame.path)?;
+                let clipped = graph.clip(completed, frame.group.clips(), &frame.path)?;
                 if let Some(parent) = active.last_mut() {
-                    charge_vertices(&mut retained_vertices, clipped.triangles.len(), &frame.path)?;
-                    append(
-                        &mut parent.child_source,
-                        &clipped,
-                        Render2dAffineTransform::IDENTITY,
-                        &frame.path,
-                    )?;
+                    parent.children.push(clipped);
                 }
             }
         }
