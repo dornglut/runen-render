@@ -1491,7 +1491,9 @@ impl AffineSignedDiskArea<'_> {
                 .checked_add(quick_cost)
                 .ok_or_else(|| resource("nested erosion cell certificate work overflow"))?;
             if *work > 16_777_216 {
-                return Err(resource("nested erosion cell certificate exceeds bounded work"));
+                return Err(resource(
+                    "nested erosion cell certificate exceeds bounded work",
+                ));
             }
             let mut center = [0.0_f64; 2];
             for point in &cell.vertices[..cell.len] {
@@ -1499,7 +1501,8 @@ impl AffineSignedDiskArea<'_> {
                 center[1] += point[1];
             }
             let count = f64::from(
-                u32::try_from(cell.len).map_err(|_| precision("eroded-cell corner count overflow"))?,
+                u32::try_from(cell.len)
+                    .map_err(|_| precision("eroded-cell corner count overflow"))?,
             );
             center[0] /= count;
             center[1] /= count;
@@ -1538,7 +1541,9 @@ impl AffineSignedDiskArea<'_> {
                 .checked_add(certificate_cost)
                 .ok_or_else(|| resource("nested eroded-cell certificate work overflow"))?;
             if *work > 16_777_216 {
-                return Err(resource("nested eroded-cell certificate exceeds bounded work"));
+                return Err(resource(
+                    "nested eroded-cell certificate exceeds bounded work",
+                ));
             }
             if let Some(coverage) =
                 certified_local_eroded_cell(self.triangles, exterior, cell, radius)
@@ -2683,7 +2688,9 @@ fn continuous_signed_spread_sample(
             .checked_add(quick_cost)
             .ok_or_else(|| resource("eroded Gaussian whole-support work overflow"))?;
         if *work > MAX_GLOBAL_SPREAD_WORK {
-            return Err(resource("eroded Gaussian whole-support exceeds bounded work"));
+            return Err(resource(
+                "eroded Gaussian whole-support exceeds bounded work",
+            ));
         }
         let reach = cutoff.hypot(cutoff);
         let distance = union_signed_interior_distance(triangles, exterior, center);
