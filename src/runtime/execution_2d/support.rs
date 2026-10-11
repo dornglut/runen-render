@@ -1098,10 +1098,12 @@ impl AffinePositiveDiskArea<'_> {
             // The complete two-triangle UNION (not its AABB) has been
             // certified to be exactly a rectangle. The analytic path has
             // constant per-cell work and no geometric heap allocations.
-            // A fixed 1024-work charge exceeds the maximal four-corner plus
-            // nine convex-clipping and circular-edge scans for this cell.
+            // Charge the inexpensive conservative per-cell classification
+            // separately from the more costly clipped circular integration.
+            // A large rectangle must not exhaust the global work budget
+            // solely for cells whose membership is geometrically certain.
             *work = work
-                .checked_add(1024)
+                .checked_add(8)
                 .ok_or_else(|| resource("rounded rectangle area work overflow"))?;
             if *work > 16_777_216 {
                 return Err(resource("rounded rectangle area exceeds bounded work"));
@@ -1127,6 +1129,57 @@ impl AffinePositiveDiskArea<'_> {
                 .ok_or_else(|| precision("rounded rectangle parent cell area is invalid"))?;
             if parent_cell_area <= 0.0 {
                 return Err(precision("rounded rectangle parent cell collapsed"));
+            }
+            let [x0, y0, x1, y1] = rect;
+            let scale = x0.abs().max(y0.abs()).max(x1.abs()).max(y1.abs())
+                .max(self.radius)
+                .max(1.0);
+            let margin = 16.0 * f64::EPSILON * scale;
+            let extended = [
+                x0 - self.radius - margin,
+                y0 - self.radius - margin,
+                x1 + self.radius + margin,
+                y1 + self.radius + margin,
+            ];
+            if !extended.iter().all(|v| v.is_finite()) {
+                return Err(precision("rounded rectangle support reach lost precision"));
+            }
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            let mut all_inside = true;
+            for point in &polygon.vertices[..polygon.len] {
+                min_x = min_x.min(point[0]);
+                min_y = min_y.min(point[1]);
+                max_x = max_x.max(point[0]);
+                max_y = max_y.max(point[1]);
+                // Rounded rectangle is convex. Four contained corners
+                // certify the entire inverse-affine root parallelogram.
+                let original_inside = point[0] >= x0 && point[0] <= x1
+                    && point[1] >= y0 && point[1] <= y1;
+                let nearest_x = point[0].clamp(x0, x1);
+                let nearest_y = point[1].clamp(y0, y1);
+                let distance = (point[0] - nearest_x).hypot(point[1] - nearest_y);
+                all_inside &= original_inside || distance + margin < self.radius;
+            }
+            if max_x < extended[0] || max_y < extended[1]
+                || min_x > extended[2] || min_y > extended[3]
+            {
+                // AABB is used only as a conservative *disjointness* proof,
+                // never as geometric membership.
+                return Ok(0.0);
+            }
+            if all_inside {
+                return Ok(1.0);
+            }
+            // 8 units were charged for all cells; 1016 additional units
+            // complete the conservative 1024-unit exact clipped integration.
+            *work = work
+                .checked_add(1016)
+                .ok_or_else(|| resource("rounded rectangle area work overflow"))?;
+            if *work > 16_777_216 {
+                return Err(resource("rounded rectangle area exceeds bounded work"));
             }
             let clipped_area = certified_rounded_rectangle_area(polygon, rect, self.radius)
                 .ok_or_else(|| precision("rounded rectangle circle integral is invalid"))?;
@@ -3032,6 +3085,53 @@ mod tests {
             work <= 8,
             "certified triangle interior must not require deep disk subdivision"
         );
+    }
+
+    #[test]
+    fn certified_rounded_rectangle_admits_large_provable_interiors_and_exteriors() {
+        let square = [
+            [10.0, 10.0],
+            [110.0, 10.0],
+            [10.0, 110.0],
+            [110.0, 10.0],
+            [110.0, 110.0],
+            [10.0, 110.0],
+        ];
+        let area = AffinePositiveDiskArea {
+            triangles: &square,
+            certified_rectangle: Some([10.0, 10.0, 110.0, 110.0]),
+            inverse: [1.0, 0.0, 0.0, 1.0],
+            root_translation: [0.0, 0.0],
+            radius: 1.0,
+        };
+        let mut work = 0;
+        for y in 20..100 {
+            for x in 20..100 {
+                assert_eq!(
+                    area.sample([f64::from(x), f64::from(y)], &mut work, &[0]).unwrap(),
+                    1.0
+                );
+            }
+        }
+        for y in 120..200 {
+            for x in 120..200 {
+                assert_eq!(
+                    area.sample([f64::from(x), f64::from(y)], &mut work, &[0]).unwrap(),
+                    0.0
+                );
+            }
+        }
+        assert_eq!(work, 80 * 80 * 2 * 8);
+        // Even this highly amortized path respects the cumulative budget.
+        let mut exhausted = 16_777_216;
+        assert!(matches!(
+            area.sample([50.0, 50.0], &mut exhausted, &[7, 4]),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [7, 4]
+        ));
     }
 
     #[test]
