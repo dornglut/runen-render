@@ -908,6 +908,50 @@ fn nested_positive_disks_add_radii_with_independent_corner_oracle_on_vulkan() {
     assert_eq!(pixel(&image, 7, 7), [0, 0, 0, 0]);
 }
 
+/// Two different ancestor shadows MUST both sample the same completed
+/// child source C ⊕ B1: the first red root spread 1 reaches radius 2,
+/// while the second blue root spread 0 reaches only radius 1. The latter
+/// paints above the former, but cannot inherit the earlier red shadow.
+#[test]
+fn two_ancestor_shadows_keep_independent_curved_caster_and_painter_order() {
+    let Some(context) = context() else { return };
+    let child = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)],
+    ));
+    let scene = group(
+        vec![child],
+        vec![
+            effect(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::new(255, 0, 0, 255)),
+            effect(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 255)),
+        ],
+        1.0,
+    );
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F independent curved ancestor shadows and authored paint order",
+    );
+    // Outer-only red radius-2 reach cannot leak into the second blue radius-1.
+    pixel_near(pixel(&image, 8, 10), [255, 0, 0, 255]);
+    // Both disks cover the next cell: later blue overwrites earlier red.
+    pixel_near(pixel(&image, 9, 10), [0, 0, 255, 255]);
+    pixel_near(pixel(&image, 15, 15), [0, 0, 255, 255]);
+    pixel_near(pixel(&image, 8, 8), [152, 0, 0, 80]);
+    assert_eq!(pixel(&image, 7, 10), [0, 0, 0, 0]);
+}
+
 #[test]
 fn qualified_child_positive_disk_does_not_silently_accept_ancestor_erosion() {
     let Some(context) = context() else { return };
