@@ -1112,10 +1112,7 @@ impl AffinePositiveDiskArea<'_> {
                     root[0] - self.root_translation[0],
                     root[1] - self.root_translation[1],
                 ];
-                [
-                    m00.mul_add(p[0], m01 * p[1]),
-                    m10.mul_add(p[0], m11 * p[1]),
-                ]
+                [m00.mul_add(p[0], m01 * p[1]), m10.mul_add(p[0], m11 * p[1])]
             };
             let [x, y] = root_lower;
             let polygon = DiskAreaCellPolygon::quadrilateral([
