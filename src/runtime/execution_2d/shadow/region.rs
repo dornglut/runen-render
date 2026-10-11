@@ -610,8 +610,7 @@ mod tests {
             .unwrap();
         // The artificial AABB corner (1,1) gives MAX+MAX = infinity.
         // None of the triangle's three REAL vertices has that coordinate.
-        let affine =
-            Render2dAffineTransform::new(f64::MAX, 0.0, f64::MAX, 1.0, 0.0, 0.0).unwrap();
+        let affine = Render2dAffineTransform::new(f64::MAX, 0.0, f64::MAX, 1.0, 0.0, 0.0).unwrap();
         let projected = builder.affine(leaf, affine, &[9, 1]).unwrap();
         assert_eq!(projected.envelope, Some([0.0, 0.0, f64::MAX, 1.0]));
         assert_eq!(builder.affine_vertex_work, 3);
@@ -635,7 +634,10 @@ mod tests {
             }) if path == [4, 1]
         ));
         assert_eq!(builder.nodes, before_nodes);
-        assert_eq!(builder.affine_vertex_work, MAX_REGION_AFFINE_VERTEX_WORK - 2);
+        assert_eq!(
+            builder.affine_vertex_work,
+            MAX_REGION_AFFINE_VERTEX_WORK - 2
+        );
     }
 
     #[test]
