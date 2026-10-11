@@ -10,7 +10,7 @@ use crate::execution_2d::{
     Render2dExecutionError, Render2dSampleSpaceError, Render2dUnsupportedContent,
 };
 use crate::runtime::execution_2d::{shadow, support};
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 const MAX_REGION_NODES: usize = 65_536;
 const MAX_REGION_DEPTH: usize = 512;
@@ -201,7 +201,9 @@ pub(super) struct NeutralRegionBuilder {
     affine_vertex_work: usize,
     pub(super) clip_work: usize,
     erosion_work: usize,
-    materialized: BTreeMap<usize, Arc<support::NeutralMesh>>,
+    // Dense, fallibly allocated by monotonic node ID; no implicit per-entry
+    // tree allocation and no aliasing if a prior node is dropped.
+    materialized: Vec<Option<Arc<support::NeutralMesh>>>,
     scales: shadow::NeutralPreparationScale,
     max_buffer_bytes: u64,
 }
@@ -215,7 +217,7 @@ impl NeutralRegionBuilder {
             affine_vertex_work: 0,
             clip_work: 0,
             erosion_work: 0,
-            materialized: BTreeMap::new(),
+            materialized: Vec::new(),
             scales,
             max_buffer_bytes,
         }
@@ -371,7 +373,7 @@ impl NeutralRegionBuilder {
         &mut self,
         region: &Arc<NeutralRegion<'a>>,
     ) -> Result<Arc<support::NeutralMesh>, Render2dExecutionError> {
-        if let Some(existing) = self.materialized.get(&region.id) {
+        if let Some(Some(existing)) = self.materialized.get(region.id) {
             return Ok(Arc::clone(existing));
         }
         let path = region.path.as_slice();
@@ -464,7 +466,25 @@ impl NeutralRegionBuilder {
                 }
             }
         };
-        self.materialized.insert(region.id, Arc::clone(&mesh));
+        // Every node ID is monotonic and bounded by MAX_REGION_NODES.
+        // Geometric Vec growth amortizes allocation across node inserts;
+        // each growth uses fallible try_reserve BEFORE changing cache state.
+        // The maximum cache capacity is bounded by at most twice the
+        // admitted index range, with no infallible per-entry tree allocation.
+        let needed = region
+            .id
+            .checked_add(1)
+            .ok_or_else(|| resource(path, "neutral materialization cache size overflow"))?;
+        if needed > MAX_REGION_NODES + 1 {
+            return Err(resource(path, "neutral materialization cache exceeds node admission"));
+        }
+        if needed > self.materialized.len() {
+            self.materialized
+                .try_reserve(needed - self.materialized.len())
+                .map_err(|_| resource(path, "neutral materialization cache allocation failed"))?;
+            self.materialized.resize_with(needed, || None);
+        }
+        self.materialized[region.id] = Some(Arc::clone(&mesh));
         Ok(mesh)
     }
 }
@@ -536,10 +556,41 @@ mod tests {
             .unwrap();
         let mesh = builder.materialize(&complete).unwrap();
         assert_eq!(mesh.triangles.len(), triangle().triangles.len() * 3);
-        assert_eq!(builder.materialized.len(), 4);
+        assert_eq!(
+            builder.materialized.iter().filter(|entry| entry.is_some()).count(),
+            4
+        );
         assert_eq!(
             builder.materialize(&caster).unwrap().triangles,
             triangle().triangles
+        );
+    }
+
+    #[test]
+    fn sparse_cache_keys_cannot_alias_after_unmaterialized_curved_nodes() {
+        let mut builder = builder();
+        let caster = builder.source(triangle(), &[2, 0]).unwrap();
+        let effect = Render2dDropShadow::new(
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            Render2dColorRgba8::TRANSPARENT,
+        )
+        .unwrap();
+        // Symbolic node 2 is never materialized. Node 3 must never inherit
+        // an allocation identity or cached geometry from that node.
+        let curved = builder.effect(Arc::clone(&caster), effect, &[2, 1]).unwrap();
+        let affine = builder
+            .affine(Arc::clone(&caster), Render2dAffineTransform::IDENTITY, &[2, 2])
+            .unwrap();
+        let realized = builder.materialize(&affine).unwrap();
+        assert!(Arc::ptr_eq(&realized, &builder.materialize(&affine).unwrap()));
+        assert_eq!(builder.materialized.len(), affine.id + 1);
+        assert!(builder.materialized[curved.id].is_none());
+        assert_eq!(
+            builder.materialized.iter().filter(|entry| entry.is_some()).count(),
+            2
         );
     }
 
