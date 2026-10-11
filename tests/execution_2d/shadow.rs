@@ -876,7 +876,7 @@ fn nested_convex_erosion_gaussian_integrates_in_its_parent_frame() {
 }
 
 #[test]
-fn nested_nonconvex_disk_erosion_rejects_with_authored_path_before_gpu_work() {
+fn nested_nonconvex_erosion_rejects_when_ancestor_needs_curved_support() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
         vec![
@@ -899,10 +899,10 @@ fn nested_nonconvex_disk_erosion_rejects_with_authored_path_before_gpu_work() {
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::OPAQUE,
-        Vec::new(),
+        vec![effect(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT)],
     ));
     let scene = Render2dComposition::new(vec![outer]).unwrap();
-    let (texture, target) = target("F3F nonconvex nested signed erosion rejects atomically");
+    let (texture, target) = target("F3F ancestor caster requires nonconvex signed erosion support");
     let mut executor = Render2dExecutor::new();
     let result = executor.prepare(
         &context,
@@ -911,7 +911,7 @@ fn nested_nonconvex_disk_erosion_rejects_with_authored_path_before_gpu_work() {
         &target,
     );
     let failure = match result {
-        Ok(_) => panic!("nonconvex disk erosion cannot become a convex rectangle"),
+        Ok(_) => panic!("nonconvex eroded region may not masquerade as ancestor caster"),
         Err(error) => error,
     };
     assert!(matches!(
