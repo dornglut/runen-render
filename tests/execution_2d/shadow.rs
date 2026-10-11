@@ -955,8 +955,11 @@ fn two_ancestor_shadows_keep_independent_curved_caster_and_painter_order() {
     assert_eq!(pixel(&image, 7, 10), [0, 0, 0, 0]);
 }
 
+/// Exact convex morphology: (C plus B1) eroded by B0.5 equals C plus B0.5.
+/// At the bottom-left pixel [9,9], only the radius-0.5 quarter disk lies
+/// within the cell, so its area is pi/16=0.19634954084936207.
 #[test]
-fn qualified_child_positive_disk_does_not_silently_accept_ancestor_erosion() {
+fn qualified_child_positive_disk_partial_ancestor_erosion_has_gpu_quarter_disk() {
     let Some(context) = context() else { return };
     let child = Render2dEntry::group(Render2dGroup::new(
         vec![caster(
@@ -982,21 +985,59 @@ fn qualified_child_positive_disk_does_not_silently_accept_ancestor_erosion() {
         )],
         1.0,
     );
-    let (_, target) = target("F3F unsupported ancestor erosion of rounded neutral caster");
-    assert!(matches!(
-        Render2dExecutor::new().prepare(
-            &context,
-            &scene,
-            &Render2dResourceBindings::default(),
-            &target,
-        ),
-        Err(Render2dExecutionError::UnsupportedEntry {
-            path,
-            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
-                root_index: 0,
-            },
-        }) if path == [0, 0]
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F exact erosion of certified rounded descendant disk",
+    );
+    pixel_near(pixel(&image, 9, 9), [123, 0, 0, 50]);
+    pixel_near(pixel(&image, 12, 12), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 8, 8), [0, 0, 0, 0]);
+}
+
+/// Convex parallel-body law beyond the existing corner radius:
+/// (C plus B1) eroded by B1.5 equals C eroded by B0.5.
+/// For rectangular C this is the exact inset [10.5,19.5]^2, yielding
+/// quarter-cell coverage 0.25 at pixel [10,10] (sRGB8 [137,0,0,64]).
+#[test]
+fn qualified_child_positive_disk_exhausted_radius_erodes_original_rectangle() {
+    let Some(context) = context() else { return };
+    let child = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)],
     ));
+    let scene = group(
+        vec![child],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            -1.5,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F disk erosion past curved radius uses exact inset rectangle",
+    );
+    pixel_near(pixel(&image, 10, 10), [137, 0, 0, 64]);
+    pixel_near(pixel(&image, 12, 12), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 9, 9), [0, 0, 0, 0]);
 }
 
 #[test]

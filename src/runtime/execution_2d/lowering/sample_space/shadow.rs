@@ -200,12 +200,15 @@ pub(super) fn prepare(
             // (C union (C plus disk(r))) plus disk(s) =
             // C plus disk(r+s), for nonnegative s. Both radii act in
             // the same parent frame, before the ancestor shadow offset.
-            // Finite Gaussian is a normalized convolution of the resulting
-            // parent-space positive-disk geometry, and does not change that
-            // morphological membership. Negative ancestor morphology and
-            // effects outside the qualified root frame still fail closed.
+            // For a convex C, support-function inequalities give the exact
+            // identity (C plus B_r) eroded by B_t =
+            // C plus B_(r-t) when t<=r, else C eroded by B_(t-r).
+            // The certified rectangular C is convex; this remains exact
+            // in its one shared parent frame. A finite Gaussian convolves
+            // the resulting support, never the child's paint alpha.
+            // Nonrectangular or foreign-frame expressions fail closed.
             let effective = if let Some((radius, owner)) = qualified_disk {
-                if path.len() != 1 || effect.spread() < 0.0 {
+                if path.len() != 1 {
                     return Err(crate::runtime::execution_2d::unsupported_at(
                         owner,
                         crate::execution_2d::Render2dUnsupportedContent::Shadows {
