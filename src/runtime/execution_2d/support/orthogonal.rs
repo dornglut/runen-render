@@ -144,7 +144,7 @@ impl<'a> OrthogonalExterior<'a> {
     /// normal complete-scene rectangular edges to exhaust the work budget.
     fn covered_width(crossings: &[f64], forbidden: &[[f64; 2]], x0: f64, x1: f64) -> f64 {
         let mut allowed = 0.0;
-        for pair in crossings.chunks_exact(2) {
+        for pair in crossings.as_chunks::<2>().0 {
             let left = pair[0].max(x0);
             let right = pair[1].min(x1);
             if right <= left {
@@ -168,14 +168,14 @@ impl<'a> OrthogonalExterior<'a> {
 
     fn slice(
         &self,
-        y0: f64,
-        y1: f64,
-        x0: f64,
-        x1: f64,
+        y: [f64; 2],
+        x: [f64; 2],
         radius: f64,
         work: &mut usize,
         path: &[usize],
     ) -> Result<Slice, Render2dExecutionError> {
+        let [y0, y1] = y;
+        let [x0, x1] = x;
         let mid = (y0 + y1) * 0.5;
         if !(y0 < mid && mid < y1) {
             return Err(precision(path, "orthogonal erosion cannot refine a slice"));
@@ -319,7 +319,7 @@ impl<'a> OrthogonalExterior<'a> {
         let mut total_lower = 0.0;
         let mut total_upper = 0.0;
         for pair in cuts.windows(2) {
-            let slab = self.slice(pair[0], pair[1], x0, x1, radius, work, path)?;
+            let slab = self.slice([pair[0], pair[1]], [x0, x1], radius, work, path)?;
             total_lower += slab.lower;
             total_upper += slab.upper;
             pending.push(slab);
@@ -347,8 +347,8 @@ impl<'a> OrthogonalExterior<'a> {
             pending
                 .try_reserve(2)
                 .map_err(|_| resource(path, "orthogonal erosion slice growth failed"))?;
-            let left = self.slice(slab.y0, mid, x0, x1, radius, work, path)?;
-            let right = self.slice(mid, slab.y1, x0, x1, radius, work, path)?;
+            let left = self.slice([slab.y0, mid], [x0, x1], radius, work, path)?;
+            let right = self.slice([mid, slab.y1], [x0, x1], radius, work, path)?;
             total_lower += left.lower + right.lower - slab.lower;
             total_upper += left.upper + right.upper - slab.upper;
             pending.push(left);

@@ -1306,6 +1306,10 @@ fn orthogonal_root_concave_l_erodes_with_true_euclidean_disk_on_vulkan() {
     pixel_near(pixel(&image, 12, 12), [255, 0, 0, 255]);
     pixel_near(pixel(&image, 17, 12), [255, 0, 0, 255]);
     pixel_near(pixel(&image, 12, 17), [255, 0, 0, 255]);
+    // The [14,15]^2 sample cell abuts the *concave* missing quadrant.
+    // Erosion removes exactly one quarter unit disk from its filled unit
+    // square: alpha=1-pi/4. F3E writes linear-premul red through sRGB.
+    pixel_near(pixel(&image, 14, 14), [128, 0, 0, 55]);
     assert_eq!(pixel(&image, 18, 18), [0, 0, 0, 0]);
     assert_eq!(pixel(&image, 9, 12), [0, 0, 0, 0]);
 }
@@ -1341,6 +1345,10 @@ fn orthogonal_root_hole_erodes_from_both_exterior_boundaries_on_vulkan() {
     );
     pixel_near(pixel(&image, 13, 20), [255, 0, 0, 255]);
     pixel_near(pixel(&image, 27, 20), [255, 0, 0, 255]);
+    // The outside of the hole's southwest corner [15,16]^2 also loses
+    // exactly pi/4 to the Euclidean disk around (16,16). An AABB/alpha
+    // approximation cannot satisfy this fractional geometry reference.
+    pixel_near(pixel(&image, 15, 15), [128, 0, 0, 55]);
     assert_eq!(pixel(&image, 20, 20), [0, 0, 0, 0]);
     assert_eq!(pixel(&image, 9, 20), [0, 0, 0, 0]);
 }
