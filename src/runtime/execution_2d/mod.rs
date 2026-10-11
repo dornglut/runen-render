@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_nonzero_kernel_shadow_group_reports_exact_unsupported_effect_path() {
+    fn nested_positive_disk_with_shadowed_ancestor_reports_exact_unsupported_path() {
         let shadow =
             Render2dDropShadow::new(1.0, 1.0, 0.0, 0.5, Render2dColorRgba8::WHITE).unwrap();
         let shadow_only = Render2dEntry::group(Render2dGroup::new(
@@ -366,7 +366,13 @@ mod tests {
             Render2dAffineTransform::IDENTITY,
             Vec::new(),
             Render2dOpacity::OPAQUE,
-            Vec::new(),
+            vec![Render2dDropShadow::new(
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                Render2dColorRgba8::TRANSPARENT,
+            ).unwrap()],
         );
         let tree = Render2dComposition::new(vec![Render2dEntry::group(outer)]).unwrap();
         let plan = scene::analyze(&tree).unwrap();
@@ -377,6 +383,29 @@ mod tests {
                 kind: Render2dUnsupportedContent::Shadows { root_index: 0 },
             }) if path == [0, 0]
         ));
+    }
+
+    #[test]
+    fn nested_positive_zero_blur_without_ancestor_caster_passes_f2_preflight() {
+        let disk =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::WHITE).unwrap();
+        let inner = Render2dEntry::group(Render2dGroup::new(
+            Vec::new(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![disk],
+        ));
+        let outer = Render2dEntry::group(Render2dGroup::new(
+            vec![inner],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            Vec::new(),
+        ));
+        let tree = Render2dComposition::new(vec![outer]).unwrap();
+        let plan = scene::analyze(&tree).unwrap();
+        assert!(admit_runs(&plan).unwrap().is_empty());
     }
 
     #[test]

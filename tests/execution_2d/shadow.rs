@@ -583,6 +583,57 @@ fn nested_finite_gaussian_integrates_parent_kernel_under_ancestor_shear() {
 }
 
 #[test]
+fn nested_positive_disk_zero_blur_integrates_inverse_affine_root_sample_cells() {
+    let Some(context) = context() else { return };
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ));
+    let composition = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F zero blur positive disk exact root-cell affine area",
+    );
+    // Parent C=[10,20]^2, Euclidean positive disk radius=1.
+    // At y in [15,16], away from the four rounded corners, the
+    // parent left boundary is x=9. Map AFTER dilation through
+    // ancestor x'=2x+.5y+4, y'=y, giving root boundary x'=22+.5y.
+    // Its exact area inside root pixel [29,30] x [15,16] is
+    // integral(y=15..16) (30-(22+.5y))dy = 0.25.
+    // Inverse-affine ROOT sample-cell integration must preserve it;
+    // midpoint tests can lose the triangular area altogether.
+    // Linear red .25 -> sRGB 137, alpha .25 -> 64.
+    pixel_near(pixel(&output, 29, 15), [137, 0, 0, 64]);
+    pixel_near(pixel(&output, 30, 15), [255, 0, 0, 255]);
+    assert_eq!(pixel(&output, 28, 15), [0, 0, 0, 0]);
+}
+
+#[test]
 fn nested_positive_disk_then_finite_gaussian_maps_through_sheared_ancestor() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(

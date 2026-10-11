@@ -263,13 +263,17 @@ pub(super) fn prepare(
             } else {
                 effect.spread()
             };
-            // A nested finite Gaussian and its optional positive Euclidean
-            // spread are evaluated in the owner's immediate-parent frame at
-            // inverse-mapped globally phased ROOT samples. Applying the
+            // A nested positive Euclidean disk and optional finite Gaussian
+            // are evaluated in the owner's immediate-parent frame at
+            // inverse-mapped globally phased ROOT samples. With zero sigma,
+            // the ROOT unit sample cell's area is integrated under the
+            // inverse-affine parallelogram, not guessed from its midpoint. Applying the
             // positive disk or Gaussian in root axes after ancestor shear
             // changes the F1 semantics and is not admitted.
             let coverage = if let Some(ancestor) = parent_affine {
-                if effect.sigma() > 0.0 && remaining_spread >= 0.0 {
+                if remaining_spread >= 0.0
+                    && (effect.sigma() > 0.0 || remaining_spread > 0.0)
+                {
                     let [a, b, c, d, _, _] = ancestor.components();
                     let determinant = a.mul_add(d, -(b * c));
                     if determinant == 0.0 {

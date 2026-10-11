@@ -855,9 +855,142 @@ fn gaussian_union_sample(
     Ok(alpha.clamp(0.0, 1.0))
 }
 
+/// Conservatively integrate a positive Euclidean disk over an inverse-affine
+/// ROOT unit sample cell, whose immediate-parent image is a parallelogram.
+/// Midpoint distance to the exact triangle union is one-Lipschitz. The
+/// farthest mapped corner bounds the entire convex cell. Thus every accepted
+/// fully covered/uncovered quadrant is mathematically certified; undecided
+/// area is refined until absolute error <=1/4096, otherwise a typed error.
+struct AffinePositiveDiskArea<'a> {
+    triangles: &'a [[f64; 2]],
+    inverse: [f64; 4],
+    root_translation: [f64; 2],
+    radius: f64,
+}
+
+impl AffinePositiveDiskArea<'_> {
+    fn sample(
+        &self,
+        root_lower: [f64; 2],
+        work: &mut usize,
+        path: &[usize],
+    ) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
+        use crate::execution_2d::Render2dSampleSpaceError;
+        let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+        let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+        const MAX_VISITS: usize = 32_768;
+        const MAX_DEPTH: u8 = 22;
+        const UNCERTAIN_MASS_TARGET: f64 = 1.0 / 2048.0;
+        if !self.radius.is_finite()
+            || self.radius <= 0.0
+            || !self.inverse.iter().all(|v| v.is_finite())
+            || !self.root_translation.iter().all(|v| v.is_finite())
+            || !root_lower.iter().all(|v| v.is_finite())
+        {
+            return Err(precision("affine disk sample parameters are unrepresentable"));
+        }
+        let mut pending = std::collections::BinaryHeap::new();
+        pending
+            .try_reserve(1)
+            .map_err(|_| resource("affine disk cell queue allocation failed"))?;
+        pending.push(SpreadGaussianCell {
+            bounds: [
+                root_lower[0],
+                root_lower[1],
+                root_lower[0] + 1.0,
+                root_lower[1] + 1.0,
+            ],
+            mass: 1.0,
+            depth: 0,
+        });
+        let mut unknown = 1.0_f64;
+        let mut covered = 0.0_f64;
+        let mut visited = 0_usize;
+        while unknown > UNCERTAIN_MASS_TARGET {
+            let cell = pending.pop().ok_or_else(|| {
+                precision("affine disk area uncertainty lost its queue")
+            })?;
+            unknown -= cell.mass;
+            visited = visited
+                .checked_add(1)
+                .ok_or_else(|| resource("affine disk area visit count overflow"))?;
+            *work = work
+                .checked_add(self.triangles.len() / 3)
+                .ok_or_else(|| resource("affine disk geometry work overflow"))?;
+            if visited > MAX_VISITS || *work > 16_777_216 {
+                return Err(resource("affine disk area exceeds bounded work"));
+            }
+            let [x0, y0, x1, y1] = cell.bounds;
+            let half_x = (x1 - x0) * 0.5;
+            let half_y = (y1 - y0) * 0.5;
+            let center = [
+                (x0 + x1) * 0.5 - self.root_translation[0],
+                (y0 + y1) * 0.5 - self.root_translation[1],
+            ];
+            let [m00, m01, m10, m11] = self.inverse;
+            let point = [
+                m00.mul_add(center[0], m01 * center[1]),
+                m10.mul_add(center[0], m11 * center[1]),
+            ];
+            let dx = m00 * half_x;
+            let dy = m10 * half_x;
+            let ex = m01 * half_y;
+            let ey = m11 * half_y;
+            let bound = (dx + ex).hypot(dy + ey).max((dx - ex).hypot(dy - ey));
+            if !point.iter().all(|v| v.is_finite()) || !bound.is_finite() {
+                return Err(precision("affine disk area projection lost precision"));
+            }
+            let distance = neutral_union_distance(self.triangles, point);
+            if !distance.is_finite() {
+                return Err(precision("affine disk area distance is unrepresentable"));
+            }
+            if distance + bound <= self.radius {
+                covered += cell.mass;
+                continue;
+            }
+            if distance > self.radius + bound {
+                continue;
+            }
+            let mx = (x0 + x1) * 0.5;
+            let my = (y0 + y1) * 0.5;
+            if cell.depth >= MAX_DEPTH
+                || mx <= x0
+                || mx >= x1
+                || my <= y0
+                || my >= y1
+            {
+                return Err(precision("affine disk area cannot certify coverage tolerance"));
+            }
+            pending
+                .try_reserve(4)
+                .map_err(|_| resource("affine disk area queue allocation failed"))?;
+            for bounds in [
+                [x0, y0, mx, my],
+                [mx, y0, x1, my],
+                [x0, my, mx, y1],
+                [mx, my, x1, y1],
+            ] {
+                let mass = cell.mass * 0.25;
+                pending.push(SpreadGaussianCell {
+                    bounds,
+                    mass,
+                    depth: cell.depth + 1,
+                });
+                unknown += mass;
+            }
+        }
+        let alpha = covered + unknown * 0.5;
+        if !alpha.is_finite() || !(-1.0e-9..=1.0 + 1.0e-9).contains(&alpha) {
+            return Err(precision("affine disk area mass is not normalized"));
+        }
+        Ok(alpha.clamp(0.0, 1.0))
+    }
+}
+
 /// Evaluate a nested finite Gaussian over the owning parent-frame neutral
 /// geometry, with an optional true Euclidean positive disk spread BEFORE
-/// convolution. An arbitrary full-rank ancestor affine changes root-space
+/// convolution. At zero sigma, integrate the inverse-affine root sample
+/// cell's exact area. An arbitrary full-rank ancestor affine changes root-space
 /// footprints, not the parent's spread or normalized Gaussian:
 /// inverse-map each root sample to its parent before continuous integration.
 /// An extent is only allocation/reach admission, never a region mask.
@@ -896,9 +1029,10 @@ pub(super) fn affine_parent_effect_coverage_admitted(
         || !source.units_per_parent_logical_unit.is_finite()
         || source.units_per_parent_logical_unit <= 0.0
         || !sigma.is_finite()
-        || sigma <= 0.0
+        || sigma < 0.0
         || !physical_sigma.is_finite()
-        || physical_sigma <= 0.0
+        || physical_sigma < 0.0
+        || (physical_sigma == 0.0 && physical_spread == 0.0)
         || !positive_spread.is_finite()
         || positive_spread < 0.0
         || !physical_spread.is_finite()
@@ -976,6 +1110,12 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             ));
         }
     }
+    let disk_area = AffinePositiveDiskArea {
+        triangles: &triangles,
+        inverse: [d / determinant, -c / determinant, -b / determinant, a / determinant],
+        root_translation: [tx * scale, ty * scale],
+        radius: physical_spread,
+    };
     let mut values = filled(area, 0.0_f64, path)?;
     for row in 0..height {
         for column in 0..width {
@@ -990,7 +1130,9 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             if !point.iter().all(|x| x.is_finite()) {
                 return Err(precision("nested Gaussian inverse mapping lost precision"));
             }
-            values[row * width + column] = if positive_spread > 0.0 {
+            values[row * width + column] = if positive_spread > 0.0 && sigma == 0.0 {
+                disk_area.sample([root_x - 0.5, root_y - 0.5], aggregate_work, path)?
+            } else if positive_spread > 0.0 {
                 // Membership is evaluated against the exact triangle UNION
                 // Euclidean distance. A conservative mass/error certificate
                 // bounds continuous disk/Gaussian integration; an uncertified
