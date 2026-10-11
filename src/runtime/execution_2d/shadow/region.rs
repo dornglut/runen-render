@@ -670,15 +670,33 @@ mod tests {
             |region, path| {
                 if path == [0] {
                     inspected_root = true;
-                    assert_eq!(region.point_certificate([9.5, 9.5]), PointCertificate::Inside);
-                    assert_eq!(region.point_certificate([8.5, 8.5]), PointCertificate::Outside);
-                    assert_eq!(region.point_certificate([15.0, 15.0]), PointCertificate::Inside);
-                    assert_eq!(region.point_certificate([9.0, 9.0]), PointCertificate::Outside);
-                    assert_eq!(region.point_certificate([9.0, 15.0]), PointCertificate::Unknown);
+                    assert_eq!(
+                        region.point_certificate([9.5, 9.5]),
+                        PointCertificate::Inside
+                    );
+                    assert_eq!(
+                        region.point_certificate([8.5, 8.5]),
+                        PointCertificate::Outside
+                    );
+                    assert_eq!(
+                        region.point_certificate([15.0, 15.0]),
+                        PointCertificate::Inside
+                    );
+                    assert_eq!(
+                        region.point_certificate([9.0, 9.0]),
+                        PointCertificate::Outside
+                    );
+                    assert_eq!(
+                        region.point_certificate([9.0, 15.0]),
+                        PointCertificate::Unknown
+                    );
                 }
             },
         );
-        assert!(inspected_root, "the actual root caster must be inspected before materialization");
+        assert!(
+            inspected_root,
+            "the actual root caster must be inspected before materialization"
+        );
         assert!(matches!(
             result,
             Err(Render2dExecutionError::UnsupportedEntry {

@@ -309,7 +309,14 @@ pub(super) fn group_child_sources<'a>(
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
 ) -> Result<BTreeMap<usize, Arc<NeutralMesh>>, Render2dExecutionError> {
-    group_child_sources_with_probe(plan, bindings, field_sets, scales, max_buffer_bytes, |_, _| {})
+    group_child_sources_with_probe(
+        plan,
+        bindings,
+        field_sets,
+        scales,
+        max_buffer_bytes,
+        |_, _| {},
+    )
 }
 
 /// A read-only, transient observer for deterministic tests of the REAL
