@@ -50,10 +50,7 @@ fn resource(path: &[usize], detail: &'static str) -> Render2dExecutionError {
     mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail)
 }
 
-fn charge_query(
-    work: &mut usize,
-    path: &[usize],
-) -> Result<(), Render2dExecutionError> {
+fn charge_query(work: &mut usize, path: &[usize]) -> Result<(), Render2dExecutionError> {
     let next = work
         .checked_add(1)
         .ok_or_else(|| resource(path, "indexed neutral-boundary query work overflow"))?;
@@ -112,9 +109,12 @@ impl<'a> ExposedBoundaryIndex<'a> {
             .ok_or_else(|| resource(path, "indexed neutral-boundary build work overflow"))?;
         charge_shadow_preparation_work(work, build_work, path)?;
         let mut order = Vec::new();
-        order
-            .try_reserve_exact(edges.len())
-            .map_err(|_| resource(path, "indexed neutral-boundary permutation allocation failed"))?;
+        order.try_reserve_exact(edges.len()).map_err(|_| {
+            resource(
+                path,
+                "indexed neutral-boundary permutation allocation failed",
+            )
+        })?;
         order.extend(0..edges.len());
         let mut nodes = Vec::new();
         nodes
@@ -231,11 +231,7 @@ impl<'a> ExposedBoundaryIndex<'a> {
         if let Some([left, right]) = node.children {
             let a = point_gap_squared(p, self.nodes[left].bounds);
             let b = point_gap_squared(p, self.nodes[right].bounds);
-            let (first, second) = if a <= b {
-                (left, right)
-            } else {
-                (right, left)
-            };
+            let (first, second) = if a <= b { (left, right) } else { (right, left) };
             nearest = self.nearest_node(first, p, nearest, work, path)?;
             return self.nearest_node(second, p, nearest, work, path);
         }
@@ -250,8 +246,8 @@ impl<'a> ExposedBoundaryIndex<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::union_exterior_boundary;
+    use super::*;
 
     #[test]
     fn indexed_exterior_respects_hole_edges_and_exact_distance() {
@@ -278,20 +274,30 @@ mod tests {
             let actual = index.nearest_distance(point, &mut work, &[2, 1]).unwrap();
             assert!((actual - reference).abs() < 1e-12);
         }
-        assert!(index
-            .far_from_exterior([0.5, 0.5, 1.0, 1.0], 0.25, &mut work, &[2, 1])
-            .unwrap());
-        assert!(!index
-            .far_from_exterior([2.9, 3.2, 3.1, 3.4], 0.25, &mut work, &[2, 1])
-            .unwrap());
+        assert!(
+            index
+                .far_from_exterior([0.5, 0.5, 1.0, 1.0], 0.25, &mut work, &[2, 1])
+                .unwrap()
+        );
+        assert!(
+            !index
+                .far_from_exterior([2.9, 3.2, 3.1, 3.4], 0.25, &mut work, &[2, 1])
+                .unwrap()
+        );
     }
 
     #[test]
     fn indexed_boundary_from_overlap_matches_independent_exhaustive_queries() {
         let triangles = [
-            [0.0, 0.0], [4.0, 0.0], [0.0, 4.0],
-            [0.0, 4.0], [4.0, 0.0], [4.0, 4.0],
-            [2.0, 2.0], [6.0, 2.0], [2.0, 6.0],
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [0.0, 4.0],
+            [0.0, 4.0],
+            [4.0, 0.0],
+            [4.0, 4.0],
+            [2.0, 2.0],
+            [6.0, 2.0],
+            [2.0, 6.0],
         ];
         let edges = union_exterior_boundary(&triangles, &[7], None).unwrap();
         let mut work = 0;
@@ -299,9 +305,11 @@ mod tests {
         for x in -2..=9 {
             for y in -2..=9 {
                 let p = [f64::from(x) + 0.37, f64::from(y) + 0.23];
-                let reference = edges.iter().map(|&[a, b]| {
-                    distance_squared_to_segment(p, a, b)
-                }).fold(f64::INFINITY, f64::min).sqrt();
+                let reference = edges
+                    .iter()
+                    .map(|&[a, b]| distance_squared_to_segment(p, a, b))
+                    .fold(f64::INFINITY, f64::min)
+                    .sqrt();
                 let actual = index.nearest_distance(p, &mut work, &[7]).unwrap();
                 assert!((actual - reference).abs() < 1e-12);
             }
@@ -319,18 +327,18 @@ mod tests {
         let mut work = 0;
         let index = ExposedBoundaryIndex::new(&edges, &[8], &mut work).unwrap();
         let before = work;
-        let nearest = index
-            .nearest_distance([0.5, 5.0], &mut work, &[8])
-            .unwrap();
+        let nearest = index.nearest_distance([0.5, 5.0], &mut work, &[8]).unwrap();
         assert!((nearest - 0.5).abs() < 1e-12);
         assert!(
             work - before < edges.len() / 2,
             "distant certified exterior must not be rescanned per query"
         );
         let before = work;
-        assert!(index
-            .far_from_exterior([0.4, 4.0, 0.6, 6.0], 0.1, &mut work, &[8])
-            .unwrap());
+        assert!(
+            index
+                .far_from_exterior([0.4, 4.0, 0.6, 6.0], 0.1, &mut work, &[8])
+                .unwrap()
+        );
         assert!(work - before < edges.len() / 2);
     }
 
