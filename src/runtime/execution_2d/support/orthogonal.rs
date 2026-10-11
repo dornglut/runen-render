@@ -6,9 +6,10 @@
 //! number of times. Erosion subtracts the exact horizontal cross-sections
 //! of Euclidean-radius capsules around each exposed boundary segment.
 //!
-//! The 2D cell area is bracketed by 1-Lipschitz radius offsets at a slice
-//! midpoint. Best-first refinement stops ONLY when the certified uncertainty
-//! is <= 1/2048 of the cell area; no sample-mask approximation is substituted.
+//! The 2D area is bracketed by each segment's exact minimum/maximum
+//! capsule-slice extent over a bounded vertical interval. Best-first
+//! refinement stops ONLY when certified uncertainty is <= 1/2048 of
+//! cell area; no sampled-mask approximation is substituted.
 use super::{UnionBoundaryEdge, mask_failure};
 use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 use std::collections::BinaryHeap;
@@ -282,7 +283,8 @@ impl<'a> OrthogonalExterior<'a> {
     }
 
     /// Certified continuous area over one actual physical sample cell.
-    /// Return value brackets the indicator's exact area to <=1/4096.
+    /// Return the midpoint of a proved enclosure, with absolute area
+    /// error <=1/4096 of this physical cell.
     pub(super) fn area(
         &self,
         cell: [f64; 4],
@@ -430,6 +432,24 @@ mod tests {
                 .unwrap(),
             1.0
         );
+    }
+
+    #[test]
+    fn orthogonal_area_resource_rejection_is_atomic_and_retains_owner_path() {
+        let mut work = 0;
+        let shape = OrthogonalExterior::new(&L, &[4, 1], &mut work)
+            .unwrap()
+            .unwrap();
+        let mut used = MAX_GLOBAL_WORK;
+        assert!(matches!(
+            shape.area([3.0, 3.0, 4.0, 4.0], 1.0, &mut used, &[4, 7]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [4, 7]
+        ));
+        assert_eq!(used, MAX_GLOBAL_WORK);
     }
 
     #[test]
