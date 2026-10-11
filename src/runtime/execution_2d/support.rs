@@ -1053,21 +1053,23 @@ fn certified_rounded_rectangle_area(
     area.is_finite().then_some(area)
 }
 
-/// Conservatively integrate a positive Euclidean disk over an inverse-affine
+/// Conservatively integrate a signed Euclidean disk over an inverse-affine
 /// ROOT unit sample cell, whose immediate-parent image is a parallelogram.
-/// Midpoint distance to the exact triangle union is one-Lipschitz. The
+/// Midpoint true distance to the union (positive dilation) or the exposed
+/// union boundary (negative erosion) is one-Lipschitz. The
 /// farthest mapped corner bounds the entire convex cell. Thus every accepted
 /// fully covered/uncovered quadrant is mathematically certified; undecided
 /// area is refined until absolute error <=1/4096, otherwise a typed error.
-struct AffinePositiveDiskArea<'a> {
+struct AffineSignedDiskArea<'a> {
     triangles: &'a [[f64; 2]],
+    exterior: Option<&'a [UnionBoundaryEdge]>,
     certified_rectangle: Option<[f64; 4]>,
     inverse: [f64; 4],
     root_translation: [f64; 2],
     radius: f64,
 }
 
-impl AffinePositiveDiskArea<'_> {
+impl AffineSignedDiskArea<'_> {
     fn sample(
         &self,
         root_lower: [f64; 2],
@@ -1085,7 +1087,7 @@ impl AffinePositiveDiskArea<'_> {
         const MAX_DEPTH: u8 = 22;
         const UNCERTAIN_MASS_TARGET: f64 = 1.0 / 2048.0;
         if !self.radius.is_finite()
-            || self.radius <= 0.0
+            || self.radius == 0.0
             || !self.inverse.iter().all(|v| v.is_finite())
             || !self.root_translation.iter().all(|v| v.is_finite())
             || !root_lower.iter().all(|v| v.is_finite())
@@ -1129,6 +1131,31 @@ impl AffinePositiveDiskArea<'_> {
                 .ok_or_else(|| precision("rounded rectangle parent cell area is invalid"))?;
             if parent_cell_area <= 0.0 {
                 return Err(precision("rounded rectangle parent cell collapsed"));
+            }
+            if self.radius < 0.0 {
+                // A Euclidean disk erosion of an entire certified rectangle
+                // is exactly its inset rectangle; root-cell area remains a
+                // true inverse-affine parallelogram, even under shear.
+                *work = work
+                    .checked_add(64)
+                    .ok_or_else(|| resource("inset rectangle area work overflow"))?;
+                if *work > 16_777_216 {
+                    return Err(resource("inset rectangle area exceeds bounded work"));
+                }
+                let r = -self.radius;
+                let [x0, y0, x1, y1] = rect;
+                let inset = [x0 + r, y0 + r, x1 - r, y1 - r];
+                if !inset.iter().all(|v| v.is_finite()) {
+                    return Err(precision("inset rectangle precision lost"));
+                }
+                if inset[0] >= inset[2] || inset[1] >= inset[3] {
+                    return Ok(0.0);
+                }
+                let clipped = polygon.clipped_rectangle(inset)
+                    .ok_or_else(|| precision("inset rectangle cell clip lost precision"))?;
+                let area = clipped.area()
+                    .ok_or_else(|| precision("inset rectangle cell area lost precision"))?;
+                return Ok((area / parent_cell_area).clamp(0.0, 1.0));
             }
             let [x0, y0, x1, y1] = rect;
             let scale = x0
@@ -1220,8 +1247,20 @@ impl AffinePositiveDiskArea<'_> {
             visited = visited
                 .checked_add(1)
                 .ok_or_else(|| resource("affine disk area visit count overflow"))?;
+            let boundary_visits = if self.radius < 0.0 {
+                self.exterior
+                    .ok_or_else(|| precision("eroded union exterior missing"))?
+                    .len()
+                    .checked_mul(2)
+                    .ok_or_else(|| resource("eroded affine cell boundary-work overflow"))?
+            } else {
+                0
+            };
+            let visits = (self.triangles.len() / 3)
+                .checked_add(boundary_visits)
+                .ok_or_else(|| resource("affine disk cell work overflow"))?;
             *work = work
-                .checked_add(self.triangles.len() / 3)
+                .checked_add(visits)
                 .ok_or_else(|| resource("affine disk geometry work overflow"))?;
             if visited > MAX_VISITS || *work > 16_777_216 {
                 return Err(resource("affine disk area exceeds bounded work"));
@@ -1246,16 +1285,37 @@ impl AffinePositiveDiskArea<'_> {
             if !point.iter().all(|v| v.is_finite()) || !bound.is_finite() {
                 return Err(precision("affine disk area projection lost precision"));
             }
-            let distance = neutral_union_distance(self.triangles, point);
+            let distance = if self.radius < 0.0 {
+                union_signed_interior_distance(
+                    self.triangles,
+                    self.exterior.ok_or_else(|| precision("eroded union boundary missing"))?,
+                    point,
+                )
+            } else {
+                neutral_union_distance(self.triangles, point)
+            };
             if !distance.is_finite() {
                 return Err(precision("affine disk area distance is unrepresentable"));
             }
-            if distance + bound <= self.radius {
-                covered += cell.mass;
-                continue;
-            }
-            if distance > self.radius + bound {
-                continue;
+            if self.radius < 0.0 {
+                // Signed inside-distance is one-Lipschitz for the exact
+                // exposed union boundary. Only a whole-cell certificate is
+                // accepted; an unknown patch is never treated as empty.
+                if distance - bound >= -self.radius {
+                    covered += cell.mass;
+                    continue;
+                }
+                if distance + bound < -self.radius {
+                    continue;
+                }
+            } else {
+                if distance + bound <= self.radius {
+                    covered += cell.mass;
+                    continue;
+                }
+                if distance > self.radius + bound {
+                    continue;
+                }
             }
             // A single triangle dilated by a Euclidean disk is convex.
             // If all four corners of the inverse-affine parallelogram lie
@@ -1264,7 +1324,7 @@ impl AffinePositiveDiskArea<'_> {
             // interiors, including arbitrarily small positive radii.
             // Charge the worst-case four distance queries per triangle.
             let certificate_work = (self.triangles.len() / 3)
-                .checked_mul(4)
+                .checked_mul(if self.radius > 0.0 { 4 } else { 0 })
                 .ok_or_else(|| resource("affine disk convex certificate work overflow"))?;
             *work = work
                 .checked_add(certificate_work)
@@ -1283,7 +1343,7 @@ impl AffinePositiveDiskArea<'_> {
             if !corners.iter().flatten().all(|v| v.is_finite()) {
                 return Err(precision("affine disk corner projection lost precision"));
             }
-            if self.triangles.as_chunks::<3>().0.iter().any(|tri| {
+            if self.radius > 0.0 && self.triangles.as_chunks::<3>().0.iter().any(|tri| {
                 orient(tri[0], tri[1], tri[2]) != 0.0
                     && corners
                         .iter()
@@ -1335,7 +1395,7 @@ impl AffinePositiveDiskArea<'_> {
 /// Private physical kernel for one owning parent-frame effect. A single
 /// parameter keeps spread and blur together without minting semantic state.
 pub(super) struct ParentEffectKernel {
-    pub(super) positive_spread: f64,
+    pub(super) signed_spread: f64,
     pub(super) sigma: f64,
 }
 
@@ -1350,7 +1410,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let ParentEffectKernel {
-        positive_spread,
+        signed_spread,
         sigma,
     } = kernel;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
@@ -1361,7 +1421,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
     let [a, b, c, d, tx, ty] = parent_to_root.components();
     let determinant = a.mul_add(d, -(b * c));
     let physical_sigma = sigma * scale;
-    let physical_spread = positive_spread * scale;
+    let physical_spread = signed_spread * scale;
     if !scale.is_finite()
         || scale <= 0.0
         || !source.units_per_parent_logical_unit.is_finite()
@@ -1371,8 +1431,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
         || !physical_sigma.is_finite()
         || physical_sigma < 0.0
         || (physical_sigma == 0.0 && physical_spread == 0.0)
-        || !positive_spread.is_finite()
-        || positive_spread < 0.0
+        || !signed_spread.is_finite()
         || !physical_spread.is_finite()
         || !determinant.is_finite()
         || determinant == 0.0
@@ -1387,7 +1446,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             "nested parent-frame Gaussian window exceeds bounded halo",
         ));
     }
-    if physical_spread > f64::from(MAX_SPREAD_RADIUS_SAMPLES) {
+    if physical_spread.abs() > f64::from(MAX_SPREAD_RADIUS_SAMPLES) {
         return Err(resource(
             "nested parent-frame Euclidean disk exceeds bounded radius",
         ));
@@ -1425,6 +1484,17 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             "nested Gaussian root sample grid exceeds bounded area",
         ));
     }
+    // Conservative whole-set erasure is provable from the smallest
+    // immediate-parent source bounding extent. Equality may retain
+    // lower-dimensional support; do not guess emptiness from a zero mask.
+    if signed_spread < 0.0 {
+        let min_extent = (source.bounds[2] - source.bounds[0])
+            .min(source.bounds[3] - source.bounds[1])
+            / source.units_per_parent_logical_unit;
+        if min_extent.is_finite() && min_extent >= 0.0 && -signed_spread > min_extent * 0.5 {
+            return Ok(None);
+        }
+    }
     let triangles_count = source.triangles.len() / 3;
     let scan_work = area
         .checked_mul(triangles_count)
@@ -1448,8 +1518,14 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             ));
         }
     }
-    let disk_area = AffinePositiveDiskArea {
+    let exterior = if signed_spread < 0.0 && certified_axis_aligned_rectangle(&triangles).is_none() {
+        Some(union_exterior_boundary(&triangles, path, Some(aggregate_work))?)
+    } else {
+        None
+    };
+    let disk_area = AffineSignedDiskArea {
         triangles: &triangles,
+        exterior: exterior.as_deref(),
         certified_rectangle: certified_axis_aligned_rectangle(&triangles),
         inverse: [
             d / determinant,
@@ -1474,16 +1550,16 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             if !point.iter().all(|x| x.is_finite()) {
                 return Err(precision("nested Gaussian inverse mapping lost precision"));
             }
-            values[row * width + column] = if positive_spread > 0.0 && sigma == 0.0 {
+            values[row * width + column] = if signed_spread != 0.0 && sigma == 0.0 {
                 disk_area.sample([root_x - 0.5, root_y - 0.5], aggregate_work, path)?
-            } else if positive_spread > 0.0 {
+            } else if signed_spread != 0.0 {
                 // Membership is evaluated against the exact triangle UNION
                 // Euclidean distance. A conservative mass/error certificate
                 // bounds continuous disk/Gaussian integration; an uncertified
                 // result rejects rather than fabricating coverage.
                 continuous_signed_spread_sample(
                     &triangles,
-                    None,
+                    exterior.as_deref(),
                     point,
                     physical_spread,
                     physical_sigma,
@@ -1494,6 +1570,14 @@ pub(super) fn affine_parent_effect_coverage_admitted(
                 gaussian_union_sample(&triangles, point, physical_sigma, aggregate_work, path)?
             };
         }
+    }
+    if signed_spread < 0.0 && values.iter().all(|v| *v == 0.0) {
+        // Unlike certified whole-set erasure, an all-zero *physical*
+        // output cannot prove the true eroded support empty. Fail closed,
+        // matching the original root-frame continuous erosion authority.
+        return Err(precision(
+            "nested signed erosion cannot infer empty support from zero sampled output",
+        ));
     }
     Ok(Some(NeutralCoverage {
         origin_x: i64::from(edges[0]),
@@ -3027,8 +3111,9 @@ mod tests {
             [4.0, 4.0],
             [2.0, 4.0],
         ];
-        let identity = AffinePositiveDiskArea {
+        let identity = AffineSignedDiskArea {
             triangles: &square,
+            exterior: None,
             certified_rectangle: Some([2.0, 2.0, 4.0, 4.0]),
             inverse: [1.0, 0.0, 0.0, 1.0],
             root_translation: [0.0, 0.0],
@@ -3061,8 +3146,9 @@ mod tests {
             [10.0, 20.0],
         ];
         // Root x=2*parent_x +.5*parent_y+4, root y=parent_y.
-        let sheared = AffinePositiveDiskArea {
+        let sheared = AffineSignedDiskArea {
             triangles: &parent_square,
+            exterior: None,
             certified_rectangle: Some([10.0, 10.0, 20.0, 20.0]),
             inverse: [0.5, -0.25, 0.0, 1.0],
             root_translation: [4.0, 0.0],
@@ -3078,8 +3164,9 @@ mod tests {
     #[test]
     fn affine_positive_disk_interior_uses_convex_cell_certificate_for_tiny_radius() {
         let large_triangle = [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]];
-        let area = AffinePositiveDiskArea {
+        let area = AffineSignedDiskArea {
             triangles: &large_triangle,
+            exterior: None,
             certified_rectangle: None,
             inverse: [1.0, 0.0, 0.0, 1.0],
             root_translation: [0.0, 0.0],
@@ -3103,8 +3190,9 @@ mod tests {
             [110.0, 110.0],
             [10.0, 110.0],
         ];
-        let area = AffinePositiveDiskArea {
+        let area = AffineSignedDiskArea {
             triangles: &square,
+            exterior: None,
             certified_rectangle: Some([10.0, 10.0, 110.0, 110.0]),
             inverse: [1.0, 0.0, 0.0, 1.0],
             root_translation: [0.0, 0.0],
@@ -3143,10 +3231,45 @@ mod tests {
     }
 
     #[test]
+    fn nested_signed_affine_area_preserves_true_hole_boundary_not_triangle_seams() {
+        let mut ring = Vec::new();
+        let mut rectangle = |x0: f64, y0: f64, x1: f64, y1: f64| {
+            ring.extend_from_slice(&[
+                [x0, y0],
+                [x1, y0],
+                [x0, y1],
+                [x1, y0],
+                [x1, y1],
+                [x0, y1],
+            ]);
+        };
+        rectangle(10.0, 10.0, 30.0, 17.0);
+        rectangle(10.0, 23.0, 30.0, 30.0);
+        rectangle(10.0, 17.0, 17.0, 23.0);
+        rectangle(23.0, 17.0, 30.0, 23.0);
+        let mut work = 0;
+        let exterior = union_exterior_boundary(&ring, &[0], Some(&mut work)).unwrap();
+        let eroded = AffineSignedDiskArea {
+            triangles: &ring,
+            exterior: Some(&exterior),
+            certified_rectangle: None,
+            inverse: [1.0, 0.0, 0.0, 1.0],
+            root_translation: [0.0, 0.0],
+            radius: -1.0,
+        };
+        assert_eq!(eroded.sample([19.0, 18.0], &mut work, &[0]).unwrap(), 0.0);
+        let hole_side = eroded.sample([23.0, 18.0], &mut work, &[0]).unwrap();
+        assert!(hole_side < 0.0004, "eroded hole boundary must move from x=23 to 24: {hole_side}");
+        let surviving = eroded.sample([25.0, 18.0], &mut work, &[0]).unwrap();
+        assert!((surviving - 1.0).abs() < 0.0004);
+    }
+
+    #[test]
     fn affine_disk_area_work_exhaustion_is_typed_and_path_bearing() {
         let triangles = [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]];
-        let area = AffinePositiveDiskArea {
+        let area = AffineSignedDiskArea {
             triangles: &triangles,
+            exterior: None,
             certified_rectangle: None,
             inverse: [1.0, 0.0, 0.0, 1.0],
             root_translation: [0.0, 0.0],

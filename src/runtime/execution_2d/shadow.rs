@@ -397,14 +397,17 @@ pub(super) fn group_child_sources(
                             &frame.path,
                         )?;
                         for shadow in frame.group.shadows() {
-                            if shadow.spread() > 0.0 {
-                                // Its own parent-frame continuous Gaussian
-                                // or inverse-affine root-cell area is prepared
-                                // by sample_space::shadow. No
-                                // ancestor shadow consumes its curved support
-                                // (certified by the structural gate above);
-                                // do not promote raw C or a bound to that
-                                // unevaluated disk region.
+                            if shadow.spread() > 0.0
+                                || (shadow.spread() < 0.0 && !ancestor_shadow_caster)
+                            {
+                                // A nested curved spread may paint directly
+                                // in its own parent frame. Without a consuming
+                                // ancestor shadow its curved region need not
+                                // become an intermediate caster, so neither
+                                // its original C nor a bounding approximation
+                                // is promoted as effected region geometry.
+                                // Negative nonconvex/holed spread is evaluated
+                                // via true exposed union-boundary distance.
                                 continue;
                             }
                             // A convex union has an EXACT Euclidean inward

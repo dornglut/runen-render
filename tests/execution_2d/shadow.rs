@@ -686,6 +686,50 @@ fn nested_positive_disk_then_finite_gaussian_maps_through_sheared_ancestor() {
 }
 
 #[test]
+fn nested_nonconvex_negative_disk_preserves_exact_parent_frame_under_shear() {
+    let Some(context) = context() else { return };
+    // The two transparent rectangles form a true concave L, not one
+    // convex polygon or an axis-aligned bounding rectangle.
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 5.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 15.0, 5.0, 5.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0, 0.0, 0.0, -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F nonconvex signed erosion in nested owning parent under shear",
+    );
+    // Along parent y=[12,13], the true eroded left edge is x=11.
+    // Map into root AFTER erosion: x'=2*11+.5*y+4 = 26+.5*y.
+    // Exact area in root pixel [32,33]x[12,13] is 3/4.
+    // Red .75 linear -> sRGB 225, alpha=191.
+    pixel_near(pixel(&output, 32, 12), [225, 0, 0, 191]);
+    assert_eq!(pixel(&output, 31, 12), [0, 0, 0, 0]);
+    pixel_near(pixel(&output, 35, 12), [255, 0, 0, 255]);
+    // The missing top-right arm stays empty after erosion.
+    assert_eq!(pixel(&output, 46, 18), [0, 0, 0, 0]);
+}
+
+#[test]
 fn nested_positive_disk_is_unsupported_when_ancestor_needs_neutral_caster() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
