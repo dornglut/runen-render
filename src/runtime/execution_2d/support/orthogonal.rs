@@ -67,6 +67,15 @@ impl OrthogonalBands {
     }
 }
 
+/// Private physical row parameters; no source-neutral support authority.
+pub(super) struct GaussianRow {
+    pub(super) y: f64,
+    pub(super) origin_x: f64,
+    pub(super) width: usize,
+    pub(super) radius: f64,
+    pub(super) sigma: f64,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Slice {
     y0: f64,
@@ -406,14 +415,17 @@ impl<'a> OrthogonalExterior<'a> {
     /// Split Gaussian integration at real exterior events and disk tangencies.
     pub(super) fn gaussian_row(
         &self,
-        y: f64,
-        origin_x: f64,
-        width: usize,
-        radius: f64,
-        sigma: f64,
+        query: GaussianRow,
         work: &mut usize,
         path: &[usize],
     ) -> Result<Vec<f64>, Render2dExecutionError> {
+        let GaussianRow {
+            y,
+            origin_x,
+            width,
+            radius,
+            sigma,
+        } = query;
         let reach = 3.0 * sigma;
         let y0 = y - reach;
         let y1 = y + reach;

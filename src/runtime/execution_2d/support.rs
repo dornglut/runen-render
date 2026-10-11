@@ -5,7 +5,7 @@
 //! an MSDF/image sampled footprint, or a second scene representation.
 
 mod orthogonal;
-use orthogonal::OrthogonalExterior;
+use orthogonal::{GaussianRow, OrthogonalExterior};
 
 #[derive(Debug)]
 #[allow(dead_code, reason = "awaiting F3F group lowering")]
@@ -2586,11 +2586,13 @@ fn rasterize_continuous_shadow_coverage(
         {
             let center_y = (origin_y as f64 + as_f64(row)) + 0.5;
             let row_values = orthogonal.gaussian_row(
-                center_y,
-                origin_x as f64,
-                width,
-                -physical_spread,
-                physical_sigma,
+                GaussianRow {
+                    y: center_y,
+                    origin_x: origin_x as f64,
+                    width,
+                    radius: -physical_spread,
+                    sigma: physical_sigma,
+                },
                 aggregate_work,
                 path,
             )?;
