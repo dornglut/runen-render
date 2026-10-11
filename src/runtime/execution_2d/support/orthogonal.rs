@@ -10,9 +10,7 @@
 //! midpoint. Best-first refinement stops ONLY when the certified uncertainty
 //! is <= 1/2048 of the cell area; no sample-mask approximation is substituted.
 use super::{UnionBoundaryEdge, mask_failure};
-use crate::execution_2d::{
-    Render2dExecutionError, Render2dSampleSpaceError,
-};
+use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 use std::collections::BinaryHeap;
 
 const MAX_ORTHOGONAL_EDGES: usize = 256;
@@ -26,11 +24,7 @@ fn resource(path: &[usize], detail: &'static str) -> Render2dExecutionError {
 fn precision(path: &[usize], detail: &'static str) -> Render2dExecutionError {
     mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail)
 }
-fn charge(
-    work: &mut usize,
-    count: usize,
-    path: &[usize],
-) -> Result<(), Render2dExecutionError> {
+fn charge(work: &mut usize, count: usize, path: &[usize]) -> Result<(), Render2dExecutionError> {
     let next = work
         .checked_add(count)
         .ok_or_else(|| resource(path, "orthogonal erosion work counter overflow"))?;
@@ -135,7 +129,10 @@ impl<'a> OrthogonalExterior<'a> {
         }
         let squared = (radius - distance) * (radius + distance);
         if !squared.is_finite() || squared < 0.0 {
-            return Err(precision(path, "orthogonal capsule extent is unrepresentable"));
+            return Err(precision(
+                path,
+                "orthogonal capsule extent is unrepresentable",
+            ));
         }
         Ok(Some(squared.sqrt()))
     }
@@ -145,12 +142,7 @@ impl<'a> OrthogonalExterior<'a> {
     /// lies between an inner and outer union of certified x intervals.
     /// This avoids the loose global radius +/- dy certificates that caused
     /// normal complete-scene rectangular edges to exhaust the work budget.
-    fn covered_width(
-        crossings: &[f64],
-        forbidden: &[[f64; 2]],
-        x0: f64,
-        x1: f64,
-    ) -> f64 {
+    fn covered_width(crossings: &[f64], forbidden: &[[f64; 2]], x0: f64, x1: f64) -> f64 {
         let mut allowed = 0.0;
         for pair in crossings.chunks_exact(2) {
             let left = pair[0].max(x0);
@@ -233,7 +225,10 @@ impl<'a> OrthogonalExterior<'a> {
                 let lo = lo_x - half;
                 let hi = hi_x + half;
                 if !lo.is_finite() || !hi.is_finite() {
-                    return Err(precision(path, "orthogonal outer capsule coordinates overflow"));
+                    return Err(precision(
+                        path,
+                        "orthogonal outer capsule coordinates overflow",
+                    ));
                 }
                 outer_forbidden.push([lo, hi]);
             }
@@ -241,7 +236,10 @@ impl<'a> OrthogonalExterior<'a> {
                 let lo = lo_x - half;
                 let hi = hi_x + half;
                 if !lo.is_finite() || !hi.is_finite() {
-                    return Err(precision(path, "orthogonal inner capsule coordinates overflow"));
+                    return Err(precision(
+                        path,
+                        "orthogonal inner capsule coordinates overflow",
+                    ));
                 }
                 inner_forbidden.push([lo, hi]);
             }
@@ -270,7 +268,10 @@ impl<'a> OrthogonalExterior<'a> {
             || upper > (x1 - x0) * height + 1.0e-9
             || lower > upper + 1.0e-9
         {
-            return Err(precision(path, "orthogonal disk-slice certificate is invalid"));
+            return Err(precision(
+                path,
+                "orthogonal disk-slice certificate is invalid",
+            ));
         }
         Ok(Slice {
             y0,
