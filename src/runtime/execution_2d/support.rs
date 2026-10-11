@@ -4,9 +4,6 @@
 //! geometry authority. They are never public renderer semantics, paint alpha,
 //! an MSDF/image sampled footprint, or a second scene representation.
 
-mod boundary_index;
-use boundary_index::ExposedBoundaryIndex;
-
 #[derive(Debug)]
 #[allow(dead_code, reason = "awaiting F3F group lowering")]
 pub(super) struct NeutralMesh {
@@ -1786,7 +1783,6 @@ fn union_exterior_boundary(
 /// the union exterior nor its radius-r boundary strip. Membership at the
 /// midpoint is therefore constant across the full cell, even for concave
 /// unions, overlapping tessellation, and interior holes.
-#[cfg(test)]
 fn eroded_cell_far_from_exterior(
     exterior: &[UnionBoundaryEdge],
     cell: [f64; 4],
@@ -1803,7 +1799,6 @@ fn eroded_cell_far_from_exterior(
     })
 }
 
-#[cfg(test)]
 fn union_signed_interior_distance(
     triangles: &[[f64; 2]],
     boundary: &[UnionBoundaryEdge],
@@ -2225,31 +2220,6 @@ fn continuous_signed_spread_sample(
     work: &mut usize,
     path: &[usize],
 ) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
-    // Ad hoc reference/positive-spread queries retain the same mathematical
-    // path. Full-scene negative erosion builds its index ONCE per caster below.
-    let index = boundary
-        .map(|edges| ExposedBoundaryIndex::new(edges, path, work))
-        .transpose()?;
-    continuous_signed_spread_sample_indexed(
-        triangles,
-        index.as_ref(),
-        center,
-        signed_spread,
-        sigma,
-        work,
-        path,
-    )
-}
-
-fn continuous_signed_spread_sample_indexed(
-    triangles: &[[f64; 2]],
-    boundary: Option<&ExposedBoundaryIndex<'_>>,
-    center: [f64; 2],
-    signed_spread: f64,
-    sigma: f64,
-    work: &mut usize,
-    path: &[usize],
-) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
@@ -2300,10 +2270,16 @@ fn continuous_signed_spread_sample_indexed(
         })?;
         unknown -= cell.mass;
         visited += 1;
-        // Charge the existing triangle-union membership probe. Each actual
-        // index node and leaf-edge visit is charged separately by the shared
-        // bounded query API, not as an invented whole-boundary traversal.
-        let classification_cost = triangles.len() / 3;
+        // The conservative exterior-box pass may be followed by a signed
+        // distance pass over the SAME boundary, so charge both traversals.
+        // A geometry-cache optimization never weakens aggregate admission.
+        let boundary_visits = boundary
+            .map_or(0, <[UnionBoundaryEdge]>::len)
+            .checked_mul(2)
+            .ok_or_else(|| resource("continuous signed spread boundary-work overflow"))?;
+        let classification_cost = (triangles.len() / 3)
+            .checked_add(boundary_visits)
+            .ok_or_else(|| resource("continuous signed spread classification work overflow"))?;
         *work = work
             .checked_add(classification_cost)
             .ok_or_else(|| resource("continuous signed spread geometry-work overflow"))?;
@@ -2315,7 +2291,7 @@ fn continuous_signed_spread_sample_indexed(
         let [x0, y0, x1, y1] = cell.bounds;
         if signed_spread < 0.0
             && let Some(edges) = boundary
-            && edges.far_from_exterior(cell.bounds, radius, work, path)?
+            && eroded_cell_far_from_exterior(edges, cell.bounds, radius)
         {
             // No exterior edge is within r of the cell. The polygon-union
             // interior predicate therefore holds throughout this connected
@@ -2339,9 +2315,7 @@ fn continuous_signed_spread_sample_indexed(
         // Signed Euclidean distance to the actual union exterior, not to
         // individual triangle edges: internal seams are NOT erosion holes.
         let distance = if let Some(edges) = boundary {
-            let inside = neutral_union_distance(triangles, midpoint) == 0.0;
-            let nearest = edges.nearest_distance(midpoint, work, path)?;
-            if inside { nearest } else { -nearest }
+            union_signed_interior_distance(triangles, edges, midpoint)
         } else {
             neutral_union_distance(triangles, midpoint)
         };
@@ -2589,17 +2563,6 @@ fn rasterize_continuous_shadow_coverage(
     if convex_inset.as_ref().is_some_and(Vec::is_empty) {
         return Ok(None);
     }
-    // An uncertified nonconvex/holed union is queried against its actual
-    // exposed boundary, never original triangle seams. The spatial index is
-    // immutable and shared by every coverage cell of this one shadow.
-    let erosion_index = if signed_spread < 0.0 && convex_inset.is_none() {
-        erosion_boundary
-            .as_deref()
-            .map(|edges| ExposedBoundaryIndex::new(edges, path, aggregate_work))
-            .transpose()?
-    } else {
-        None
-    };
     let mut values = filled(area, 0.0_f64, path)?;
     for row in 0..height {
         for column in 0..width {
@@ -2622,9 +2585,9 @@ fn rasterize_continuous_shadow_coverage(
                     )?
                 }
             } else if signed_spread != 0.0 {
-                continuous_signed_spread_sample_indexed(
+                continuous_signed_spread_sample(
                     &triangles,
-                    erosion_index.as_ref(),
+                    erosion_boundary.as_deref(),
                     center,
                     physical_spread,
                     physical_sigma,
