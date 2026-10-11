@@ -35,7 +35,10 @@ fn charge(
         .checked_add(count)
         .ok_or_else(|| resource(path, "orthogonal erosion work counter overflow"))?;
     if next > MAX_GLOBAL_WORK {
-        return Err(resource(path, "orthogonal erosion exceeds bounded whole-scene work"));
+        return Err(resource(
+            path,
+            "orthogonal erosion exceeds bounded whole-scene work",
+        ));
     }
     *work = next;
     Ok(())
@@ -150,8 +153,7 @@ impl<'a> OrthogonalExterior<'a> {
                 if radius > 0.0 {
                     let dy = (lo - y).max(y - hi).max(0.0);
                     if dy <= radius {
-                        let half = radius.hypot(0.0); // validated finite radius
-                        let extent = ((half - dy) * (half + dy)).max(0.0).sqrt();
+                        let extent = ((radius - dy) * (radius + dy)).max(0.0).sqrt();
                         forbidden.push([a[0] - extent, a[0] + extent]);
                     }
                 }
@@ -159,10 +161,7 @@ impl<'a> OrthogonalExterior<'a> {
                 let dy = (y - a[1]).abs();
                 if dy <= radius {
                     let extent = ((radius - dy) * (radius + dy)).max(0.0).sqrt();
-                    forbidden.push([
-                        a[0].min(b[0]) - extent,
-                        a[0].max(b[0]) + extent,
-                    ]);
+                    forbidden.push([a[0].min(b[0]) - extent, a[0].max(b[0]) + extent]);
                 }
             }
         }
@@ -172,7 +171,10 @@ impl<'a> OrthogonalExterior<'a> {
         // toggles parity ONCE, regardless of duplicate edge inventory.
         crossings.dedup();
         if crossings.len() % 2 != 0 {
-            return Err(precision(path, "orthogonal exterior scanline parity is uncertified"));
+            return Err(precision(
+                path,
+                "orthogonal exterior scanline parity is uncertified",
+            ));
         }
         forbidden.sort_by(|a, b| a[0].total_cmp(&b[0]));
         let mut covered = 0.0;
@@ -198,7 +200,10 @@ impl<'a> OrthogonalExterior<'a> {
         // covered above accumulates allowed intervals: fix any overlap with
         // two successive exclusion bands by monotone cursor accounting.
         if !covered.is_finite() || covered < -1.0e-9 || covered > (x1 - x0) + 1.0e-9 {
-            return Err(precision(path, "orthogonal eroded scanline lost coverage bounds"));
+            return Err(precision(
+                path,
+                "orthogonal eroded scanline lost coverage bounds",
+            ));
         }
         Ok(covered.clamp(0.0, x1 - x0))
     }
@@ -221,12 +226,18 @@ impl<'a> OrthogonalExterior<'a> {
         let safe_upper_radius = (radius - half).max(0.0);
         let safe_lower_radius = radius + half;
         if !safe_lower_radius.is_finite() {
-            return Err(precision(path, "orthogonal erosion radius interval overflow"));
+            return Err(precision(
+                path,
+                "orthogonal erosion radius interval overflow",
+            ));
         }
         let lower = self.width(mid, x0, x1, safe_lower_radius, work, path)? * (y1 - y0);
         let upper = self.width(mid, x0, x1, safe_upper_radius, work, path)? * (y1 - y0);
         if !lower.is_finite() || !upper.is_finite() || lower > upper + 1.0e-9 {
-            return Err(precision(path, "orthogonal erosion interval bounds reversed"));
+            return Err(precision(
+                path,
+                "orthogonal erosion interval bounds reversed",
+            ));
         }
         Ok(Slice {
             y0,
@@ -288,10 +299,16 @@ impl<'a> OrthogonalExterior<'a> {
                 .ok_or_else(|| precision(path, "orthogonal erosion uncertainty lost its queue"))?;
             let mid = (slab.y0 + slab.y1) * 0.5;
             if !(slab.y0 < mid && mid < slab.y1) {
-                return Err(precision(path, "orthogonal erosion precision depth exhausted"));
+                return Err(precision(
+                    path,
+                    "orthogonal erosion precision depth exhausted",
+                ));
             }
             if pending.len() + 2 > MAX_INTERVALS {
-                return Err(resource(path, "orthogonal erosion exceeds bounded slice count"));
+                return Err(resource(
+                    path,
+                    "orthogonal erosion exceeds bounded slice count",
+                ));
             }
             pending
                 .try_reserve(2)
@@ -331,9 +348,21 @@ mod tests {
         let shape = OrthogonalExterior::new(&L, &[0, 2], &mut work)
             .unwrap()
             .unwrap();
-        assert_eq!(shape.area([1.0, 1.0, 2.0, 2.0], 0.5, &mut work, &[0, 2]).unwrap(), 1.0);
-        assert_eq!(shape.area([6.0, 6.0, 7.0, 7.0], 0.5, &mut work, &[0, 2]).unwrap(), 0.0);
-        let corner = shape.area([3.0, 3.0, 4.0, 4.0], 1.0, &mut work, &[0, 2]).unwrap();
+        assert_eq!(
+            shape
+                .area([1.0, 1.0, 2.0, 2.0], 0.5, &mut work, &[0, 2])
+                .unwrap(),
+            1.0
+        );
+        assert_eq!(
+            shape
+                .area([6.0, 6.0, 7.0, 7.0], 0.5, &mut work, &[0, 2])
+                .unwrap(),
+            0.0
+        );
+        let corner = shape
+            .area([3.0, 3.0, 4.0, 4.0], 1.0, &mut work, &[0, 2])
+            .unwrap();
         // The inside near a concave corner is a true quarter-disc of
         // forbidden area, not the bounding rectangle.
         assert!((corner - (1.0 - std::f64::consts::FRAC_PI_4)).abs() < 0.001);
@@ -355,17 +384,27 @@ mod tests {
         let shape = OrthogonalExterior::new(&ring, &[2], &mut work)
             .unwrap()
             .unwrap();
-        assert_eq!(shape.area([4.0, 4.0, 5.0, 5.0], 0.5, &mut work, &[2]).unwrap(), 0.0);
-        assert_eq!(shape.area([1.0, 4.0, 2.0, 5.0], 0.5, &mut work, &[2]).unwrap(), 1.0);
+        assert_eq!(
+            shape
+                .area([4.0, 4.0, 5.0, 5.0], 0.5, &mut work, &[2])
+                .unwrap(),
+            0.0
+        );
+        assert_eq!(
+            shape
+                .area([1.0, 4.0, 2.0, 5.0], 0.5, &mut work, &[2])
+                .unwrap(),
+            1.0
+        );
     }
 
     #[test]
     fn rejects_oblique_polygon_without_fabricating_orthogonal_membership() {
         let mut work = 0;
-        assert!(OrthogonalExterior::new(
-            &[[[0.0, 0.0], [1.0, 1.0]]],
-            &[3],
-            &mut work,
-        ).unwrap().is_none());
+        assert!(
+            OrthogonalExterior::new(&[[[0.0, 0.0], [1.0, 1.0]]], &[3], &mut work,)
+                .unwrap()
+                .is_none()
+        );
     }
 }
