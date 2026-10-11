@@ -634,6 +634,57 @@ fn nested_positive_disk_zero_blur_integrates_inverse_affine_root_sample_cells() 
 }
 
 #[test]
+fn nested_positive_zero_blur_respects_reflected_ancestor_area_and_winding() {
+    let Some(context) = context() else { return };
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::new(-2.0, 0.0, 0.0, 1.0, 50.5, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F nested positive disk zero blur with reflected ancestor",
+    );
+    // Parent C=[10,20]^2; positive Euclidean disk radius=1.
+    // In the y=[15,16] interior, the left parent support boundary
+    // is x=9. The negative-determinant ancestor maps it to
+    // root x'=-2*9+50.5=32.5. The root pixel [32,33] is therefore
+    // covered by exactly half its area. A correctly oriented inverse-
+    // affine parallelogram must produce alpha 0.5; clipping its signed
+    // polygon area without winding normalization would incorrectly
+    // lose the coverage or report a negative area.
+    // Premultiplied linear red 0.5 -> sRGB 188; alpha 0.5 -> 128.
+    pixel_near(pixel(&output, 32, 15), [188, 0, 0, 128]);
+    pixel_near(pixel(&output, 31, 15), [255, 0, 0, 255]);
+    assert_eq!(pixel(&output, 33, 15), [0, 0, 0, 0]);
+}
+
+#[test]
 fn nested_positive_disk_then_finite_gaussian_maps_through_sheared_ancestor() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
