@@ -84,7 +84,10 @@ fn region_envelope(
             } else {
                 let scale = mesh.units_per_parent_logical_unit;
                 if !scale.is_finite() || scale <= 0.0 {
-                    return Err(precision(path, "neutral-region source scale is unrepresentable"));
+                    return Err(precision(
+                        path,
+                        "neutral-region source scale is unrepresentable",
+                    ));
                 }
                 Some(mesh.bounds.map(|coordinate| coordinate / scale))
             }
@@ -111,7 +114,10 @@ fn region_envelope(
             .map(|bounds| shadow::transform_envelope(bounds, *to_parent, path))
             .transpose()?,
         Kind::Clip { source, .. } => source.envelope,
-        Kind::Effect { source, shadow: effect } => source.envelope.map(|bounds| {
+        Kind::Effect {
+            source,
+            shadow: effect,
+        } => source.envelope.map(|bounds| {
             // Spread is a Euclidean DISK while sigma>0 has a finite axis-aligned
             // square envelope. The sum is conservative for support reach, not
             // a square substituted as the positive disk's actual membership.
@@ -129,7 +135,10 @@ fn region_envelope(
             || bounds[0] > bounds[2]
             || bounds[1] > bounds[3])
     {
-        return Err(precision(path, "neutral-region envelope is unrepresentable"));
+        return Err(precision(
+            path,
+            "neutral-region envelope is unrepresentable",
+        ));
     }
     Ok(result)
 }
@@ -198,11 +207,42 @@ impl NeutralRegionBuilder {
 
     pub(super) fn source<'a>(
         &mut self,
-        mesh: support::NeutralMesh,
+        mut mesh: support::NeutralMesh,
         path: &[usize],
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
-        shadow::charge_vertices(&mut self.retained_vertices, mesh.triangles.len(), path)?;
-        self.node(Kind::Source(Arc::new(mesh)), path, 1)
+        // The cached tessellation AABB is disposable physical metadata, not
+        // F1 semantic authority. Certify the support envelope from the
+        // ACTUAL retained vertices once, and normalize only after ensuring
+        // scale/vertex representability. Inconsistent stored bounds cannot
+        // cause a curved ancestor effect to be culled prematurely.
+        if !mesh.triangles.len().is_multiple_of(3)
+            || !mesh.units_per_parent_logical_unit.is_finite()
+            || mesh.units_per_parent_logical_unit <= 0.0
+        {
+            return Err(precision(path, "neutral-region mesh scale or topology is invalid"));
+        }
+        let mut bounds = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for &[x, y] in &mesh.triangles {
+            if !x.is_finite() || !y.is_finite() {
+                return Err(precision(path, "neutral-region source vertex is nonfinite"));
+            }
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(y);
+        }
+        mesh.bounds = bounds;
+        // A rejected graph node MUST NOT consume retained geometry budget.
+        let mut retained = self.retained_vertices;
+        shadow::charge_vertices(&mut retained, mesh.triangles.len(), path)?;
+        let node = self.node(Kind::Source(Arc::new(mesh)), path, 1)?;
+        self.retained_vertices = retained;
+        Ok(node)
     }
 
     pub(super) fn union<'a>(
@@ -430,18 +470,48 @@ mod tests {
     }
 
     #[test]
+    fn leaf_reach_is_certified_from_real_vertices_not_cached_metadata() {
+        let mut builder = builder();
+        let mut stale = triangle();
+        stale.bounds = [0.0; 4];
+        let leaf = builder.source(stale, &[7, 0]).unwrap();
+        assert_eq!(leaf.envelope, Some([0.0, 0.0, 4.0, 4.0]));
+        assert_eq!(
+            builder.materialize(&leaf).unwrap().bounds,
+            [0.0, 0.0, 4.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn nonfinite_leaf_rejects_without_mutating_graph_admission() {
+        let mut builder = builder();
+        let mut invalid = triangle();
+        invalid.triangles[1][0] = f64::NAN;
+        assert!(matches!(
+            builder.source(invalid, &[6, 2]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [6, 2]
+        ));
+        assert_eq!(builder.nodes, 0);
+        assert_eq!(builder.retained_vertices, 0);
+    }
+
+    #[test]
     fn symbolic_effect_reach_uses_immediate_parent_frame_and_finite_cutoff() {
         let mut builder = builder();
         let caster = builder.source(triangle(), &[5, 0]).unwrap();
-        let scale_and_shear =
-            Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 0.0, 0.0).unwrap();
+        let scale_and_shear = Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 0.0, 0.0).unwrap();
         let in_parent = builder.affine(caster, scale_and_shear, &[5, 1]).unwrap();
-        assert_eq!(in_parent.envelope, Some([0.0, 0.0, 8.0, 4.0]));
+        // A sheared SOURCE AABB is conservative: its unused corner at (4,4)
+        // projects to x=10 although the actual triangle stops at x=8.
+        assert_eq!(in_parent.envelope, Some([0.0, 0.0, 10.0, 4.0]));
         let effect =
-            Render2dDropShadow::new(1.0, -2.0, 0.5, 1.0, Render2dColorRgba8::TRANSPARENT)
-                .unwrap();
+            Render2dDropShadow::new(1.0, -2.0, 0.5, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let curved = builder.effect(in_parent, effect, &[5, 2]).unwrap();
-        assert_eq!(curved.envelope, Some([-1.5, -4.5, 11.5, 4.5]));
+        assert_eq!(curved.envelope, Some([-1.5, -4.5, 13.5, 4.5]));
         assert!(matches!(
             builder.materialize(&curved),
             Err(Render2dExecutionError::UnsupportedEntry {
