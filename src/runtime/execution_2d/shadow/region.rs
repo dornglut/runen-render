@@ -219,7 +219,10 @@ impl NeutralRegionBuilder {
             || !mesh.units_per_parent_logical_unit.is_finite()
             || mesh.units_per_parent_logical_unit <= 0.0
         {
-            return Err(precision(path, "neutral-region mesh scale or topology is invalid"));
+            return Err(precision(
+                path,
+                "neutral-region mesh scale or topology is invalid",
+            ));
         }
         let mut bounds = [
             f64::INFINITY,
