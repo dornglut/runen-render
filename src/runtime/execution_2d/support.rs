@@ -954,6 +954,39 @@ impl AffinePositiveDiskArea<'_> {
             if distance > self.radius + bound {
                 continue;
             }
+            // A single triangle dilated by a Euclidean disk is convex.
+            // If all four corners of the inverse-affine parallelogram lie
+            // in that convex set, its WHOLE area is known to be inside.
+            // This avoids excessive subdivisions of already-covered
+            // interiors, including arbitrarily small positive radii.
+            // Charge the worst-case four distance queries per triangle.
+            let certificate_work = (self.triangles.len() / 3)
+                .checked_mul(4)
+                .ok_or_else(|| resource("affine disk convex certificate work overflow"))?;
+            *work = work
+                .checked_add(certificate_work)
+                .ok_or_else(|| resource("affine disk convex certificate work overflow"))?;
+            if *work > 16_777_216 {
+                return Err(resource("affine disk convex certificate exceeds bounded work"));
+            }
+            let corners = [
+                [point[0] - dx - ex, point[1] - dy - ey],
+                [point[0] - dx + ex, point[1] - dy + ey],
+                [point[0] + dx - ex, point[1] + dy - ey],
+                [point[0] + dx + ex, point[1] + dy + ey],
+            ];
+            if !corners.iter().flatten().all(|v| v.is_finite()) {
+                return Err(precision("affine disk corner projection lost precision"));
+            }
+            if self.triangles.as_chunks::<3>().0.iter().any(|tri| {
+                orient(tri[0], tri[1], tri[2]) != 0.0
+                    && corners
+                        .iter()
+                        .all(|&point| neutral_union_distance(tri, point) <= self.radius)
+            }) {
+                covered += cell.mass;
+                continue;
+            }
             let mx = (x0 + x1) * 0.5;
             let my = (y0 + y1) * 0.5;
             if cell.depth >= MAX_DEPTH || mx <= x0 || mx >= x1 || my <= y0 || my >= y1 {
@@ -2726,12 +2759,25 @@ mod tests {
     }
 
     #[test]
+    fn affine_positive_disk_interior_uses_convex_cell_certificate_for_tiny_radius() {
+        let large_triangle = [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]];
+        let area = AffinePositiveDiskArea {
+            triangles: &large_triangle,
+            inverse: [1.0, 0.0, 0.0, 1.0],
+            root_translation: [0.0, 0.0],
+            radius: 1.0e-7,
+        };
+        let mut work = 0_usize;
+        assert_eq!(area.sample([20.0, 10.0], &mut work, &[1]).unwrap(), 1.0);
+        assert!(
+            work <= 8,
+            "certified triangle interior must not require deep disk subdivision"
+        );
+    }
+
+    #[test]
     fn affine_disk_area_work_exhaustion_is_typed_and_path_bearing() {
-        let triangles = [
-            [0.0, 0.0],
-            [2.0, 0.0],
-            [0.0, 2.0],
-        ];
+        let triangles = [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]];
         let area = AffinePositiveDiskArea {
             triangles: &triangles,
             inverse: [1.0, 0.0, 0.0, 1.0],
