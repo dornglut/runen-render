@@ -21,6 +21,9 @@ pub(super) struct NeutralRegion<'a> {
     path: Vec<usize>,
     id: usize,
     depth: usize,
+    /// Conservative logical bounds in this node's owning frame. Bounds
+    /// certify reach/finite preflight only; they are NEVER membership.
+    envelope: Option<[f64; 4]>,
 }
 
 enum Kind<'a> {
@@ -63,6 +66,72 @@ fn unsupported(path: &[usize]) -> Render2dExecutionError {
             root_index: path[0],
         },
     )
+}
+
+/// Conservative support reach derived from exact symbolic operators.
+/// An axis-aligned extent must NEVER be interpreted as region membership or
+/// Gaussian coverage. In particular, Clip may shrink but cannot enlarge its
+/// source, and negative Euclidean erosion may shrink or erase but cannot grow.
+/// Retaining the larger original extent avoids guessing curved clip geometry.
+fn region_envelope(
+    kind: &Kind<'_>,
+    path: &[usize],
+) -> Result<Option<[f64; 4]>, Render2dExecutionError> {
+    let result = match kind {
+        Kind::Source(mesh) => {
+            if mesh.triangles.is_empty() {
+                None
+            } else {
+                let scale = mesh.units_per_parent_logical_unit;
+                if !scale.is_finite() || scale <= 0.0 {
+                    return Err(precision(path, "neutral-region source scale is unrepresentable"));
+                }
+                Some(mesh.bounds.map(|coordinate| coordinate / scale))
+            }
+        }
+        Kind::Union(children) => {
+            let mut combined: Option<[f64; 4]> = None;
+            for node in children {
+                if let Some(bounds) = node.envelope {
+                    combined = Some(match combined {
+                        Some(prev) => [
+                            prev[0].min(bounds[0]),
+                            prev[1].min(bounds[1]),
+                            prev[2].max(bounds[2]),
+                            prev[3].max(bounds[3]),
+                        ],
+                        None => bounds,
+                    });
+                }
+            }
+            combined
+        }
+        Kind::Affine { source, to_parent } => source
+            .envelope
+            .map(|bounds| shadow::transform_envelope(bounds, *to_parent, path))
+            .transpose()?,
+        Kind::Clip { source, .. } => source.envelope,
+        Kind::Effect { source, shadow: effect } => source.envelope.map(|bounds| {
+            // Spread is a Euclidean DISK while sigma>0 has a finite axis-aligned
+            // square envelope. The sum is conservative for support reach, not
+            // a square substituted as the positive disk's actual membership.
+            let pad = effect.spread().max(0.0) + 3.0 * effect.sigma();
+            [
+                bounds[0] + effect.offset_x() - pad,
+                bounds[1] + effect.offset_y() - pad,
+                bounds[2] + effect.offset_x() + pad,
+                bounds[3] + effect.offset_y() + pad,
+            ]
+        }),
+    };
+    if let Some(bounds) = result
+        && (!bounds.iter().all(|value| value.is_finite())
+            || bounds[0] > bounds[2]
+            || bounds[1] > bounds[3])
+    {
+        return Err(precision(path, "neutral-region envelope is unrepresentable"));
+    }
+    Ok(result)
 }
 
 /// One invocation-owned bounded graph and memoized polygonal realization.
@@ -112,6 +181,10 @@ impl NeutralRegionBuilder {
                 "neutral support graph exceeds node/depth/path admission",
             ));
         }
+        // Validate every finite support reach before committing the node.
+        // This remains an envelope-only fact, even for unmaterializable
+        // positive disks and clipped compound regions.
+        let envelope = region_envelope(&kind, path)?;
         self.nodes = next;
         self.retained_path_units = paths;
         Ok(Arc::new(NeutralRegion {
@@ -119,6 +192,7 @@ impl NeutralRegionBuilder {
             path: path.to_vec(),
             id: next,
             depth,
+            envelope,
         }))
     }
 
@@ -353,6 +427,44 @@ mod tests {
             builder.materialize(&caster).unwrap().triangles,
             triangle().triangles
         );
+    }
+
+    #[test]
+    fn symbolic_effect_reach_uses_immediate_parent_frame_and_finite_cutoff() {
+        let mut builder = builder();
+        let caster = builder.source(triangle(), &[5, 0]).unwrap();
+        let scale_and_shear =
+            Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 0.0, 0.0).unwrap();
+        let in_parent = builder.affine(caster, scale_and_shear, &[5, 1]).unwrap();
+        assert_eq!(in_parent.envelope, Some([0.0, 0.0, 8.0, 4.0]));
+        let effect =
+            Render2dDropShadow::new(1.0, -2.0, 0.5, 1.0, Render2dColorRgba8::TRANSPARENT)
+                .unwrap();
+        let curved = builder.effect(in_parent, effect, &[5, 2]).unwrap();
+        assert_eq!(curved.envelope, Some([-1.5, -4.5, 11.5, 4.5]));
+        assert!(matches!(
+            builder.materialize(&curved),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Shadows { root_index: 5 },
+            }) if path == [5, 2]
+        ));
+    }
+
+    #[test]
+    fn composite_reach_rejects_nonfinite_transform_before_materializing() {
+        let mut builder = builder();
+        let caster = builder.source(triangle(), &[8, 0]).unwrap();
+        let extreme = Render2dAffineTransform::new(f64::MAX, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap();
+        assert!(matches!(
+            builder.affine(caster, extreme, &[8, 4]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [8, 4]
+        ));
+        assert!(builder.materialized.is_empty());
     }
 
     #[test]
