@@ -476,7 +476,10 @@ impl NeutralRegionBuilder {
             .checked_add(1)
             .ok_or_else(|| resource(path, "neutral materialization cache size overflow"))?;
         if needed > MAX_REGION_NODES + 1 {
-            return Err(resource(path, "neutral materialization cache exceeds node admission"));
+            return Err(resource(
+                path,
+                "neutral materialization cache exceeds node admission",
+            ));
         }
         if needed > self.materialized.len() {
             self.materialized
@@ -557,7 +560,11 @@ mod tests {
         let mesh = builder.materialize(&complete).unwrap();
         assert_eq!(mesh.triangles.len(), triangle().triangles.len() * 3);
         assert_eq!(
-            builder.materialized.iter().filter(|entry| entry.is_some()).count(),
+            builder
+                .materialized
+                .iter()
+                .filter(|entry| entry.is_some())
+                .count(),
             4
         );
         assert_eq!(
@@ -570,26 +577,33 @@ mod tests {
     fn sparse_cache_keys_cannot_alias_after_unmaterialized_curved_nodes() {
         let mut builder = builder();
         let caster = builder.source(triangle(), &[2, 0]).unwrap();
-        let effect = Render2dDropShadow::new(
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            Render2dColorRgba8::TRANSPARENT,
-        )
-        .unwrap();
+        let effect =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         // Symbolic node 2 is never materialized. Node 3 must never inherit
         // an allocation identity or cached geometry from that node.
-        let curved = builder.effect(Arc::clone(&caster), effect, &[2, 1]).unwrap();
+        let curved = builder
+            .effect(Arc::clone(&caster), effect, &[2, 1])
+            .unwrap();
         let affine = builder
-            .affine(Arc::clone(&caster), Render2dAffineTransform::IDENTITY, &[2, 2])
+            .affine(
+                Arc::clone(&caster),
+                Render2dAffineTransform::IDENTITY,
+                &[2, 2],
+            )
             .unwrap();
         let realized = builder.materialize(&affine).unwrap();
-        assert!(Arc::ptr_eq(&realized, &builder.materialize(&affine).unwrap()));
+        assert!(Arc::ptr_eq(
+            &realized,
+            &builder.materialize(&affine).unwrap()
+        ));
         assert_eq!(builder.materialized.len(), affine.id + 1);
         assert!(builder.materialized[curved.id].is_none());
         assert_eq!(
-            builder.materialized.iter().filter(|entry| entry.is_some()).count(),
+            builder
+                .materialized
+                .iter()
+                .filter(|entry| entry.is_some())
+                .count(),
             2
         );
     }
