@@ -586,19 +586,19 @@ mod tests {
         let mut b = builder();
         let pristine = b.source(rectangle(), &[0, 0]).unwrap();
         let source = b
-            .affine(Arc::clone(&pristine), Render2dAffineTransform::IDENTITY, &[0, 0])
+            .affine(
+                Arc::clone(&pristine),
+                Render2dAffineTransform::IDENTITY,
+                &[0, 0],
+            )
             .unwrap();
-        let shadow = Render2dDropShadow::new(
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            Render2dColorRgba8::TRANSPARENT,
-        )
-        .unwrap();
+        let shadow =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let effect = b.effect(Arc::clone(&source), shadow, &[0, 1]).unwrap();
         let union = b.union(vec![Arc::clone(&source), effect], &[0]).unwrap();
-        let root = b.affine(union, Render2dAffineTransform::IDENTITY, &[0]).unwrap();
+        let root = b
+            .affine(union, Render2dAffineTransform::IDENTITY, &[0])
+            .unwrap();
         let (caster, radius) = b
             .certified_rectangle_with_disk(&root)
             .unwrap()
@@ -616,21 +616,12 @@ mod tests {
 
     #[test]
     fn rounded_rectangle_qualifier_rejects_blur_offset_shear_and_nonrectangles() {
-        for (sigma, offset, shear) in [
-            (0.1, 0.0, 0.0),
-            (0.0, 1.0, 0.0),
-            (0.0, 0.0, 0.5),
-        ] {
+        for (sigma, offset, shear) in [(0.1, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 0.5)] {
             let mut b = builder();
             let source = b.source(rectangle(), &[1, 0]).unwrap();
-            let shadow = Render2dDropShadow::new(
-                offset,
-                0.0,
-                sigma,
-                1.0,
-                Render2dColorRgba8::TRANSPARENT,
-            )
-            .unwrap();
+            let shadow =
+                Render2dDropShadow::new(offset, 0.0, sigma, 1.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap();
             let effect = b.effect(Arc::clone(&source), shadow, &[1, 1]).unwrap();
             let union = b.union(vec![source, effect], &[1]).unwrap();
             let affine = Render2dAffineTransform::new(1.0, 0.0, shear, 1.0, 0.0, 0.0).unwrap();
@@ -642,14 +633,8 @@ mod tests {
         }
         let mut b = builder();
         let source = b.source(triangle(), &[2, 0]).unwrap();
-        let shadow = Render2dDropShadow::new(
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            Render2dColorRgba8::TRANSPARENT,
-        )
-        .unwrap();
+        let shadow =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let effect = b.effect(Arc::clone(&source), shadow, &[2, 1]).unwrap();
         let union = b.union(vec![source, effect], &[2]).unwrap();
         assert!(b.certified_rectangle_with_disk(&union).unwrap().is_none());

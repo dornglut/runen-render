@@ -736,7 +736,6 @@ fn nested_positive_disk_then_finite_gaussian_maps_through_sheared_ancestor() {
     assert_eq!(pixel(&output, 28, 15), [0, 0, 0, 0]);
 }
 
-
 #[test]
 fn transparent_child_positive_disk_support_is_consumed_by_ancestor_shadow() {
     let Some(context) = context() else { return };
@@ -755,13 +754,7 @@ fn transparent_child_positive_disk_support_is_consumed_by_ancestor_shadow() {
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::TRANSPARENT,
-        vec![effect(
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            Render2dColorRgba8::TRANSPARENT,
-        )],
+        vec![effect(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)],
     ));
     let composition = group(
         vec![child],
