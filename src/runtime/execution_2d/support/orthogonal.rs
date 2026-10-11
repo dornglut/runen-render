@@ -58,15 +58,30 @@ struct Kernel {
     sigma: f64,
 }
 impl Kernel {
-    fn axis_mass(self, lo: f64, hi: f64, axis: usize) -> f64 {
+    fn axis_mass(
+        self,
+        lo: f64,
+        hi: f64,
+        axis: usize,
+        work: &mut usize,
+        path: &[usize],
+    ) -> Result<f64, Render2dExecutionError> {
         if hi <= lo {
-            return 0.0;
+            return Ok(0.0);
         }
-        if self.sigma > 0.0 {
+        let mass = if self.sigma > 0.0 {
+            // Charge EACH actual Gaussian integral before its 16 quadrature
+            // node evaluations; billing every boundary edge as if it caused
+            // x integration grossly overadmitted normal full scenes.
+            charge(work, super::GAUSS_NODES.len(), path)?;
             gaussian_axis_mass(lo, hi, self.center[axis], self.sigma)
         } else {
             hi - lo
+        };
+        if !mass.is_finite() || mass < 0.0 {
+            return Err(precision(path, "orthogonal Gaussian axis mass is invalid"));
         }
+        Ok(mass)
     }
 }
 #[derive(Clone, Copy)]
@@ -166,7 +181,14 @@ impl<'a> OrthogonalExterior<'a> {
     /// lies between an inner and outer union of certified x intervals.
     /// This avoids the loose global radius +/- dy certificates that caused
     /// normal complete-scene rectangular edges to exhaust the work budget.
-    fn covered_mass(crossings: &[f64], forbidden: &[[f64; 2]], x: [f64; 2], kernel: Kernel) -> f64 {
+    fn covered_mass(
+        crossings: &[f64],
+        forbidden: &[[f64; 2]],
+        x: [f64; 2],
+        kernel: Kernel,
+        work: &mut usize,
+        path: &[usize],
+    ) -> Result<f64, Render2dExecutionError> {
         let [x0, x1] = x;
         let mut allowed = 0.0;
         for pair in crossings.as_chunks::<2>().0 {
@@ -180,15 +202,15 @@ impl<'a> OrthogonalExterior<'a> {
                 if end <= cursor || start >= right {
                     continue;
                 }
-                allowed += kernel.axis_mass(cursor, start.max(cursor).min(right), 0);
+                allowed += kernel.axis_mass(cursor, start.max(cursor).min(right), 0, work, path)?;
                 cursor = cursor.max(end).min(right);
                 if cursor >= right {
                     break;
                 }
             }
-            allowed += kernel.axis_mass(cursor, right, 0);
+            allowed += kernel.axis_mass(cursor, right, 0, work, path)?;
         }
-        allowed
+        Ok(allowed)
     }
 
     fn slice(
@@ -205,19 +227,7 @@ impl<'a> OrthogonalExterior<'a> {
         if !(y0 < mid && mid < y1) {
             return Err(precision(path, "orthogonal erosion cannot refine a slice"));
         }
-        let gaussian_cost = if query.kernel.sigma > 0.0 {
-            self.edges
-                .len()
-                .checked_mul(8 * super::GAUSS_NODES.len())
-                .ok_or_else(|| resource(path, "orthogonal Gaussian work overflow"))?
-        } else {
-            0
-        };
-        let cost = self
-            .charge_per_slice
-            .checked_add(gaussian_cost)
-            .ok_or_else(|| resource(path, "orthogonal slice work overflow"))?;
-        charge(work, cost, path)?;
+        charge(work, self.charge_per_slice, path)?;
         let mut crossings = Vec::<f64>::new();
         let mut outer_forbidden = Vec::<[f64; 2]>::new();
         let mut inner_forbidden = Vec::<[f64; 2]>::new();
@@ -294,12 +304,16 @@ impl<'a> OrthogonalExterior<'a> {
         // For each y, union(INNER) is contained in true forbidden(y),
         // which is contained in union(OUTER). Therefore the remaining
         // original-inside width is bounded by these two evaluations.
-        let lower_width = Self::covered_mass(&crossings, &outer_forbidden, [x0, x1], query.kernel);
-        let upper_width = Self::covered_mass(&crossings, &inner_forbidden, [x0, x1], query.kernel);
-        let height = query.kernel.axis_mass(y0, y1, 1);
+        let lower_width = Self::covered_mass(
+            &crossings, &outer_forbidden, [x0, x1], query.kernel, work, path,
+        )?;
+        let upper_width = Self::covered_mass(
+            &crossings, &inner_forbidden, [x0, x1], query.kernel, work, path,
+        )?;
+        let height = query.kernel.axis_mass(y0, y1, 1, work, path)?;
         let lower = lower_width * height;
         let upper = upper_width * height;
-        let total = query.kernel.axis_mass(x0, x1, 0) * height;
+        let total = query.kernel.axis_mass(x0, x1, 0, work, path)? * height;
         if !lower.is_finite()
             || !upper.is_finite()
             || lower < -1.0e-9
