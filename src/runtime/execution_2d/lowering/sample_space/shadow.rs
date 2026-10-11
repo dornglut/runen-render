@@ -186,9 +186,39 @@ pub(super) fn prepare(
             // Build the effect in its immediate-parent frame first.
             // Zero spread and zero blur commute with ancestor affine
             // projection, so a nested translated C remains exact triangles.
-            // Nonzero nested kernels reject in group_child_sources rather
-            // than being incorrectly applied in root space.
-            let Some(parent_envelope) = geometry_support::shadow_envelope(source, *effect, path)?
+            // Nonzero nested kernels never become root-axis effects without
+            // a separately qualified region and physical realization.
+            let (source_mesh, qualified_radius) = match source {
+                geometry_support::NeutralCaster::Mesh(mesh) => (mesh.as_ref(), 0.0),
+                geometry_support::NeutralCaster::RectangleWithDisk { pristine, radius } => {
+                    // General compositions must use a certified region query.
+                    // This bounded realization only admits a root identity
+                    // shadow consuming already-rounded source geometry.
+                    if path.len() != 1 || effect.spread() != 0.0 || effect.sigma() != 0.0 {
+                        return Err(crate::runtime::execution_2d::unsupported_at(
+                            path,
+                            crate::execution_2d::Render2dUnsupportedContent::Shadows {
+                                root_index: path[0],
+                            },
+                        ));
+                    }
+                    (pristine.as_ref(), *radius)
+                }
+            };
+            let effective = if qualified_radius > 0.0 {
+                Render2dDropShadow::new(
+                    effect.offset_x(),
+                    effect.offset_y(),
+                    0.0,
+                    qualified_radius,
+                    effect.color(),
+                )
+                .map_err(|_| shadow_precision(path, "qualified disk effect is invalid"))?
+            } else {
+                *effect
+            };
+            let Some(parent_envelope) =
+                geometry_support::shadow_envelope(source_mesh, effective, path)?
             else {
                 continue;
             };
@@ -229,7 +259,7 @@ pub(super) fn prepare(
                     shadow_precision(path, "shadow offset transform is unrepresentable")
                 })?;
             let mut shifted = geometry_support::empty_mesh();
-            geometry_support::append(&mut shifted, source, offset, path)?;
+            geometry_support::append(&mut shifted, source_mesh, offset, path)?;
             // A certified negative Euclidean disk erosion has EXACT convex
             // polygonal geometry, so carry that into the already-owned
             // parent-frame continuous Gaussian / identity evaluator.
@@ -261,7 +291,7 @@ pub(super) fn prepare(
             let remaining_spread = if erosion.is_some() {
                 0.0
             } else {
-                effect.spread()
+                effect.spread() + qualified_radius
             };
             // A nested positive Euclidean disk and optional finite Gaussian
             // are evaluated in the owner's immediate-parent frame at
