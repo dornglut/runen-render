@@ -2604,13 +2604,42 @@ fn rasterize_continuous_shadow_coverage(
                 }
             } else if let Some(orthogonal) = &orthogonal {
                 if physical_sigma > 0.0 {
-                    orthogonal.gaussian(
-                        center,
-                        -physical_spread,
-                        physical_sigma,
-                        aggregate_work,
-                        path,
-                    )?
+                    // A connected finite Gaussian kernel square that cannot
+                    // reach any true exterior boundary by radius r is
+                    // CONSTANT neutral support. Prove this from actual
+                    // source geometry before any costly curved quadrature:
+                    // it is either fully covered or fully outside, never
+                    // inferred from alpha, AABB membership or a pixel mask.
+                    let edges = erosion_boundary.as_deref().ok_or_else(|| {
+                        precision("orthogonal Gaussian requires true exterior edges")
+                    })?;
+                    let visits = edges
+                        .len()
+                        .checked_add(triangles.len() / 3)
+                        .ok_or_else(|| resource("orthogonal constant-cell work overflow"))?;
+                    orthogonal::charge(aggregate_work, visits, path)?;
+                    let radius = -physical_spread;
+                    let kernel_square = [
+                        center[0] - cutoff,
+                        center[1] - cutoff,
+                        center[0] + cutoff,
+                        center[1] + cutoff,
+                    ];
+                    if eroded_cell_far_from_exterior(edges, kernel_square, radius) {
+                        if neutral_union_distance(&triangles, center) == 0.0 {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        orthogonal.gaussian(
+                            center,
+                            radius,
+                            physical_sigma,
+                            aggregate_work,
+                            path,
+                        )?
+                    }
                 } else {
                     orthogonal.area(
                         [

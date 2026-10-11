@@ -25,7 +25,7 @@ fn resource(path: &[usize], detail: &'static str) -> Render2dExecutionError {
 fn precision(path: &[usize], detail: &'static str) -> Render2dExecutionError {
     mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail)
 }
-fn charge(work: &mut usize, count: usize, path: &[usize]) -> Result<(), Render2dExecutionError> {
+pub(super) fn charge(work: &mut usize, count: usize, path: &[usize]) -> Result<(), Render2dExecutionError> {
     let next = work
         .checked_add(count)
         .ok_or_else(|| resource(path, "orthogonal erosion work counter overflow"))?;
