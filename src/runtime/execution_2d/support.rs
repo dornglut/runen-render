@@ -855,13 +855,15 @@ fn gaussian_union_sample(
     Ok(alpha.clamp(0.0, 1.0))
 }
 
-/// Evaluate nested zero-spread Gaussian coverage in its owning immediate-parent
-/// frame at each globally phased ROOT sample. An arbitrary full-rank ancestor
-/// affine changes the footprint in root space, not the parent's Gaussian:
+/// Evaluate a nested finite Gaussian over the owning parent-frame neutral
+/// geometry, with an optional true Euclidean positive disk spread BEFORE
+/// convolution. An arbitrary full-rank ancestor affine changes root-space
+/// footprints, not the parent's spread or normalized Gaussian:
 /// inverse-map each root sample to its parent before continuous integration.
 /// An extent is only allocation/reach admission, never a region mask.
-pub(super) fn affine_parent_gaussian_coverage_admitted(
+pub(super) fn affine_parent_effect_coverage_admitted(
     source: &NeutralMesh,
+    positive_spread: f64,
     sigma: f64,
     parent_to_root: crate::composition_2d::Render2dAffineTransform,
     root_envelope: [f64; 4],
@@ -878,6 +880,7 @@ pub(super) fn affine_parent_gaussian_coverage_admitted(
     let [a, b, c, d, tx, ty] = parent_to_root.components();
     let determinant = a.mul_add(d, -(b * c));
     let physical_sigma = sigma * scale;
+    let physical_spread = positive_spread * scale;
     if !scale.is_finite()
         || scale <= 0.0
         || !source.units_per_parent_logical_unit.is_finite()
@@ -886,6 +889,9 @@ pub(super) fn affine_parent_gaussian_coverage_admitted(
         || sigma <= 0.0
         || !physical_sigma.is_finite()
         || physical_sigma <= 0.0
+        || !positive_spread.is_finite()
+        || positive_spread < 0.0
+        || !physical_spread.is_finite()
         || !determinant.is_finite()
         || determinant == 0.0
         || !parent_to_root.components().iter().all(|x| x.is_finite())
@@ -897,6 +903,11 @@ pub(super) fn affine_parent_gaussian_coverage_admitted(
     if (3.0 * physical_sigma).ceil() > f64::from(MAX_GAUSSIAN_RADIUS_SAMPLES) {
         return Err(resource(
             "nested parent-frame Gaussian window exceeds bounded halo",
+        ));
+    }
+    if physical_spread > f64::from(MAX_SPREAD_RADIUS_SAMPLES) {
+        return Err(resource(
+            "nested parent-frame Euclidean disk exceeds bounded radius",
         ));
     }
     let scaled = root_envelope.map(|v| v * scale);
@@ -969,8 +980,23 @@ pub(super) fn affine_parent_gaussian_coverage_admitted(
             if !point.iter().all(|x| x.is_finite()) {
                 return Err(precision("nested Gaussian inverse mapping lost precision"));
             }
-            values[row * width + column] =
-                gaussian_union_sample(&triangles, point, physical_sigma, aggregate_work, path)?;
+            values[row * width + column] = if positive_spread > 0.0 {
+                // Membership is evaluated against the exact triangle UNION
+                // Euclidean distance. A conservative mass/error certificate
+                // bounds continuous disk/Gaussian integration; an uncertified
+                // result rejects rather than fabricating coverage.
+                continuous_signed_spread_sample(
+                    &triangles,
+                    None,
+                    point,
+                    physical_spread,
+                    physical_sigma,
+                    aggregate_work,
+                    path,
+                )?
+            } else {
+                gaussian_union_sample(&triangles, point, physical_sigma, aggregate_work, path)?
+            };
         }
     }
     Ok(Some(NeutralCoverage {

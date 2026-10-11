@@ -240,6 +240,9 @@ fn unsupported_at(path: &[usize], kind: Render2dUnsupportedContent) -> Render2dE
 
 fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecutionError> {
     let mut runs = Vec::new();
+    // Only shadow-bearing ancestors consume descendant neutral effect
+    // geometry. Track this F1 structural fact before F2 field preparation.
+    let mut shadowed_ancestors = Vec::<bool>::new();
     for (event_index, event) in plan.events.iter().enumerate() {
         let (root_index, item, to_root) = match event {
             scene::Event::Item {
@@ -252,19 +255,31 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
                 (root_index, *item, *to_root)
             }
             scene::Event::BeginGroup { path, group, .. } => {
-                // Nested zero-spread Gaussian and certified convex negative
-                // Euclidean disk erosion retain parent-frame geometry.
-                // Positive disk spread still requires a compositional
-                // continuous-region representation: fail before F2 work.
-                if path.len() > 1 && group.shadows().iter().any(|shadow| shadow.spread() > 0.0) {
+                // A positive Euclidean disk has curved support which cannot
+                // be represented by the stored triangle union. Without an
+                // ancestor shadow, its support is not a downstream caster:
+                // its *own* finite Gaussian can still be integrated exactly
+                // in the owning parent frame. No-sigma positive disks still
+                // require a transformed continuous root-cell area evaluator.
+                if path.len() > 1
+                    && group.shadows().iter().any(|shadow| {
+                        shadow.spread() > 0.0
+                            && (shadow.sigma() == 0.0
+                                || shadowed_ancestors.iter().any(|owner| *owner))
+                    })
+                {
                     let kind = Render2dUnsupportedContent::Shadows {
                         root_index: path[0],
                     };
                     return Err(unsupported_at(path, kind));
                 }
+                shadowed_ancestors.push(!group.shadows().is_empty());
                 continue;
             }
-            scene::Event::EndGroup => continue,
+            scene::Event::EndGroup => {
+                shadowed_ancestors.pop().expect("balanced F1 shadow ancestry");
+                continue;
+            },
         };
         let text = match item.primitive() {
             Render2dPrimitive::Fill { .. }

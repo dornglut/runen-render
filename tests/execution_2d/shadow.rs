@@ -583,6 +583,115 @@ fn nested_finite_gaussian_integrates_parent_kernel_under_ancestor_shear() {
 }
 
 #[test]
+fn nested_positive_disk_then_finite_gaussian_maps_through_sheared_ancestor() {
+    let Some(context) = context() else { return };
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.1,
+            1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ));
+    let composition = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F nested positive disk before parent Gaussian and ancestor shear",
+    );
+    // Source C=[10,20]^2. At y≈15 its exact Euclidean disk(+1)
+    // boundary is parent x=9; the finite normalized sigma=.1 Gaussian
+    // has 3sigma=.3 parent-axis support. For each 4x4 root pixel sample:
+    // parent x=(root_x-.5*root_y-4)/2, integrate
+    // G(x) on [-.3,min(.3,parent_x-9)] / integral[-.3,.3].
+    // Independent Simpson integration of this F1 half-plane law over
+    // 16 correlated root sample centers gives alpha:
+    // root (29,15)=.2662224405, (30,15)=.9837775595.
+    // Premultiplied LINEAR red converted to sRGB yields 141 and 253.
+    pixel_near(pixel(&output, 29, 15), [141, 0, 0, 68]);
+    pixel_near(pixel(&output, 30, 15), [253, 0, 0, 251]);
+    pixel_near(pixel(&output, 31, 15), [255, 0, 0, 255]);
+    assert_eq!(pixel(&output, 28, 15), [0, 0, 0, 0]);
+}
+
+#[test]
+fn nested_positive_disk_is_unsupported_when_ancestor_needs_neutral_caster() {
+    let Some(context) = context() else { return };
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(
+            0.0,
+            0.0,
+            0.1,
+            1.0,
+            Render2dColorRgba8::TRANSPARENT,
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::TRANSPARENT,
+        )],
+    ));
+    let composition = Render2dComposition::new(vec![outer]).unwrap();
+    let (_, target) = target("F3F curved caster must not be replaced with raw C");
+    let error = match Render2dExecutor::new().prepare(
+        &context,
+        &composition,
+        &Render2dResourceBindings::default(),
+        &target,
+    ) {
+        Ok(_) => panic!("an ancestor shadow must not consume unrepresented curved C"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        Render2dExecutionError::UnsupportedEntry {
+            path,
+            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
+                root_index: 0,
+            },
+        } if path == [0, 0]
+    ));
+}
+
+#[test]
 fn nested_convex_signed_disk_erosion_is_exact_before_ancestor_shear() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(

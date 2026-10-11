@@ -297,8 +297,10 @@ fn gaussian_square_support(
 /// finite square Minkowski union in its immediate-parent frame. Nonzero
 /// nested convex negative disk spread uses a mathematically certified
 /// polygonal Euclidean inset before its optional Gaussian support square.
-/// Positive disk spread and uncertified nonconvex erosions still reject;
-/// neither sampled alpha nor AABBs stand in.
+/// A nested positive disk with finite Gaussian is painted only when NO
+/// ancestor shadow needs its curved support. All other positive disks and
+/// uncertified nonconvex erosions reject; neither sampled alpha nor AABBs
+/// stand in for curved caster geometry.
 pub(super) fn group_child_sources(
     plan: &scene::Plan<'_>,
     bindings: &Render2dResourceBindings,
@@ -366,12 +368,13 @@ pub(super) fn group_child_sources(
                 let mut completed = empty_mesh();
                 if !frame.group.shadows().is_empty() {
                     if nested {
-                        if frame
-                            .group
-                            .shadows()
+                        let ancestor_shadow_caster = active
                             .iter()
-                            .any(|shadow| shadow.spread() > 0.0)
-                        {
+                            .any(|ancestor| !ancestor.group.shadows().is_empty());
+                        if frame.group.shadows().iter().any(|shadow| {
+                            shadow.spread() > 0.0
+                                && (shadow.sigma() == 0.0 || ancestor_shadow_caster)
+                        }) {
                             return Err(super::unsupported_at(
                                 &frame.path,
                                 Render2dUnsupportedContent::Shadows {
@@ -391,6 +394,15 @@ pub(super) fn group_child_sources(
                             &frame.path,
                         )?;
                         for shadow in frame.group.shadows() {
+                            if shadow.spread() > 0.0 {
+                                // Its *own* continuous parent-frame Gaussian
+                                // is prepared by sample_space::shadow. No
+                                // ancestor shadow consumes its curved support
+                                // (certified by the structural gate above);
+                                // do not promote raw C or a bound to that
+                                // unevaluated disk region.
+                                continue;
+                            }
                             // A convex union has an EXACT Euclidean inward
                             // disk offset as another polygon. Nonconvex/hole
                             // unions remain typed unsupported, not "empty".

@@ -263,12 +263,13 @@ pub(super) fn prepare(
             } else {
                 effect.spread()
             };
-            // A nested finite Gaussian must be evaluated at each inverse-
-            // mapped ROOT sample in the group's immediate-parent frame.
-            // Projecting triangles and then applying root-axis sigma changes
-            // the convolution under shear/nonuniform ancestor affine.
+            // A nested finite Gaussian and its optional positive Euclidean
+            // spread are evaluated in the owner's immediate-parent frame at
+            // inverse-mapped globally phased ROOT samples. Applying the
+            // positive disk or Gaussian in root axes after ancestor shear
+            // changes the F1 semantics and is not admitted.
             let coverage = if let Some(ancestor) = parent_affine {
-                if effect.sigma() > 0.0 && remaining_spread == 0.0 {
+                if effect.sigma() > 0.0 && remaining_spread >= 0.0 {
                     let [a, b, c, d, _, _] = ancestor.components();
                     let determinant = a.mul_add(d, -(b * c));
                     if determinant == 0.0 {
@@ -277,8 +278,9 @@ pub(super) fn prepare(
                         // separately discards degenerate affine triangles.
                         continue;
                     }
-                    support::affine_parent_gaussian_coverage_admitted(
+                    support::affine_parent_effect_coverage_admitted(
                         caster,
+                        remaining_spread,
                         effect.sigma(),
                         ancestor,
                         envelope,
