@@ -783,7 +783,13 @@ fn nested_positive_disk_sigma_zero_consumed_by_ancestor_on_actual_vulkan() {
 fn qualified_nested_disk_respects_ancestor_translation_on_actual_vulkan() {
     let Some(context) = context() else { return };
     let child = Render2dEntry::group(Render2dGroup::new(
-        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 10.0)],
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::TRANSPARENT,
@@ -791,7 +797,13 @@ fn qualified_nested_disk_respects_ancestor_translation_on_actual_vulkan() {
     ));
     let composition = group(
         vec![child],
-        vec![effect(3.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(255, 0, 0, 255))],
+        vec![effect(
+            3.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
         1.0,
     );
     let image = execute(
@@ -811,7 +823,13 @@ fn qualified_nested_disk_respects_ancestor_translation_on_actual_vulkan() {
 fn qualified_child_disk_rejects_uncertified_ancestor_gaussian_at_child_path() {
     let Some(context) = context() else { return };
     let child = Render2dEntry::group(Render2dGroup::new(
-        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 10.0)],
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::TRANSPARENT,
@@ -819,7 +837,13 @@ fn qualified_child_disk_rejects_uncertified_ancestor_gaussian_at_child_path() {
     ));
     let composition = group(
         vec![child],
-        vec![effect(0.0, 0.0, 0.1, 0.0, Render2dColorRgba8::new(255, 0, 0, 255))],
+        vec![effect(
+            0.0,
+            0.0,
+            0.1,
+            0.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
         1.0,
     );
     let (_, target) = target("F3F unqualified ancestor finite Gaussian rejection");
