@@ -923,51 +923,6 @@ impl DiskAreaCellPolygon {
         Some(output)
     }
 
-    /// Intersect a convex root-cell polygon with one certified inward
-    /// Euclidean half-plane, dot((point-origin),inward)>=radius.
-    /// This is an exact straight-edge area calculation, not an SDF or AABB
-    /// surrogate. All intermediate polygon vertices remain private f64.
-    fn clipped_inward_halfplane(
-        self,
-        origin: [f64; 2],
-        inward: [f64; 2],
-        radius: f64,
-    ) -> Option<Self> {
-        let mut output = Self {
-            vertices: [[0.0; 2]; 16],
-            len: 0,
-        };
-        if self.len == 0 {
-            return Some(output);
-        }
-        let signed = |p: [f64; 2]| {
-            (p[0] - origin[0]).mul_add(inward[0], (p[1] - origin[1]) * inward[1]) - radius
-        };
-        for index in 0..self.len {
-            let p = self.vertices[index];
-            let q = self.vertices[(index + 1) % self.len];
-            let dp = signed(p);
-            let dq = signed(q);
-            if !dp.is_finite() || !dq.is_finite() {
-                return None;
-            }
-            if (dp >= 0.0) != (dq >= 0.0) {
-                let t = dp / (dp - dq);
-                if !t.is_finite() || !(0.0..=1.0).contains(&t) {
-                    return None;
-                }
-                output.push([
-                    (q[0] - p[0]).mul_add(t, p[0]),
-                    (q[1] - p[1]).mul_add(t, p[1]),
-                ])?;
-            }
-            if dq >= 0.0 {
-                output.push(q)?;
-            }
-        }
-        Some(output)
-    }
-
     fn clipped_rectangle(self, [x0, y0, x1, y1]: [f64; 4]) -> Option<Self> {
         self.clip_axis(0, x0, false)?
             .clip_axis(0, x1, true)?
@@ -1098,291 +1053,21 @@ fn certified_rounded_rectangle_area(
     area.is_finite().then_some(area)
 }
 
-/// Numeric uncertainty guard for *sufficient* Euclidean erosion
-/// certificates. The bound is deliberately loose: uncertain queries fall
-/// back to the existing continuous evaluator instead of inventing geometry.
-/// The exact triangle union remains the only membership authority.
-fn erosion_query_margin(
-    triangles: &[[f64; 2]],
-    center: [f64; 2],
-    radius: f64,
-    reach: f64,
-) -> Option<f64> {
-    let scale = triangles
-        .iter()
-        .flat_map(|point| point.iter())
-        .chain(center.iter())
-        .copied()
-        .fold(radius.abs().max(reach).max(1.0), |max, value| {
-            max.max(value.abs())
-        });
-    let margin = scale * (64.0 * f64::EPSILON);
-    margin.is_finite().then_some(margin)
-}
-
-/// An exact local erosion certificate for inverse-affine convex sample
-/// parallelograms. Only the true EXPOSED boundary is inspected, never
-/// tessellation seams. If every boundary edge farther than radius cannot
-/// affect the whole cell, membership is constant. If ALL potentially
-/// affecting edges are collinear and a single segment contains every cell
-/// projection, the eroded set on this cell is precisely one inward-offset
-/// half-plane. Otherwise the continuous signed-distance area integrator
-/// remains the fail-closed authority. No thresholding of cached alpha.
-/// This certificate describes a whole convex query cell, never merely
-/// its midpoint. A straight exposed boundary and uniform inside/outside
-/// regions are reusable by identity-blur area and separable Gaussian paths.
-#[derive(Clone, Copy)]
-enum CertifiedErosionRegion {
-    Uniform(bool),
-    Halfplane {
-        origin: [f64; 2],
-        inward: [f64; 2],
-    },
-}
-
-fn certified_local_eroded_region(
-    source: &[[f64; 2]],
-    exterior: &[UnionBoundaryEdge],
-    cell: DiskAreaCellPolygon,
-    radius: f64,
-) -> Option<CertifiedErosionRegion> {
-    if exterior.is_empty() || radius <= 0.0 {
-        return None;
-    }
-    let area = cell.area()?;
-    if area <= 0.0 {
-        return None;
-    }
-    let corners = &cell.vertices[..cell.len];
-    let mut min_x = f64::INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    let mut center = [0.0_f64; 2];
-    for &point in corners {
-        min_x = min_x.min(point[0]);
-        min_y = min_y.min(point[1]);
-        max_x = max_x.max(point[0]);
-        max_y = max_y.max(point[1]);
-        center[0] += point[0];
-        center[1] += point[1];
-    }
-    let n = f64::from(u32::try_from(cell.len).ok()?);
-    center[0] /= n;
-    center[1] /= n;
-    if !center.iter().all(|v| v.is_finite()) {
-        return None;
-    }
-    let mut first: Option<UnionBoundaryEdge> = None;
-    let mut candidate_segments = 0_usize;
-    let mut covered_segment = None;
-    for &edge in exterior {
-        let lo_x = edge[0][0].min(edge[1][0]);
-        let hi_x = edge[0][0].max(edge[1][0]);
-        let lo_y = edge[0][1].min(edge[1][1]);
-        let hi_y = edge[0][1].max(edge[1][1]);
-        let dx = (lo_x - max_x).max(min_x - hi_x).max(0.0);
-        let dy = (lo_y - max_y).max(min_y - hi_y).max(0.0);
-        // AABB separation is ONLY a lower bound on edge distance. It can
-        // eliminate an edge that cannot influence the radius-r cell, but
-        // cannot certify positive membership or change boundary topology.
-        if dx.hypot(dy) > radius {
-            continue;
-        }
-        candidate_segments += 1;
-        if let Some(reference) = first {
-            if orient(reference[0], reference[1], edge[0]) != 0.0
-                || orient(reference[0], reference[1], edge[1]) != 0.0
-            {
-                return None;
-            }
-        } else {
-            first = Some(edge);
-        }
-        let direction = [edge[1][0] - edge[0][0], edge[1][1] - edge[0][1]];
-        let norm2 = direction[0].mul_add(direction[0], direction[1] * direction[1]);
-        if !norm2.is_finite() || norm2 <= 0.0 {
-            return None;
-        }
-        if corners.iter().all(|point| {
-            let offset = [point[0] - edge[0][0], point[1] - edge[0][1]];
-            let t = offset[0].mul_add(direction[0], offset[1] * direction[1]) / norm2;
-            t.is_finite() && (0.0..=1.0).contains(&t)
-        }) {
-            covered_segment = Some(edge);
-        }
-    }
-    if candidate_segments == 0 {
-        // The connected convex cell is separated by >r from EVERY exterior
-        // boundary. Its original inside/outside classification is constant
-        // and so is its eroded membership.
-        return Some(CertifiedErosionRegion::Uniform(
-            neutral_union_distance(source, center) == 0.0,
-        ));
-    }
-    let edge = covered_segment?;
-    let direction = [edge[1][0] - edge[0][0], edge[1][1] - edge[0][1]];
-    let length = direction[0].hypot(direction[1]);
-    if !length.is_finite() || length <= 0.0 {
-        return None;
-    }
-    let normal = [-direction[1] / length, direction[0] / length];
-    let t = ((center[0] - edge[0][0])
-        .mul_add(direction[0], (center[1] - edge[0][1]) * direction[1]))
-        / (length * length);
-    if !t.is_finite() || !(0.0..=1.0).contains(&t) {
-        return None;
-    }
-    let origin = [
-        direction[0].mul_add(t, edge[0][0]),
-        direction[1].mul_add(t, edge[0][1]),
-    ];
-    // The union-exterior segment was extracted from an ORIGINAL triangle
-    // side. Recover the topological inward orientation from that triangle's
-    // third vertex, not from a finite-distance sampled probe that could cross
-    // a thin feature, hole or another boundary. Conflicting or absent
-    // witnesses fail this optimization closed.
-    let mut inward_sign: Option<f64> = None;
-    for tri in source.as_chunks::<3>().0 {
-        for side in 0..3 {
-            let a = tri[side];
-            let b = tri[(side + 1) % 3];
-            if orient(a, b, edge[0]) != 0.0 || orient(a, b, edge[1]) != 0.0 {
-                continue;
-            }
-            let v = [b[0] - a[0], b[1] - a[1]];
-            let length_squared = v[0].mul_add(v[0], v[1] * v[1]);
-            if !length_squared.is_finite() || length_squared <= 0.0 {
-                continue;
-            }
-            let contains = edge.iter().all(|point| {
-                let delta = [point[0] - a[0], point[1] - a[1]];
-                let t = delta[0].mul_add(v[0], delta[1] * v[1]) / length_squared;
-                t.is_finite() && (0.0..=1.0).contains(&t)
-            });
-            if !contains {
-                continue;
-            }
-            let cross = orient(edge[0], edge[1], tri[(side + 2) % 3]);
-            if !cross.is_finite() || cross == 0.0 {
-                continue;
-            }
-            if let Some(previous) = inward_sign
-                && previous != cross.signum()
-            {
-                return None;
-            }
-            inward_sign = Some(cross.signum());
-        }
-    }
-    let inward = if inward_sign? > 0.0 {
-        normal
-    } else {
-        [-normal[0], -normal[1]]
-    };
-    Some(CertifiedErosionRegion::Halfplane { origin, inward })
-}
-
-fn certified_local_eroded_cell(
-    source: &[[f64; 2]],
-    exterior: &[UnionBoundaryEdge],
-    cell: DiskAreaCellPolygon,
-    radius: f64,
-) -> Option<f64> {
-    let area = cell.area()?;
-    if area <= 0.0 {
-        return None;
-    }
-    match certified_local_eroded_region(source, exterior, cell, radius)? {
-        CertifiedErosionRegion::Uniform(inside) => Some(if inside { 1.0 } else { 0.0 }),
-        CertifiedErosionRegion::Halfplane { origin, inward } => {
-            let clipped = cell.clipped_inward_halfplane(origin, inward, radius)?;
-            let covered_area = clipped.area()? / area;
-            (covered_area.is_finite() && (-1.0e-7..=1.0 + 1.0e-7).contains(&covered_area))
-                .then_some(covered_area.clamp(0.0, 1.0))
-        }
-    }
-}
-
-/// When the true exposed union boundary certifies a unique axis-aligned
-/// straight halfplane over the COMPLETE finite Gaussian support square,
-/// separability gives its clipped 1D normalized Gaussian mass. Any curved,
-/// oblique, overlapping or uncertified support retains the bounded general
-/// integrator. This is a region-query reuse, not a sampled shadow mask.
-fn certified_local_eroded_gaussian_axis(
-    source: &[[f64; 2]],
-    exterior: &[UnionBoundaryEdge],
-    center: [f64; 2],
-    radius: f64,
-    sigma: f64,
-) -> Option<f64> {
-    if !sigma.is_finite() || sigma <= 0.0 {
-        return None;
-    }
-    let reach = 3.0 * sigma;
-    let low = [center[0] - reach, center[1] - reach];
-    let high = [center[0] + reach, center[1] + reach];
-    if !low.iter().chain(high.iter()).all(|v| v.is_finite()) {
-        return None;
-    }
-    let square = DiskAreaCellPolygon::quadrilateral([
-        [low[0], low[1]],
-        [high[0], low[1]],
-        [high[0], high[1]],
-        [low[0], high[1]],
-    ])?;
-    match certified_local_eroded_region(source, exterior, square, radius)? {
-        CertifiedErosionRegion::Uniform(inside) => Some(if inside { 1.0 } else { 0.0 }),
-        CertifiedErosionRegion::Halfplane { origin, inward } => {
-            let axis = if inward[1] == 0.0 && inward[0].abs() == 1.0 {
-                0
-            } else if inward[0] == 0.0 && inward[1].abs() == 1.0 {
-                1
-            } else {
-                return None;
-            };
-            let threshold = origin[axis] + radius * inward[axis];
-            if !threshold.is_finite() {
-                return None;
-            }
-            let fraction = if inward[axis] > 0.0 {
-                if threshold <= low[axis] {
-                    1.0
-                } else if threshold >= high[axis] {
-                    0.0
-                } else {
-                    gaussian_axis_mass(threshold, high[axis], center[axis], sigma)
-                }
-            } else if threshold >= high[axis] {
-                1.0
-            } else if threshold <= low[axis] {
-                0.0
-            } else {
-                gaussian_axis_mass(low[axis], threshold, center[axis], sigma)
-            };
-            (fraction.is_finite() && (-1.0e-7..=1.0 + 1.0e-7).contains(&fraction))
-                .then_some(fraction.clamp(0.0, 1.0))
-        }
-    }
-}
-
-/// Conservatively integrate a signed Euclidean disk over an inverse-affine
+/// Conservatively integrate a positive Euclidean disk over an inverse-affine
 /// ROOT unit sample cell, whose immediate-parent image is a parallelogram.
-/// Midpoint true distance to the union (positive dilation) or the exposed
-/// union boundary (negative erosion) is one-Lipschitz. The
+/// Midpoint distance to the exact triangle union is one-Lipschitz. The
 /// farthest mapped corner bounds the entire convex cell. Thus every accepted
 /// fully covered/uncovered quadrant is mathematically certified; undecided
 /// area is refined until absolute error <=1/4096, otherwise a typed error.
-struct AffineSignedDiskArea<'a> {
+struct AffinePositiveDiskArea<'a> {
     triangles: &'a [[f64; 2]],
-    exterior: Option<&'a [UnionBoundaryEdge]>,
     certified_rectangle: Option<[f64; 4]>,
     inverse: [f64; 4],
     root_translation: [f64; 2],
     radius: f64,
 }
 
-impl AffineSignedDiskArea<'_> {
+impl AffinePositiveDiskArea<'_> {
     fn sample(
         &self,
         root_lower: [f64; 2],
@@ -1400,7 +1085,7 @@ impl AffineSignedDiskArea<'_> {
         const MAX_DEPTH: u8 = 22;
         const UNCERTAIN_MASS_TARGET: f64 = 1.0 / 2048.0;
         if !self.radius.is_finite()
-            || self.radius == 0.0
+            || self.radius <= 0.0
             || !self.inverse.iter().all(|v| v.is_finite())
             || !self.root_translation.iter().all(|v| v.is_finite())
             || !root_lower.iter().all(|v| v.is_finite())
@@ -1444,33 +1129,6 @@ impl AffineSignedDiskArea<'_> {
                 .ok_or_else(|| precision("rounded rectangle parent cell area is invalid"))?;
             if parent_cell_area <= 0.0 {
                 return Err(precision("rounded rectangle parent cell collapsed"));
-            }
-            if self.radius < 0.0 {
-                // A Euclidean disk erosion of an entire certified rectangle
-                // is exactly its inset rectangle; root-cell area remains a
-                // true inverse-affine parallelogram, even under shear.
-                *work = work
-                    .checked_add(64)
-                    .ok_or_else(|| resource("inset rectangle area work overflow"))?;
-                if *work > 16_777_216 {
-                    return Err(resource("inset rectangle area exceeds bounded work"));
-                }
-                let r = -self.radius;
-                let [x0, y0, x1, y1] = rect;
-                let inset = [x0 + r, y0 + r, x1 - r, y1 - r];
-                if !inset.iter().all(|v| v.is_finite()) {
-                    return Err(precision("inset rectangle precision lost"));
-                }
-                if inset[0] >= inset[2] || inset[1] >= inset[3] {
-                    return Ok(0.0);
-                }
-                let clipped = polygon
-                    .clipped_rectangle(inset)
-                    .ok_or_else(|| precision("inset rectangle cell clip lost precision"))?;
-                let area = clipped
-                    .area()
-                    .ok_or_else(|| precision("inset rectangle cell area lost precision"))?;
-                return Ok((area / parent_cell_area).clamp(0.0, 1.0));
             }
             let [x0, y0, x1, y1] = rect;
             let scale = x0
@@ -1537,110 +1195,6 @@ impl AffineSignedDiskArea<'_> {
             }
             return Ok(coverage.clamp(0.0, 1.0));
         }
-        if self.radius < 0.0 {
-            let exterior = self.exterior.ok_or_else(|| {
-                precision("nested signed erosion cannot evaluate missing union exterior")
-            })?;
-            let [m00, m01, m10, m11] = self.inverse;
-            let mapped = |root: [f64; 2]| {
-                let p = [
-                    root[0] - self.root_translation[0],
-                    root[1] - self.root_translation[1],
-                ];
-                [m00.mul_add(p[0], m01 * p[1]), m10.mul_add(p[0], m11 * p[1])]
-            };
-            let [x, y] = root_lower;
-            let cell = DiskAreaCellPolygon::quadrilateral([
-                mapped([x, y]),
-                mapped([x + 1.0, y]),
-                mapped([x + 1.0, y + 1.0]),
-                mapped([x, y + 1.0]),
-            ])
-            .ok_or_else(|| precision("nested eroded-cell affine mapping failed"))?;
-            let cell_area = cell
-                .area()
-                .ok_or_else(|| precision("nested eroded-cell area is unrepresentable"))?;
-            if cell_area <= 0.0 {
-                return Err(precision("nested eroded-cell area collapsed"));
-            }
-            // Every inverse-affine sample cell is convex. Signed Euclidean
-            // distance to the *exposed union boundary* is one-Lipschitz:
-            // the center's distance +/- its farthest-vertex radius bounds
-            // every point. Certify uniform cells in O(triangles+boundary),
-            // without reconstructing a costly local straight-edge witness.
-            // Both the distance evaluation and the classification are charged
-            // before querying the source; uncertain cells retain the existing
-            // exact local half-plane or bounded subdivision path.
-            let quick_cost = exterior
-                .len()
-                .checked_mul(2)
-                .and_then(|n| n.checked_add(self.triangles.len() / 3))
-                .and_then(|n| n.checked_add(16))
-                .ok_or_else(|| resource("nested erosion cell certificate work overflow"))?;
-            *work = work
-                .checked_add(quick_cost)
-                .ok_or_else(|| resource("nested erosion cell certificate work overflow"))?;
-            if *work > 16_777_216 {
-                return Err(resource(
-                    "nested erosion cell certificate exceeds bounded work",
-                ));
-            }
-            let mut center = [0.0_f64; 2];
-            for point in &cell.vertices[..cell.len] {
-                center[0] += point[0];
-                center[1] += point[1];
-            }
-            let count = f64::from(
-                u32::try_from(cell.len)
-                    .map_err(|_| precision("eroded-cell corner count overflow"))?,
-            );
-            center[0] /= count;
-            center[1] /= count;
-            let reach = cell.vertices[..cell.len]
-                .iter()
-                .map(|point| (point[0] - center[0]).hypot(point[1] - center[1]))
-                .fold(0.0_f64, f64::max);
-            let distance = union_signed_interior_distance(self.triangles, exterior, center);
-            let margin = erosion_query_margin(self.triangles, center, -self.radius, reach)
-                .ok_or_else(|| precision("nested erosion distance margin is invalid"))?;
-            if !distance.is_finite() || !reach.is_finite() {
-                return Err(precision("nested erosion distance is unrepresentable"));
-            }
-            let radius = -self.radius;
-            if distance - reach > radius + margin {
-                return Ok(1.0);
-            }
-            if distance + reach < radius - margin {
-                return Ok(0.0);
-            }
-
-            // Only true boundary-near cells pay the larger segment/witness
-            // cost. General full-scene scenes must not exhaust the work
-            // budget on thousands of trivially covered or empty samples.
-            let certificate_cost = exterior
-                .len()
-                .checked_mul(8)
-                .and_then(|n| {
-                    (self.triangles.len() / 3)
-                        .checked_mul(16)
-                        .and_then(|m| n.checked_add(m))
-                })
-                .and_then(|n| n.checked_add(128))
-                .ok_or_else(|| resource("nested eroded-cell certificate work overflow"))?;
-            *work = work
-                .checked_add(certificate_cost)
-                .ok_or_else(|| resource("nested eroded-cell certificate work overflow"))?;
-            if *work > 16_777_216 {
-                return Err(resource(
-                    "nested eroded-cell certificate exceeds bounded work",
-                ));
-            }
-            if let Some(coverage) =
-                certified_local_eroded_cell(self.triangles, exterior, cell, radius)
-            {
-                return Ok(coverage);
-            }
-        }
         let mut pending = std::collections::BinaryHeap::new();
         pending
             .try_reserve(1)
@@ -1666,20 +1220,8 @@ impl AffineSignedDiskArea<'_> {
             visited = visited
                 .checked_add(1)
                 .ok_or_else(|| resource("affine disk area visit count overflow"))?;
-            let boundary_visits = if self.radius < 0.0 {
-                self.exterior
-                    .ok_or_else(|| precision("eroded union exterior missing"))?
-                    .len()
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("eroded affine cell boundary-work overflow"))?
-            } else {
-                0
-            };
-            let visits = (self.triangles.len() / 3)
-                .checked_add(boundary_visits)
-                .ok_or_else(|| resource("affine disk cell work overflow"))?;
             *work = work
-                .checked_add(visits)
+                .checked_add(self.triangles.len() / 3)
                 .ok_or_else(|| resource("affine disk geometry work overflow"))?;
             if visited > MAX_VISITS || *work > 16_777_216 {
                 return Err(resource("affine disk area exceeds bounded work"));
@@ -1704,78 +1246,16 @@ impl AffineSignedDiskArea<'_> {
             if !point.iter().all(|v| v.is_finite()) || !bound.is_finite() {
                 return Err(precision("affine disk area projection lost precision"));
             }
-            let distance = if self.radius < 0.0 {
-                union_signed_interior_distance(
-                    self.triangles,
-                    self.exterior
-                        .ok_or_else(|| precision("eroded union boundary missing"))?,
-                    point,
-                )
-            } else {
-                neutral_union_distance(self.triangles, point)
-            };
+            let distance = neutral_union_distance(self.triangles, point);
             if !distance.is_finite() {
                 return Err(precision("affine disk area distance is unrepresentable"));
             }
-            if self.radius < 0.0 {
-                // Signed inside-distance is one-Lipschitz for the exact
-                // exposed union boundary. Only a whole-cell certificate is
-                // accepted; an unknown patch is never treated as empty.
-                if distance - bound >= -self.radius {
-                    covered += cell.mass;
-                    continue;
-                }
-                if distance + bound < -self.radius {
-                    continue;
-                }
-            } else {
-                if distance + bound <= self.radius {
-                    covered += cell.mass;
-                    continue;
-                }
-                if distance > self.radius + bound {
-                    continue;
-                }
+            if distance + bound <= self.radius {
+                covered += cell.mass;
+                continue;
             }
-            if self.radius < 0.0 {
-                let exterior = self.exterior.ok_or_else(|| {
-                    precision("eroded cell exterior missing during subdivision")
-                })?;
-                // Once a coarse cell fails the exact straight-edge
-                // certificate, its smaller children may be locally linear.
-                // Integrate certified fractions of every such subcell
-                // directly instead of refining a long edge to 1/2048 mass.
-                let certificate_cost = exterior
-                    .len()
-                    .checked_mul(8)
-                    .and_then(|n| {
-                        (self.triangles.len() / 3)
-                            .checked_mul(16)
-                            .and_then(|m| n.checked_add(m))
-                    })
-                    .and_then(|n| n.checked_add(128))
-                    .ok_or_else(|| resource("eroded subdivision certificate work overflow"))?;
-                *work = work
-                    .checked_add(certificate_cost)
-                    .ok_or_else(|| resource("eroded subdivision certificate work overflow"))?;
-                if *work > 16_777_216 {
-                    return Err(resource(
-                        "eroded subdivision certificate exceeds bounded work",
-                    ));
-                }
-                let subcell = DiskAreaCellPolygon::quadrilateral([
-                    [point[0] - dx - ex, point[1] - dy - ey],
-                    [point[0] + dx - ex, point[1] + dy - ey],
-                    [point[0] + dx + ex, point[1] + dy + ey],
-                    [point[0] - dx + ex, point[1] - dy + ey],
-                ])
-                .ok_or_else(|| precision("eroded subdivision affine cell is invalid"))?;
-                if let Some(fraction) =
-                    certified_local_eroded_cell(self.triangles, exterior, subcell, -self.radius)
-                {
-                    covered += cell.mass * fraction;
-                    continue;
-                }
+            if distance > self.radius + bound {
+                continue;
             }
             // A single triangle dilated by a Euclidean disk is convex.
             // If all four corners of the inverse-affine parallelogram lie
@@ -1784,7 +1264,7 @@ impl AffineSignedDiskArea<'_> {
             // interiors, including arbitrarily small positive radii.
             // Charge the worst-case four distance queries per triangle.
             let certificate_work = (self.triangles.len() / 3)
-                .checked_mul(if self.radius > 0.0 { 4 } else { 0 })
+                .checked_mul(4)
                 .ok_or_else(|| resource("affine disk convex certificate work overflow"))?;
             *work = work
                 .checked_add(certificate_work)
@@ -1803,14 +1283,12 @@ impl AffineSignedDiskArea<'_> {
             if !corners.iter().flatten().all(|v| v.is_finite()) {
                 return Err(precision("affine disk corner projection lost precision"));
             }
-            if self.radius > 0.0
-                && self.triangles.as_chunks::<3>().0.iter().any(|tri| {
-                    orient(tri[0], tri[1], tri[2]) != 0.0
-                        && corners
-                            .iter()
-                            .all(|&point| neutral_union_distance(tri, point) <= self.radius)
-                })
-            {
+            if self.triangles.as_chunks::<3>().0.iter().any(|tri| {
+                orient(tri[0], tri[1], tri[2]) != 0.0
+                    && corners
+                        .iter()
+                        .all(|&point| neutral_union_distance(tri, point) <= self.radius)
+            }) {
                 covered += cell.mass;
                 continue;
             }
@@ -1848,7 +1326,7 @@ impl AffineSignedDiskArea<'_> {
 }
 
 /// Evaluate a nested finite Gaussian over the owning parent-frame neutral
-/// geometry, with an optional signed Euclidean disk spread BEFORE
+/// geometry, with an optional true Euclidean positive disk spread BEFORE
 /// convolution. At zero sigma, integrate the inverse-affine root sample
 /// cell's exact area. An arbitrary full-rank ancestor affine changes root-space
 /// footprints, not the parent's spread or normalized Gaussian:
@@ -1857,7 +1335,7 @@ impl AffineSignedDiskArea<'_> {
 /// Private physical kernel for one owning parent-frame effect. A single
 /// parameter keeps spread and blur together without minting semantic state.
 pub(super) struct ParentEffectKernel {
-    pub(super) signed_spread: f64,
+    pub(super) positive_spread: f64,
     pub(super) sigma: f64,
 }
 
@@ -1872,7 +1350,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let ParentEffectKernel {
-        signed_spread,
+        positive_spread,
         sigma,
     } = kernel;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
@@ -1883,7 +1361,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
     let [a, b, c, d, tx, ty] = parent_to_root.components();
     let determinant = a.mul_add(d, -(b * c));
     let physical_sigma = sigma * scale;
-    let physical_spread = signed_spread * scale;
+    let physical_spread = positive_spread * scale;
     if !scale.is_finite()
         || scale <= 0.0
         || !source.units_per_parent_logical_unit.is_finite()
@@ -1893,7 +1371,8 @@ pub(super) fn affine_parent_effect_coverage_admitted(
         || !physical_sigma.is_finite()
         || physical_sigma < 0.0
         || (physical_sigma == 0.0 && physical_spread == 0.0)
-        || !signed_spread.is_finite()
+        || !positive_spread.is_finite()
+        || positive_spread < 0.0
         || !physical_spread.is_finite()
         || !determinant.is_finite()
         || determinant == 0.0
@@ -1908,7 +1387,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             "nested parent-frame Gaussian window exceeds bounded halo",
         ));
     }
-    if physical_spread.abs() > f64::from(MAX_SPREAD_RADIUS_SAMPLES) {
+    if physical_spread > f64::from(MAX_SPREAD_RADIUS_SAMPLES) {
         return Err(resource(
             "nested parent-frame Euclidean disk exceeds bounded radius",
         ));
@@ -1946,17 +1425,6 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             "nested Gaussian root sample grid exceeds bounded area",
         ));
     }
-    // Conservative whole-set erasure is provable from the smallest
-    // immediate-parent source bounding extent. Equality may retain
-    // lower-dimensional support; do not guess emptiness from a zero mask.
-    if signed_spread < 0.0 {
-        let min_extent = (source.bounds[2] - source.bounds[0])
-            .min(source.bounds[3] - source.bounds[1])
-            / source.units_per_parent_logical_unit;
-        if min_extent.is_finite() && min_extent >= 0.0 && -signed_spread > min_extent * 0.5 {
-            return Ok(None);
-        }
-    }
     let triangles_count = source.triangles.len() / 3;
     let scan_work = area
         .checked_mul(triangles_count)
@@ -1980,19 +1448,8 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             ));
         }
     }
-    let exterior = if signed_spread < 0.0 && certified_axis_aligned_rectangle(&triangles).is_none()
-    {
-        Some(union_exterior_boundary(
-            &triangles,
-            path,
-            Some(aggregate_work),
-        )?)
-    } else {
-        None
-    };
-    let disk_area = AffineSignedDiskArea {
+    let disk_area = AffinePositiveDiskArea {
         triangles: &triangles,
-        exterior: exterior.as_deref(),
         certified_rectangle: certified_axis_aligned_rectangle(&triangles),
         inverse: [
             d / determinant,
@@ -2017,16 +1474,16 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             if !point.iter().all(|x| x.is_finite()) {
                 return Err(precision("nested Gaussian inverse mapping lost precision"));
             }
-            values[row * width + column] = if signed_spread != 0.0 && sigma == 0.0 {
+            values[row * width + column] = if positive_spread > 0.0 && sigma == 0.0 {
                 disk_area.sample([root_x - 0.5, root_y - 0.5], aggregate_work, path)?
-            } else if signed_spread != 0.0 {
+            } else if positive_spread > 0.0 {
                 // Membership is evaluated against the exact triangle UNION
                 // Euclidean distance. A conservative mass/error certificate
                 // bounds continuous disk/Gaussian integration; an uncertified
                 // result rejects rather than fabricating coverage.
                 continuous_signed_spread_sample(
                     &triangles,
-                    exterior.as_deref(),
+                    None,
                     point,
                     physical_spread,
                     physical_sigma,
@@ -2037,14 +1494,6 @@ pub(super) fn affine_parent_effect_coverage_admitted(
                 gaussian_union_sample(&triangles, point, physical_sigma, aggregate_work, path)?
             };
         }
-    }
-    if signed_spread < 0.0 && values.iter().all(|v| *v == 0.0) {
-        // Unlike certified whole-set erasure, an all-zero *physical*
-        // output cannot prove the true eroded support empty. Fail closed,
-        // matching the original root-frame continuous erosion authority.
-        return Err(precision(
-            "nested signed erosion cannot infer empty support from zero sampled output",
-        ));
     }
     Ok(Some(NeutralCoverage {
         origin_x: i64::from(edges[0]),
@@ -2801,66 +2250,6 @@ fn continuous_signed_spread_sample(
         return Err(precision(
             "continuous spread Gaussian domain cannot be resolved",
         ));
-    }
-    if signed_spread < 0.0 {
-        let exterior = boundary.ok_or_else(|| precision("eroded union exterior missing"))?;
-        // A Gaussian has unit mass in its closed 3-sigma square. If the
-        // *entire square* is respectively inside/outside the eroded region,
-        // its convolution is exactly one/zero. Do not allocate a subdivision
-        // queue or exhaust work on uniform pixels of a concave or holed union.
-        let quick_cost = exterior
-            .len()
-            .checked_mul(2)
-            .and_then(|n| n.checked_add(triangles.len() / 3))
-            .and_then(|n| n.checked_add(16))
-            .ok_or_else(|| resource("eroded Gaussian whole-support work overflow"))?;
-        *work = work
-            .checked_add(quick_cost)
-            .ok_or_else(|| resource("eroded Gaussian whole-support work overflow"))?;
-        if *work > MAX_GLOBAL_SPREAD_WORK {
-            return Err(resource(
-                "eroded Gaussian whole-support exceeds bounded work",
-            ));
-        }
-        let reach = cutoff.hypot(cutoff);
-        let distance = union_signed_interior_distance(triangles, exterior, center);
-        let margin = erosion_query_margin(triangles, center, radius, reach)
-            .ok_or_else(|| precision("eroded Gaussian separation margin is invalid"))?;
-        if !reach.is_finite() || !distance.is_finite() {
-            return Err(precision("eroded Gaussian distance is unrepresentable"));
-        }
-        if distance - reach > radius + margin {
-            return Ok(1.0);
-        }
-        if distance + reach < radius - margin {
-            return Ok(0.0);
-        }
-    }
-    if signed_spread < 0.0 && sigma > 0.0 {
-        let exterior = boundary.ok_or_else(|| precision("eroded Gaussian exterior missing"))?;
-        let certificate_cost = exterior
-            .len()
-            .checked_mul(8)
-            .and_then(|n| {
-                (triangles.len() / 3)
-                    .checked_mul(16)
-                    .and_then(|m| n.checked_add(m))
-            })
-            .and_then(|n| n.checked_add(128))
-            .ok_or_else(|| resource("eroded Gaussian straight-edge work overflow"))?;
-        *work = work
-            .checked_add(certificate_cost)
-            .ok_or_else(|| resource("eroded Gaussian straight-edge work overflow"))?;
-        if *work > MAX_GLOBAL_SPREAD_WORK {
-            return Err(resource(
-                "eroded Gaussian straight-edge exceeds bounded work",
-            ));
-        }
-        if let Some(fraction) =
-            certified_local_eroded_gaussian_axis(triangles, exterior, center, radius, sigma)
-        {
-            return Ok(fraction);
-        }
     }
     let mut pending = std::collections::BinaryHeap::new();
     pending.push(SpreadGaussianCell {
@@ -3638,9 +3027,8 @@ mod tests {
             [4.0, 4.0],
             [2.0, 4.0],
         ];
-        let identity = AffineSignedDiskArea {
+        let identity = AffinePositiveDiskArea {
             triangles: &square,
-            exterior: None,
             certified_rectangle: Some([2.0, 2.0, 4.0, 4.0]),
             inverse: [1.0, 0.0, 0.0, 1.0],
             root_translation: [0.0, 0.0],
@@ -3673,9 +3061,8 @@ mod tests {
             [10.0, 20.0],
         ];
         // Root x=2*parent_x +.5*parent_y+4, root y=parent_y.
-        let sheared = AffineSignedDiskArea {
+        let sheared = AffinePositiveDiskArea {
             triangles: &parent_square,
-            exterior: None,
             certified_rectangle: Some([10.0, 10.0, 20.0, 20.0]),
             inverse: [0.5, -0.25, 0.0, 1.0],
             root_translation: [4.0, 0.0],
@@ -3691,9 +3078,8 @@ mod tests {
     #[test]
     fn affine_positive_disk_interior_uses_convex_cell_certificate_for_tiny_radius() {
         let large_triangle = [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]];
-        let area = AffineSignedDiskArea {
+        let area = AffinePositiveDiskArea {
             triangles: &large_triangle,
-            exterior: None,
             certified_rectangle: None,
             inverse: [1.0, 0.0, 0.0, 1.0],
             root_translation: [0.0, 0.0],
@@ -3717,9 +3103,8 @@ mod tests {
             [110.0, 110.0],
             [10.0, 110.0],
         ];
-        let area = AffineSignedDiskArea {
+        let area = AffinePositiveDiskArea {
             triangles: &square,
-            exterior: None,
             certified_rectangle: Some([10.0, 10.0, 110.0, 110.0]),
             inverse: [1.0, 0.0, 0.0, 1.0],
             root_translation: [0.0, 0.0],
@@ -3758,114 +3143,10 @@ mod tests {
     }
 
     #[test]
-    fn certified_nonconvex_eroded_gaussian_halfplane_is_normalized() {
-        let mut source = Vec::new();
-        for [x0, y0, x1, y1] in [[10.0, 10.0, 20.0, 15.0], [10.0, 15.0, 15.0, 20.0]] {
-            source.extend_from_slice(&[[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]]);
-        }
-        let mut work = 0;
-        let exterior = union_exterior_boundary(&source, &[5], Some(&mut work)).unwrap();
-        // For all points inside this finite 3-sigma square, the true
-        // signed erosion is EXACTLY the inward halfplane x >= 11.
-        // The normalized separable Gaussian must therefore have alpha
-        // exactly 1/2 at x=11, independent of triangle tessellation.
-        let alpha = certified_local_eroded_gaussian_axis(
-            &source,
-            &exterior,
-            [11.0, 12.5],
-            1.0,
-            0.1,
-        )
-        .expect("exposed L boundary is locally straight");
-        assert!((alpha - 0.5).abs() < 1.0e-5, "{alpha}");
-        // Inside the L's missing top-right arm, absence of paint alone
-        // must not manufacture a neutral shadow. A distant eroded region
-        // is exactly empty on its finite Gaussian support.
-        assert_eq!(
-            certified_local_eroded_gaussian_axis(
-                &source,
-                &exterior,
-                [18.0, 18.0],
-                1.0,
-                0.1,
-            ),
-            Some(0.0),
-        );
-    }
-
-    #[test]
-    fn concave_signed_erosion_uses_exact_exposed_edge_area_under_affine_shear() {
-        let mut source = Vec::new();
-        for [x0, y0, x1, y1] in [[10.0, 10.0, 20.0, 15.0], [10.0, 15.0, 15.0, 20.0]] {
-            source.extend_from_slice(&[[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]]);
-        }
-        let mut work = 0;
-        let exterior = union_exterior_boundary(&source, &[2], Some(&mut work)).unwrap();
-        let sheared = AffineSignedDiskArea {
-            triangles: &source,
-            exterior: Some(&exterior),
-            certified_rectangle: None,
-            inverse: [0.5, -0.25, 0.0, 1.0],
-            root_translation: [4.0, 0.0],
-            radius: -1.0,
-        };
-        // The source's exposed parent x=10 edge erodes to x=11.
-        // Its root image x=26+.5y crosses [32,33]×[12,13] with
-        // exactly .75 area. No root-space box, finite SDF mask or
-        // center-only test can substitute for this physical cell integral.
-        let coverage = sheared.sample([32.0, 12.0], &mut work, &[2]).unwrap();
-        assert!((coverage - 0.75).abs() < 0.0004, "{coverage}");
-        // A single straight-edge cell must not need unbounded quadtree
-        // subdivision; this test specifically protects normal UI geometry.
-        assert!(work < 20_000, "ordinary concave edge work: {work}");
-        let reflected = AffineSignedDiskArea {
-            triangles: &source,
-            exterior: Some(&exterior),
-            certified_rectangle: None,
-            inverse: [-1.0, 0.0, 0.0, 1.0],
-            root_translation: [50.0, 0.0],
-            radius: -1.0,
-        };
-        assert!((reflected.sample([38.0, 12.0], &mut work, &[2]).unwrap() - 1.0).abs() < 0.0004);
-        assert!(reflected.sample([39.0, 12.0], &mut work, &[2]).unwrap() < 0.0004);
-    }
-
-    #[test]
-    fn nested_signed_affine_area_preserves_true_hole_boundary_not_triangle_seams() {
-        let mut ring = Vec::new();
-        let mut rectangle = |x0: f64, y0: f64, x1: f64, y1: f64| {
-            ring.extend_from_slice(&[[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]]);
-        };
-        rectangle(10.0, 10.0, 30.0, 17.0);
-        rectangle(10.0, 23.0, 30.0, 30.0);
-        rectangle(10.0, 17.0, 17.0, 23.0);
-        rectangle(23.0, 17.0, 30.0, 23.0);
-        let mut work = 0;
-        let exterior = union_exterior_boundary(&ring, &[0], Some(&mut work)).unwrap();
-        let eroded = AffineSignedDiskArea {
-            triangles: &ring,
-            exterior: Some(&exterior),
-            certified_rectangle: None,
-            inverse: [1.0, 0.0, 0.0, 1.0],
-            root_translation: [0.0, 0.0],
-            radius: -1.0,
-        };
-        assert_eq!(eroded.sample([19.0, 18.0], &mut work, &[0]).unwrap(), 0.0);
-        let hole_side = eroded.sample([23.0, 18.0], &mut work, &[0]).unwrap();
-        assert!(
-            hole_side < 0.0004,
-            "eroded hole boundary must move from x=23 to 24: {hole_side}"
-        );
-        let surviving = eroded.sample([25.0, 18.0], &mut work, &[0]).unwrap();
-        assert!((surviving - 1.0).abs() < 0.0004);
-    }
-
-    #[test]
     fn affine_disk_area_work_exhaustion_is_typed_and_path_bearing() {
         let triangles = [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]];
-        let area = AffineSignedDiskArea {
+        let area = AffinePositiveDiskArea {
             triangles: &triangles,
-            exterior: None,
             certified_rectangle: None,
             inverse: [1.0, 0.0, 0.0, 1.0],
             root_translation: [0.0, 0.0],
