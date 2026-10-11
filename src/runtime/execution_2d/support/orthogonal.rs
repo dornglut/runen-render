@@ -843,6 +843,73 @@ mod tests {
     }
 
     #[test]
+    fn shared_gaussian_rows_reuse_exact_orthogonal_membership_without_filling_concavity() {
+        let mut work = 0;
+        let region = OrthogonalExterior::new(&L, &[3], &mut work)
+            .unwrap()
+            .unwrap();
+        let near = region
+            .gaussian_row(
+                GaussianRow {
+                    y: 2.0,
+                    origin_x: 1.0,
+                    width: 6,
+                    radius: 0.5,
+                    sigma: 0.1,
+                },
+                &mut work,
+                &[3],
+            )
+            .unwrap();
+        let notch = region
+            .gaussian_row(
+                GaussianRow {
+                    y: 6.0,
+                    origin_x: 1.0,
+                    width: 6,
+                    radius: 0.5,
+                    sigma: 0.1,
+                },
+                &mut work,
+                &[3],
+            )
+            .unwrap();
+        assert!((near[0] - 1.0).abs() < 0.001);
+        assert!((near[5] - 1.0).abs() < 0.001);
+        assert!((notch[0] - 1.0).abs() < 0.001);
+        assert!(notch[5].abs() < 0.001);
+        assert!(work < MAX_GLOBAL_WORK);
+    }
+
+    #[test]
+    fn gaussian_row_budget_rejection_keeps_exact_authored_path() {
+        let mut work = 0;
+        let region = OrthogonalExterior::new(&L, &[8], &mut work)
+            .unwrap()
+            .unwrap();
+        let mut exhausted = MAX_GLOBAL_WORK;
+        assert!(matches!(
+            region.gaussian_row(
+                GaussianRow {
+                    y: 2.0,
+                    origin_x: 1.0,
+                    width: 6,
+                    radius: 0.5,
+                    sigma: 0.1,
+                },
+                &mut exhausted,
+                &[8, 4],
+            ),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [8, 4]
+        ));
+        assert_eq!(exhausted, MAX_GLOBAL_WORK);
+    }
+
+    #[test]
     fn orthogonal_area_resource_rejection_is_atomic_and_retains_owner_path() {
         let mut work = 0;
         let shape = OrthogonalExterior::new(&L, &[4, 1], &mut work)
