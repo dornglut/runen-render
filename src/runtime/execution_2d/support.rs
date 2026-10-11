@@ -1128,12 +1128,24 @@ fn erosion_query_margin(
 /// projection, the eroded set on this cell is precisely one inward-offset
 /// half-plane. Otherwise the continuous signed-distance area integrator
 /// remains the fail-closed authority. No thresholding of cached alpha.
-fn certified_local_eroded_cell(
+/// This certificate describes a whole convex query cell, never merely
+/// its midpoint. A straight exposed boundary and uniform inside/outside
+/// regions are reusable by identity-blur area and separable Gaussian paths.
+#[derive(Clone, Copy)]
+enum CertifiedErosionRegion {
+    Uniform(bool),
+    Halfplane {
+        origin: [f64; 2],
+        inward: [f64; 2],
+    },
+}
+
+fn certified_local_eroded_region(
     source: &[[f64; 2]],
     exterior: &[UnionBoundaryEdge],
     cell: DiskAreaCellPolygon,
     radius: f64,
-) -> Option<f64> {
+) -> Option<CertifiedErosionRegion> {
     if exterior.is_empty() || radius <= 0.0 {
         return None;
     }
@@ -1204,11 +1216,9 @@ fn certified_local_eroded_cell(
         // The connected convex cell is separated by >r from EVERY exterior
         // boundary. Its original inside/outside classification is constant
         // and so is its eroded membership.
-        return Some(if neutral_union_distance(source, center) == 0.0 {
-            1.0
-        } else {
-            0.0
-        });
+        return Some(CertifiedErosionRegion::Uniform(
+            neutral_union_distance(source, center) == 0.0,
+        ));
     }
     let edge = covered_segment?;
     let direction = [edge[1][0] - edge[0][0], edge[1][1] - edge[0][1]];
@@ -1270,10 +1280,90 @@ fn certified_local_eroded_cell(
     } else {
         [-normal[0], -normal[1]]
     };
-    let clipped = cell.clipped_inward_halfplane(origin, inward, radius)?;
-    let covered_area = clipped.area()? / area;
-    (covered_area.is_finite() && (-1.0e-7..=1.0 + 1.0e-7).contains(&covered_area))
-        .then_some(covered_area.clamp(0.0, 1.0))
+    Some(CertifiedErosionRegion::Halfplane { origin, inward })
+}
+
+fn certified_local_eroded_cell(
+    source: &[[f64; 2]],
+    exterior: &[UnionBoundaryEdge],
+    cell: DiskAreaCellPolygon,
+    radius: f64,
+) -> Option<f64> {
+    let area = cell.area()?;
+    if area <= 0.0 {
+        return None;
+    }
+    match certified_local_eroded_region(source, exterior, cell, radius)? {
+        CertifiedErosionRegion::Uniform(inside) => Some(if inside { 1.0 } else { 0.0 }),
+        CertifiedErosionRegion::Halfplane { origin, inward } => {
+            let clipped = cell.clipped_inward_halfplane(origin, inward, radius)?;
+            let covered_area = clipped.area()? / area;
+            (covered_area.is_finite() && (-1.0e-7..=1.0 + 1.0e-7).contains(&covered_area))
+                .then_some(covered_area.clamp(0.0, 1.0))
+        }
+    }
+}
+
+/// When the true exposed union boundary certifies a unique axis-aligned
+/// straight halfplane over the COMPLETE finite Gaussian support square,
+/// separability gives its clipped 1D normalized Gaussian mass. Any curved,
+/// oblique, overlapping or uncertified support retains the bounded general
+/// integrator. This is a region-query reuse, not a sampled shadow mask.
+fn certified_local_eroded_gaussian_axis(
+    source: &[[f64; 2]],
+    exterior: &[UnionBoundaryEdge],
+    center: [f64; 2],
+    radius: f64,
+    sigma: f64,
+) -> Option<f64> {
+    if !sigma.is_finite() || sigma <= 0.0 {
+        return None;
+    }
+    let reach = 3.0 * sigma;
+    let low = [center[0] - reach, center[1] - reach];
+    let high = [center[0] + reach, center[1] + reach];
+    if !low.iter().chain(high.iter()).all(|v| v.is_finite()) {
+        return None;
+    }
+    let square = DiskAreaCellPolygon::quadrilateral([
+        [low[0], low[1]],
+        [high[0], low[1]],
+        [high[0], high[1]],
+        [low[0], high[1]],
+    ])?;
+    match certified_local_eroded_region(source, exterior, square, radius)? {
+        CertifiedErosionRegion::Uniform(inside) => Some(if inside { 1.0 } else { 0.0 }),
+        CertifiedErosionRegion::Halfplane { origin, inward } => {
+            let axis = if inward[1] == 0.0 && inward[0].abs() == 1.0 {
+                0
+            } else if inward[0] == 0.0 && inward[1].abs() == 1.0 {
+                1
+            } else {
+                return None;
+            };
+            let threshold = origin[axis] + radius * inward[axis];
+            if !threshold.is_finite() {
+                return None;
+            }
+            let fraction = if inward[axis] > 0.0 {
+                if threshold <= low[axis] {
+                    1.0
+                } else if threshold >= high[axis] {
+                    0.0
+                } else {
+                    gaussian_axis_mass(threshold, high[axis], center[axis], sigma)
+                }
+            } else if threshold >= high[axis] {
+                1.0
+            } else if threshold <= low[axis] {
+                0.0
+            } else {
+                gaussian_axis_mass(low[axis], threshold, center[axis], sigma)
+            };
+            (fraction.is_finite() && (-1.0e-7..=1.0 + 1.0e-7).contains(&fraction))
+                .then_some(fraction.clamp(0.0, 1.0))
+        }
+    }
 }
 
 /// Conservatively integrate a signed Euclidean disk over an inverse-affine
@@ -1644,6 +1734,46 @@ impl AffineSignedDiskArea<'_> {
                     continue;
                 }
                 if distance > self.radius + bound {
+                    continue;
+                }
+            }
+            if self.radius < 0.0 {
+                let exterior = self.exterior.ok_or_else(|| {
+                    precision("eroded cell exterior missing during subdivision")
+                })?;
+                // Once a coarse cell fails the exact straight-edge
+                // certificate, its smaller children may be locally linear.
+                // Integrate certified fractions of every such subcell
+                // directly instead of refining a long edge to 1/2048 mass.
+                let certificate_cost = exterior
+                    .len()
+                    .checked_mul(8)
+                    .and_then(|n| {
+                        (self.triangles.len() / 3)
+                            .checked_mul(16)
+                            .and_then(|m| n.checked_add(m))
+                    })
+                    .and_then(|n| n.checked_add(128))
+                    .ok_or_else(|| resource("eroded subdivision certificate work overflow"))?;
+                *work = work
+                    .checked_add(certificate_cost)
+                    .ok_or_else(|| resource("eroded subdivision certificate work overflow"))?;
+                if *work > 16_777_216 {
+                    return Err(resource(
+                        "eroded subdivision certificate exceeds bounded work",
+                    ));
+                }
+                let subcell = DiskAreaCellPolygon::quadrilateral([
+                    [point[0] - dx - ex, point[1] - dy - ey],
+                    [point[0] + dx - ex, point[1] + dy - ey],
+                    [point[0] + dx + ex, point[1] + dy + ey],
+                    [point[0] - dx + ex, point[1] - dy + ey],
+                ])
+                .ok_or_else(|| precision("eroded subdivision affine cell is invalid"))?;
+                if let Some(fraction) =
+                    certified_local_eroded_cell(self.triangles, exterior, subcell, -self.radius)
+                {
+                    covered += cell.mass * fraction;
                     continue;
                 }
             }
@@ -2706,6 +2836,32 @@ fn continuous_signed_spread_sample(
             return Ok(0.0);
         }
     }
+    if signed_spread < 0.0 && sigma > 0.0 {
+        let exterior = boundary.ok_or_else(|| precision("eroded Gaussian exterior missing"))?;
+        let certificate_cost = exterior
+            .len()
+            .checked_mul(8)
+            .and_then(|n| {
+                (triangles.len() / 3)
+                    .checked_mul(16)
+                    .and_then(|m| n.checked_add(m))
+            })
+            .and_then(|n| n.checked_add(128))
+            .ok_or_else(|| resource("eroded Gaussian straight-edge work overflow"))?;
+        *work = work
+            .checked_add(certificate_cost)
+            .ok_or_else(|| resource("eroded Gaussian straight-edge work overflow"))?;
+        if *work > MAX_GLOBAL_SPREAD_WORK {
+            return Err(resource(
+                "eroded Gaussian straight-edge exceeds bounded work",
+            ));
+        }
+        if let Some(fraction) =
+            certified_local_eroded_gaussian_axis(triangles, exterior, center, radius, sigma)
+        {
+            return Ok(fraction);
+        }
+    }
     let mut pending = std::collections::BinaryHeap::new();
     pending.push(SpreadGaussianCell {
         bounds,
@@ -3599,6 +3755,42 @@ mod tests {
                 ..
             }) if path == [7, 4]
         ));
+    }
+
+    #[test]
+    fn certified_nonconvex_eroded_gaussian_halfplane_is_normalized() {
+        let mut source = Vec::new();
+        for [x0, y0, x1, y1] in [[10.0, 10.0, 20.0, 15.0], [10.0, 15.0, 15.0, 20.0]] {
+            source.extend_from_slice(&[[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]]);
+        }
+        let mut work = 0;
+        let exterior = union_exterior_boundary(&source, &[5], Some(&mut work)).unwrap();
+        // For all points inside this finite 3-sigma square, the true
+        // signed erosion is EXACTLY the inward halfplane x >= 11.
+        // The normalized separable Gaussian must therefore have alpha
+        // exactly 1/2 at x=11, independent of triangle tessellation.
+        let alpha = certified_local_eroded_gaussian_axis(
+            &source,
+            &exterior,
+            [11.0, 12.5],
+            1.0,
+            0.1,
+        )
+        .expect("exposed L boundary is locally straight");
+        assert!((alpha - 0.5).abs() < 1.0e-5, "{alpha}");
+        // Inside the L's missing top-right arm, absence of paint alone
+        // must not manufacture a neutral shadow. A distant eroded region
+        // is exactly empty on its finite Gaussian support.
+        assert_eq!(
+            certified_local_eroded_gaussian_axis(
+                &source,
+                &exterior,
+                [18.0, 18.0],
+                1.0,
+                0.1,
+            ),
+            Some(0.0),
+        );
     }
 
     #[test]
