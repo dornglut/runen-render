@@ -927,6 +927,55 @@ fn nested_convex_erosion_gaussian_integrates_in_its_parent_frame() {
 }
 
 #[test]
+fn nested_holed_negative_disk_preserves_true_inner_boundary_under_shear() {
+    let Some(context) = context() else { return };
+    // A four-rectangle ring surrounds an 8x8 TRUE hole. The inner
+    // boundary belongs to the exterior of its geometric union even though
+    // all individual fill triangles remain valid and transparent.
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 20.0, 6.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 16.0, 6.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 24.0, 16.0, 6.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 24.0, 20.0, 6.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 0.5, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F holed signed erosion under ancestor shear",
+    );
+    // The eroded LEFT arm stops at parent x=15 away from its corners.
+    // The ancestor maps that boundary to root x'=15+0.5*y+0.5.
+    // Over root [25,26] x [20,21] the exact covered area is 3/4.
+    pixel_near(pixel(&output, 25, 20), [225, 0, 0, 191]);
+    pixel_near(pixel(&output, 24, 20), [255, 0, 0, 255]);
+    assert_eq!(pixel(&output, 26, 20), [0, 0, 0, 0]);
+    // This point is deep inside the true hole, not its enclosing AABB.
+    assert_eq!(pixel(&output, 30, 20), [0, 0, 0, 0]);
+}
+
+#[test]
 fn nested_nonconvex_negative_disk_with_finite_gaussian_uses_parent_frame() {
     let Some(context) = context() else { return };
     // The two transparent rectangles form a true concave L, not one
