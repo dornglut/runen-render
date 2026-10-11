@@ -2566,13 +2566,13 @@ fn rasterize_continuous_shadow_coverage(
     if convex_inset.as_ref().is_some_and(Vec::is_empty) {
         return Ok(None);
     }
-    // Certified orthogonal TRUE exteriors have exact horizontal inside
-    // intervals after subtracting Euclidean boundary-edge capsules. The
-    // same rigorous slice enclosure admits uniform sigma-zero area or
-    // finite *normalized separable Gaussian* mass without inferring
-    // geometry from sampled pixels. General/oblique boundaries still
-    // retain their existing independent continuous integrator.
-    let orthogonal = if signed_spread < 0.0 && convex_inset.is_none() {
+    // For a certified orthogonal TRUE exterior, the Euclidean erosion
+    // indicator has exact horizontal slice intervals. Integrate continuous
+    // sigma-zero cell area by provable one-Lipschitz upper/lower brackets,
+    // reusing one boundary arrangement for this entire root shadow.
+    // General/oblique shapes and finite Gaussian still use the existing
+    // independent continuous integrator with typed resource rejection.
+    let orthogonal = if signed_spread < 0.0 && physical_sigma == 0.0 && convex_inset.is_none() {
         erosion_boundary
             .as_deref()
             .map(|boundary| OrthogonalExterior::new(boundary, path, aggregate_work))
@@ -2603,56 +2603,17 @@ fn rasterize_continuous_shadow_coverage(
                     )?
                 }
             } else if let Some(orthogonal) = &orthogonal {
-                if physical_sigma > 0.0 {
-                    // A connected finite Gaussian kernel square that cannot
-                    // reach any true exterior boundary by radius r is
-                    // CONSTANT neutral support. Prove this from actual
-                    // source geometry before any costly curved quadrature:
-                    // it is either fully covered or fully outside, never
-                    // inferred from alpha, AABB membership or a pixel mask.
-                    let edges = erosion_boundary.as_deref().ok_or_else(|| {
-                        precision("orthogonal Gaussian requires true exterior edges")
-                    })?;
-                    let visits = edges
-                        .len()
-                        .checked_add(triangles.len() / 3)
-                        .ok_or_else(|| resource("orthogonal constant-cell work overflow"))?;
-                    orthogonal::charge(aggregate_work, visits, path)?;
-                    let radius = -physical_spread;
-                    let kernel_square = [
-                        center[0] - cutoff,
-                        center[1] - cutoff,
-                        center[0] + cutoff,
-                        center[1] + cutoff,
-                    ];
-                    if eroded_cell_far_from_exterior(edges, kernel_square, radius) {
-                        if neutral_union_distance(&triangles, center) == 0.0 {
-                            1.0
-                        } else {
-                            0.0
-                        }
-                    } else {
-                        orthogonal.gaussian(
-                            center,
-                            radius,
-                            physical_sigma,
-                            aggregate_work,
-                            path,
-                        )?
-                    }
-                } else {
-                    orthogonal.area(
-                        [
-                            center[0] - 0.5,
-                            center[1] - 0.5,
-                            center[0] + 0.5,
-                            center[1] + 0.5,
-                        ],
-                        -physical_spread,
-                        aggregate_work,
-                        path,
-                    )?
-                }
+                orthogonal.area(
+                    [
+                        center[0] - 0.5,
+                        center[1] - 0.5,
+                        center[0] + 0.5,
+                        center[1] + 0.5,
+                    ],
+                    -physical_spread,
+                    aggregate_work,
+                    path,
+                )?
             } else if signed_spread != 0.0 {
                 continuous_signed_spread_sample(
                     &triangles,
