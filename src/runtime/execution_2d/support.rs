@@ -32,10 +32,14 @@ fn charge_shadow_preparation_work(
             "aggregate shadow preparation work exceeds bounded admission",
         )
     };
-    *used = used.checked_add(cost).ok_or_else(fail)?;
-    if *used > MAX_AGGREGATE_SHADOW_PREPARATION_WORK {
+    // A rejected charge must leave the shared invocation counter intact.
+    // The next sibling still owns the remaining work budget and its path.
+    // Compute and check the candidate before committing the charge.
+    let next = used.checked_add(cost).ok_or_else(fail)?;
+    if next > MAX_AGGREGATE_SHADOW_PREPARATION_WORK {
         return Err(fail());
     }
+    *used = next;
     Ok(())
 }
 
@@ -3247,6 +3251,43 @@ mod tests {
                 .is_none(),
             "nonconvex union must remain unsupported, never treated as empty"
         );
+    }
+
+    #[test]
+    fn rejected_aggregate_shadow_work_is_atomic_and_path_specific() {
+        use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
+
+        let limit = MAX_AGGREGATE_SHADOW_PREPARATION_WORK;
+        let mut used = limit - 2;
+        charge_shadow_preparation_work(&mut used, 2, &[1, 0]).unwrap();
+        assert_eq!(used, limit, "an exact-limit charge must be legal");
+
+        for cost in [1, usize::MAX] {
+            let error = charge_shadow_preparation_work(&mut used, cost, &[4, 3])
+                .expect_err("an excess or integer overflow must fail closed");
+            assert!(matches!(
+                error,
+                Render2dExecutionError::SampleSpace {
+                    kind: Render2dSampleSpaceError::ResourceLimit,
+                    path: Some(path),
+                    ..
+                } if path == [4, 3]
+            ));
+            assert_eq!(used, limit, "failed work admission cannot consume budget");
+        }
+
+        let mut sibling_budget = limit - 2;
+        assert!(matches!(
+            charge_shadow_preparation_work(&mut sibling_budget, 3, &[5, 2]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [5, 2]
+        ));
+        assert_eq!(sibling_budget, limit - 2);
+        charge_shadow_preparation_work(&mut sibling_budget, 2, &[5, 3]).unwrap();
+        assert_eq!(sibling_budget, limit);
     }
 
     #[test]
