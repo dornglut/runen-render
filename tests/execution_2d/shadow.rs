@@ -648,26 +648,14 @@ fn nested_positive_disk_is_unsupported_when_ancestor_needs_neutral_caster() {
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::TRANSPARENT,
-        vec![effect(
-            0.0,
-            0.0,
-            0.1,
-            1.0,
-            Render2dColorRgba8::TRANSPARENT,
-        )],
+        vec![effect(0.0, 0.0, 0.1, 1.0, Render2dColorRgba8::TRANSPARENT)],
     ));
     let outer = Render2dEntry::group(Render2dGroup::new(
         vec![inner],
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::OPAQUE,
-        vec![effect(
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            Render2dColorRgba8::TRANSPARENT,
-        )],
+        vec![effect(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT)],
     ));
     let composition = Render2dComposition::new(vec![outer]).unwrap();
     let (_, target) = target("F3F curved caster must not be replaced with raw C");

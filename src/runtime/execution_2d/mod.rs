@@ -277,9 +277,11 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
                 continue;
             }
             scene::Event::EndGroup => {
-                shadowed_ancestors.pop().expect("balanced F1 shadow ancestry");
+                shadowed_ancestors
+                    .pop()
+                    .expect("balanced F1 shadow ancestry");
                 continue;
-            },
+            }
         };
         let text = match item.primitive() {
             Render2dPrimitive::Fill { .. }
