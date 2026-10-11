@@ -4,6 +4,9 @@
 //! geometry authority. They are never public renderer semantics, paint alpha,
 //! an MSDF/image sampled footprint, or a second scene representation.
 
+mod orthogonal;
+use orthogonal::OrthogonalExterior;
+
 #[derive(Debug)]
 #[allow(dead_code, reason = "awaiting F3F group lowering")]
 pub(super) struct NeutralMesh {
@@ -2563,6 +2566,21 @@ fn rasterize_continuous_shadow_coverage(
     if convex_inset.as_ref().is_some_and(Vec::is_empty) {
         return Ok(None);
     }
+    // For a certified orthogonal TRUE exterior, the Euclidean erosion
+    // indicator has exact horizontal slice intervals. Integrate continuous
+    // sigma-zero cell area by provable one-Lipschitz upper/lower brackets,
+    // reusing one boundary arrangement for this entire root shadow.
+    // General/oblique shapes and finite Gaussian still use the existing
+    // independent continuous integrator with typed resource rejection.
+    let orthogonal = if signed_spread < 0.0 && physical_sigma == 0.0 && convex_inset.is_none() {
+        erosion_boundary
+            .as_deref()
+            .map(|boundary| OrthogonalExterior::new(boundary, path, aggregate_work))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     let mut values = filled(area, 0.0_f64, path)?;
     for row in 0..height {
         for column in 0..width {
@@ -2584,6 +2602,18 @@ fn rasterize_continuous_shadow_coverage(
                         path,
                     )?
                 }
+            } else if let Some(orthogonal) = &orthogonal {
+                orthogonal.area(
+                    [
+                        center[0] - 0.5,
+                        center[1] - 0.5,
+                        center[0] + 0.5,
+                        center[1] + 0.5,
+                    ],
+                    -physical_spread,
+                    aggregate_work,
+                    path,
+                )?
             } else if signed_spread != 0.0 {
                 continuous_signed_spread_sample(
                     &triangles,

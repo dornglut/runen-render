@@ -1278,6 +1278,74 @@ fn zero_alpha_image_bytes_and_item_opacity_still_cast_from_resolved_destination(
 }
 
 #[test]
+fn orthogonal_root_concave_l_erodes_with_true_euclidean_disk_on_vulkan() {
+    let Some(context) = context() else { return };
+    // Source-neutral alpha-zero L. The missing upper-right quadrant must not
+    // be filled by a polygon bounding box or an internal triangle seam.
+    let composition = group(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 5.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 15.0, 5.0, 5.0),
+        ],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F certified root concave-L Euclidean negative spread",
+    );
+    pixel_near(pixel(&image, 12, 12), [255, 0, 0, 255]);
+    pixel_near(pixel(&image, 17, 12), [255, 0, 0, 255]);
+    pixel_near(pixel(&image, 12, 17), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 18, 18), [0, 0, 0, 0]);
+    assert_eq!(pixel(&image, 9, 12), [0, 0, 0, 0]);
+}
+
+#[test]
+fn orthogonal_root_hole_erodes_from_both_exterior_boundaries_on_vulkan() {
+    let Some(context) = context() else { return };
+    // Exact 20x20 outer ring with an [16,24]^2 hole. Top/bottom/side
+    // rectangles touch; all their internal tessellation seams are NOT an
+    // erosion boundary. The central hole is genuine union exterior.
+    let composition = group(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 20.0, 6.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 16.0, 6.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 24.0, 16.0, 6.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 24.0, 20.0, 6.0),
+        ],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F certified root holed-ring Euclidean negative spread",
+    );
+    pixel_near(pixel(&image, 13, 20), [255, 0, 0, 255]);
+    pixel_near(pixel(&image, 27, 20), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 20, 20), [0, 0, 0, 0]);
+    assert_eq!(pixel(&image, 9, 20), [0, 0, 0, 0]);
+}
+
+#[test]
 fn excess_authored_shadows_fail_before_caller_work_and_executor_remains_reusable() {
     let Some(context) = context() else {
         return;
