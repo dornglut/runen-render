@@ -393,13 +393,19 @@ impl NeutralRegionBuilder {
         }
         let region = strip(region);
         let Kind::Union(children) = &region.kind else {
+            #[cfg(debug_assertions)]
+            eprintln!("F3F qualified-case diagnostic: root node {} is not a union (owner {:?})", region.id, region.path);
             return Ok(None);
         };
         if children.len() != 2 {
+            #[cfg(debug_assertions)]
+            eprintln!("F3F qualified-case diagnostic: root union has {} children", children.len());
             return Ok(None);
         }
         let pristine_region = &children[0];
         let Kind::Effect { source, shadow } = &strip(&children[1]).kind else {
+            #[cfg(debug_assertions)]
+            eprintln!("F3F qualified-case diagnostic: second union child is not an effect");
             return Ok(None);
         };
         if !Arc::ptr_eq(pristine_region, source)
@@ -408,10 +414,18 @@ impl NeutralRegionBuilder {
             || shadow.offset_x() != 0.0
             || shadow.offset_y() != 0.0
         {
+            #[cfg(debug_assertions)]
+            eprintln!("F3F qualified-case diagnostic: source ids {} vs {}, ptr {}; spread {}, sigma {}, offset ({}, {})",
+                pristine_region.id, source.id, Arc::ptr_eq(pristine_region, source),
+                shadow.spread(), shadow.sigma(), shadow.offset_x(), shadow.offset_y());
             return Ok(None);
         }
         let pristine = self.materialize(pristine_region)?;
         if support::certified_axis_aligned_rectangle(&pristine.triangles).is_none() {
+            #[cfg(debug_assertions)]
+            eprintln!("F3F qualified-case diagnostic: source {} triangles, scale {}, first {:?}",
+                pristine.triangles.len() / 3, pristine.units_per_parent_logical_unit,
+                pristine.triangles.first());
             return Ok(None);
         }
         Ok(Some((pristine, shadow.spread())))
