@@ -297,11 +297,11 @@ fn gaussian_square_support(
 /// finite square Minkowski union in its immediate-parent frame. Nonzero
 /// nested convex negative disk spread uses a mathematically certified
 /// polygonal Euclidean inset before its optional Gaussian support square.
-/// A nested positive disk is painted with continuous Gaussian or root-cell
-/// area integration only when NO ancestor shadow needs its curved support.
-/// Other positive disk caster dependencies and
-/// uncertified nonconvex erosions reject; neither sampled alpha nor AABBs
-/// stand in for curved caster geometry.
+/// A nested positive disk or nonconvex/holed negative disk is painted with
+/// continuous Gaussian or inverse-affine root-cell area integration only
+/// when NO ancestor shadow needs its curved support. Ancestor casters
+/// requiring unrepresentable curved regions reject; neither sampled alpha
+/// nor AABBs stand in for geometric shadow membership.
 pub(super) fn group_child_sources(
     plan: &scene::Plan<'_>,
     bindings: &Render2dResourceBindings,
@@ -397,14 +397,17 @@ pub(super) fn group_child_sources(
                             &frame.path,
                         )?;
                         for shadow in frame.group.shadows() {
-                            if shadow.spread() > 0.0 {
-                                // Its own parent-frame continuous Gaussian
-                                // or inverse-affine root-cell area is prepared
-                                // by sample_space::shadow. No
-                                // ancestor shadow consumes its curved support
-                                // (certified by the structural gate above);
-                                // do not promote raw C or a bound to that
-                                // unevaluated disk region.
+                            if shadow.spread() > 0.0
+                                || (shadow.spread() < 0.0 && !ancestor_shadow_caster)
+                            {
+                                // A nested curved spread may paint directly
+                                // in its own parent frame. Without a consuming
+                                // ancestor shadow its curved region need not
+                                // become an intermediate caster, so neither
+                                // its original C nor a bounding approximation
+                                // is promoted as effected region geometry.
+                                // Negative nonconvex/holed spread is evaluated
+                                // via true exposed union-boundary distance.
                                 continue;
                             }
                             // A convex union has an EXACT Euclidean inward

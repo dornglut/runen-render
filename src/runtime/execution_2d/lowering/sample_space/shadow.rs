@@ -230,27 +230,23 @@ pub(super) fn prepare(
                 })?;
             let mut shifted = geometry_support::empty_mesh();
             geometry_support::append(&mut shifted, source, offset, path)?;
-            // A certified negative Euclidean disk erosion has EXACT convex
-            // polygonal geometry, so carry that into the already-owned
-            // parent-frame continuous Gaussian / identity evaluator.
-            // Nonconvex unions fail closed during neutral-source admission.
+            // Certified negative Euclidean erosion has exact convex
+            // polygonal geometry, so it can be propagated to ancestors.
+            // Nonconvex/holed unions remain paint-only until their curved
+            // support has a compositional neutral-region representation.
             let erosion = if parent_affine.is_some() && effect.spread() < 0.0 {
-                Some(
-                    support::certified_convex_erosion_mesh(
-                        &shifted,
-                        -effect.spread(),
-                        path,
-                        &mut aggregate_coverage_work,
-                    )?
-                    .ok_or_else(|| {
-                        crate::runtime::execution_2d::unsupported_at(
-                            path,
-                            crate::execution_2d::Render2dUnsupportedContent::Shadows {
-                                root_index: path[0],
-                            },
-                        )
-                    })?,
-                )
+                // A convex neutral union can be propagated exactly as an
+                // inset polygon. A nonconvex/holed union cannot; the separate
+                // source-propagation pass already rejects if any ancestor
+                // shadow needs that geometry. For paint-only shadow coverage
+                // retain the original C and evaluate its actual exposed
+                // boundary continuously in the owning parent frame.
+                support::certified_convex_erosion_mesh(
+                    &shifted,
+                    -effect.spread(),
+                    path,
+                    &mut aggregate_coverage_work,
+                )?
             } else {
                 None
             };
@@ -263,15 +259,16 @@ pub(super) fn prepare(
             } else {
                 effect.spread()
             };
-            // A nested positive Euclidean disk and optional finite Gaussian
+            // A nested signed Euclidean disk and optional finite Gaussian
             // are evaluated in the owner's immediate-parent frame at
             // inverse-mapped globally phased ROOT samples. With zero sigma,
-            // the ROOT unit sample cell's area is integrated under the
-            // inverse-affine parallelogram, not guessed from its midpoint. Applying the
-            // positive disk or Gaussian in root axes after ancestor shear
-            // changes the F1 semantics and is not admitted.
+            // the ROOT unit sample cell's area is integrated under its
+            // inverse-affine parallelogram, not guessed from the midpoint.
+            // Positive spread uses union distance; general negative spread
+            // uses the exposed union boundary and cannot become an ancestor
+            // caster without compositional curved-region representation.
             let coverage = if let Some(ancestor) = parent_affine {
-                if remaining_spread >= 0.0 && (effect.sigma() > 0.0 || remaining_spread > 0.0) {
+                if effect.sigma() > 0.0 || remaining_spread != 0.0 {
                     let [a, b, c, d, _, _] = ancestor.components();
                     let determinant = a.mul_add(d, -(b * c));
                     if determinant == 0.0 {
@@ -283,7 +280,7 @@ pub(super) fn prepare(
                     support::affine_parent_effect_coverage_admitted(
                         caster,
                         support::ParentEffectKernel {
-                            positive_spread: remaining_spread,
+                            signed_spread: remaining_spread,
                             sigma: effect.sigma(),
                         },
                         ancestor,
