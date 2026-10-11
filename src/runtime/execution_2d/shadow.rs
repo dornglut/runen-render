@@ -16,9 +16,7 @@ use crate::composition_2d::{
     Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dResourceBindings,
     Render2dResourceValue,
 };
-use crate::execution_2d::{
-    Render2dExecutionError, Render2dSampleSpaceError, Render2dUnsupportedContent,
-};
+use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 use std::{collections::BTreeMap, sync::Arc};
 
 mod region;
@@ -390,25 +388,11 @@ fn group_child_sources_with_probe<'a>(
                 }
                 let mut components = vec![Arc::clone(&in_parent)];
                 if !frame.group.shadows().is_empty() {
-                    let ancestor_shadow_caster = active
-                        .iter()
-                        .any(|ancestor| !ancestor.group.shadows().is_empty());
-                    if frame
-                        .group
-                        .shadows()
-                        .iter()
-                        .any(|effect| effect.spread() > 0.0 && ancestor_shadow_caster)
-                    {
-                        // Keep the prior exact path of the unrepresented
-                        // curved caster. A consuming ancestor MUST NOT see
-                        // the raw C in place of this disk expression.
-                        return Err(super::unsupported_at(
-                            &frame.path,
-                            Render2dUnsupportedContent::Shadows {
-                                root_index: frame.path[0],
-                            },
-                        ));
-                    }
+                    // Do not reject a positive disk before its symbolic
+                    // neutral support reaches the consuming ancestor's DAG.
+                    // Polygonal materialization of that root still fails
+                    // closed with the disk's exact original F1 owner path;
+                    // no cached alpha, AABB or faceted substitute is admitted.
                     components
                         .try_reserve(frame.group.shadows().len())
                         .map_err(|_| {
@@ -425,9 +409,9 @@ fn group_child_sources_with_probe<'a>(
                             // even when no ancestor would paint from it.
                             graph.materialize(&effect_region)?;
                         }
-                        // Positive disks remain symbolic only when no shadowed
-                        // ancestor consumes their curved support; their own
-                        // continuous paint path remains unchanged.
+                        // Positive disks remain symbolic until a certified
+                        // ancestor region query is independently qualified;
+                        // their own continuous paint path remains unchanged.
                         components.push(effect_region);
                     }
                 }
@@ -770,6 +754,7 @@ pub(super) fn intersect_clips(
 mod tests {
     use super::*;
     use crate::composition_2d::{Render2dRect, Render2dShape};
+    use crate::execution_2d::Render2dUnsupportedContent;
 
     #[test]
     fn neutral_geometry_transforms_before_ancestor_effects_and_keeps_disjoint_sources() {
