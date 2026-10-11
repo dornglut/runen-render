@@ -1354,6 +1354,53 @@ fn orthogonal_root_hole_erodes_from_both_exterior_boundaries_on_vulkan() {
 }
 
 #[test]
+fn orthogonal_l_and_holed_ring_negative_erosion_accept_finite_gaussian_on_vulkan() {
+    let Some(context) = context() else { return };
+    let red = Render2dColorRgba8::new(255, 0, 0, 255);
+    // Both roots are transparent neutral casters. The sigma=.1 Gaussian
+    // samples the exact eroded support, not original source alpha.
+    let l = group(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 5.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 15.0, 5.0, 5.0),
+        ],
+        vec![effect(0.0, 0.0, 0.1, -1.0, red)],
+        1.0,
+    );
+    let l_image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &l,
+        &Render2dResourceBindings::default(),
+        "F3F orthogonal concave L finite normalized Gaussian",
+    );
+    pixel_near(pixel(&l_image, 12, 12), [255, 0, 0, 255]);
+    pixel_near(pixel(&l_image, 17, 12), [255, 0, 0, 255]);
+    assert_eq!(pixel(&l_image, 18, 18), [0, 0, 0, 0]);
+
+    let ring = group(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 20.0, 6.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 16.0, 6.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 24.0, 16.0, 6.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 24.0, 20.0, 6.0),
+        ],
+        vec![effect(0.0, 0.0, 0.1, -1.0, red)],
+        1.0,
+    );
+    let ring_image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &ring,
+        &Render2dResourceBindings::default(),
+        "F3F orthogonal holed ring finite normalized Gaussian",
+    );
+    pixel_near(pixel(&ring_image, 13, 20), [255, 0, 0, 255]);
+    pixel_near(pixel(&ring_image, 27, 20), [255, 0, 0, 255]);
+    assert_eq!(pixel(&ring_image, 20, 20), [0, 0, 0, 0]);
+}
+
+#[test]
 fn excess_authored_shadows_fail_before_caller_work_and_executor_remains_reusable() {
     let Some(context) = context() else {
         return;

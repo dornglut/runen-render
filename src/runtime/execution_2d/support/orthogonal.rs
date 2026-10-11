@@ -10,7 +10,7 @@
 //! capsule-slice extent over a bounded vertical interval. Best-first
 //! refinement stops ONLY when certified uncertainty is <= 1/2048 of
 //! cell area; no sampled-mask approximation is substituted.
-use super::{UnionBoundaryEdge, mask_failure};
+use super::{UnionBoundaryEdge, gaussian_axis_mass, mask_failure};
 use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 use std::collections::BinaryHeap;
 
@@ -51,6 +51,29 @@ struct Slice {
     y1: f64,
     lower: f64,
     upper: f64,
+}
+#[derive(Clone, Copy)]
+struct Kernel {
+    center: [f64; 2],
+    sigma: f64,
+}
+impl Kernel {
+    fn axis_mass(self, lo: f64, hi: f64, axis: usize) -> f64 {
+        if hi <= lo {
+            return 0.0;
+        }
+        if self.sigma > 0.0 {
+            gaussian_axis_mass(lo, hi, self.center[axis], self.sigma)
+        } else {
+            hi - lo
+        }
+    }
+}
+#[derive(Clone, Copy)]
+struct SliceQuery {
+    x: [f64; 2],
+    radius: f64,
+    kernel: Kernel,
 }
 impl Slice {
     fn uncertainty(self) -> f64 {
@@ -143,7 +166,8 @@ impl<'a> OrthogonalExterior<'a> {
     /// lies between an inner and outer union of certified x intervals.
     /// This avoids the loose global radius +/- dy certificates that caused
     /// normal complete-scene rectangular edges to exhaust the work budget.
-    fn covered_width(crossings: &[f64], forbidden: &[[f64; 2]], x0: f64, x1: f64) -> f64 {
+    fn covered_mass(crossings: &[f64], forbidden: &[[f64; 2]], x: [f64; 2], kernel: Kernel) -> f64 {
+        let [x0, x1] = x;
         let mut allowed = 0.0;
         for pair in crossings.as_chunks::<2>().0 {
             let left = pair[0].max(x0);
@@ -156,13 +180,13 @@ impl<'a> OrthogonalExterior<'a> {
                 if end <= cursor || start >= right {
                     continue;
                 }
-                allowed += (start.max(cursor).min(right) - cursor).max(0.0);
+                allowed += kernel.axis_mass(cursor, start.max(cursor).min(right), 0);
                 cursor = cursor.max(end).min(right);
                 if cursor >= right {
                     break;
                 }
             }
-            allowed += (right - cursor).max(0.0);
+            allowed += kernel.axis_mass(cursor, right, 0);
         }
         allowed
     }
@@ -170,18 +194,30 @@ impl<'a> OrthogonalExterior<'a> {
     fn slice(
         &self,
         y: [f64; 2],
-        x: [f64; 2],
-        radius: f64,
+        query: SliceQuery,
         work: &mut usize,
         path: &[usize],
     ) -> Result<Slice, Render2dExecutionError> {
         let [y0, y1] = y;
-        let [x0, x1] = x;
+        let [x0, x1] = query.x;
+        let radius = query.radius;
         let mid = (y0 + y1) * 0.5;
         if !(y0 < mid && mid < y1) {
             return Err(precision(path, "orthogonal erosion cannot refine a slice"));
         }
-        charge(work, self.charge_per_slice, path)?;
+        let gaussian_cost = if query.kernel.sigma > 0.0 {
+            self.edges
+                .len()
+                .checked_mul(8 * super::GAUSS_NODES.len())
+                .ok_or_else(|| resource(path, "orthogonal Gaussian work overflow"))?
+        } else {
+            0
+        };
+        let cost = self
+            .charge_per_slice
+            .checked_add(gaussian_cost)
+            .ok_or_else(|| resource(path, "orthogonal slice work overflow"))?;
+        charge(work, cost, path)?;
         let mut crossings = Vec::<f64>::new();
         let mut outer_forbidden = Vec::<[f64; 2]>::new();
         let mut inner_forbidden = Vec::<[f64; 2]>::new();
@@ -258,15 +294,18 @@ impl<'a> OrthogonalExterior<'a> {
         // For each y, union(INNER) is contained in true forbidden(y),
         // which is contained in union(OUTER). Therefore the remaining
         // original-inside width is bounded by these two evaluations.
-        let lower_width = Self::covered_width(&crossings, &outer_forbidden, x0, x1);
-        let upper_width = Self::covered_width(&crossings, &inner_forbidden, x0, x1);
-        let height = y1 - y0;
+        let lower_width =
+            Self::covered_mass(&crossings, &outer_forbidden, [x0, x1], query.kernel);
+        let upper_width =
+            Self::covered_mass(&crossings, &inner_forbidden, [x0, x1], query.kernel);
+        let height = query.kernel.axis_mass(y0, y1, 1);
         let lower = lower_width * height;
         let upper = upper_width * height;
+        let total = query.kernel.axis_mass(x0, x1, 0) * height;
         if !lower.is_finite()
             || !upper.is_finite()
             || lower < -1.0e-9
-            || upper > (x1 - x0) * height + 1.0e-9
+            || upper > total + 1.0e-9
             || lower > upper + 1.0e-9
         {
             return Err(precision(
@@ -282,13 +321,59 @@ impl<'a> OrthogonalExterior<'a> {
         })
     }
 
-    /// Certified continuous area over one actual physical sample cell.
-    /// Return the midpoint of a proved enclosure, with absolute area
-    /// error <=1/4096 of this physical cell.
+    /// Certified sigma-zero continuous area over one physical sample cell.
     pub(super) fn area(
         &self,
         cell: [f64; 4],
         radius: f64,
+        work: &mut usize,
+        path: &[usize],
+    ) -> Result<f64, Render2dExecutionError> {
+        self.integrate(
+            cell,
+            radius,
+            Kernel {
+                center: [0.0, 0.0],
+                sigma: 0.0,
+            },
+            work,
+            path,
+        )
+    }
+
+    /// Finite normalized Gaussian coverage of the same exact Euclidean
+    /// eroded orthogonal union; sample paint never becomes source geometry.
+    pub(super) fn gaussian(
+        &self,
+        center: [f64; 2],
+        radius: f64,
+        sigma: f64,
+        work: &mut usize,
+        path: &[usize],
+    ) -> Result<f64, Render2dExecutionError> {
+        let cutoff = 3.0 * sigma;
+        if !sigma.is_finite() || sigma <= 0.0 || !cutoff.is_finite() {
+            return Err(precision(path, "orthogonal Gaussian sigma is invalid"));
+        }
+        self.integrate(
+            [
+                center[0] - cutoff,
+                center[1] - cutoff,
+                center[0] + cutoff,
+                center[1] + cutoff,
+            ],
+            radius,
+            Kernel { center, sigma },
+            work,
+            path,
+        )
+    }
+
+    fn integrate(
+        &self,
+        cell: [f64; 4],
+        radius: f64,
+        kernel: Kernel,
         work: &mut usize,
         path: &[usize],
     ) -> Result<f64, Render2dExecutionError> {
@@ -300,9 +385,14 @@ impl<'a> OrthogonalExterior<'a> {
         {
             return Err(precision(path, "orthogonal erosion sample is invalid"));
         }
-        let area = (x1 - x0) * (y1 - y0);
-        if !area.is_finite() || area <= 0.0 {
-            return Err(precision(path, "orthogonal erosion cell area overflow"));
+        // Uniform sigma-zero area versus normalized finite Gaussian mass.
+        let reference_mass = if kernel.sigma > 0.0 {
+            1.0
+        } else {
+            (x1 - x0) * (y1 - y0)
+        };
+        if !reference_mass.is_finite() || reference_mass <= 0.0 {
+            return Err(precision(path, "orthogonal erosion reference mass is invalid"));
         }
         let mut pending = BinaryHeap::new();
         pending
@@ -318,47 +408,46 @@ impl<'a> OrthogonalExterior<'a> {
             }
         }
         cuts.push(y1);
+        let query = SliceQuery {
+            x: [x0, x1],
+            radius,
+            kernel,
+        };
         let mut total_lower = 0.0;
         let mut total_upper = 0.0;
         for pair in cuts.windows(2) {
-            let slab = self.slice([pair[0], pair[1]], [x0, x1], radius, work, path)?;
+            let slab = self.slice([pair[0], pair[1]], query, work, path)?;
             total_lower += slab.lower;
             total_upper += slab.upper;
             pending.push(slab);
         }
-        // Splitting at all exterior edge endpoints is essential: between
-        // such events, the ORIGINAL orthogonal inside intervals are constant.
-        let tolerance = area * ERROR_TARGET;
+        // Between all actual exterior vertex events the original orthogonal
+        // inside intervals are fixed; only disk capsule edges need splitting.
+        let tolerance = reference_mass * ERROR_TARGET;
         while total_upper - total_lower > tolerance {
             let slab = pending
                 .pop()
                 .ok_or_else(|| precision(path, "orthogonal erosion uncertainty lost its queue"))?;
             let mid = (slab.y0 + slab.y1) * 0.5;
             if !(slab.y0 < mid && mid < slab.y1) {
-                return Err(precision(
-                    path,
-                    "orthogonal erosion precision depth exhausted",
-                ));
+                return Err(precision(path, "orthogonal erosion precision depth exhausted"));
             }
             if pending.len() + 2 > MAX_INTERVALS {
-                return Err(resource(
-                    path,
-                    "orthogonal erosion exceeds bounded slice count",
-                ));
+                return Err(resource(path, "orthogonal erosion exceeds bounded slice count"));
             }
             pending
                 .try_reserve(2)
                 .map_err(|_| resource(path, "orthogonal erosion slice growth failed"))?;
-            let left = self.slice([slab.y0, mid], [x0, x1], radius, work, path)?;
-            let right = self.slice([mid, slab.y1], [x0, x1], radius, work, path)?;
+            let left = self.slice([slab.y0, mid], query, work, path)?;
+            let right = self.slice([mid, slab.y1], query, work, path)?;
             total_lower += left.lower + right.lower - slab.lower;
             total_upper += left.upper + right.upper - slab.upper;
             pending.push(left);
             pending.push(right);
         }
-        let fraction = (total_lower + total_upper) * 0.5 / area;
+        let fraction = (total_lower + total_upper) * 0.5 / reference_mass;
         if !fraction.is_finite() || !(-1.0e-9..=1.0 + 1.0e-9).contains(&fraction) {
-            return Err(precision(path, "orthogonal erosion area is not normalized"));
+            return Err(precision(path, "orthogonal erosion mass is not normalized"));
         }
         Ok(fraction.clamp(0.0, 1.0))
     }
@@ -431,6 +520,23 @@ mod tests {
                 .area([1.0, 4.0, 2.0, 5.0], 0.5, &mut work, &[2])
                 .unwrap(),
             1.0
+        );
+    }
+
+    #[test]
+    fn orthogonal_gaussian_exact_interior_and_hole() {
+        let mut work = 0;
+        let l = OrthogonalExterior::new(&L, &[0, 2], &mut work)
+            .unwrap()
+            .unwrap();
+        assert!(
+            (l.gaussian([2.0, 2.0], 0.5, 0.1, &mut work, &[0, 2]).unwrap() - 1.0).abs()
+                < 0.00025
+        );
+        assert_eq!(
+            l.gaussian([6.5, 6.5], 0.5, 0.1, &mut work, &[0, 2])
+                .unwrap(),
+            0.0
         );
     }
 
