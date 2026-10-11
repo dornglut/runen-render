@@ -7,6 +7,7 @@ use crate::runtime::execution_2d::{
     shadow as geometry_support,
     support::{self, NeutralCoverage},
 };
+use crate::composition_2d::Render2dDropShadow;
 use std::sync::Arc;
 
 // Retained floating neutral support is separate from per-tile source-backed

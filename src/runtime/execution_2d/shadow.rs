@@ -914,7 +914,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sources.len(), 1);
-        let caster = sources.get(&0).unwrap();
+        let NeutralCaster::Mesh(caster) = sources.get(&0).unwrap() else {
+            panic!("certified clipped group support must remain polygonal");
+        };
         for (actual, expected) in caster.bounds.iter().zip([0.5, 0.0, 2.0, 1.0]) {
             assert!((*actual - expected).abs() < 1.0e-6);
         }
@@ -988,7 +990,9 @@ mod tests {
             1_048_576,
         )
         .unwrap();
-        let mesh = sources.get(&0).unwrap();
+        let NeutralCaster::Mesh(mesh) = sources.get(&0).unwrap() else {
+            panic!("certified outlined glyph must remain polygonal");
+        };
         assert!(!mesh.triangles.is_empty());
         assert!(mesh.bounds[0].is_finite() && mesh.bounds[2] > mesh.bounds[0]);
     }
