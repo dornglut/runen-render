@@ -492,6 +492,108 @@ impl NeutralRegionBuilder {
     }
 }
 
+/// A proof-only point classifier for the *borrowed F1* graph.
+/// Unknown is mandatory for unproven geometry or uncertain boundaries.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PointCertificate {
+    Inside,
+    Outside,
+    Unknown,
+}
+
+#[cfg(test)]
+impl NeutralRegion<'_> {
+    fn rectangle(&self) -> Option<[f64; 4]> {
+        match &self.kind {
+            Kind::Source(mesh) => {
+                let rect = support::certified_axis_aligned_rectangle(&mesh.triangles)?;
+                let scale = mesh.units_per_parent_logical_unit;
+                (scale.is_finite() && scale > 0.0).then(|| rect.map(|v| v / scale))
+            }
+            Kind::Affine { source, to_parent }
+                if to_parent.components() == Render2dAffineTransform::IDENTITY.components() =>
+            {
+                source.rectangle()
+            }
+            Kind::Clip { source, clips } if clips.is_empty() => source.rectangle(),
+            Kind::Union(children) if children.len() == 1 => children[0].rectangle(),
+            _ => None,
+        }
+    }
+
+    fn point_certificate(&self, point: [f64; 2]) -> PointCertificate {
+        if !point.iter().all(|v| v.is_finite()) {
+            return PointCertificate::Unknown;
+        }
+        match &self.kind {
+            Kind::Source(_) => {
+                let Some([x0, y0, x1, y1]) = self.rectangle() else {
+                    return PointCertificate::Unknown;
+                };
+                if point[0] > x0 && point[0] < x1 && point[1] > y0 && point[1] < y1 {
+                    PointCertificate::Inside
+                } else if point[0] < x0 || point[0] > x1 || point[1] < y0 || point[1] > y1 {
+                    PointCertificate::Outside
+                } else {
+                    PointCertificate::Unknown
+                }
+            }
+            Kind::Union(children) => {
+                let mut unknown = false;
+                for child in children {
+                    match child.point_certificate(point) {
+                        PointCertificate::Inside => return PointCertificate::Inside,
+                        PointCertificate::Unknown => unknown = true,
+                        PointCertificate::Outside => {}
+                    }
+                }
+                if unknown {
+                    PointCertificate::Unknown
+                } else {
+                    PointCertificate::Outside
+                }
+            }
+            Kind::Affine { source, to_parent }
+                if to_parent.components() == Render2dAffineTransform::IDENTITY.components() =>
+            {
+                source.point_certificate(point)
+            }
+            Kind::Clip { source, clips } if clips.is_empty() => {
+                source.point_certificate(point)
+            }
+            Kind::Effect { source, shadow }
+                if shadow.spread() > 0.0 && shadow.sigma() == 0.0 =>
+            {
+                let Some([x0, y0, x1, y1]) = source.rectangle() else {
+                    return PointCertificate::Unknown;
+                };
+                let x = point[0] - shadow.offset_x();
+                let y = point[1] - shadow.offset_y();
+                let dx = x - x.clamp(x0, x1);
+                let dy = y - y.clamp(y0, y1);
+                let squared = dx.mul_add(dx, dy * dy);
+                let radius = shadow.spread();
+                let limit = radius * radius;
+                if !squared.is_finite() || !limit.is_finite() {
+                    return PointCertificate::Unknown;
+                }
+                let margin = 128.0 * f64::EPSILON * limit.abs().max(squared.abs()).max(1.0);
+                if squared + margin < limit {
+                    PointCertificate::Inside
+                } else if squared > limit + margin {
+                    PointCertificate::Outside
+                } else {
+                    PointCertificate::Unknown
+                }
+            }
+            // Nonidentity affine, real clips, finite Gaussian envelopes and
+            // negative/nonrectangular disks require independent certificates.
+            _ => PointCertificate::Unknown,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,6 +615,109 @@ mod tests {
             },
             1_048_576,
         )
+    }
+
+
+    #[test]
+    fn borrowed_f1_group_events_build_exact_transparent_disk_expression() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dComposition, Render2dEntry, Render2dGroup,
+            Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dRect, Render2dShape,
+            Render2dResourceBindings,
+        };
+        let transparent = Render2dColorRgba8::TRANSPARENT;
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(10.0, 10.0, 10.0, 10.0).unwrap()),
+                brush: Render2dBrush::solid(transparent),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let positive =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, transparent).unwrap();
+        let child = Render2dGroup::new(
+            vec![Render2dEntry::item(item)],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            vec![positive],
+        );
+        let root = Render2dGroup::new(
+            vec![Render2dEntry::group(child)],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![Render2dDropShadow::new(
+                0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(255, 0, 0, 255),
+            ).unwrap()],
+        );
+        let composition = Render2dComposition::new(vec![Render2dEntry::group(root)]).unwrap();
+        let plan = shadow::scene::analyze(&composition).unwrap();
+        let mut builder = builder();
+        let bindings = Render2dResourceBindings::default();
+        // Replay exactly the borrowed F1 event frames and the production
+        // neutral-item/source/affine/effect/clip constructors, never an
+        // invented cached-alpha or semantic surrogate.
+        let mut stack = Vec::<(
+            Vec<usize>,
+            &Render2dGroup,
+            Vec<Arc<NeutralRegion<'_>>>,
+        )>::new();
+        let mut root_expression = None;
+        for event in &plan.events {
+            match event {
+                shadow::scene::Event::BeginGroup { path, group, .. } => {
+                    stack.push((path.clone(), group, Vec::new()));
+                }
+                shadow::scene::Event::Item { path, item, .. } => {
+                    let mesh = shadow::neutral_item(
+                        item,
+                        path,
+                        &bindings,
+                        &std::collections::BTreeMap::new(),
+                        shadow::NeutralPreparationScale {
+                            field_raster_scale: 1.0,
+                            geometry_sample_scale: 4.0,
+                        },
+                        1_048_576,
+                        &mut builder.clip_work,
+                    ).unwrap().expect("transparent authored fill keeps neutral support");
+                    let leaf = builder.source(mesh, path).unwrap();
+                    stack.last_mut().unwrap().2.push(leaf);
+                }
+                shadow::scene::Event::EndGroup => {
+                    let (path, group, children) = stack.pop().unwrap();
+                    let union = builder.union(children, &path).unwrap();
+                    let pristine = builder.affine(union, group.local_to_parent(), &path).unwrap();
+                    if stack.is_empty() {
+                        root_expression = Some(pristine);
+                    } else {
+                        let mut parts = vec![Arc::clone(&pristine)];
+                        for shadow in group.shadows() {
+                            parts.push(builder.effect(Arc::clone(&pristine), *shadow, &path).unwrap());
+                        }
+                        let complete = builder.union(parts, &path).unwrap();
+                        let clipped = builder.clip(complete, group.clips(), &path).unwrap();
+                        stack.last_mut().unwrap().2.push(clipped);
+                    }
+                }
+            }
+        }
+        let expr = root_expression.expect("root group completed");
+        assert_eq!(expr.point_certificate([9.5, 9.5]), PointCertificate::Inside);
+        assert_eq!(expr.point_certificate([8.5, 8.5]), PointCertificate::Outside);
+        assert_eq!(expr.point_certificate([15.0, 15.0]), PointCertificate::Inside);
+        assert_eq!(expr.point_certificate([9.0, 9.0]), PointCertificate::Outside);
+        assert_eq!(expr.point_certificate([9.0, 15.0]), PointCertificate::Unknown);
+        assert!(matches!(
+            builder.materialize(&expr),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Shadows { root_index: 0 },
+            }) if path == [0, 0]
+        ));
     }
 
     #[test]
