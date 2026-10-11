@@ -366,7 +366,6 @@ impl NeutralRegionBuilder {
         self.node(Kind::Effect { source, shadow }, path, depth)
     }
 
-
     /// Recognize only the exact existing F1 DAG: C union (C ⊕ disk(r)).
     /// The child source must be a whole, certified axis-aligned rectangle,
     /// with identity frames, no clip, zero blur and no effect translation.
@@ -375,9 +374,7 @@ impl NeutralRegionBuilder {
         &mut self,
         root: &Arc<NeutralRegion<'a>>,
     ) -> Result<Option<(Arc<support::NeutralMesh>, f64, Vec<usize>)>, Render2dExecutionError> {
-        fn identity<'a, 'b>(
-            mut node: &'b Arc<NeutralRegion<'a>>,
-        ) -> &'b Arc<NeutralRegion<'a>> {
+        fn identity<'a, 'b>(mut node: &'b Arc<NeutralRegion<'a>>) -> &'b Arc<NeutralRegion<'a>> {
             loop {
                 match &node.kind {
                     Kind::Affine { source, to_parent }

@@ -216,12 +216,13 @@ pub(super) fn prepare(
                     radius,
                     effect.color(),
                 )
-                .map_err(|_| shadow_precision(owner, "rounded neutral caster effect cannot be represented"))?
+                .map_err(|_| {
+                    shadow_precision(owner, "rounded neutral caster effect cannot be represented")
+                })?
             } else {
                 *effect
             };
-            let Some(parent_envelope) =
-                geometry_support::shadow_envelope(mesh, effective, path)?
+            let Some(parent_envelope) = geometry_support::shadow_envelope(mesh, effective, path)?
             else {
                 continue;
             };
