@@ -879,7 +879,10 @@ impl AffinePositiveDiskArea<'_> {
         let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
         let precision =
             |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
-        const MAX_VISITS: usize = 32_768;
+        // A quarter-circle boundary requires ~38k visits to certify
+        // area within 1/4096 under root-cell quadtree refinement.
+        // The independent 16M aggregate geometric-work cap still applies.
+        const MAX_VISITS: usize = 65_536;
         const MAX_DEPTH: u8 = 22;
         const UNCERTAIN_MASS_TARGET: f64 = 1.0 / 2048.0;
         if !self.radius.is_finite()

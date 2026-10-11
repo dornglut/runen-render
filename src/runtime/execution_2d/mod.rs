@@ -258,14 +258,12 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
                 // A positive Euclidean disk has curved support which cannot
                 // be represented by the stored triangle union. Without an
                 // ancestor shadow, its support is not a downstream caster:
-                // its *own* finite Gaussian can still be integrated exactly
-                // in the owning parent frame. No-sigma positive disks still
-                // require a transformed continuous root-cell area evaluator.
+                // its own finite Gaussian or sigma-zero ROOT sample-cell
+                // area can be evaluated continuously in the parent frame.
                 if path.len() > 1
                     && group.shadows().iter().any(|shadow| {
                         shadow.spread() > 0.0
-                            && (shadow.sigma() == 0.0
-                                || shadowed_ancestors.iter().any(|owner| *owner))
+                            && shadowed_ancestors.iter().any(|owner| *owner)
                     })
                 {
                     let kind = Render2dUnsupportedContent::Shadows {
