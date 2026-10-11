@@ -294,10 +294,8 @@ impl<'a> OrthogonalExterior<'a> {
         // For each y, union(INNER) is contained in true forbidden(y),
         // which is contained in union(OUTER). Therefore the remaining
         // original-inside width is bounded by these two evaluations.
-        let lower_width =
-            Self::covered_mass(&crossings, &outer_forbidden, [x0, x1], query.kernel);
-        let upper_width =
-            Self::covered_mass(&crossings, &inner_forbidden, [x0, x1], query.kernel);
+        let lower_width = Self::covered_mass(&crossings, &outer_forbidden, [x0, x1], query.kernel);
+        let upper_width = Self::covered_mass(&crossings, &inner_forbidden, [x0, x1], query.kernel);
         let height = query.kernel.axis_mass(y0, y1, 1);
         let lower = lower_width * height;
         let upper = upper_width * height;
@@ -392,7 +390,10 @@ impl<'a> OrthogonalExterior<'a> {
             (x1 - x0) * (y1 - y0)
         };
         if !reference_mass.is_finite() || reference_mass <= 0.0 {
-            return Err(precision(path, "orthogonal erosion reference mass is invalid"));
+            return Err(precision(
+                path,
+                "orthogonal erosion reference mass is invalid",
+            ));
         }
         let mut pending = BinaryHeap::new();
         pending
@@ -430,10 +431,16 @@ impl<'a> OrthogonalExterior<'a> {
                 .ok_or_else(|| precision(path, "orthogonal erosion uncertainty lost its queue"))?;
             let mid = (slab.y0 + slab.y1) * 0.5;
             if !(slab.y0 < mid && mid < slab.y1) {
-                return Err(precision(path, "orthogonal erosion precision depth exhausted"));
+                return Err(precision(
+                    path,
+                    "orthogonal erosion precision depth exhausted",
+                ));
             }
             if pending.len() + 2 > MAX_INTERVALS {
-                return Err(resource(path, "orthogonal erosion exceeds bounded slice count"));
+                return Err(resource(
+                    path,
+                    "orthogonal erosion exceeds bounded slice count",
+                ));
             }
             pending
                 .try_reserve(2)
@@ -530,7 +537,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(
-            (l.gaussian([2.0, 2.0], 0.5, 0.1, &mut work, &[0, 2]).unwrap() - 1.0).abs()
+            (l.gaussian([2.0, 2.0], 0.5, 0.1, &mut work, &[0, 2])
+                .unwrap()
+                - 1.0)
+                .abs()
                 < 0.00025
         );
         assert_eq!(
