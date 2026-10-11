@@ -196,11 +196,14 @@ pub(super) fn prepare(
             // projection, so a nested translated C remains exact triangles.
             // Nonzero nested kernels reject in group_child_sources rather
             // than being incorrectly applied in root space.
-            // C union (C plus disk(r)) equals C plus disk(r).
-            // This is valid only when the consuming root effect has
-            // zero spread and zero blur. Otherwise fail at child owner.
+            // Exact Euclidean Minkowski associativity:
+            // (C union (C plus disk(r))) plus disk(s) =
+            // C plus disk(r+s), for nonnegative s. Both radii act in
+            // the same parent frame, before the ancestor shadow offset.
+            // Negative/blurred ancestor effects require independent
+            // compositional region certificates and still fail closed.
             let effective = if let Some((radius, owner)) = qualified_disk {
-                if path.len() != 1 || effect.spread() != 0.0 || effect.sigma() != 0.0 {
+                if path.len() != 1 || effect.spread() < 0.0 || effect.sigma() != 0.0 {
                     return Err(crate::runtime::execution_2d::unsupported_at(
                         owner,
                         crate::execution_2d::Render2dUnsupportedContent::Shadows {
@@ -208,15 +211,19 @@ pub(super) fn prepare(
                         },
                     ));
                 }
+                let combined = radius + effect.spread();
+                if !combined.is_finite() {
+                    return Err(shadow_precision(owner, "combined Euclidean disk radius overflow"));
+                }
                 Render2dDropShadow::new(
                     effect.offset_x(),
                     effect.offset_y(),
                     0.0,
-                    radius,
+                    combined,
                     effect.color(),
                 )
                 .map_err(|_| {
-                    shadow_precision(owner, "rounded neutral caster effect cannot be represented")
+                    shadow_precision(owner, "combined rounded neutral caster cannot be represented")
                 })?
             } else {
                 *effect

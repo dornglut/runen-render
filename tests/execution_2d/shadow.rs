@@ -863,6 +863,95 @@ fn qualified_child_disk_rejects_uncertified_ancestor_gaussian_at_child_path() {
     ));
 }
 
+/// Independent geometric identity: (C ⊕ B1) ⊕ B1 = C ⊕ B2.
+/// At the rounded bottom-left corner, pixel [8,9]² relative to C=[10,20]²
+/// contains a circle/square intersection of 0.31514674362772044 area,
+/// obtained analytically by integrating sqrt(4-x²)-1 over x=[1,sqrt(3)].
+/// It premultiplies opaque linear red to sRGB8 [152,0,0,80].
+#[test]
+fn nested_positive_disks_add_radii_with_independent_corner_oracle_on_vulkan() {
+    let Some(context) = context() else { return };
+    let child = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)],
+    ));
+    let composition = group(
+        vec![child],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F consecutive positive Euclidean disks add exact radii",
+    );
+    pixel_near(pixel(&image, 8, 8), [152, 0, 0, 80]);
+    pixel_near(pixel(&image, 8, 10), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 7, 10), [0, 0, 0, 0]);
+    assert_eq!(pixel(&image, 7, 7), [0, 0, 0, 0]);
+}
+
+#[test]
+fn qualified_child_positive_disk_does_not_silently_accept_ancestor_erosion() {
+    let Some(context) = context() else { return };
+    let child = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            10.0,
+            10.0,
+        )],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)],
+    ));
+    let scene = group(
+        vec![child],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            -0.5,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let (_, target) = target("F3F erosion after curved child is not a disk radius subtraction");
+    assert!(matches!(
+        Render2dExecutor::new().prepare(
+            &context,
+            &scene,
+            &Render2dResourceBindings::default(),
+            &target,
+        ),
+        Err(Render2dExecutionError::UnsupportedEntry {
+            path,
+            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
+                root_index: 0,
+            },
+        }) if path == [0, 0]
+    ));
+}
+
 #[test]
 fn nested_positive_disk_is_unsupported_when_ancestor_needs_neutral_caster() {
     let Some(context) = context() else { return };
