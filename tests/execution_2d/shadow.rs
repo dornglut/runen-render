@@ -686,53 +686,6 @@ fn nested_positive_disk_then_finite_gaussian_maps_through_sheared_ancestor() {
 }
 
 #[test]
-fn nested_nonconvex_negative_disk_preserves_exact_parent_frame_under_shear() {
-    let Some(context) = context() else { return };
-    // The two transparent rectangles form a true concave L, not one
-    // convex polygon or an axis-aligned bounding rectangle.
-    let inner = Render2dEntry::group(Render2dGroup::new(
-        vec![
-            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 5.0),
-            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 15.0, 5.0, 5.0),
-        ],
-        Render2dAffineTransform::IDENTITY,
-        Vec::new(),
-        Render2dOpacity::OPAQUE,
-        vec![effect(
-            0.0,
-            0.0,
-            0.0,
-            -1.0,
-            Render2dColorRgba8::new(255, 0, 0, 255),
-        )],
-    ));
-    let outer = Render2dEntry::group(Render2dGroup::new(
-        vec![inner],
-        Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
-        Vec::new(),
-        Render2dOpacity::OPAQUE,
-        Vec::new(),
-    ));
-    let scene = Render2dComposition::new(vec![outer]).unwrap();
-    let output = execute(
-        &context,
-        &mut Render2dExecutor::new(),
-        &scene,
-        &Render2dResourceBindings::default(),
-        "F3F nonconvex signed erosion in nested owning parent under shear",
-    );
-    // Along parent y=[12,13], the true eroded left edge is x=11.
-    // Map into root AFTER erosion: x'=2*11+.5*y+4 = 26+.5*y.
-    // Exact area in root pixel [32,33]x[12,13] is 3/4.
-    // Red .75 linear -> sRGB 225, alpha=191.
-    pixel_near(pixel(&output, 32, 12), [225, 0, 0, 191]);
-    assert_eq!(pixel(&output, 31, 12), [0, 0, 0, 0]);
-    pixel_near(pixel(&output, 35, 12), [255, 0, 0, 255]);
-    // The missing top-right arm stays empty after erosion.
-    assert_eq!(pixel(&output, 46, 18), [0, 0, 0, 0]);
-}
-
-#[test]
 fn nested_positive_disk_is_unsupported_when_ancestor_needs_neutral_caster() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
@@ -876,56 +829,7 @@ fn nested_convex_erosion_gaussian_integrates_in_its_parent_frame() {
 }
 
 #[test]
-fn nested_nonconvex_negative_disk_with_finite_gaussian_uses_parent_frame() {
-    let Some(context) = context() else { return };
-    // The two transparent rectangles form a true concave L, not one
-    // convex polygon or an axis-aligned bounding rectangle.
-    let inner = Render2dEntry::group(Render2dGroup::new(
-        vec![
-            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 5.0),
-            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 15.0, 5.0, 5.0),
-        ],
-        Render2dAffineTransform::IDENTITY,
-        Vec::new(),
-        Render2dOpacity::OPAQUE,
-        vec![effect(
-            0.0,
-            0.0,
-            0.1,
-            -1.0,
-            Render2dColorRgba8::new(255, 0, 0, 255),
-        )],
-    ));
-    let outer = Render2dEntry::group(Render2dGroup::new(
-        vec![inner],
-        Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
-        Vec::new(),
-        Render2dOpacity::OPAQUE,
-        Vec::new(),
-    ));
-    let scene = Render2dComposition::new(vec![outer]).unwrap();
-    let output = execute(
-        &context,
-        &mut Render2dExecutor::new(),
-        &scene,
-        &Render2dResourceBindings::default(),
-        "F3F nonconvex erosion then parent finite Gaussian under shear",
-    );
-    // At parent y=[12,13] the eroded source is the true half-plane
-    // x>=11. Sigma=.1 is finite and truncated at 3sigma. For each
-    // globally phased 4x4 ROOT sample, inverse-map the ancestor shear:
-    // parent x=(root_x-.5*root_y-4)/2 before Gaussian integration.
-    // Independent normalized erf CDF gives alpha values:
-    // (31,12)=.01622244054, (32,12)=.73377755946.
-    // Premultiplied linear red -> sRGB 34 and 222 respectively.
-    pixel_near(pixel(&output, 31, 12), [34, 0, 0, 4]);
-    pixel_near(pixel(&output, 32, 12), [222, 0, 0, 187]);
-    pixel_near(pixel(&output, 33, 12), [255, 0, 0, 255]);
-    assert_eq!(pixel(&output, 46, 18), [0, 0, 0, 0]);
-}
-
-#[test]
-fn nested_nonconvex_erosion_rejects_when_ancestor_needs_curved_support() {
+fn nested_nonconvex_disk_erosion_rejects_with_authored_path_before_gpu_work() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
         vec![
@@ -948,10 +852,10 @@ fn nested_nonconvex_erosion_rejects_when_ancestor_needs_curved_support() {
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::OPAQUE,
-        vec![effect(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT)],
+        Vec::new(),
     ));
     let scene = Render2dComposition::new(vec![outer]).unwrap();
-    let (texture, target) = target("F3F ancestor caster requires nonconvex signed erosion support");
+    let (texture, target) = target("F3F nonconvex nested signed erosion rejects atomically");
     let mut executor = Render2dExecutor::new();
     let result = executor.prepare(
         &context,
@@ -960,7 +864,7 @@ fn nested_nonconvex_erosion_rejects_when_ancestor_needs_curved_support() {
         &target,
     );
     let failure = match result {
-        Ok(_) => panic!("nonconvex eroded region may not masquerade as ancestor caster"),
+        Ok(_) => panic!("nonconvex disk erosion cannot become a convex rectangle"),
         Err(error) => error,
     };
     assert!(matches!(
