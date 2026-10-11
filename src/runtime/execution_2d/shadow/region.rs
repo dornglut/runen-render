@@ -579,13 +579,13 @@ mod tests {
         let caster = builder.source(triangle(), &[5, 0]).unwrap();
         let scale_and_shear = Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 0.0, 0.0).unwrap();
         let in_parent = builder.affine(caster, scale_and_shear, &[5, 1]).unwrap();
-        // A sheared SOURCE AABB is conservative: its unused corner at (4,4)
-        // projects to x=10 although the actual triangle stops at x=8.
-        assert_eq!(in_parent.envelope, Some([0.0, 0.0, 10.0, 4.0]));
+        // Projecting the actual triangle vertices avoids the unused AABB
+        // corner: its x reach is 8 rather than a box-derived 10.
+        assert_eq!(in_parent.envelope, Some([0.0, 0.0, 8.0, 4.0]));
         let effect =
             Render2dDropShadow::new(1.0, -2.0, 0.5, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let curved = builder.effect(in_parent, effect, &[5, 2]).unwrap();
-        assert_eq!(curved.envelope, Some([-1.5, -4.5, 13.5, 4.5]));
+        assert_eq!(curved.envelope, Some([-1.5, -4.5, 11.5, 4.5]));
         assert!(matches!(
             builder.materialize(&curved),
             Err(Render2dExecutionError::UnsupportedEntry {
