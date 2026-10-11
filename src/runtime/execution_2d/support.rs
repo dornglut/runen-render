@@ -855,6 +855,204 @@ fn gaussian_union_sample(
     Ok(alpha.clamp(0.0, 1.0))
 }
 
+/// A small fixed-capacity convex polygon. A root sample has four corners;
+/// clipping against four rectangle sides or two corner quadrants adds at
+/// most one vertex per plane. Stack storage avoids per-sample heap churn.
+#[derive(Clone, Copy)]
+struct DiskAreaCellPolygon {
+    vertices: [[f64; 2]; 16],
+    len: usize,
+}
+
+impl DiskAreaCellPolygon {
+    fn quadrilateral(points: [[f64; 2]; 4]) -> Option<Self> {
+        if !points.iter().flatten().all(|v| v.is_finite()) {
+            return None;
+        }
+        let mut vertices = [[0.0; 2]; 16];
+        vertices[..4].copy_from_slice(&points);
+        Some(Self { vertices, len: 4 })
+    }
+
+    fn push(&mut self, point: [f64; 2]) -> Option<()> {
+        if self.len >= self.vertices.len() || !point.iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        self.vertices[self.len] = point;
+        self.len += 1;
+        Some(())
+    }
+
+    fn clip_axis(self, axis: usize, edge: f64, keep_lower: bool) -> Option<Self> {
+        let mut output = Self {
+            vertices: [[0.0; 2]; 16],
+            len: 0,
+        };
+        if self.len == 0 {
+            return Some(output);
+        }
+        let signed = |p: [f64; 2]| {
+            if keep_lower {
+                edge - p[axis]
+            } else {
+                p[axis] - edge
+            }
+        };
+        for i in 0..self.len {
+            let p = self.vertices[i];
+            let q = self.vertices[(i + 1) % self.len];
+            let dp = signed(p);
+            let dq = signed(q);
+            if !dp.is_finite() || !dq.is_finite() {
+                return None;
+            }
+            if (dp >= 0.0) != (dq >= 0.0) {
+                let t = dp / (dp - dq);
+                if !t.is_finite() || !(0.0..=1.0).contains(&t) {
+                    return None;
+                }
+                output.push([
+                    (q[0] - p[0]).mul_add(t, p[0]),
+                    (q[1] - p[1]).mul_add(t, p[1]),
+                ])?;
+            }
+            if dq >= 0.0 {
+                output.push(q)?;
+            }
+        }
+        Some(output)
+    }
+
+    fn clipped_rectangle(self, [x0, y0, x1, y1]: [f64; 4]) -> Option<Self> {
+        self.clip_axis(0, x0, false)?
+            .clip_axis(0, x1, true)?
+            .clip_axis(1, y0, false)?
+            .clip_axis(1, y1, true)
+    }
+
+    fn area(self) -> Option<f64> {
+        if self.len < 3 {
+            return Some(0.0);
+        }
+        // Triangulation from a local origin avoids cancellation at large
+        // absolute parent coordinates; clipping preserves convexity.
+        let origin = self.vertices[0];
+        let mut twice = 0.0_f64;
+        for i in 1..self.len - 1 {
+            twice += orient(origin, self.vertices[i], self.vertices[i + 1]);
+        }
+        let result = twice.abs() * 0.5;
+        result.is_finite().then_some(result)
+    }
+
+    /// Green's theorem for intersection with a Euclidean disk. Split each
+    /// polygon edge at the true circle crossings. Inside intervals
+    /// contribute triangle area, outside intervals a signed circular
+    /// sector r² atan2(cross,dot)/2. No faceted circle approximation.
+    fn disk_area(self, center: [f64; 2], radius: f64) -> Option<f64> {
+        if self.len < 3 {
+            return Some(0.0);
+        }
+        if !radius.is_finite() || radius <= 0.0 {
+            return None;
+        }
+        let radius_squared = radius * radius;
+        if !radius_squared.is_finite() {
+            return None;
+        }
+        let mut total = 0.0_f64;
+        for i in 0..self.len {
+            let p = [
+                self.vertices[i][0] - center[0],
+                self.vertices[i][1] - center[1],
+            ];
+            let q = [
+                self.vertices[(i + 1) % self.len][0] - center[0],
+                self.vertices[(i + 1) % self.len][1] - center[1],
+            ];
+            let d = [q[0] - p[0], q[1] - p[1]];
+            let a = d[0].mul_add(d[0], d[1] * d[1]);
+            if !a.is_finite() {
+                return None;
+            }
+            if a == 0.0 {
+                continue;
+            }
+            let b = 2.0 * p[0].mul_add(d[0], p[1] * d[1]);
+            let c = p[0].mul_add(p[0], p[1] * p[1]) - radius_squared;
+            let discriminant = b.mul_add(b, -4.0 * a * c);
+            if !discriminant.is_finite() {
+                return None;
+            }
+            let mut times = [0.0, 1.0, 1.0, 1.0];
+            let mut len = 2_usize;
+            if discriminant >= 0.0 {
+                let root = discriminant.sqrt();
+                for t in [(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)] {
+                    if t > 0.0 && t < 1.0 {
+                        times[len] = t;
+                        len += 1;
+                    }
+                }
+            }
+            times[..len].sort_by(f64::total_cmp);
+            for interval in times[..len].windows(2) {
+                let lo = interval[0];
+                let hi = interval[1];
+                let left = [d[0].mul_add(lo, p[0]), d[1].mul_add(lo, p[1])];
+                let right = [d[0].mul_add(hi, p[0]), d[1].mul_add(hi, p[1])];
+                let mid = [
+                    d[0].mul_add((lo + hi) * 0.5, p[0]),
+                    d[1].mul_add((lo + hi) * 0.5, p[1]),
+                ];
+                let cross = left[0].mul_add(right[1], -(left[1] * right[0]));
+                let dot = left[0].mul_add(right[0], left[1] * right[1]);
+                if mid[0].mul_add(mid[0], mid[1] * mid[1]) <= radius_squared {
+                    total += cross * 0.5;
+                } else {
+                    total += 0.5 * radius_squared * cross.atan2(dot);
+                }
+            }
+        }
+        let result = total.abs();
+        result.is_finite().then_some(result)
+    }
+}
+
+/// Exact area of a *certified entire rectangle union* dilated by a disk,
+/// intersected with a convex inverse-affine root sample parallelogram.
+/// The five rectangular strips and four disjoint quarter-disks partition
+/// the true rounded rectangle; neither its AABB nor a faceted polygon
+/// replaces the curved Euclidean boundary.
+fn certified_rounded_rectangle_area(
+    cell: DiskAreaCellPolygon,
+    [x0, y0, x1, y1]: [f64; 4],
+    radius: f64,
+) -> Option<f64> {
+    if !(x0 < x1 && y0 < y1 && radius > 0.0) {
+        return None;
+    }
+    let mut area = 0.0_f64;
+    for rect in [
+        [x0, y0, x1, y1],
+        [x0 - radius, y0, x0, y1],
+        [x1, y0, x1 + radius, y1],
+        [x0, y0 - radius, x1, y0],
+        [x0, y1, x1, y1 + radius],
+    ] {
+        area += cell.clipped_rectangle(rect)?.area()?;
+    }
+    for (x, lower_x) in [(x0, true), (x1, false)] {
+        for (y, lower_y) in [(y0, true), (y1, false)] {
+            area += cell
+                .clip_axis(0, x, lower_x)?
+                .clip_axis(1, y, lower_y)?
+                .disk_area([x, y], radius)?;
+        }
+    }
+    area.is_finite().then_some(area)
+}
+
 /// Conservatively integrate a positive Euclidean disk over an inverse-affine
 /// ROOT unit sample cell, whose immediate-parent image is a parallelogram.
 /// Midpoint distance to the exact triangle union is one-Lipschitz. The
@@ -863,6 +1061,7 @@ fn gaussian_union_sample(
 /// area is refined until absolute error <=1/4096, otherwise a typed error.
 struct AffinePositiveDiskArea<'a> {
     triangles: &'a [[f64; 2]],
+    certified_rectangle: Option<[f64; 4]>,
     inverse: [f64; 4],
     root_translation: [f64; 2],
     radius: f64,
@@ -894,6 +1093,51 @@ impl AffinePositiveDiskArea<'_> {
             return Err(precision(
                 "affine disk sample parameters are unrepresentable",
             ));
+        }
+        if let Some(rect) = self.certified_rectangle {
+            // The complete two-triangle UNION (not its AABB) has been
+            // certified to be exactly a rectangle. The analytic path has
+            // constant per-cell work and no geometric heap allocations.
+            // A fixed 1024-work charge exceeds the maximal four-corner plus
+            // nine convex-clipping and circular-edge scans for this cell.
+            *work = work
+                .checked_add(1024)
+                .ok_or_else(|| resource("rounded rectangle area work overflow"))?;
+            if *work > 16_777_216 {
+                return Err(resource("rounded rectangle area exceeds bounded work"));
+            }
+            let [m00, m01, m10, m11] = self.inverse;
+            let mapped = |root: [f64; 2]| {
+                let p = [
+                    root[0] - self.root_translation[0],
+                    root[1] - self.root_translation[1],
+                ];
+                [
+                    m00.mul_add(p[0], m01 * p[1]),
+                    m10.mul_add(p[0], m11 * p[1]),
+                ]
+            };
+            let [x, y] = root_lower;
+            let polygon = DiskAreaCellPolygon::quadrilateral([
+                mapped([x, y]),
+                mapped([x + 1.0, y]),
+                mapped([x + 1.0, y + 1.0]),
+                mapped([x, y + 1.0]),
+            ])
+            .ok_or_else(|| precision("rounded rectangle affine cell is invalid"))?;
+            let parent_cell_area = polygon
+                .area()
+                .ok_or_else(|| precision("rounded rectangle parent cell area is invalid"))?;
+            if parent_cell_area <= 0.0 {
+                return Err(precision("rounded rectangle parent cell collapsed"));
+            }
+            let clipped_area = certified_rounded_rectangle_area(polygon, rect, self.radius)
+                .ok_or_else(|| precision("rounded rectangle circle integral is invalid"))?;
+            let coverage = clipped_area / parent_cell_area;
+            if !coverage.is_finite() || !(-1.0e-7..=1.0 + 1.0e-7).contains(&coverage) {
+                return Err(precision("rounded rectangle circle area is not normalized"));
+            }
+            return Ok(coverage.clamp(0.0, 1.0));
         }
         let mut pending = std::collections::BinaryHeap::new();
         pending
@@ -1150,6 +1394,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
     }
     let disk_area = AffinePositiveDiskArea {
         triangles: &triangles,
+        certified_rectangle: certified_axis_aligned_rectangle(&triangles),
         inverse: [
             d / determinant,
             -c / determinant,
@@ -2728,6 +2973,7 @@ mod tests {
         ];
         let identity = AffinePositiveDiskArea {
             triangles: &square,
+            certified_rectangle: Some([2.0, 2.0, 4.0, 4.0]),
             inverse: [1.0, 0.0, 0.0, 1.0],
             root_translation: [0.0, 0.0],
             radius: 1.0,
@@ -2740,6 +2986,15 @@ mod tests {
         assert_eq!(identity.sample([0.0, 0.0], &mut work, &[0]).unwrap(), 0.0);
         assert_eq!(identity.sample([3.0, 3.0], &mut work, &[0]).unwrap(), 1.0);
         assert!(work > 0);
+        let mut exhausted = 16_777_216_usize;
+        assert!(matches!(
+            identity.sample([1.0, 1.0], &mut exhausted, &[3, 2]),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [3, 2]
+        ));
 
         let parent_square = [
             [10.0, 10.0],
@@ -2752,6 +3007,7 @@ mod tests {
         // Root x=2*parent_x +.5*parent_y+4, root y=parent_y.
         let sheared = AffinePositiveDiskArea {
             triangles: &parent_square,
+            certified_rectangle: Some([10.0, 10.0, 20.0, 20.0]),
             inverse: [0.5, -0.25, 0.0, 1.0],
             root_translation: [4.0, 0.0],
             radius: 1.0,
@@ -2768,6 +3024,7 @@ mod tests {
         let large_triangle = [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]];
         let area = AffinePositiveDiskArea {
             triangles: &large_triangle,
+            certified_rectangle: None,
             inverse: [1.0, 0.0, 0.0, 1.0],
             root_translation: [0.0, 0.0],
             radius: 1.0e-7,
@@ -2785,6 +3042,7 @@ mod tests {
         let triangles = [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]];
         let area = AffinePositiveDiskArea {
             triangles: &triangles,
+            certified_rectangle: None,
             inverse: [1.0, 0.0, 0.0, 1.0],
             root_translation: [0.0, 0.0],
             radius: 0.5,
