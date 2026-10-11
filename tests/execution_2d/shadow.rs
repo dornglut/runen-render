@@ -1353,6 +1353,130 @@ fn orthogonal_root_hole_erodes_from_both_exterior_boundaries_on_vulkan() {
     assert_eq!(pixel(&image, 9, 20), [0, 0, 0, 0]);
 }
 
+/*
+ * RR-F3F-NS02 Gaussian admission PROBES, not positive conformance.
+ *
+ * Both tests must exercise the complete 64x64 scene independently, even if
+ * its current evaluator exceeds the unchanged whole-scene work admission.
+ * A typed, before-work ResourceLimit is a valid provisional outcome only
+ * while #81 remains draft. It MUST be removed as an allowed outcome before
+ * final F3F acceptance; a green probe is NOT evidence of Gaussian support.
+ *
+ * Independent mathematical reference: erode the true orthogonal union by
+ * radius 1. Across each constant-topology horizontal strip, its occupied
+ * x-intervals have endpoints consisting of straight segments and the
+ * circle arcs sqrt(1 - (y - corner_y)^2). Integrate each x interval against
+ * the normalized, truncated 3sigma Gaussian using its erf antiderivative;
+ * integrate the resulting piecewise y function independently. Averaging
+ * the 16 globally correlated sample centers in the specified corner pixel
+ * gives alpha ~= 0.22752904084766 at sigma=0.1 for both these shapes.
+ * Linear premultiplied red then resolves to sRGB8 [131, 0, 0, 58].
+ */
+fn probe_orthogonal_finite_gaussian(
+    composition: &Render2dComposition,
+    corner: [u32; 2],
+    label: &str,
+) {
+    let Some(context) = context() else { return };
+    let bindings = Render2dResourceBindings::default();
+    let (_, target) = target(label);
+    let mut executor = Render2dExecutor::new();
+    match executor.prepare(&context, composition, &bindings, &target) {
+        Ok(prepared) => {
+            assert!(
+                prepared.has_render_work(),
+                "a visible, nonempty finite-Gaussian effect must author work"
+            );
+            let image = execute(&context, &mut executor, composition, &bindings, label);
+            pixel_near(pixel(&image, corner[0], corner[1]), [131, 0, 0, 58]);
+        }
+        Err(Render2dExecutionError::SampleSpace {
+            kind: runen_render::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+            path: Some(path),
+            ..
+        }) if path == [0] => {
+            // A resource failure is NOT acceptance of this ordinary class.
+            // The absence of a prepared contribution prevents publication of
+            // partial GPU work. A later independent valid request must still
+            // prepare on this same executor.
+            let ordinary = group(
+                vec![caster(
+                    Render2dColorRgba8::TRANSPARENT,
+                    10.0,
+                    10.0,
+                    2.0,
+                    2.0,
+                )],
+                vec![effect(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    Render2dColorRgba8::new(255, 0, 0, 255),
+                )],
+                1.0,
+            );
+            assert!(
+                executor
+                    .prepare(&context, &ordinary, &bindings, &target)
+                    .expect("a rejected Gaussian cannot poison subsequent execution")
+                    .has_render_work()
+            );
+        }
+        Err(error) => panic!(
+            "{label}: only independently verified GPU output or exact owner-path ResourceLimit is admissible in the feasibility probe: {error}"
+        ),
+    }
+}
+
+#[test]
+fn finite_gaussian_concave_l_has_independent_oracle_or_typed_preflight_rejection() {
+    // Existing certified sigma-zero L source, independently repeated here at
+    // sigma=.1 rather than sharing control flow with the ring probe.
+    let composition = group(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 5.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 15.0, 5.0, 5.0),
+        ],
+        vec![effect(
+            0.0,
+            0.0,
+            0.1,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    probe_orthogonal_finite_gaussian(&composition, [14, 14], "F3F NS02 L sigma .1 feasibility");
+}
+
+#[test]
+fn finite_gaussian_holed_ring_has_independent_oracle_or_typed_preflight_rejection() {
+    // The ring is an independent invocation; prior combined failing tests
+    // never reached it because the L exhausted preparation first.
+    let composition = group(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 20.0, 6.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 16.0, 6.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 24.0, 16.0, 6.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 24.0, 20.0, 6.0),
+        ],
+        vec![effect(
+            0.0,
+            0.0,
+            0.1,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    probe_orthogonal_finite_gaussian(
+        &composition,
+        [15, 15],
+        "F3F NS02 holed ring sigma .1 feasibility",
+    );
+}
+
 #[test]
 fn excess_authored_shadows_fail_before_caller_work_and_executor_remains_reusable() {
     let Some(context) = context() else {
