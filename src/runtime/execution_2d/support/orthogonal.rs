@@ -430,7 +430,10 @@ impl<'a> OrthogonalExterior<'a> {
             || !(origin_x + width as f64).is_finite()
             || width > super::MAX_NEUTRAL_MASK_SAMPLES
         {
-            return Err(precision(path, "orthogonal Gaussian row is unrepresentable"));
+            return Err(precision(
+                path,
+                "orthogonal Gaussian row is unrepresentable",
+            ));
         }
         let mut cuts = Vec::new();
         cuts.try_reserve(self.y_events.len() * 3 + 2)
@@ -446,17 +449,21 @@ impl<'a> OrthogonalExterior<'a> {
         cuts.sort_by(f64::total_cmp);
         cuts.dedup();
         let mut values = Vec::new();
-        values.try_reserve_exact(width)
+        values
+            .try_reserve_exact(width)
             .map_err(|_| resource(path, "Gaussian row buffer allocation failed"))?;
         values.resize(width, 0.0_f64);
         let mut crossings = Vec::<f64>::new();
         let mut forbidden = Vec::<[f64; 2]>::new();
         let mut allowed = Vec::<[f64; 2]>::new();
-        crossings.try_reserve(self.edges.len())
+        crossings
+            .try_reserve(self.edges.len())
             .map_err(|_| resource(path, "Gaussian crossing allocation failed"))?;
-        forbidden.try_reserve(self.edges.len())
+        forbidden
+            .try_reserve(self.edges.len())
             .map_err(|_| resource(path, "Gaussian capsule allocation failed"))?;
-        allowed.try_reserve(self.edges.len() + 1)
+        allowed
+            .try_reserve(self.edges.len() + 1)
             .map_err(|_| resource(path, "Gaussian interval allocation failed"))?;
         let levels = (usize::BITS - self.edges.len().leading_zeros()) as usize + 1;
         let section_charge = self
