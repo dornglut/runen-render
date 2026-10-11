@@ -737,52 +737,6 @@ fn nested_positive_disk_then_finite_gaussian_maps_through_sheared_ancestor() {
 }
 
 #[test]
-fn transparent_child_positive_disk_support_is_consumed_by_ancestor_shadow() {
-    let Some(context) = context() else { return };
-    // A transparent child C=[10,20]^2 independently emits the support
-    // C (+) Euclidean disk(1), with sigma=0 and no paint contribution.
-    // The parent must consume C UNION this exact curved support, not C,
-    // the disk's square AABB, or a sampled child alpha mask.
-    let child = Render2dEntry::group(Render2dGroup::new(
-        vec![caster(
-            Render2dColorRgba8::TRANSPARENT,
-            10.0,
-            10.0,
-            10.0,
-            10.0,
-        )],
-        Render2dAffineTransform::IDENTITY,
-        Vec::new(),
-        Render2dOpacity::TRANSPARENT,
-        vec![effect(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)],
-    ));
-    let composition = group(
-        vec![child],
-        vec![effect(
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            Render2dColorRgba8::new(255, 0, 0, 255),
-        )],
-        1.0,
-    );
-    let output = execute(
-        &context,
-        &mut Render2dExecutor::new(),
-        &composition,
-        &Render2dResourceBindings::default(),
-        "F3F nested positive disk is exact transparent ancestor caster",
-    );
-    // The pixel [9,10] x [9,10] intersects the radius-1 corner disk
-    // in precisely pi/4 of its area. Source-over linear premul red gives
-    // sRGB8 [229,0,0,200], independent of child opacity and color alpha.
-    pixel_near(pixel(&output, 9, 9), [229, 0, 0, 200]);
-    pixel_near(pixel(&output, 10, 10), [255, 0, 0, 255]);
-    assert_eq!(pixel(&output, 8, 8), [0, 0, 0, 0]);
-}
-
-#[test]
 fn nested_positive_disk_is_unsupported_when_ancestor_needs_neutral_caster() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(

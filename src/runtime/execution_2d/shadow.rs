@@ -302,28 +302,13 @@ fn gaussian_square_support(
 ///
 /// Retaining graph operations here is a structural cutover, NOT admission of
 /// previously unsupported mixed signed morphology or repeated curved effects.
-
-/// A renderer-private qualified caster realization derived from the F1 DAG.
-/// Rounded support is kept geometrically precise until continuous coverage;
-/// it is never a faceted mesh, cache identity, or second semantic owner.
-pub(super) enum NeutralCaster {
-    Mesh(Arc<NeutralMesh>),
-    RectangleWithDisk {
-        pristine: Arc<NeutralMesh>,
-        radius: f64,
-    },
-}
-
-/// The single borrowed F1 plan is the only source of authoring semantics.
-/// Materializable meshes and one verified rounded rectangle are private
-/// replaceable physical realizations of its immutable region graph.
 pub(super) fn group_child_sources<'a>(
     plan: &scene::Plan<'a>,
     bindings: &Render2dResourceBindings,
     field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
-) -> Result<BTreeMap<usize, NeutralCaster>, Render2dExecutionError> {
+) -> Result<BTreeMap<usize, Arc<NeutralMesh>>, Render2dExecutionError> {
     let mut active = Vec::<SourceFrame<'a>>::new();
     let mut sources = BTreeMap::new();
     let mut graph = region::NeutralRegionBuilder::new(scales, max_buffer_bytes);
@@ -368,18 +353,7 @@ pub(super) fn group_child_sources<'a>(
                     graph.affine(children, frame.group.local_to_parent(), &frame.path)?;
                 let nested = !active.is_empty();
                 if !frame.group.shadows().is_empty() {
-                    let source = match graph.materialize(&in_parent) {
-                        Ok(mesh) => NeutralCaster::Mesh(mesh),
-                        Err(error @ Render2dExecutionError::UnsupportedEntry { .. }) => {
-                            match graph.certified_rectangle_with_disk(&in_parent)? {
-                                Some((pristine, radius)) => {
-                                    NeutralCaster::RectangleWithDisk { pristine, radius }
-                                }
-                                None => return Err(error),
-                            }
-                        }
-                        Err(error) => return Err(error),
-                    };
+                    let source = graph.materialize(&in_parent)?;
                     sources.insert(frame.begin_event, source);
                     if !nested {
                         // A root group has no ancestor caster consumer. Its
@@ -393,9 +367,25 @@ pub(super) fn group_child_sources<'a>(
                 }
                 let mut components = vec![Arc::clone(&in_parent)];
                 if !frame.group.shadows().is_empty() {
-                    // A positive Euclidean disk remains symbolic here.
-                    // A consuming ancestor must subsequently qualify its
-                    // exact region query or reject at the curved owner's path.
+                    let ancestor_shadow_caster = active
+                        .iter()
+                        .any(|ancestor| !ancestor.group.shadows().is_empty());
+                    if frame
+                        .group
+                        .shadows()
+                        .iter()
+                        .any(|effect| effect.spread() > 0.0 && ancestor_shadow_caster)
+                    {
+                        // Keep the prior exact path of the unrepresented
+                        // curved caster. A consuming ancestor MUST NOT see
+                        // the raw C in place of this disk expression.
+                        return Err(super::unsupported_at(
+                            &frame.path,
+                            Render2dUnsupportedContent::Shadows {
+                                root_index: frame.path[0],
+                            },
+                        ));
+                    }
                     components
                         .try_reserve(frame.group.shadows().len())
                         .map_err(|_| {
@@ -914,9 +904,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sources.len(), 1);
-        let NeutralCaster::Mesh(caster) = sources.get(&0).unwrap() else {
-            panic!("certified clipped group support must remain polygonal");
-        };
+        let caster = sources.get(&0).unwrap();
         for (actual, expected) in caster.bounds.iter().zip([0.5, 0.0, 2.0, 1.0]) {
             assert!((*actual - expected).abs() < 1.0e-6);
         }
@@ -990,9 +978,7 @@ mod tests {
             1_048_576,
         )
         .unwrap();
-        let NeutralCaster::Mesh(mesh) = sources.get(&0).unwrap() else {
-            panic!("certified outlined glyph must remain polygonal");
-        };
+        let mesh = sources.get(&0).unwrap();
         assert!(!mesh.triangles.is_empty());
         assert!(mesh.bounds[0].is_finite() && mesh.bounds[2] > mesh.bounds[0]);
     }

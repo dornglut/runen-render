@@ -2115,7 +2115,7 @@ pub(super) fn certified_convex_erosion_mesh(
 /// This admits equivalent diagonals and duplicate tessellation without ever
 /// treating the union AABB alone as geometry. All other meshes take the
 /// general continuous signed-distance route.
-pub(super) fn certified_axis_aligned_rectangle(triangles: &[[f64; 2]]) -> Option<[f64; 4]> {
+fn certified_axis_aligned_rectangle(triangles: &[[f64; 2]]) -> Option<[f64; 4]> {
     if triangles.len() < 6 || !triangles.len().is_multiple_of(3) {
         return None;
     }
