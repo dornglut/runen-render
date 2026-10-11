@@ -210,10 +210,10 @@ pub(super) struct NeutralRegionBuilder {
 
 /// Bounded private physical realization of one proven F1 rounded rectangle.
 /// The original child path remains authoritative for unsupported extensions.
-pub(super) struct CertifiedRoundedRectangle {
-    pub(super) rectangle: Arc<support::NeutralMesh>,
-    pub(super) radius: f64,
-    pub(super) curved_owner: Vec<usize>,
+pub(in crate::runtime::execution_2d) struct CertifiedRoundedRectangle {
+    pub(in crate::runtime::execution_2d) rectangle: Arc<support::NeutralMesh>,
+    pub(in crate::runtime::execution_2d) radius: f64,
+    pub(in crate::runtime::execution_2d) curved_owner: Vec<usize>,
 }
 
 impl NeutralRegionBuilder {
