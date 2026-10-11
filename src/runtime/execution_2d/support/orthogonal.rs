@@ -305,10 +305,20 @@ impl<'a> OrthogonalExterior<'a> {
         // which is contained in union(OUTER). Therefore the remaining
         // original-inside width is bounded by these two evaluations.
         let lower_width = Self::covered_mass(
-            &crossings, &outer_forbidden, [x0, x1], query.kernel, work, path,
+            &crossings,
+            &outer_forbidden,
+            [x0, x1],
+            query.kernel,
+            work,
+            path,
         )?;
         let upper_width = Self::covered_mass(
-            &crossings, &inner_forbidden, [x0, x1], query.kernel, work, path,
+            &crossings,
+            &inner_forbidden,
+            [x0, x1],
+            query.kernel,
+            work,
+            path,
         )?;
         let height = query.kernel.axis_mass(y0, y1, 1, work, path)?;
         let lower = lower_width * height;
