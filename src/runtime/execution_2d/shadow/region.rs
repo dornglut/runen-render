@@ -559,12 +559,8 @@ impl NeutralRegion<'_> {
             {
                 source.point_certificate(point)
             }
-            Kind::Clip { source, clips } if clips.is_empty() => {
-                source.point_certificate(point)
-            }
-            Kind::Effect { source, shadow }
-                if shadow.spread() > 0.0 && shadow.sigma() == 0.0 =>
-            {
+            Kind::Clip { source, clips } if clips.is_empty() => source.point_certificate(point),
+            Kind::Effect { source, shadow } if shadow.spread() > 0.0 && shadow.sigma() == 0.0 => {
                 let Some([x0, y0, x1, y1]) = source.rectangle() else {
                     return PointCertificate::Unknown;
                 };
@@ -617,13 +613,12 @@ mod tests {
         )
     }
 
-
     #[test]
     fn borrowed_f1_group_events_build_exact_transparent_disk_expression() {
         use crate::composition_2d::{
-            Render2dBrush, Render2dComposition, Render2dEntry, Render2dGroup,
-            Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dRect, Render2dShape,
-            Render2dResourceBindings,
+            Render2dBrush, Render2dComposition, Render2dEntry, Render2dGroup, Render2dItem,
+            Render2dOpacity, Render2dPrimitive, Render2dRect, Render2dResourceBindings,
+            Render2dShape,
         };
         let transparent = Render2dColorRgba8::TRANSPARENT;
         let item = Render2dItem::new(
@@ -635,8 +630,7 @@ mod tests {
             Vec::new(),
             Render2dOpacity::TRANSPARENT,
         );
-        let positive =
-            Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, transparent).unwrap();
+        let positive = Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, transparent).unwrap();
         let child = Render2dGroup::new(
             vec![Render2dEntry::item(item)],
             Render2dAffineTransform::IDENTITY,
@@ -649,9 +643,16 @@ mod tests {
             Render2dAffineTransform::IDENTITY,
             Vec::new(),
             Render2dOpacity::OPAQUE,
-            vec![Render2dDropShadow::new(
-                0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(255, 0, 0, 255),
-            ).unwrap()],
+            vec![
+                Render2dDropShadow::new(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    Render2dColorRgba8::new(255, 0, 0, 255),
+                )
+                .unwrap(),
+            ],
         );
         let composition = Render2dComposition::new(vec![Render2dEntry::group(root)]).unwrap();
         let plan = shadow::scene::analyze(&composition).unwrap();
@@ -660,11 +661,7 @@ mod tests {
         // Replay exactly the borrowed F1 event frames and the production
         // neutral-item/source/affine/effect/clip constructors, never an
         // invented cached-alpha or semantic surrogate.
-        let mut stack = Vec::<(
-            Vec<usize>,
-            &Render2dGroup,
-            Vec<Arc<NeutralRegion<'_>>>,
-        )>::new();
+        let mut stack = Vec::<(Vec<usize>, &Render2dGroup, Vec<Arc<NeutralRegion<'_>>>)>::new();
         let mut root_expression = None;
         for event in &plan.events {
             match event {
@@ -683,20 +680,28 @@ mod tests {
                         },
                         1_048_576,
                         &mut builder.clip_work,
-                    ).unwrap().expect("transparent authored fill keeps neutral support");
+                    )
+                    .unwrap()
+                    .expect("transparent authored fill keeps neutral support");
                     let leaf = builder.source(mesh, path).unwrap();
                     stack.last_mut().unwrap().2.push(leaf);
                 }
                 shadow::scene::Event::EndGroup => {
                     let (path, group, children) = stack.pop().unwrap();
                     let union = builder.union(children, &path).unwrap();
-                    let pristine = builder.affine(union, group.local_to_parent(), &path).unwrap();
+                    let pristine = builder
+                        .affine(union, group.local_to_parent(), &path)
+                        .unwrap();
                     if stack.is_empty() {
                         root_expression = Some(pristine);
                     } else {
                         let mut parts = vec![Arc::clone(&pristine)];
                         for shadow in group.shadows() {
-                            parts.push(builder.effect(Arc::clone(&pristine), *shadow, &path).unwrap());
+                            parts.push(
+                                builder
+                                    .effect(Arc::clone(&pristine), *shadow, &path)
+                                    .unwrap(),
+                            );
                         }
                         let complete = builder.union(parts, &path).unwrap();
                         let clipped = builder.clip(complete, group.clips(), &path).unwrap();
@@ -707,10 +712,22 @@ mod tests {
         }
         let expr = root_expression.expect("root group completed");
         assert_eq!(expr.point_certificate([9.5, 9.5]), PointCertificate::Inside);
-        assert_eq!(expr.point_certificate([8.5, 8.5]), PointCertificate::Outside);
-        assert_eq!(expr.point_certificate([15.0, 15.0]), PointCertificate::Inside);
-        assert_eq!(expr.point_certificate([9.0, 9.0]), PointCertificate::Outside);
-        assert_eq!(expr.point_certificate([9.0, 15.0]), PointCertificate::Unknown);
+        assert_eq!(
+            expr.point_certificate([8.5, 8.5]),
+            PointCertificate::Outside
+        );
+        assert_eq!(
+            expr.point_certificate([15.0, 15.0]),
+            PointCertificate::Inside
+        );
+        assert_eq!(
+            expr.point_certificate([9.0, 9.0]),
+            PointCertificate::Outside
+        );
+        assert_eq!(
+            expr.point_certificate([9.0, 15.0]),
+            PointCertificate::Unknown
+        );
         assert!(matches!(
             builder.materialize(&expr),
             Err(Render2dExecutionError::UnsupportedEntry {
