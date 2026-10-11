@@ -780,6 +780,66 @@ fn nested_positive_disk_sigma_zero_consumed_by_ancestor_on_actual_vulkan() {
 }
 
 #[test]
+fn qualified_nested_disk_respects_ancestor_translation_on_actual_vulkan() {
+    let Some(context) = context() else { return };
+    let child = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 10.0)],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)],
+    ));
+    let composition = group(
+        vec![child],
+        vec![effect(3.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(255, 0, 0, 255))],
+        1.0,
+    );
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F certified disk precedes ancestor offset",
+    );
+    // The same 1-radius quarter disk has moved precisely +3 in x.
+    pixel_near(pixel(&image, 12, 9), [229, 0, 0, 200]);
+    pixel_near(pixel(&image, 17, 15), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 9, 9), [0, 0, 0, 0]);
+}
+
+#[test]
+fn qualified_child_disk_rejects_uncertified_ancestor_gaussian_at_child_path() {
+    let Some(context) = context() else { return };
+    let child = Render2dEntry::group(Render2dGroup::new(
+        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 10.0)],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)],
+    ));
+    let composition = group(
+        vec![child],
+        vec![effect(0.0, 0.0, 0.1, 0.0, Render2dColorRgba8::new(255, 0, 0, 255))],
+        1.0,
+    );
+    let (_, target) = target("F3F unqualified ancestor finite Gaussian rejection");
+    assert!(matches!(
+        Render2dExecutor::new().prepare(
+            &context,
+            &composition,
+            &Render2dResourceBindings::default(),
+            &target,
+        ),
+        Err(Render2dExecutionError::UnsupportedEntry {
+            path,
+            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
+                root_index: 0,
+            },
+        }) if path == [0, 0]
+    ));
+}
+
+#[test]
 fn nested_positive_disk_is_unsupported_when_ancestor_needs_neutral_caster() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(

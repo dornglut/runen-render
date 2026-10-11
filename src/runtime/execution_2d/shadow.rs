@@ -381,15 +381,16 @@ fn group_child_sources_with_probe<'a>(
                 let nested = !active.is_empty();
                 if !frame.group.shadows().is_empty() {
                     inspect(&in_parent, &frame.path);
-                    let source = match graph.materialize(&in_parent) {
-                        Ok(mesh) => NeutralCaster::Mesh(mesh),
-                        Err(error @ Render2dExecutionError::UnsupportedEntry { .. }) if !nested => {
-                            match graph.qualified_rounded_rectangle(&in_parent)? {
-                                Some(qualified) => NeutralCaster::RoundedRectangle(qualified),
-                                None => return Err(error),
-                            }
+                    // Resolve the proven curved DAG before asking for a
+                    // polygonal mesh: a disk cannot be made into triangles
+                    // and an expected rejection is not control flow.
+                    let source = if !nested {
+                        match graph.qualified_rounded_rectangle(&in_parent)? {
+                            Some(qualified) => NeutralCaster::RoundedRectangle(qualified),
+                            None => NeutralCaster::Mesh(graph.materialize(&in_parent)?),
                         }
-                        Err(error) => return Err(error),
+                    } else {
+                        NeutralCaster::Mesh(graph.materialize(&in_parent)?)
                     };
                     sources.insert(frame.begin_event, source);
                     if !nested {
