@@ -208,6 +208,14 @@ pub(super) struct NeutralRegionBuilder {
     max_buffer_bytes: u64,
 }
 
+/// Bounded private physical realization of one proven F1 rounded rectangle.
+/// The original child path remains authoritative for unsupported extensions.
+pub(super) struct CertifiedRoundedRectangle {
+    pub(super) rectangle: Arc<support::NeutralMesh>,
+    pub(super) radius: f64,
+    pub(super) curved_owner: Vec<usize>,
+}
+
 impl NeutralRegionBuilder {
     pub(super) fn new(scales: shadow::NeutralPreparationScale, max_buffer_bytes: u64) -> Self {
         Self {
@@ -373,7 +381,7 @@ impl NeutralRegionBuilder {
     pub(super) fn qualified_rounded_rectangle<'a>(
         &mut self,
         root: &Arc<NeutralRegion<'a>>,
-    ) -> Result<Option<(Arc<support::NeutralMesh>, f64, Vec<usize>)>, Render2dExecutionError> {
+    ) -> Result<Option<CertifiedRoundedRectangle>, Render2dExecutionError> {
         fn identity<'a, 'b>(mut node: &'b Arc<NeutralRegion<'a>>) -> &'b Arc<NeutralRegion<'a>> {
             loop {
                 match &node.kind {
@@ -411,7 +419,11 @@ impl NeutralRegionBuilder {
         if support::certified_axis_aligned_rectangle(&rectangle.triangles).is_none() {
             return Ok(None);
         }
-        Ok(Some((rectangle, shadow.spread(), curved.path.clone())))
+        Ok(Some(CertifiedRoundedRectangle {
+            rectangle,
+            radius: shadow.spread(),
+            curved_owner: curved.path.clone(),
+        }))
     }
 
     /// Cached polygons share the one original C. IDs remain unique even when
@@ -746,19 +758,14 @@ mod tests {
             "the actual root caster must be inspected before materialization"
         );
         let sources = result.expect("qualified C union disk must reach the ancestor");
-        let Some(shadow::NeutralCaster::RoundedRectangle {
-            rectangle,
-            radius,
-            curved_owner,
-        }) = sources.get(&0)
-        else {
+        let Some(shadow::NeutralCaster::RoundedRectangle(qualified)) = sources.get(&0) else {
             panic!("the root must carry one exact qualified rounded caster");
         };
-        assert_eq!(*radius, 1.0);
-        assert_eq!(curved_owner, &[0, 0]);
-        let rect = support::certified_axis_aligned_rectangle(&rectangle.triangles)
+        assert_eq!(qualified.radius, 1.0);
+        assert_eq!(qualified.curved_owner, &[0, 0]);
+        let rect = support::certified_axis_aligned_rectangle(&qualified.rectangle.triangles)
             .expect("the child C is still a complete physical rectangle");
-        let scale = rectangle.units_per_parent_logical_unit;
+        let scale = qualified.rectangle.units_per_parent_logical_unit;
         assert_eq!(rect.map(|v| v / scale), [10.0, 10.0, 20.0, 20.0]);
     }
 

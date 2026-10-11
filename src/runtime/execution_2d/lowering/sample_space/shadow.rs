@@ -180,11 +180,10 @@ pub(super) fn prepare(
             .expect("the neutral F1 traversal records each shadow-bearing group");
         let (mesh, qualified_disk) = match source {
             geometry_support::NeutralCaster::Mesh(mesh) => (mesh.as_ref(), None),
-            geometry_support::NeutralCaster::RoundedRectangle {
-                rectangle,
-                radius,
-                curved_owner,
-            } => (rectangle.as_ref(), Some((*radius, curved_owner.as_slice()))),
+            geometry_support::NeutralCaster::RoundedRectangle(qualified) => (
+                qualified.rectangle.as_ref(),
+                Some((qualified.radius, qualified.curved_owner.as_slice())),
+            ),
         };
         let mut prepared = Vec::new();
         prepared

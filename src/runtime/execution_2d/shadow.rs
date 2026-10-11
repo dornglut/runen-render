@@ -304,11 +304,7 @@ fn gaussian_square_support(
 /// The qualified disk remains an exact curve, never triangle/AABB/alpha support.
 pub(super) enum NeutralCaster {
     Mesh(Arc<NeutralMesh>),
-    RoundedRectangle {
-        rectangle: Arc<NeutralMesh>,
-        radius: f64,
-        curved_owner: Vec<usize>,
-    },
+    RoundedRectangle(region::CertifiedRoundedRectangle),
 }
 
 pub(super) fn group_child_sources<'a>(
@@ -389,13 +385,7 @@ fn group_child_sources_with_probe<'a>(
                         Ok(mesh) => NeutralCaster::Mesh(mesh),
                         Err(error @ Render2dExecutionError::UnsupportedEntry { .. }) if !nested => {
                             match graph.qualified_rounded_rectangle(&in_parent)? {
-                                Some((rectangle, radius, curved_owner)) => {
-                                    NeutralCaster::RoundedRectangle {
-                                        rectangle,
-                                        radius,
-                                        curved_owner,
-                                    }
-                                }
+                                Some(qualified) => NeutralCaster::RoundedRectangle(qualified),
                                 None => return Err(error),
                             }
                         }
