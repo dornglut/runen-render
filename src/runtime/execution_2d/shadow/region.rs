@@ -5,13 +5,11 @@
 //! realization is merely one *certified* disposable query path; an unsupported
 //! curved consumer fails before target mutation instead of inventing triangles
 //! from bounds, alpha or a sampled distance field.
-use crate::runtime::execution_2d::{shadow, support};
-use crate::composition_2d::{
-    Render2dAffineTransform, Render2dClip, Render2dDropShadow,
-};
+use crate::composition_2d::{Render2dAffineTransform, Render2dClip, Render2dDropShadow};
 use crate::execution_2d::{
     Render2dExecutionError, Render2dSampleSpaceError, Render2dUnsupportedContent,
 };
+use crate::runtime::execution_2d::{shadow, support};
 use std::{collections::BTreeMap, sync::Arc};
 
 const MAX_REGION_NODES: usize = 65_536;
@@ -104,11 +102,15 @@ impl NeutralRegionBuilder {
             .nodes
             .checked_add(1)
             .ok_or_else(|| resource(path, "neutral support node count overflow"))?;
-        let paths = self.retained_path_units.checked_add(path.len()).ok_or_else(|| {
-            resource(path, "neutral support graph owner-path budget overflow")
-        })?;
+        let paths = self
+            .retained_path_units
+            .checked_add(path.len())
+            .ok_or_else(|| resource(path, "neutral support graph owner-path budget overflow"))?;
         if next > MAX_REGION_NODES || depth > MAX_REGION_DEPTH || paths > MAX_REGION_PATH_UNITS {
-            return Err(resource(path, "neutral support graph exceeds node/depth/path admission"));
+            return Err(resource(
+                path,
+                "neutral support graph exceeds node/depth/path admission",
+            ));
         }
         self.nodes = next;
         self.retained_path_units = paths;
@@ -196,22 +198,13 @@ impl NeutralRegionBuilder {
                         mesh.triangles.len(),
                         path,
                     )?;
-                    shadow::append(
-                        &mut output,
-                        &mesh,
-                        Render2dAffineTransform::IDENTITY,
-                        path,
-                    )?;
+                    shadow::append(&mut output, &mesh, Render2dAffineTransform::IDENTITY, path)?;
                 }
                 Arc::new(output)
             }
             Kind::Affine { source, to_parent } => {
                 let mesh = self.materialize(source)?;
-                shadow::charge_vertices(
-                    &mut self.retained_vertices,
-                    mesh.triangles.len(),
-                    path,
-                )?;
+                shadow::charge_vertices(&mut self.retained_vertices, mesh.triangles.len(), path)?;
                 let mut output = shadow::empty_mesh();
                 shadow::append(&mut output, &mesh, *to_parent, path)?;
                 Arc::new(output)
@@ -234,7 +227,10 @@ impl NeutralRegionBuilder {
                 )?;
                 Arc::new(clipped)
             }
-            Kind::Effect { source, shadow: effect } => {
+            Kind::Effect {
+                source,
+                shadow: effect,
+            } => {
                 let mesh = self.materialize(source)?;
                 // A positive disk is retained as a precise expression but
                 // cannot be *polygonalized* as finite triangles. A consuming
