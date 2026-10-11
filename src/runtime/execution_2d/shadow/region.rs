@@ -366,6 +366,57 @@ impl NeutralRegionBuilder {
         self.node(Kind::Effect { source, shadow }, path, depth)
     }
 
+
+    /// Recognize only the exact existing F1 DAG: C union (C ⊕ disk(r)).
+    /// The child source must be a whole, certified axis-aligned rectangle,
+    /// with identity frames, no clip, zero blur and no effect translation.
+    /// All other curved DAGs remain unsupported rather than faceted.
+    pub(super) fn qualified_rounded_rectangle<'a>(
+        &mut self,
+        root: &Arc<NeutralRegion<'a>>,
+    ) -> Result<Option<(Arc<support::NeutralMesh>, f64, Vec<usize>)>, Render2dExecutionError> {
+        fn identity<'a, 'b>(
+            mut node: &'b Arc<NeutralRegion<'a>>,
+        ) -> &'b Arc<NeutralRegion<'a>> {
+            loop {
+                match &node.kind {
+                    Kind::Affine { source, to_parent }
+                        if to_parent.components()
+                            == Render2dAffineTransform::IDENTITY.components() =>
+                    {
+                        node = source;
+                    }
+                    Kind::Clip { source, clips: [] } => node = source,
+                    Kind::Union(children) if children.len() == 1 => node = &children[0],
+                    _ => return node,
+                }
+            }
+        }
+        let Kind::Union(children) = &identity(root).kind else {
+            return Ok(None);
+        };
+        if children.len() != 2 {
+            return Ok(None);
+        }
+        let (original, curved) = (&children[0], identity(&children[1]));
+        let Kind::Effect { source, shadow } = &curved.kind else {
+            return Ok(None);
+        };
+        if !Arc::ptr_eq(original, source)
+            || shadow.spread() <= 0.0
+            || shadow.sigma() != 0.0
+            || shadow.offset_x() != 0.0
+            || shadow.offset_y() != 0.0
+        {
+            return Ok(None);
+        }
+        let rectangle = self.materialize(original)?;
+        if support::certified_axis_aligned_rectangle(&rectangle.triangles).is_none() {
+            return Ok(None);
+        }
+        Ok(Some((rectangle, shadow.spread(), curved.path.clone())))
+    }
+
     /// Cached polygons share the one original C. IDs remain unique even when
     /// a completed graph subtree is discarded before its siblings are built.
     /// Every new cached materialization is charged once, including copies.

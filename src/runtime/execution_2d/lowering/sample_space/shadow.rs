@@ -2,6 +2,7 @@
 //! linear-premultiplied 4x4 sample compositor. No separate color renderer,
 //! sampled source alpha, shader module, scene owner or direct WGPU backend.
 use super::*;
+use crate::composition_2d::Render2dDropShadow;
 use crate::runtime::execution_2d::{
     field::{FieldSetKey, ResourceFields},
     shadow as geometry_support,
@@ -177,6 +178,14 @@ pub(super) fn prepare(
         let source = sources
             .get(&index)
             .expect("the neutral F1 traversal records each shadow-bearing group");
+        let (mesh, qualified_disk) = match source {
+            geometry_support::NeutralCaster::Mesh(mesh) => (mesh.as_ref(), None),
+            geometry_support::NeutralCaster::RoundedRectangle {
+                rectangle,
+                radius,
+                curved_owner,
+            } => (rectangle.as_ref(), Some((*radius, curved_owner.as_slice()))),
+        };
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(group.shadows().len())
@@ -188,7 +197,31 @@ pub(super) fn prepare(
             // projection, so a nested translated C remains exact triangles.
             // Nonzero nested kernels reject in group_child_sources rather
             // than being incorrectly applied in root space.
-            let Some(parent_envelope) = geometry_support::shadow_envelope(source, *effect, path)?
+            // C union (C plus disk(r)) equals C plus disk(r).
+            // This is valid only when the consuming root effect has
+            // zero spread and zero blur. Otherwise fail at child owner.
+            let effective = if let Some((radius, owner)) = qualified_disk {
+                if path.len() != 1 || effect.spread() != 0.0 || effect.sigma() != 0.0 {
+                    return Err(crate::runtime::execution_2d::unsupported_at(
+                        owner,
+                        crate::execution_2d::Render2dUnsupportedContent::Shadows {
+                            root_index: owner[0],
+                        },
+                    ));
+                }
+                Render2dDropShadow::new(
+                    effect.offset_x(),
+                    effect.offset_y(),
+                    0.0,
+                    radius,
+                    effect.color(),
+                )
+                .map_err(|_| shadow_precision(owner, "rounded neutral caster effect cannot be represented"))?
+            } else {
+                *effect
+            };
+            let Some(parent_envelope) =
+                geometry_support::shadow_envelope(mesh, effective, path)?
             else {
                 continue;
             };
@@ -229,7 +262,7 @@ pub(super) fn prepare(
                     shadow_precision(path, "shadow offset transform is unrepresentable")
                 })?;
             let mut shifted = geometry_support::empty_mesh();
-            geometry_support::append(&mut shifted, source, offset, path)?;
+            geometry_support::append(&mut shifted, mesh, offset, path)?;
             // A certified negative Euclidean disk erosion has EXACT convex
             // polygonal geometry, so carry that into the already-owned
             // parent-frame continuous Gaussian / identity evaluator.
@@ -261,7 +294,7 @@ pub(super) fn prepare(
             let remaining_spread = if erosion.is_some() {
                 0.0
             } else {
-                effect.spread()
+                effective.spread()
             };
             // A nested positive Euclidean disk and optional finite Gaussian
             // are evaluated in the owner's immediate-parent frame at

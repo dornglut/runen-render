@@ -300,13 +300,24 @@ fn gaussian_square_support(
 ///
 /// Retaining graph operations here is a structural cutover, NOT admission of
 /// previously unsupported mixed signed morphology or repeated curved effects.
+/// One renderer-private physical realization of an immutable F1 caster.
+/// The qualified disk remains an exact curve, never triangle/AABB/alpha support.
+pub(super) enum NeutralCaster {
+    Mesh(Arc<NeutralMesh>),
+    RoundedRectangle {
+        rectangle: Arc<NeutralMesh>,
+        radius: f64,
+        curved_owner: Vec<usize>,
+    },
+}
+
 pub(super) fn group_child_sources<'a>(
     plan: &scene::Plan<'a>,
     bindings: &Render2dResourceBindings,
     field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
-) -> Result<BTreeMap<usize, Arc<NeutralMesh>>, Render2dExecutionError> {
+) -> Result<BTreeMap<usize, NeutralCaster>, Render2dExecutionError> {
     group_child_sources_with_probe(
         plan,
         bindings,
@@ -328,7 +339,7 @@ fn group_child_sources_with_probe<'a>(
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
     mut inspect: impl FnMut(&Arc<region::NeutralRegion<'a>>, &[usize]),
-) -> Result<BTreeMap<usize, Arc<NeutralMesh>>, Render2dExecutionError> {
+) -> Result<BTreeMap<usize, NeutralCaster>, Render2dExecutionError> {
     let mut active = Vec::<SourceFrame<'a>>::new();
     let mut sources = BTreeMap::new();
     let mut graph = region::NeutralRegionBuilder::new(scales, max_buffer_bytes);
@@ -374,7 +385,22 @@ fn group_child_sources_with_probe<'a>(
                 let nested = !active.is_empty();
                 if !frame.group.shadows().is_empty() {
                     inspect(&in_parent, &frame.path);
-                    let source = graph.materialize(&in_parent)?;
+                    let source = match graph.materialize(&in_parent) {
+                        Ok(mesh) => NeutralCaster::Mesh(mesh),
+                        Err(error @ Render2dExecutionError::UnsupportedEntry { .. }) if !nested => {
+                            match graph.qualified_rounded_rectangle(&in_parent)? {
+                                Some((rectangle, radius, curved_owner)) => {
+                                    NeutralCaster::RoundedRectangle {
+                                        rectangle,
+                                        radius,
+                                        curved_owner,
+                                    }
+                                }
+                                None => return Err(error),
+                            }
+                        }
+                        Err(error) => return Err(error),
+                    };
                     sources.insert(frame.begin_event, source);
                     if !nested {
                         // A root group has no ancestor caster consumer. Its
@@ -912,7 +938,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sources.len(), 1);
-        let caster = sources.get(&0).unwrap();
+        let NeutralCaster::Mesh(caster) = sources.get(&0).unwrap() else {
+            panic!("clipped caster must remain polygonal");
+        };
         for (actual, expected) in caster.bounds.iter().zip([0.5, 0.0, 2.0, 1.0]) {
             assert!((*actual - expected).abs() < 1.0e-6);
         }
@@ -986,7 +1014,9 @@ mod tests {
             1_048_576,
         )
         .unwrap();
-        let mesh = sources.get(&0).unwrap();
+        let NeutralCaster::Mesh(mesh) = sources.get(&0).unwrap() else {
+            panic!("outlined glyph caster must remain polygonal");
+        };
         assert!(!mesh.triangles.is_empty());
         assert!(mesh.bounds[0].is_finite() && mesh.bounds[2] > mesh.bounds[0]);
     }

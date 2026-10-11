@@ -736,12 +736,10 @@ fn nested_positive_disk_then_finite_gaussian_maps_through_sheared_ancestor() {
     assert_eq!(pixel(&output, 28, 15), [0, 0, 0, 0]);
 }
 
-/// Mandatory F3F gap: a parent cannot yet consume a child's exact curved
-/// positive disk, even with zero blur and completely transparent child paint.
-/// The next compositional evaluator must REPLACE this expected rejection with
-/// an unconditional Vulkan quarter-circle oracle, not weaken F1 support.
+/// An ancestor must consume its child's exact positive Euclidean disk, not
+/// transparent paint alpha, the raw rectangle or a bounding-box substitute.
 #[test]
-fn nested_positive_disk_sigma_zero_rejects_without_alpha_or_bbox_substitution() {
+fn nested_positive_disk_sigma_zero_consumed_by_ancestor_on_actual_vulkan() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
         vec![caster(
@@ -767,58 +765,18 @@ fn nested_positive_disk_sigma_zero_rejects_without_alpha_or_bbox_substitution() 
         )],
         1.0,
     );
-    // If admitted, the independent continuous Euclidean reference for
-    // root pixel [9,10] x [9,10] is a quarter of a radius-1 disk:
-    // alpha pi/4, linear-premul sRGB8 [229,0,0,200]. The current
-    // qualified subset MUST reject rather than fake this via the
-    // transparent child's paint alpha, raw rectangle C, or box bound.
-    let (texture, target) = target("F3F nested positive disk owner rejection");
-    let bindings = Render2dResourceBindings::default();
-    let mut executor = Render2dExecutor::new();
-    let rejected = match executor.prepare(&context, &scene, &bindings, &target) {
-        Ok(_) => panic!("unqualified curved ancestor support must not render"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        rejected,
-        Render2dExecutionError::UnsupportedEntry {
-            path,
-            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
-                root_index: 0,
-            },
-        } if path == [0, 0]
-    ));
-
-    // Reject before appending caller-owned work or poisoning this executor:
-    // a later ordinary valid shadow still composites over caller blue.
-    let valid = group(
-        vec![caster(
-            Render2dColorRgba8::TRANSPARENT,
-            10.0,
-            10.0,
-            8.0,
-            8.0,
-        )],
-        vec![effect(
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            Render2dColorRgba8::new(255, 0, 0, 128),
-        )],
-        1.0,
-    );
-    let output = execute_inline(
+    // The [9,10]x[9,10] corner intersects the radius-one disk in
+    // exactly pi/4 area. Linear-premultiplied red resolves to [229,0,0,200].
+    let output = execute(
         &context,
-        &mut executor,
-        &valid,
-        &bindings,
-        &texture,
-        &target,
-        Some([0.0, 0.0, 1.0, 1.0]),
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F ancestor consumes the real transparent positive disk",
     );
-    pixel_near(pixel(&output, 15, 15), [188, 0, 187, 255]);
-    assert_eq!(pixel(&output, 5, 5), [0, 0, 255, 255]);
+    pixel_near(pixel(&output, 9, 9), [229, 0, 0, 200]);
+    pixel_near(pixel(&output, 15, 15), [255, 0, 0, 255]);
+    assert_eq!(pixel(&output, 8, 8), [0, 0, 0, 0]);
 }
 
 #[test]
