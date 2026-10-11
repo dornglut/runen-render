@@ -16,6 +16,9 @@ use std::collections::BinaryHeap;
 
 const MAX_ORTHOGONAL_EDGES: usize = 256;
 const MAX_INTERVALS: usize = 32_768;
+// Bound scene-shared neutral crossing storage independently of source edge
+// admission. Oversized arrangements keep the previously certified path.
+const MAX_CACHED_CROSSINGS: usize = 16_384;
 const MAX_GLOBAL_WORK: usize = 16_777_216;
 const ERROR_TARGET: f64 = 1.0 / 2048.0;
 
@@ -43,6 +46,25 @@ pub(super) struct OrthogonalExterior<'a> {
     edges: &'a [UnionBoundaryEdge],
     y_events: Vec<f64>,
     charge_per_slice: usize,
+    cached_charge_per_slice: usize,
+    bands: Option<OrthogonalBands>,
+}
+
+/// Pure neutral-geometry arrangement shared by every physical sample in
+/// this invocation. Band crossings depend ONLY on the exposed boundary and
+/// vertex-height events, not x coverage, alpha, Gaussian or sample caches.
+struct OrthogonalBands {
+    offsets: Vec<usize>,
+    crossings: Vec<f64>,
+}
+impl OrthogonalBands {
+    fn at<'a>(&'a self, events: &[f64], y: f64) -> &'a [f64] {
+        if events.len() < 2 || y < events[0] || y >= events[events.len() - 1] {
+            return &[];
+        }
+        let index = events.partition_point(|height| *height <= y) - 1;
+        &self.crossings[self.offsets[index]..self.offsets[index + 1]]
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -59,7 +81,7 @@ impl Slice {
 }
 impl PartialEq for Slice {
     fn eq(&self, other: &Self) -> bool {
-        self.y0 == other.y0 && self.y1 == other.y1
+        self.cmp(other) == std::cmp::Ordering::Equal
     }
 }
 impl Eq for Slice {}
@@ -74,6 +96,8 @@ impl Ord for Slice {
             .total_cmp(&other.uncertainty())
             .then_with(|| self.y0.total_cmp(&other.y0))
             .then_with(|| self.y1.total_cmp(&other.y1))
+            .then_with(|| self.lower.total_cmp(&other.lower))
+            .then_with(|| self.upper.total_cmp(&other.upper))
     }
 }
 
@@ -113,10 +137,91 @@ impl<'a> OrthogonalExterior<'a> {
         }
         y_events.sort_by(f64::total_cmp);
         y_events.dedup();
+
+        // Only eligible, small arrangements are cached. The construction
+        // charge is admitted against a LOCAL candidate counter before any
+        // cache allocations and committed only after construction succeeds.
+        // If the scene budget cannot admit optional caching, the original
+        // correct per-slice path remains available with its full work charge.
+        let cached_charge_per_slice = edges
+            .len()
+            .checked_mul(2 * levels + 8)
+            .and_then(|cost| cost.checked_add(levels))
+            .ok_or_else(|| resource(path, "cached orthogonal slice work overflow"))?;
+        let bands_count = y_events.len().saturating_sub(1);
+        let max_inventory = bands_count.checked_mul(edges.len());
+        let mut bands = None;
+        if bands_count > 0
+            && max_inventory.is_some_and(|n| n <= MAX_CACHED_CROSSINGS)
+        {
+            let preparation = max_inventory
+                .and_then(|n| n.checked_mul(levels + 2))
+                .ok_or_else(|| resource(path, "cached orthogonal crossing preparation overflow"))?;
+            let mut admitted = *work;
+            if charge(&mut admitted, preparation, path).is_ok() {
+                let mut offsets = Vec::new();
+                offsets
+                    .try_reserve_exact(bands_count + 1)
+                    .map_err(|_| resource(path, "orthogonal band offsets allocation failed"))?;
+                let mut crossings = Vec::new();
+                crossings
+                    .try_reserve_exact(max_inventory.unwrap_or(0))
+                    .map_err(|_| resource(path, "orthogonal band crossings allocation failed"))?;
+                offsets.push(0);
+                for window in y_events.windows(2) {
+                    let mid = window[0] + (window[1] - window[0]) * 0.5;
+                    if !(window[0] < mid && mid < window[1]) {
+                        // A numerically collapsed height interval cannot be
+                        // made a certified cached band. Retain old behavior.
+                        offsets.clear();
+                        break;
+                    }
+                    let base = crossings.len();
+                    for &[a, b] in edges {
+                        if a[0] != b[0] {
+                            continue;
+                        }
+                        let lo = a[1].min(b[1]);
+                        let hi = a[1].max(b[1]);
+                        if mid >= lo && mid < hi {
+                            crossings.push(a[0]);
+                        }
+                    }
+                    crossings[base..].sort_by(f64::total_cmp);
+                    // Deduplicate ONLY this band's suffix. Global Vec
+                    // dedup would accidentally merge the last crossing of
+                    // an earlier y band with the first of the next band.
+                    let mut unique = base;
+                    for index in base..crossings.len() {
+                        if unique == base || crossings[unique - 1] != crossings[index] {
+                            crossings[unique] = crossings[index];
+                            unique += 1;
+                        }
+                    }
+                    crossings.truncate(unique);
+                    // Each physical exterior crossing toggles once. The
+                    // same true segment may appear more than once from
+                    // coincident triangulation but must not be counted twice.
+                    if !(crossings.len() - base).is_multiple_of(2) {
+                        return Err(precision(
+                            path,
+                            "orthogonal cached exterior parity is uncertified",
+                        ));
+                    }
+                    offsets.push(crossings.len());
+                }
+                if offsets.len() == bands_count + 1 {
+                    *work = admitted;
+                    bands = Some(OrthogonalBands { offsets, crossings });
+                }
+            }
+        }
         Ok(Some(Self {
             edges,
             y_events,
             charge_per_slice,
+            cached_charge_per_slice,
+            bands,
         }))
     }
 
@@ -181,13 +286,23 @@ impl<'a> OrthogonalExterior<'a> {
         if !(y0 < mid && mid < y1) {
             return Err(precision(path, "orthogonal erosion cannot refine a slice"));
         }
-        charge(work, self.charge_per_slice, path)?;
+        charge(
+            work,
+            if self.bands.is_some() {
+                self.cached_charge_per_slice
+            } else {
+                self.charge_per_slice
+            },
+            path,
+        )?;
         let mut crossings = Vec::<f64>::new();
         let mut outer_forbidden = Vec::<[f64; 2]>::new();
         let mut inner_forbidden = Vec::<[f64; 2]>::new();
-        crossings
-            .try_reserve(self.edges.len())
-            .map_err(|_| resource(path, "orthogonal crossing allocation failed"))?;
+        if self.bands.is_none() {
+            crossings
+                .try_reserve(self.edges.len())
+                .map_err(|_| resource(path, "orthogonal crossing allocation failed"))?;
+        }
         outer_forbidden
             .try_reserve(self.edges.len())
             .map_err(|_| resource(path, "orthogonal outer-capsule allocation failed"))?;
@@ -199,7 +314,7 @@ impl<'a> OrthogonalExterior<'a> {
             let (lo_x, hi_x, nearest_y, farthest_y) = if vertical {
                 let lo = a[1].min(b[1]);
                 let hi = a[1].max(b[1]);
-                if mid >= lo && mid < hi {
+                if self.bands.is_none() && mid >= lo && mid < hi {
                     crossings.push(a[0]);
                 }
                 // Exact min/max of distance(y,[lo,hi]) over [y0,y1].
@@ -245,21 +360,26 @@ impl<'a> OrthogonalExterior<'a> {
                 inner_forbidden.push([lo, hi]);
             }
         }
-        crossings.sort_by(f64::total_cmp);
-        crossings.dedup();
-        if !crossings.len().is_multiple_of(2) {
-            return Err(precision(
-                path,
-                "orthogonal exterior scanline parity is uncertified",
-            ));
-        }
+        let crossings: &[f64] = if let Some(bands) = &self.bands {
+            bands.at(&self.y_events, mid)
+        } else {
+            crossings.sort_by(f64::total_cmp);
+            crossings.dedup();
+            if !crossings.len().is_multiple_of(2) {
+                return Err(precision(
+                    path,
+                    "orthogonal exterior scanline parity is uncertified",
+                ));
+            }
+            &crossings
+        };
         outer_forbidden.sort_by(|a, b| a[0].total_cmp(&b[0]));
         inner_forbidden.sort_by(|a, b| a[0].total_cmp(&b[0]));
         // For each y, union(INNER) is contained in true forbidden(y),
         // which is contained in union(OUTER). Therefore the remaining
         // original-inside width is bounded by these two evaluations.
-        let lower_width = Self::covered_width(&crossings, &outer_forbidden, x0, x1);
-        let upper_width = Self::covered_width(&crossings, &inner_forbidden, x0, x1);
+        let lower_width = Self::covered_width(crossings, &outer_forbidden, x0, x1);
+        let upper_width = Self::covered_width(crossings, &inner_forbidden, x0, x1);
         let height = y1 - y0;
         let lower = lower_width * height;
         let upper = upper_width * height;
@@ -432,6 +552,81 @@ mod tests {
                 .unwrap(),
             1.0
         );
+    }
+
+    #[test]
+    fn slice_heap_total_order_is_consistent_with_equality() {
+        let first = Slice {
+            y0: 0.0,
+            y1: 1.0,
+            lower: 0.25,
+            upper: 0.75,
+        };
+        let different = Slice {
+            y0: 0.0,
+            y1: 1.0,
+            lower: 0.0,
+            upper: 0.75,
+        };
+        assert_ne!(first, different);
+        assert_ne!(first.cmp(&different), std::cmp::Ordering::Equal);
+        assert_eq!(first, first);
+        assert_eq!(first.cmp(&first), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn shared_band_crossings_preserve_exact_concave_area_and_save_query_work() {
+        let mut cached_work = 0;
+        let cached = OrthogonalExterior::new(&L, &[6], &mut cached_work)
+            .unwrap()
+            .unwrap();
+        let bands = cached.bands.as_ref().expect("bounded L band inventory");
+        assert_eq!(bands.at(&cached.y_events, 2.0), &[0.0, 8.0]);
+        assert_eq!(bands.at(&cached.y_events, 6.0), &[0.0, 4.0]);
+        assert!(bands.at(&cached.y_events, -2.0).is_empty());
+        assert!(bands.at(&cached.y_events, 10.0).is_empty());
+
+        let mut fallback_work = 0;
+        let mut fallback = OrthogonalExterior::new(&L, &[6], &mut fallback_work)
+            .unwrap()
+            .unwrap();
+        fallback.bands = None;
+        for _ in 0..8 {
+            for &cell in &[
+                [1.0, 1.0, 2.0, 2.0],
+                [3.0, 3.0, 4.0, 4.0],
+                [6.0, 6.0, 7.0, 7.0],
+            ] {
+                let a = cached.area(cell, 1.0, &mut cached_work, &[6]).unwrap();
+                let b = fallback.area(cell, 1.0, &mut fallback_work, &[6]).unwrap();
+                assert!((a - b).abs() <= ERROR_TARGET);
+            }
+        }
+        assert!(cached_work < fallback_work, "shared band construction must amortize");
+    }
+
+    #[test]
+    fn cached_crossings_remain_source_neutral_across_a_hole_and_disjoint_bands() {
+        let ring: [UnionBoundaryEdge; 8] = [
+            [[0.0, 0.0], [10.0, 0.0]],
+            [[10.0, 0.0], [10.0, 10.0]],
+            [[10.0, 10.0], [0.0, 10.0]],
+            [[0.0, 10.0], [0.0, 0.0]],
+            [[3.0, 3.0], [7.0, 3.0]],
+            [[7.0, 3.0], [7.0, 7.0]],
+            [[7.0, 7.0], [3.0, 7.0]],
+            [[3.0, 7.0], [3.0, 3.0]],
+        ];
+        let mut work = 0;
+        let cached = OrthogonalExterior::new(&ring, &[5], &mut work)
+            .unwrap()
+            .unwrap();
+        let bands = cached.bands.as_ref().unwrap();
+        assert_eq!(bands.at(&cached.y_events, 1.0), &[0.0, 10.0]);
+        assert_eq!(bands.at(&cached.y_events, 5.0), &[0.0, 3.0, 7.0, 10.0]);
+        assert_eq!(bands.at(&cached.y_events, 9.0), &[0.0, 10.0]);
+        assert_eq!(cached.area([4.0, 4.0, 5.0, 5.0], 0.5, &mut work, &[5]).unwrap(), 0.0);
+        assert_eq!(cached.area([1.0, 4.0, 2.0, 5.0], 0.5, &mut work, &[5]).unwrap(), 1.0);
     }
 
     #[test]
