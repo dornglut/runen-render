@@ -213,7 +213,10 @@ pub(super) fn prepare(
                 }
                 let combined = radius + effect.spread();
                 if !combined.is_finite() {
-                    return Err(shadow_precision(owner, "combined Euclidean disk radius overflow"));
+                    return Err(shadow_precision(
+                        owner,
+                        "combined Euclidean disk radius overflow",
+                    ));
                 }
                 Render2dDropShadow::new(
                     effect.offset_x(),
@@ -223,7 +226,10 @@ pub(super) fn prepare(
                     effect.color(),
                 )
                 .map_err(|_| {
-                    shadow_precision(owner, "combined rounded neutral caster cannot be represented")
+                    shadow_precision(
+                        owner,
+                        "combined rounded neutral caster cannot be represented",
+                    )
                 })?
             } else {
                 *effect

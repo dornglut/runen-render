@@ -935,7 +935,7 @@ fn qualified_child_positive_disk_does_not_silently_accept_ancestor_erosion() {
         )],
         1.0,
     );
-    let (_, target) = target("F3F erosion after curved child is not a disk radius subtraction");
+    let (_, target) = target("F3F unsupported ancestor erosion of rounded neutral caster");
     assert!(matches!(
         Render2dExecutor::new().prepare(
             &context,
