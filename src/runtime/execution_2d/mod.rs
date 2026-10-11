@@ -262,8 +262,7 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
                 // area can be evaluated continuously in the parent frame.
                 if path.len() > 1
                     && group.shadows().iter().any(|shadow| {
-                        shadow.spread() > 0.0
-                            && shadowed_ancestors.iter().any(|owner| *owner)
+                        shadow.spread() > 0.0 && shadowed_ancestors.iter().any(|owner| *owner)
                     })
                 {
                     let kind = Render2dUnsupportedContent::Shadows {
