@@ -102,9 +102,11 @@ impl<'a> OrthogonalExterior<'a> {
             }
         }
         let levels = (usize::BITS - edges.len().leading_zeros()) as usize + 1;
+        // One scanline traversal plus THREE bounded sorts (parity crossings
+        // and the two interval envelopes); charge worst-case log comparisons.
         let charge_per_slice = edges
             .len()
-            .checked_mul(levels + 6)
+            .checked_mul(3 * levels + 8)
             .ok_or_else(|| resource(path, "orthogonal slice work overflow"))?;
         charge(work, charge_per_slice, path)?;
         let mut y_events = Vec::new();
@@ -123,61 +125,33 @@ impl<'a> OrthogonalExterior<'a> {
         }))
     }
 
-    fn width(
-        &self,
-        y: f64,
+    fn forbidden_extent(
+        radius: f64,
+        distance: f64,
+        path: &[usize],
+    ) -> Result<Option<f64>, Render2dExecutionError> {
+        if distance > radius {
+            return Ok(None);
+        }
+        let squared = (radius - distance) * (radius + distance);
+        if !squared.is_finite() || squared < 0.0 {
+            return Err(precision(path, "orthogonal capsule extent is unrepresentable"));
+        }
+        Ok(Some(squared.sqrt()))
+    }
+
+    /// The original orthogonal interior is fixed between adjacent vertex
+    /// y-events. The true forbidden disk-capsule slice at EVERY y in a slab
+    /// lies between an inner and outer union of certified x intervals.
+    /// This avoids the loose global radius +/- dy certificates that caused
+    /// normal complete-scene rectangular edges to exhaust the work budget.
+    fn covered_width(
+        crossings: &[f64],
+        forbidden: &[[f64; 2]],
         x0: f64,
         x1: f64,
-        radius: f64,
-        work: &mut usize,
-        path: &[usize],
-    ) -> Result<f64, Render2dExecutionError> {
-        charge(work, self.charge_per_slice, path)?;
-        let mut crossings = Vec::<f64>::new();
-        let mut forbidden = Vec::<[f64; 2]>::new();
-        crossings
-            .try_reserve(self.edges.len())
-            .map_err(|_| resource(path, "orthogonal crossing allocation failed"))?;
-        if radius > 0.0 {
-            forbidden
-                .try_reserve(self.edges.len())
-                .map_err(|_| resource(path, "orthogonal disk-interval allocation failed"))?;
-        }
-        for &[a, b] in self.edges {
-            if a[0] == b[0] {
-                let lo = a[1].min(b[1]);
-                let hi = a[1].max(b[1]);
-                if y >= lo && y < hi {
-                    crossings.push(a[0]);
-                }
-                if radius > 0.0 {
-                    let dy = (lo - y).max(y - hi).max(0.0);
-                    if dy <= radius {
-                        let extent = ((radius - dy) * (radius + dy)).max(0.0).sqrt();
-                        forbidden.push([a[0] - extent, a[0] + extent]);
-                    }
-                }
-            } else if radius > 0.0 {
-                let dy = (y - a[1]).abs();
-                if dy <= radius {
-                    let extent = ((radius - dy) * (radius + dy)).max(0.0).sqrt();
-                    forbidden.push([a[0].min(b[0]) - extent, a[0].max(b[0]) + extent]);
-                }
-            }
-        }
-        crossings.sort_by(f64::total_cmp);
-        // Collinear coincident exterior pieces may overlap or be partitioned
-        // differently by the original tessellation. One geometric crossing
-        // toggles parity ONCE, regardless of duplicate edge inventory.
-        crossings.dedup();
-        if crossings.len() % 2 != 0 {
-            return Err(precision(
-                path,
-                "orthogonal exterior scanline parity is uncertified",
-            ));
-        }
-        forbidden.sort_by(|a, b| a[0].total_cmp(&b[0]));
-        let mut covered = 0.0;
+    ) -> f64 {
+        let mut allowed = 0.0;
         for pair in crossings.chunks_exact(2) {
             let left = pair[0].max(x0);
             let right = pair[1].min(x1);
@@ -185,27 +159,19 @@ impl<'a> OrthogonalExterior<'a> {
                 continue;
             }
             let mut cursor = left;
-            for interval in &forbidden {
-                if interval[1] <= cursor || interval[0] >= right {
+            for &[start, end] in forbidden {
+                if end <= cursor || start >= right {
                     continue;
                 }
-                covered += (interval[0].max(cursor).min(right) - cursor).max(0.0);
-                cursor = cursor.max(interval[1]).min(right);
+                allowed += (start.max(cursor).min(right) - cursor).max(0.0);
+                cursor = cursor.max(end).min(right);
                 if cursor >= right {
                     break;
                 }
             }
-            covered += (right - cursor).max(0.0);
+            allowed += (right - cursor).max(0.0);
         }
-        // covered above accumulates allowed intervals: fix any overlap with
-        // two successive exclusion bands by monotone cursor accounting.
-        if !covered.is_finite() || covered < -1.0e-9 || covered > (x1 - x0) + 1.0e-9 {
-            return Err(precision(
-                path,
-                "orthogonal eroded scanline lost coverage bounds",
-            ));
-        }
-        Ok(covered.clamp(0.0, x1 - x0))
+        allowed
     }
 
     fn slice(
@@ -222,22 +188,89 @@ impl<'a> OrthogonalExterior<'a> {
         if !(y0 < mid && mid < y1) {
             return Err(precision(path, "orthogonal erosion cannot refine a slice"));
         }
-        let half = (y1 - y0) * 0.5;
-        let safe_upper_radius = (radius - half).max(0.0);
-        let safe_lower_radius = radius + half;
-        if !safe_lower_radius.is_finite() {
+        charge(work, self.charge_per_slice, path)?;
+        let mut crossings = Vec::<f64>::new();
+        let mut outer_forbidden = Vec::<[f64; 2]>::new();
+        let mut inner_forbidden = Vec::<[f64; 2]>::new();
+        crossings
+            .try_reserve(self.edges.len())
+            .map_err(|_| resource(path, "orthogonal crossing allocation failed"))?;
+        outer_forbidden
+            .try_reserve(self.edges.len())
+            .map_err(|_| resource(path, "orthogonal outer-capsule allocation failed"))?;
+        inner_forbidden
+            .try_reserve(self.edges.len())
+            .map_err(|_| resource(path, "orthogonal inner-capsule allocation failed"))?;
+        for &[a, b] in self.edges {
+            let vertical = a[0] == b[0];
+            let (lo_x, hi_x, nearest_y, farthest_y) = if vertical {
+                let lo = a[1].min(b[1]);
+                let hi = a[1].max(b[1]);
+                if mid >= lo && mid < hi {
+                    crossings.push(a[0]);
+                }
+                // Exact min/max of distance(y,[lo,hi]) over [y0,y1].
+                let nearest = (lo - y1).max(y0 - hi).max(0.0);
+                let dy0 = (lo - y0).max(y0 - hi).max(0.0);
+                let dy1 = (lo - y1).max(y1 - hi).max(0.0);
+                (a[0], a[0], nearest, dy0.max(dy1))
+            } else {
+                let edge_y = a[1];
+                // Exact min/max of |y-edge_y| over the complete slice.
+                let nearest = if edge_y >= y0 && edge_y <= y1 {
+                    0.0
+                } else {
+                    (edge_y - y0).abs().min((edge_y - y1).abs())
+                };
+                (
+                    a[0].min(b[0]),
+                    a[0].max(b[0]),
+                    nearest,
+                    (edge_y - y0).abs().max((edge_y - y1).abs()),
+                )
+            };
+            if let Some(half) = Self::forbidden_extent(radius, nearest_y, path)? {
+                let lo = lo_x - half;
+                let hi = hi_x + half;
+                if !lo.is_finite() || !hi.is_finite() {
+                    return Err(precision(path, "orthogonal outer capsule coordinates overflow"));
+                }
+                outer_forbidden.push([lo, hi]);
+            }
+            if let Some(half) = Self::forbidden_extent(radius, farthest_y, path)? {
+                let lo = lo_x - half;
+                let hi = hi_x + half;
+                if !lo.is_finite() || !hi.is_finite() {
+                    return Err(precision(path, "orthogonal inner capsule coordinates overflow"));
+                }
+                inner_forbidden.push([lo, hi]);
+            }
+        }
+        crossings.sort_by(f64::total_cmp);
+        crossings.dedup();
+        if !crossings.len().is_multiple_of(2) {
             return Err(precision(
                 path,
-                "orthogonal erosion radius interval overflow",
+                "orthogonal exterior scanline parity is uncertified",
             ));
         }
-        let lower = self.width(mid, x0, x1, safe_lower_radius, work, path)? * (y1 - y0);
-        let upper = self.width(mid, x0, x1, safe_upper_radius, work, path)? * (y1 - y0);
-        if !lower.is_finite() || !upper.is_finite() || lower > upper + 1.0e-9 {
-            return Err(precision(
-                path,
-                "orthogonal erosion interval bounds reversed",
-            ));
+        outer_forbidden.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        inner_forbidden.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        // For each y, union(INNER) is contained in true forbidden(y),
+        // which is contained in union(OUTER). Therefore the remaining
+        // original-inside width is bounded by these two evaluations.
+        let lower_width = Self::covered_width(&crossings, &outer_forbidden, x0, x1);
+        let upper_width = Self::covered_width(&crossings, &inner_forbidden, x0, x1);
+        let height = y1 - y0;
+        let lower = lower_width * height;
+        let upper = upper_width * height;
+        if !lower.is_finite()
+            || !upper.is_finite()
+            || lower < -1.0e-9
+            || upper > (x1 - x0) * height + 1.0e-9
+            || lower > upper + 1.0e-9
+        {
+            return Err(precision(path, "orthogonal disk-slice certificate is invalid"));
         }
         Ok(Slice {
             y0,
