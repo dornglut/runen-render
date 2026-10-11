@@ -1131,7 +1131,11 @@ impl AffinePositiveDiskArea<'_> {
                 return Err(precision("rounded rectangle parent cell collapsed"));
             }
             let [x0, y0, x1, y1] = rect;
-            let scale = x0.abs().max(y0.abs()).max(x1.abs()).max(y1.abs())
+            let scale = x0
+                .abs()
+                .max(y0.abs())
+                .max(x1.abs())
+                .max(y1.abs())
                 .max(self.radius)
                 .max(1.0);
             let margin = 16.0 * f64::EPSILON * scale;
@@ -1156,15 +1160,17 @@ impl AffinePositiveDiskArea<'_> {
                 max_y = max_y.max(point[1]);
                 // Rounded rectangle is convex. Four contained corners
                 // certify the entire inverse-affine root parallelogram.
-                let original_inside = point[0] >= x0 && point[0] <= x1
-                    && point[1] >= y0 && point[1] <= y1;
+                let original_inside =
+                    point[0] >= x0 && point[0] <= x1 && point[1] >= y0 && point[1] <= y1;
                 let nearest_x = point[0].clamp(x0, x1);
                 let nearest_y = point[1].clamp(y0, y1);
                 let distance = (point[0] - nearest_x).hypot(point[1] - nearest_y);
                 all_inside &= original_inside || distance + margin < self.radius;
             }
-            if max_x < extended[0] || max_y < extended[1]
-                || min_x > extended[2] || min_y > extended[3]
+            if max_x < extended[0]
+                || max_y < extended[1]
+                || min_x > extended[2]
+                || min_y > extended[3]
             {
                 // AABB is used only as a conservative *disjointness* proof,
                 // never as geometric membership.
@@ -3108,7 +3114,8 @@ mod tests {
         for y in 20..100 {
             for x in 20..100 {
                 assert_eq!(
-                    area.sample([f64::from(x), f64::from(y)], &mut work, &[0]).unwrap(),
+                    area.sample([f64::from(x), f64::from(y)], &mut work, &[0])
+                        .unwrap(),
                     1.0
                 );
             }
@@ -3116,7 +3123,8 @@ mod tests {
         for y in 120..200 {
             for x in 120..200 {
                 assert_eq!(
-                    area.sample([f64::from(x), f64::from(y)], &mut work, &[0]).unwrap(),
+                    area.sample([f64::from(x), f64::from(y)], &mut work, &[0])
+                        .unwrap(),
                     0.0
                 );
             }
