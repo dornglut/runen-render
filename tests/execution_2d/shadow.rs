@@ -819,16 +819,24 @@ fn qualified_nested_disk_respects_ancestor_translation_on_actual_vulkan() {
     assert_eq!(pixel(&image, 9, 9), [0, 0, 0, 0]);
 }
 
+/// Independent normalized finite 3sigma Gaussian reference. For the
+/// rounded C=[10,14]^2 with Euclidean dilation r=1, the bottom-left
+/// boundary at y in [9,10] is x=10-sqrt(1-(y-10)^2). Integrate each
+/// retained x half-line with the truncated normal CDF at sigma=.25,
+/// then integrate y over its curved/straight topology pieces. Averaging
+/// the 16 globally phased 4x4 physical centers of pixel [9,9] gives
+/// alpha=0.69934700764064, premultiplied sRGB8 [218,0,0,178].
+/// This is a genuinely different oracle from unblurred pi/4 alpha=.7854.
 #[test]
-fn qualified_child_disk_rejects_uncertified_ancestor_gaussian_at_child_path() {
+fn qualified_child_positive_disk_convolves_finite_ancestor_gaussian_on_vulkan() {
     let Some(context) = context() else { return };
     let child = Render2dEntry::group(Render2dGroup::new(
         vec![caster(
             Render2dColorRgba8::TRANSPARENT,
             10.0,
             10.0,
-            10.0,
-            10.0,
+            4.0,
+            4.0,
         )],
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
@@ -840,27 +848,22 @@ fn qualified_child_disk_rejects_uncertified_ancestor_gaussian_at_child_path() {
         vec![effect(
             0.0,
             0.0,
-            0.1,
+            0.25,
             0.0,
             Render2dColorRgba8::new(255, 0, 0, 255),
         )],
         1.0,
     );
-    let (_, target) = target("F3F unqualified ancestor finite Gaussian rejection");
-    assert!(matches!(
-        Render2dExecutor::new().prepare(
-            &context,
-            &composition,
-            &Render2dResourceBindings::default(),
-            &target,
-        ),
-        Err(Render2dExecutionError::UnsupportedEntry {
-            path,
-            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
-                root_index: 0,
-            },
-        }) if path == [0, 0]
-    ));
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F curved child finite ancestor Gaussian real Vulkan",
+    );
+    pixel_near(pixel(&image, 9, 9), [218, 0, 0, 178]);
+    pixel_near(pixel(&image, 11, 11), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 7, 7), [0, 0, 0, 0]);
 }
 
 /// Independent geometric identity: (C ⊕ B1) ⊕ B1 = C ⊕ B2.

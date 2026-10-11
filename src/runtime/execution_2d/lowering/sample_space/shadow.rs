@@ -200,10 +200,12 @@ pub(super) fn prepare(
             // (C union (C plus disk(r))) plus disk(s) =
             // C plus disk(r+s), for nonnegative s. Both radii act in
             // the same parent frame, before the ancestor shadow offset.
-            // Negative/blurred ancestor effects require independent
-            // compositional region certificates and still fail closed.
+            // Finite Gaussian is a normalized convolution of the resulting
+            // parent-space positive-disk geometry, and does not change that
+            // morphological membership. Negative ancestor morphology and
+            // effects outside the qualified root frame still fail closed.
             let effective = if let Some((radius, owner)) = qualified_disk {
-                if path.len() != 1 || effect.spread() < 0.0 || effect.sigma() != 0.0 {
+                if path.len() != 1 || effect.spread() < 0.0 {
                     return Err(crate::runtime::execution_2d::unsupported_at(
                         owner,
                         crate::execution_2d::Render2dUnsupportedContent::Shadows {
@@ -221,7 +223,7 @@ pub(super) fn prepare(
                 Render2dDropShadow::new(
                     effect.offset_x(),
                     effect.offset_y(),
-                    0.0,
+                    effect.sigma(),
                     combined,
                     effect.color(),
                 )
