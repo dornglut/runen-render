@@ -5,7 +5,7 @@
 //! realization is merely one *certified* disposable query path; an unsupported
 //! curved consumer fails before target mutation instead of inventing triangles
 //! from bounds, alpha or a sampled distance field.
-use super::{shadow, support};
+use crate::runtime::execution_2d::{shadow, support};
 use crate::composition_2d::{
     Render2dAffineTransform, Render2dClip, Render2dDropShadow,
 };
@@ -59,7 +59,7 @@ fn precision(path: &[usize], detail: &'static str) -> Render2dExecutionError {
 }
 
 fn unsupported(path: &[usize]) -> Render2dExecutionError {
-    super::unsupported_at(
+    crate::runtime::execution_2d::unsupported_at(
         path,
         Render2dUnsupportedContent::Shadows {
             root_index: path[0],
@@ -258,16 +258,12 @@ impl NeutralRegionBuilder {
                 } else {
                     mesh.as_ref()
                 };
-                let offset = Render2dAffineTransform::translation(
-                    effect.offset_x(),
-                    effect.offset_y(),
-                )
-                .map_err(|_| precision(path, "neutral effect offset cannot be represented"))?;
-                shadow::charge_vertices(
-                    &mut self.retained_vertices,
-                    caster.triangles.len(),
-                    path,
-                )?;
+                let offset =
+                    Render2dAffineTransform::translation(effect.offset_x(), effect.offset_y())
+                        .map_err(|_| {
+                            precision(path, "neutral effect offset cannot be represented")
+                        })?;
+                shadow::charge_vertices(&mut self.retained_vertices, caster.triangles.len(), path)?;
                 let mut shifted = shadow::empty_mesh();
                 shadow::append(&mut shifted, caster, offset, path)?;
                 if effect.sigma() > 0.0 && !shifted.triangles.is_empty() {
@@ -316,15 +312,11 @@ mod tests {
     fn independently_authored_curved_effect_remains_symbolic_and_preserves_pristine_c() {
         let mut builder = builder();
         let caster = builder.source(triangle(), &[0, 0]).unwrap();
-        let spread = Render2dDropShadow::new(
-            0.0,
-            0.0,
-            0.1,
-            1.0,
-            Render2dColorRgba8::TRANSPARENT,
-        )
-        .unwrap();
-        let effect = builder.effect(Arc::clone(&caster), spread, &[0, 2]).unwrap();
+        let spread =
+            Render2dDropShadow::new(0.0, 0.0, 0.1, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
+        let effect = builder
+            .effect(Arc::clone(&caster), spread, &[0, 2])
+            .unwrap();
         let complete = builder
             .union(vec![Arc::clone(&caster), effect], &[0])
             .unwrap();
@@ -337,28 +329,34 @@ mod tests {
                 kind: Render2dUnsupportedContent::Shadows { root_index: 0 },
             }) if path == [0, 2]
         ));
-        assert_eq!(builder.materialize(&caster).unwrap().triangles, pristine.triangles);
+        assert_eq!(
+            builder.materialize(&caster).unwrap().triangles,
+            pristine.triangles
+        );
     }
 
     #[test]
     fn neutral_support_dag_shares_pristine_source_between_distinct_effects() {
         let mut builder = builder();
         let caster = builder.source(triangle(), &[1, 0]).unwrap();
-        let effect = Render2dDropShadow::new(
-            2.0,
-            0.0,
-            0.0,
-            0.0,
-            Render2dColorRgba8::TRANSPARENT,
-        )
-        .unwrap();
-        let e1 = builder.effect(Arc::clone(&caster), effect, &[1, 1]).unwrap();
-        let e2 = builder.effect(Arc::clone(&caster), effect, &[1, 2]).unwrap();
-        let complete = builder.union(vec![Arc::clone(&caster), e1, e2], &[1]).unwrap();
+        let effect =
+            Render2dDropShadow::new(2.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT).unwrap();
+        let e1 = builder
+            .effect(Arc::clone(&caster), effect, &[1, 1])
+            .unwrap();
+        let e2 = builder
+            .effect(Arc::clone(&caster), effect, &[1, 2])
+            .unwrap();
+        let complete = builder
+            .union(vec![Arc::clone(&caster), e1, e2], &[1])
+            .unwrap();
         let mesh = builder.materialize(&complete).unwrap();
         assert_eq!(mesh.triangles.len(), triangle().triangles.len() * 3);
         assert_eq!(builder.materialized.len(), 4);
-        assert_eq!(builder.materialize(&caster).unwrap().triangles, triangle().triangles);
+        assert_eq!(
+            builder.materialize(&caster).unwrap().triangles,
+            triangle().triangles
+        );
     }
 
     #[test]

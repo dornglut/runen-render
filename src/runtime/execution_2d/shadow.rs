@@ -336,7 +336,11 @@ pub(super) fn group_child_sources<'a>(
                     &mut graph.clip_work,
                 )? {
                     let leaf = graph.source(mesh, path)?;
-                    active.last_mut().expect("active source group").children.push(leaf);
+                    active
+                        .last_mut()
+                        .expect("active source group")
+                        .children
+                        .push(leaf);
                 }
             }
             scene::Event::EndGroup => {
@@ -345,11 +349,8 @@ pub(super) fn group_child_sources<'a>(
                 // A group first maps its entire local C into its immediate
                 // parent frame. Only THEN do its Euclidean disk, offset and
                 // finite Gaussian square operators act in that parent frame.
-                let in_parent = graph.affine(
-                    children,
-                    frame.group.local_to_parent(),
-                    &frame.path,
-                )?;
+                let in_parent =
+                    graph.affine(children, frame.group.local_to_parent(), &frame.path)?;
                 let nested = !active.is_empty();
                 if !frame.group.shadows().is_empty() {
                     let source = graph.materialize(&in_parent)?;
@@ -369,9 +370,12 @@ pub(super) fn group_child_sources<'a>(
                     let ancestor_shadow_caster = active
                         .iter()
                         .any(|ancestor| !ancestor.group.shadows().is_empty());
-                    if frame.group.shadows().iter().any(|effect| {
-                        effect.spread() > 0.0 && ancestor_shadow_caster
-                    }) {
+                    if frame
+                        .group
+                        .shadows()
+                        .iter()
+                        .any(|effect| effect.spread() > 0.0 && ancestor_shadow_caster)
+                    {
                         // Keep the prior exact path of the unrepresented
                         // curved caster. A consuming ancestor MUST NOT see
                         // the raw C in place of this disk expression.
@@ -384,7 +388,9 @@ pub(super) fn group_child_sources<'a>(
                     }
                     components
                         .try_reserve(frame.group.shadows().len())
-                        .map_err(|_| resource(&frame.path, "neutral effect graph allocation failed"))?;
+                        .map_err(|_| {
+                            resource(&frame.path, "neutral effect graph allocation failed")
+                        })?;
                     for &effect in frame.group.shadows() {
                         let effect_region =
                             graph.effect(Arc::clone(&in_parent), effect, &frame.path)?;
