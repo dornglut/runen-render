@@ -240,9 +240,10 @@ fn unsupported_at(path: &[usize], kind: Render2dUnsupportedContent) -> Render2dE
 
 fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecutionError> {
     let mut runs = Vec::new();
-    // Only shadow-bearing ancestors consume descendant neutral effect
-    // geometry. Track this F1 structural fact before F2 field preparation.
-    let mut shadowed_ancestors = Vec::<bool>::new();
+    // Shaped-text run admission owns only the F2 text/translation contract.
+    // F3F neutral-region preparation is the sole authority for whether an
+    // ancestor can consume a curved descendant; checking that here would
+    // reject a valid region before its certified evaluator could inspect it.
     for (event_index, event) in plan.events.iter().enumerate() {
         let (root_index, item, to_root) = match event {
             scene::Event::Item {
@@ -254,31 +255,7 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
                 let root_index = path[0];
                 (root_index, *item, *to_root)
             }
-            scene::Event::BeginGroup { path, group, .. } => {
-                // A positive Euclidean disk has curved support which cannot
-                // be represented by the stored triangle union. Without an
-                // ancestor shadow, its support is not a downstream caster:
-                // its own finite Gaussian or sigma-zero ROOT sample-cell
-                // area can be evaluated continuously in the parent frame.
-                if path.len() > 1
-                    && group.shadows().iter().any(|shadow| {
-                        shadow.spread() > 0.0 && shadowed_ancestors.iter().any(|owner| *owner)
-                    })
-                {
-                    let kind = Render2dUnsupportedContent::Shadows {
-                        root_index: path[0],
-                    };
-                    return Err(unsupported_at(path, kind));
-                }
-                shadowed_ancestors.push(!group.shadows().is_empty());
-                continue;
-            }
-            scene::Event::EndGroup => {
-                shadowed_ancestors
-                    .pop()
-                    .expect("balanced F1 shadow ancestry");
-                continue;
-            }
+            scene::Event::BeginGroup { .. } | scene::Event::EndGroup => continue,
         };
         let text = match item.primitive() {
             Render2dPrimitive::Fill { .. }
@@ -348,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_positive_disk_with_shadowed_ancestor_reports_exact_unsupported_path() {
+    fn f2_text_gate_defers_curved_ancestor_admission_to_f3f() {
         let shadow =
             Render2dDropShadow::new(1.0, 1.0, 0.0, 0.5, Render2dColorRgba8::WHITE).unwrap();
         let shadow_only = Render2dEntry::group(Render2dGroup::new(
@@ -370,13 +347,10 @@ mod tests {
         );
         let tree = Render2dComposition::new(vec![Render2dEntry::group(outer)]).unwrap();
         let plan = scene::analyze(&tree).unwrap();
-        assert!(matches!(
-            admit_runs(&plan),
-            Err(Render2dExecutionError::UnsupportedEntry {
-                path,
-                kind: Render2dUnsupportedContent::Shadows { root_index: 0 },
-            }) if path == [0, 0]
-        ));
+        assert!(
+            admit_runs(&plan).unwrap().is_empty(),
+            "the F2 text extractor must not invent a second curved-shadow authority"
+        );
     }
 
     #[test]
