@@ -230,10 +230,10 @@ pub(super) fn prepare(
                 })?;
             let mut shifted = geometry_support::empty_mesh();
             geometry_support::append(&mut shifted, source, offset, path)?;
-            // A certified negative Euclidean disk erosion has EXACT convex
-            // polygonal geometry, so carry that into the already-owned
-            // parent-frame continuous Gaussian / identity evaluator.
-            // Nonconvex unions fail closed during neutral-source admission.
+            // Certified negative Euclidean erosion has exact convex
+            // polygonal geometry, so it can be propagated to ancestors.
+            // Nonconvex/holed unions remain paint-only until their curved
+            // support has a compositional neutral-region representation.
             let erosion = if parent_affine.is_some() && effect.spread() < 0.0 {
                 // A convex neutral union can be propagated exactly as an
                 // inset polygon. A nonconvex/holed union cannot; the separate

@@ -297,11 +297,11 @@ fn gaussian_square_support(
 /// finite square Minkowski union in its immediate-parent frame. Nonzero
 /// nested convex negative disk spread uses a mathematically certified
 /// polygonal Euclidean inset before its optional Gaussian support square.
-/// A nested positive disk is painted with continuous Gaussian or root-cell
-/// area integration only when NO ancestor shadow needs its curved support.
-/// Other positive disk caster dependencies and
-/// uncertified nonconvex erosions reject; neither sampled alpha nor AABBs
-/// stand in for curved caster geometry.
+/// A nested positive disk or nonconvex/holed negative disk is painted with
+/// continuous Gaussian or inverse-affine root-cell area integration only
+/// when NO ancestor shadow needs its curved support. Ancestor casters
+/// requiring unrepresentable curved regions reject; neither sampled alpha
+/// nor AABBs stand in for geometric shadow membership.
 pub(super) fn group_child_sources(
     plan: &scene::Plan<'_>,
     bindings: &Render2dResourceBindings,

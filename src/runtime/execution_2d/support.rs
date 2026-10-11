@@ -923,6 +923,52 @@ impl DiskAreaCellPolygon {
         Some(output)
     }
 
+    /// Intersect a convex root-cell polygon with one certified inward
+    /// Euclidean half-plane, dot((point-origin),inward)>=radius.
+    /// This is an exact straight-edge area calculation, not an SDF or AABB
+    /// surrogate. All intermediate polygon vertices remain private f64.
+    fn clipped_inward_halfplane(
+        self,
+        origin: [f64; 2],
+        inward: [f64; 2],
+        radius: f64,
+    ) -> Option<Self> {
+        let mut output = Self {
+            vertices: [[0.0; 2]; 16],
+            len: 0,
+        };
+        if self.len == 0 {
+            return Some(output);
+        }
+        let signed = |p: [f64; 2]| {
+            (p[0] - origin[0]).mul_add(inward[0], (p[1] - origin[1]) * inward[1])
+                - radius
+        };
+        for index in 0..self.len {
+            let p = self.vertices[index];
+            let q = self.vertices[(index + 1) % self.len];
+            let dp = signed(p);
+            let dq = signed(q);
+            if !dp.is_finite() || !dq.is_finite() {
+                return None;
+            }
+            if (dp >= 0.0) != (dq >= 0.0) {
+                let t = dp / (dp - dq);
+                if !t.is_finite() || !(0.0..=1.0).contains(&t) {
+                    return None;
+                }
+                output.push([
+                    (q[0] - p[0]).mul_add(t, p[0]),
+                    (q[1] - p[1]).mul_add(t, p[1]),
+                ])?;
+            }
+            if dq >= 0.0 {
+                output.push(q)?;
+            }
+        }
+        Some(output)
+    }
+
     fn clipped_rectangle(self, [x0, y0, x1, y1]: [f64; 4]) -> Option<Self> {
         self.clip_axis(0, x0, false)?
             .clip_axis(0, x1, true)?
@@ -1051,6 +1097,166 @@ fn certified_rounded_rectangle_area(
         }
     }
     area.is_finite().then_some(area)
+}
+
+/// An exact local erosion certificate for inverse-affine convex sample
+/// parallelograms. Only the true EXPOSED boundary is inspected, never
+/// tessellation seams. If every boundary edge farther than radius cannot
+/// affect the whole cell, membership is constant. If ALL potentially
+/// affecting edges are collinear and a single segment contains every cell
+/// projection, the eroded set on this cell is precisely one inward-offset
+/// half-plane. Otherwise the continuous signed-distance area integrator
+/// remains the fail-closed authority. No thresholding of cached alpha.
+fn certified_local_eroded_cell(
+    source: &[[f64; 2]],
+    exterior: &[UnionBoundaryEdge],
+    cell: DiskAreaCellPolygon,
+    radius: f64,
+) -> Option<f64> {
+    if exterior.is_empty() || radius <= 0.0 {
+        return None;
+    }
+    let area = cell.area()?;
+    if area <= 0.0 {
+        return None;
+    }
+    let corners = &cell.vertices[..cell.len];
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut center = [0.0_f64; 2];
+    for &point in corners {
+        min_x = min_x.min(point[0]);
+        min_y = min_y.min(point[1]);
+        max_x = max_x.max(point[0]);
+        max_y = max_y.max(point[1]);
+        center[0] += point[0];
+        center[1] += point[1];
+    }
+    let n = f64::from(u32::try_from(cell.len).ok()?);
+    center[0] /= n;
+    center[1] /= n;
+    if !center.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let mut first: Option<UnionBoundaryEdge> = None;
+    let mut candidate_segments = 0_usize;
+    let mut covered_segment = None;
+    for &edge in exterior {
+        let lo_x = edge[0][0].min(edge[1][0]);
+        let hi_x = edge[0][0].max(edge[1][0]);
+        let lo_y = edge[0][1].min(edge[1][1]);
+        let hi_y = edge[0][1].max(edge[1][1]);
+        let dx = (lo_x - max_x).max(min_x - hi_x).max(0.0);
+        let dy = (lo_y - max_y).max(min_y - hi_y).max(0.0);
+        // AABB separation is ONLY a lower bound on edge distance. It can
+        // eliminate an edge that cannot influence the radius-r cell, but
+        // cannot certify positive membership or change boundary topology.
+        if dx.hypot(dy) > radius {
+            continue;
+        }
+        candidate_segments += 1;
+        if let Some(reference) = first {
+            if orient(reference[0], reference[1], edge[0]) != 0.0
+                || orient(reference[0], reference[1], edge[1]) != 0.0
+            {
+                return None;
+            }
+        } else {
+            first = Some(edge);
+        }
+        let direction = [
+            edge[1][0] - edge[0][0],
+            edge[1][1] - edge[0][1],
+        ];
+        let norm2 = direction[0].mul_add(direction[0], direction[1] * direction[1]);
+        if !norm2.is_finite() || norm2 <= 0.0 {
+            return None;
+        }
+        if corners.iter().all(|point| {
+            let offset = [point[0] - edge[0][0], point[1] - edge[0][1]];
+            let t = offset[0].mul_add(direction[0], offset[1] * direction[1]) / norm2;
+            t.is_finite() && (0.0..=1.0).contains(&t)
+        }) {
+            covered_segment = Some(edge);
+        }
+    }
+    if candidate_segments == 0 {
+        // The connected convex cell is separated by >r from EVERY exterior
+        // boundary. Its original inside/outside classification is constant
+        // and so is its eroded membership.
+        return Some(if neutral_union_distance(source, center) == 0.0 {
+            1.0
+        } else {
+            0.0
+        });
+    }
+    let edge = covered_segment?;
+    let direction = [edge[1][0] - edge[0][0], edge[1][1] - edge[0][1]];
+    let length = direction[0].hypot(direction[1]);
+    if !length.is_finite() || length <= 0.0 {
+        return None;
+    }
+    let normal = [-direction[1] / length, direction[0] / length];
+    let t = ((center[0] - edge[0][0]).mul_add(
+        direction[0],
+        (center[1] - edge[0][1]) * direction[1],
+    )) / (length * length);
+    if !t.is_finite() || !(0.0..=1.0).contains(&t) {
+        return None;
+    }
+    let origin = [
+        direction[0].mul_add(t, edge[0][0]),
+        direction[1].mul_add(t, edge[0][1]),
+    ];
+    // The union-exterior segment was extracted from an ORIGINAL triangle
+    // side. Recover the topological inward orientation from that triangle's
+    // third vertex, not from a finite-distance sampled probe that could cross
+    // a thin feature, hole or another boundary. Conflicting or absent
+    // witnesses fail this optimization closed.
+    let mut inward_sign: Option<f64> = None;
+    for tri in source.as_chunks::<3>().0 {
+        for side in 0..3 {
+            let a = tri[side];
+            let b = tri[(side + 1) % 3];
+            if orient(a, b, edge[0]) != 0.0 || orient(a, b, edge[1]) != 0.0 {
+                continue;
+            }
+            let v = [b[0] - a[0], b[1] - a[1]];
+            let length_squared = v[0].mul_add(v[0], v[1] * v[1]);
+            if !length_squared.is_finite() || length_squared <= 0.0 {
+                continue;
+            }
+            let contains = edge.iter().all(|point| {
+                let delta = [point[0] - a[0], point[1] - a[1]];
+                let t = delta[0].mul_add(v[0], delta[1] * v[1]) / length_squared;
+                t.is_finite() && (0.0..=1.0).contains(&t)
+            });
+            if !contains {
+                continue;
+            }
+            let cross = orient(edge[0], edge[1], tri[(side + 2) % 3]);
+            if !cross.is_finite() || cross == 0.0 {
+                continue;
+            }
+            if let Some(previous) = inward_sign
+                && previous != cross.signum()
+            {
+                return None;
+            }
+            inward_sign = Some(cross.signum());
+        }
+    }
+    let inward = if inward_sign? > 0.0 {
+        normal
+    } else {
+        [-normal[0], -normal[1]]
+    };
+    let clipped = cell.clipped_inward_halfplane(origin, inward, radius)?;
+    let covered_area = clipped.area()? / area;
+    (covered_area.is_finite() && (-1.0e-7..=1.0 + 1.0e-7).contains(&covered_area))
+        .then_some(covered_area.clamp(0.0, 1.0))
 }
 
 /// Conservatively integrate a signed Euclidean disk over an inverse-affine
@@ -1224,6 +1430,53 @@ impl AffineSignedDiskArea<'_> {
             }
             return Ok(coverage.clamp(0.0, 1.0));
         }
+        if self.radius < 0.0 {
+            let exterior = self.exterior.ok_or_else(|| {
+                precision("nested signed erosion cannot evaluate missing union exterior")
+            })?;
+            // Charge all potential exposed-edge classifications and
+            // source-side probes before considering this optimization.
+            let certificate_cost = exterior
+                .len()
+                .checked_mul(8)
+                .and_then(|n| {
+                    (self.triangles.len() / 3)
+                        .checked_mul(16)
+                        .and_then(|m| n.checked_add(m))
+                })
+                .and_then(|n| n.checked_add(128))
+                .ok_or_else(|| resource("nested eroded-cell certificate work overflow"))?;
+            *work = work
+                .checked_add(certificate_cost)
+                .ok_or_else(|| resource("nested eroded-cell certificate work overflow"))?;
+            if *work > 16_777_216 {
+                return Err(resource("nested eroded-cell certificate exceeds bounded work"));
+            }
+            let [m00, m01, m10, m11] = self.inverse;
+            let mapped = |root: [f64; 2]| {
+                let p = [
+                    root[0] - self.root_translation[0],
+                    root[1] - self.root_translation[1],
+                ];
+                [m00.mul_add(p[0], m01 * p[1]), m10.mul_add(p[0], m11 * p[1])]
+            };
+            let [x, y] = root_lower;
+            let cell = DiskAreaCellPolygon::quadrilateral([
+                mapped([x, y]),
+                mapped([x + 1.0, y]),
+                mapped([x + 1.0, y + 1.0]),
+                mapped([x, y + 1.0]),
+            ])
+            .ok_or_else(|| precision("nested eroded-cell affine mapping failed"))?;
+            if let Some(coverage) = certified_local_eroded_cell(
+                self.triangles,
+                exterior,
+                cell,
+                -self.radius,
+            ) {
+                return Ok(coverage);
+            }
+        }
         let mut pending = std::collections::BinaryHeap::new();
         pending
             .try_reserve(1)
@@ -1391,7 +1644,7 @@ impl AffineSignedDiskArea<'_> {
 }
 
 /// Evaluate a nested finite Gaussian over the owning parent-frame neutral
-/// geometry, with an optional true Euclidean positive disk spread BEFORE
+/// geometry, with an optional signed Euclidean disk spread BEFORE
 /// convolution. At zero sigma, integrate the inverse-affine root sample
 /// cell's exact area. An arbitrary full-rank ancestor affine changes root-space
 /// footprints, not the parent's spread or normalized Gaussian:
@@ -3238,6 +3491,53 @@ mod tests {
                 ..
             }) if path == [7, 4]
         ));
+    }
+
+    #[test]
+    fn concave_signed_erosion_uses_exact_exposed_edge_area_under_affine_shear() {
+        let mut source = Vec::new();
+        for [x0, y0, x1, y1] in [
+            [10.0, 10.0, 20.0, 15.0],
+            [10.0, 15.0, 15.0, 20.0],
+        ] {
+            source.extend_from_slice(&[
+                [x0, y0],
+                [x1, y0],
+                [x0, y1],
+                [x1, y0],
+                [x1, y1],
+                [x0, y1],
+            ]);
+        }
+        let mut work = 0;
+        let exterior = union_exterior_boundary(&source, &[2], Some(&mut work)).unwrap();
+        let sheared = AffineSignedDiskArea {
+            triangles: &source,
+            exterior: Some(&exterior),
+            certified_rectangle: None,
+            inverse: [0.5, -0.25, 0.0, 1.0],
+            root_translation: [4.0, 0.0],
+            radius: -1.0,
+        };
+        // The source's exposed parent x=10 edge erodes to x=11.
+        // Its root image x=26+.5y crosses [32,33]×[12,13] with
+        // exactly .75 area. No root-space box, finite SDF mask or
+        // center-only test can substitute for this physical cell integral.
+        let coverage = sheared.sample([32.0, 12.0], &mut work, &[2]).unwrap();
+        assert!((coverage - 0.75).abs() < 0.0004, "{coverage}");
+        // A single straight-edge cell must not need unbounded quadtree
+        // subdivision; this test specifically protects normal UI geometry.
+        assert!(work < 20_000, "ordinary concave edge work: {work}");
+        let reflected = AffineSignedDiskArea {
+            triangles: &source,
+            exterior: Some(&exterior),
+            certified_rectangle: None,
+            inverse: [-1.0, 0.0, 0.0, 1.0],
+            root_translation: [50.0, 0.0],
+            radius: -1.0,
+        };
+        assert!((reflected.sample([38.0, 12.0], &mut work, &[2]).unwrap() - 1.0).abs() < 0.0004);
+        assert!(reflected.sample([39.0, 12.0], &mut work, &[2]).unwrap() < 0.0004);
     }
 
     #[test]
