@@ -400,22 +400,34 @@ impl<'a> OrthogonalExterior<'a> {
         })
     }
 
-
     /// Share exact exposed-boundary y sections across all x samples in a
     /// physical row. Gaussian alpha is disposable numerical realization;
     /// neither these intervals nor output values own semantic F1 support.
     /// Split Gaussian integration at real exterior events and disk tangencies.
     pub(super) fn gaussian_row(
-        &self, y: f64, origin_x: f64, width: usize, radius: f64,
-        sigma: f64, work: &mut usize, path: &[usize],
+        &self,
+        y: f64,
+        origin_x: f64,
+        width: usize,
+        radius: f64,
+        sigma: f64,
+        work: &mut usize,
+        path: &[usize],
     ) -> Result<Vec<f64>, Render2dExecutionError> {
         let reach = 3.0 * sigma;
         let y0 = y - reach;
         let y1 = y + reach;
-        if !y.is_finite() || !origin_x.is_finite() || !radius.is_finite()
-            || radius <= 0.0 || !sigma.is_finite() || sigma <= 0.0
-            || !reach.is_finite() || !y0.is_finite() || !y1.is_finite()
-            || !(y0 < y1) || !((origin_x + width as f64).is_finite())
+        if !y.is_finite()
+            || !origin_x.is_finite()
+            || !radius.is_finite()
+            || radius <= 0.0
+            || !sigma.is_finite()
+            || sigma <= 0.0
+            || !reach.is_finite()
+            || !y0.is_finite()
+            || !y1.is_finite()
+            || y0 >= y1
+            || !(origin_x + width as f64).is_finite()
             || width > super::MAX_NEUTRAL_MASK_SAMPLES
         {
             return Err(precision(path, "orthogonal Gaussian row is unrepresentable"));
@@ -447,13 +459,15 @@ impl<'a> OrthogonalExterior<'a> {
         allowed.try_reserve(self.edges.len() + 1)
             .map_err(|_| resource(path, "Gaussian interval allocation failed"))?;
         let levels = (usize::BITS - self.edges.len().leading_zeros()) as usize + 1;
-        let section_charge = self.edges.len().checked_mul(
-            self.edges.len() + 3 * levels + 16
-        ).ok_or_else(|| resource(path, "Gaussian section work overflow"))?;
+        let section_charge = self
+            .edges
+            .len()
+            .checked_mul(self.edges.len() + 3 * levels + 16)
+            .ok_or_else(|| resource(path, "Gaussian section work overflow"))?;
 
         for pair in cuts.windows(2) {
             let half = (pair[1] - pair[0]) * 0.5;
-            if !(half > 0.0) {
+            if half <= 0.0 {
                 continue;
             }
             let middle = pair[0] + half;
@@ -521,12 +535,16 @@ impl<'a> OrthogonalExterior<'a> {
                 for interval in active.as_chunks::<2>().0 {
                     let mut cursor = interval[0];
                     for &[left, right] in &forbidden {
-                        if right <= cursor || left >= interval[1] { continue; }
+                        if right <= cursor || left >= interval[1] {
+                            continue;
+                        }
                         if left > cursor {
                             allowed.push([cursor, left.min(interval[1])]);
                         }
                         cursor = cursor.max(right).min(interval[1]);
-                        if cursor >= interval[1] { break; }
+                        if cursor >= interval[1] {
+                            break;
+                        }
                     }
                     if cursor < interval[1] {
                         allowed.push([cursor, interval[1]]);
@@ -542,7 +560,9 @@ impl<'a> OrthogonalExterior<'a> {
                         charge(work, 1, path)?;
                         let start = left.max(window[0]);
                         let end = right.min(window[1]);
-                        if start >= end { continue; }
+                        if start >= end {
+                            continue;
+                        }
                         if start <= window[0] && end >= window[1] {
                             x_mass = 1.0;
                             break;
