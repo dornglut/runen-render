@@ -656,80 +656,31 @@ mod tests {
         );
         let composition = Render2dComposition::new(vec![Render2dEntry::group(root)]).unwrap();
         let plan = shadow::scene::analyze(&composition).unwrap();
-        let mut builder = builder();
         let bindings = Render2dResourceBindings::default();
-        // Replay exactly the borrowed F1 event frames and the production
-        // neutral-item/source/affine/effect/clip constructors, never an
-        // invented cached-alpha or semantic surrogate.
-        let mut stack = Vec::<(Vec<usize>, &Render2dGroup, Vec<Arc<NeutralRegion<'_>>>)>::new();
-        let mut root_expression = None;
-        for event in &plan.events {
-            match event {
-                shadow::scene::Event::BeginGroup { path, group, .. } => {
-                    stack.push((path.clone(), group, Vec::new()));
+        let mut inspected_root = false;
+        let result = shadow::group_child_sources_with_probe(
+            &plan,
+            &bindings,
+            &std::collections::BTreeMap::new(),
+            shadow::NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            1_048_576,
+            |region, path| {
+                if path == [0] {
+                    inspected_root = true;
+                    assert_eq!(region.point_certificate([9.5, 9.5]), PointCertificate::Inside);
+                    assert_eq!(region.point_certificate([8.5, 8.5]), PointCertificate::Outside);
+                    assert_eq!(region.point_certificate([15.0, 15.0]), PointCertificate::Inside);
+                    assert_eq!(region.point_certificate([9.0, 9.0]), PointCertificate::Outside);
+                    assert_eq!(region.point_certificate([9.0, 15.0]), PointCertificate::Unknown);
                 }
-                shadow::scene::Event::Item { path, item, .. } => {
-                    let mesh = shadow::neutral_item(
-                        item,
-                        path,
-                        &bindings,
-                        &std::collections::BTreeMap::new(),
-                        shadow::NeutralPreparationScale {
-                            field_raster_scale: 1.0,
-                            geometry_sample_scale: 4.0,
-                        },
-                        1_048_576,
-                        &mut builder.clip_work,
-                    )
-                    .unwrap()
-                    .expect("transparent authored fill keeps neutral support");
-                    let leaf = builder.source(mesh, path).unwrap();
-                    stack.last_mut().unwrap().2.push(leaf);
-                }
-                shadow::scene::Event::EndGroup => {
-                    let (path, group, children) = stack.pop().unwrap();
-                    let union = builder.union(children, &path).unwrap();
-                    let pristine = builder
-                        .affine(union, group.local_to_parent(), &path)
-                        .unwrap();
-                    if stack.is_empty() {
-                        root_expression = Some(pristine);
-                    } else {
-                        let mut parts = vec![Arc::clone(&pristine)];
-                        for shadow in group.shadows() {
-                            parts.push(
-                                builder
-                                    .effect(Arc::clone(&pristine), *shadow, &path)
-                                    .unwrap(),
-                            );
-                        }
-                        let complete = builder.union(parts, &path).unwrap();
-                        let clipped = builder.clip(complete, group.clips(), &path).unwrap();
-                        stack.last_mut().unwrap().2.push(clipped);
-                    }
-                }
-            }
-        }
-        let expr = root_expression.expect("root group completed");
-        assert_eq!(expr.point_certificate([9.5, 9.5]), PointCertificate::Inside);
-        assert_eq!(
-            expr.point_certificate([8.5, 8.5]),
-            PointCertificate::Outside
+            },
         );
-        assert_eq!(
-            expr.point_certificate([15.0, 15.0]),
-            PointCertificate::Inside
-        );
-        assert_eq!(
-            expr.point_certificate([9.0, 9.0]),
-            PointCertificate::Outside
-        );
-        assert_eq!(
-            expr.point_certificate([9.0, 15.0]),
-            PointCertificate::Unknown
-        );
+        assert!(inspected_root, "the actual root caster must be inspected before materialization");
         assert!(matches!(
-            builder.materialize(&expr),
+            result,
             Err(Render2dExecutionError::UnsupportedEntry {
                 path,
                 kind: Render2dUnsupportedContent::Shadows { root_index: 0 },

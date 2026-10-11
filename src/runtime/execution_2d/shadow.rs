@@ -309,6 +309,21 @@ pub(super) fn group_child_sources<'a>(
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
 ) -> Result<BTreeMap<usize, Arc<NeutralMesh>>, Render2dExecutionError> {
+    group_child_sources_with_probe(plan, bindings, field_sets, scales, max_buffer_bytes, |_, _| {})
+}
+
+/// A read-only, transient observer for deterministic tests of the REAL
+/// borrowed-F1 graph construction. It never writes or replaces F1 authority,
+/// does not retain renderer-owned nodes, and cannot bypass materialization.
+/// The production path supplies a no-op observer.
+fn group_child_sources_with_probe<'a>(
+    plan: &scene::Plan<'a>,
+    bindings: &Render2dResourceBindings,
+    field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
+    scales: NeutralPreparationScale,
+    max_buffer_bytes: u64,
+    mut inspect: impl FnMut(&Arc<region::NeutralRegion<'a>>, &[usize]),
+) -> Result<BTreeMap<usize, Arc<NeutralMesh>>, Render2dExecutionError> {
     let mut active = Vec::<SourceFrame<'a>>::new();
     let mut sources = BTreeMap::new();
     let mut graph = region::NeutralRegionBuilder::new(scales, max_buffer_bytes);
@@ -353,6 +368,7 @@ pub(super) fn group_child_sources<'a>(
                     graph.affine(children, frame.group.local_to_parent(), &frame.path)?;
                 let nested = !active.is_empty();
                 if !frame.group.shadows().is_empty() {
+                    inspect(&in_parent, &frame.path);
                     let source = graph.materialize(&in_parent)?;
                     sources.insert(frame.begin_event, source);
                     if !nested {
