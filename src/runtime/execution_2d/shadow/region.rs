@@ -683,8 +683,7 @@ impl NeutralRegionBuilder {
                 // clip_to_parent affine and physical intersection preserve
                 // the original F1 rectangle. Only the identity/no-op clip
                 // wrapper qualifies for this exact rounded-caster shortcut.
-                clips.is_empty()
-                    && Self::polygonal_source_proven(source, remaining_visits, memo)?
+                clips.is_empty() && Self::polygonal_source_proven(source, remaining_visits, memo)?
             }
             Kind::Effect { .. } => false,
         };
@@ -1353,7 +1352,10 @@ mod tests {
             .unwrap();
         let clipped = graph.union(vec![clip_source, clip_disk], &[3]).unwrap();
         assert!(
-            graph.qualified_rounded_rectangle(&clipped).unwrap().is_none(),
+            graph
+                .qualified_rounded_rectangle(&clipped)
+                .unwrap()
+                .is_none(),
             "the clip's authored affine/intersection needs its own exact F1 proof"
         );
         assert!(matches!(
