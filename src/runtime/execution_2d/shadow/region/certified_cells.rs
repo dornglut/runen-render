@@ -1321,7 +1321,10 @@ fn bounded_gaussian_density_keeps_cell_variation_and_numeric_error_distinct() {
     let y = Interval::new(-0.5, 0.5).unwrap();
     let bounds = gaussian_density_enclosure(x, y).unwrap();
     assert!(bounds.lo < 1.0 && bounds.hi >= 1.0);
-    assert!(bounds.lo < 0.8, "spatial cell variation still needs refinement");
+    assert!(
+        bounds.lo < 0.8,
+        "spatial cell variation still needs refinement"
+    );
     assert!(bounds.hi >= bounds.lo);
 }
 
