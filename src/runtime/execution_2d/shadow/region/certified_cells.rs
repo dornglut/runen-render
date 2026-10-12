@@ -7,6 +7,8 @@
 //! must separately establish source enclosures and Gaussian *coverage* bounds.
 //! A certificate concerns SUPPORT membership, not alpha or Gaussian weights.
 
+mod axis_gaussian;
+
 use super::interval::Interval;
 use super::*;
 use crate::composition_2d::{
