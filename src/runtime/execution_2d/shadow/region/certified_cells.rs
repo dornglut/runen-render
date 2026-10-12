@@ -542,18 +542,25 @@ impl AdaptiveGaussianMass {
     }
 }
 
+/// Borrowed immutable Gaussian semantics stay together throughout recursive
+/// refinement. This is one private evaluation context, not a second renderer
+/// or an alternate scene representation.
+struct GaussianRefinement<'r, 'a> {
+    region: &'r NeutralRegion<'a>,
+    center: [Interval; 2],
+    sigma: Interval,
+    max_depth: usize,
+    mass_threshold: f64,
+}
+
 /// Subdivide ALL uncertain geometry cells, and definite cells with a
 /// significant remaining Gaussian integration enclosure width. Never refine
 /// only geometric boundaries while leaving normalization uncertainty unbound.
 /// Every visited node costs its conservative numerical work plus the actual
 /// region evaluator's visit charges; depth and total nodes are capped.
 fn refine_gaussian_cell(
-    region: &NeutralRegion<'_>,
-    query_center: [Interval; 2],
-    sigma: Interval,
+    context: &GaussianRefinement<'_, '_>,
     cell: GaussianQuadCell,
-    max_depth: usize,
-    mass_threshold: f64,
     remaining_nodes: &mut usize,
     visits: &mut usize,
     accumulator: &mut AdaptiveGaussianMass,
@@ -569,15 +576,16 @@ fn refine_gaussian_cell(
         .mul(Interval::scalar(cell.y.hi)?.sub(Interval::scalar(cell.y.lo)?)?)?;
     let weight = area.mul(gaussian_density_enclosure(cell.x, cell.y)?)?;
     let query = Cell {
-        x: query_center[0].add(sigma.mul(cell.x)?)?,
-        y: query_center[1].add(sigma.mul(cell.y)?)?,
+        x: context.center[0].add(context.sigma.mul(cell.x)?)?,
+        y: context.center[1].add(context.sigma.mul(cell.y)?)?,
     };
-    let certificate = region.certify_cell(query, visits);
+    let certificate = context.region.certify_cell(query, visits);
     if certificate == CellCertificate::Unknown && *visits == 0 {
         return None;
     }
-    let should_refine = cell.depth < max_depth
-        && (certificate == CellCertificate::Unknown || weight.hi - weight.lo > mass_threshold);
+    let should_refine = cell.depth < context.max_depth
+        && (certificate == CellCertificate::Unknown
+            || weight.hi - weight.lo > context.mass_threshold);
     if !should_refine {
         return accumulator.add(weight, certificate);
     }
@@ -589,16 +597,12 @@ fn refine_gaussian_cell(
     let bottom = Interval::new(my, cell.y.hi)?;
     for (x, y) in [(left, top), (right, top), (left, bottom), (right, bottom)] {
         refine_gaussian_cell(
-            region,
-            query_center,
-            sigma,
+            context,
             GaussianQuadCell {
                 x,
                 y,
                 depth: cell.depth + 1,
             },
-            max_depth,
-            mass_threshold,
             remaining_nodes,
             visits,
             accumulator,
@@ -652,17 +656,20 @@ fn certified_adaptive_finite_gaussian_coverage(
     }
     let mut result = AdaptiveGaussianMass::empty()?;
     let mut remaining_nodes = max_nodes;
-    refine_gaussian_cell(
+    let context = GaussianRefinement {
         region,
         center,
         sigma,
+        max_depth,
+        mass_threshold: max_width / 128.0,
+    };
+    refine_gaussian_cell(
+        &context,
         GaussianQuadCell {
             x: Interval::new(-3.0, 3.0)?,
             y: Interval::new(-3.0, 3.0)?,
             depth: 0,
         },
-        max_depth,
-        max_width / 128.0,
         &mut remaining_nodes,
         visits,
         &mut result,
