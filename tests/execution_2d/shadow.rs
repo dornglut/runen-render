@@ -2147,3 +2147,71 @@ fn finite_gaussian_shadow_retains_continuous_coverage_across_two_gpu_tiles() {
         assert_eq!(pixel_sized(&image, 512, x, 20), [0, 0, 0, 0]);
     }
 }
+
+/// The original rectangle and finite Gaussian are independent of paint alpha.
+/// The expected samples below come from the continuous F1 reference, never a
+/// renderer-owned raster mask or the test-only region-DAG feasibility helper.
+#[test]
+fn finite_gaussian_shadows_preserve_order_at_fractional_boundary_on_vulkan() {
+    let Some(context) = context() else { return };
+    let red = effect(
+        0.0,
+        0.0,
+        0.25,
+        0.0,
+        Render2dColorRgba8::new(255, 0, 0, 128),
+    );
+    let blue = effect(
+        0.0,
+        0.0,
+        0.25,
+        0.0,
+        Render2dColorRgba8::new(0, 0, 255, 128),
+    );
+
+    // Original neutral source: [10,20]^2. For pixel [10,10], the four
+    // correlated sample centers are 10.125, 10.375, 10.625, 10.875
+    // on each axis. Independent normalized finite Gaussian axis integrals:
+    // (Phi(min(3, (center-10)/0.25))-Phi(-3))/(Phi(3)-Phi(-3)) =
+    // [0.6919807702016251, 0.9343654969899314,
+    //  0.995127076807001, 1.0], with Phi the standard normal CDF.
+    //
+    // At each of 16 sites, q=(128/255)*mass_x*mass_y. Red then blue
+    // is premul [q(1-q),0,q] and alpha 2q-q². Reverse painter order
+    // exchanges red and blue. Average all premul site colors BEFORE the
+    // once-only linear-sRGB8 resolve: [133,0,172,165] or [172,0,133,165].
+    let neutral_rectangle = vec![caster(
+        Render2dColorRgba8::TRANSPARENT,
+        10.0,
+        10.0,
+        10.0,
+        10.0,
+    )];
+    for (shadows, boundary, interior, label) in [
+        (
+            vec![red, blue],
+            [133, 0, 172, 165],
+            [137, 0, 188, 191],
+            "F3F finite Gaussian red then blue",
+        ),
+        (
+            vec![blue, red],
+            [172, 0, 133, 165],
+            [188, 0, 137, 191],
+            "F3F finite Gaussian blue then red",
+        ),
+    ] {
+        let result = execute(
+            &context,
+            &mut Render2dExecutor::new(),
+            &group(neutral_rectangle.clone(), shadows, 1.0),
+            &Render2dResourceBindings::default(),
+            label,
+        );
+        pixel_near(pixel(&result, 10, 10), boundary);
+        // The full finite Gaussian kernel is inside the neutral rectangle.
+        pixel_near(pixel(&result, 15, 15), interior);
+        // No tail is permitted outside the exact finite 3σ square support.
+        assert_eq!(pixel(&result, 7, 7), [0, 0, 0, 0]);
+    }
+}
