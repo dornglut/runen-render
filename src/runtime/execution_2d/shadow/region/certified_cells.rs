@@ -9,7 +9,9 @@
 
 use super::interval::Interval;
 use super::*;
-use crate::composition_2d::{Render2dClip, Render2dItem, Render2dPrimitive, Render2dRect, Render2dShape};
+use crate::composition_2d::{
+    Render2dClip, Render2dItem, Render2dPrimitive, Render2dRect, Render2dShape,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CellCertificate {
@@ -275,11 +277,7 @@ impl NeutralRegion<'_> {
 
 /// Certify original F1 fill geometry first; apply item clips independently
 /// in their declared immediate-parent space. Painter color/opacity are ignored.
-fn certify_authored_item(
-    item: &Render2dItem,
-    cell: Cell,
-    visits: &mut usize,
-) -> CellCertificate {
+fn certify_authored_item(item: &Render2dItem, cell: Cell, visits: &mut usize) -> CellCertificate {
     let Render2dPrimitive::Fill { shape, .. } = item.primitive() else {
         return CellCertificate::Unknown;
     };
@@ -541,10 +539,7 @@ fn group_ellipse_clip_certifies_inside_outside_and_budget_exhaustion() {
     );
     let mut work = 2;
     assert_eq!(
-        clipped.certify_cell(
-            Cell::new([2.75, 2.75, 3.25, 3.25]).unwrap(),
-            &mut work,
-        ),
+        clipped.certify_cell(Cell::new([2.75, 2.75, 3.25, 3.25]).unwrap(), &mut work,),
         CellCertificate::Unknown
     );
     assert_eq!(work, 0);
