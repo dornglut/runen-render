@@ -321,6 +321,15 @@ pub(super) fn prepare(
             // inverse-affine parallelogram, not guessed from its midpoint. Applying the
             // positive disk or Gaussian in root axes after ancestor shear
             // changes the F1 semantics and is not admitted.
+            // Retained f64 neutral coverage is invocation-owned. Pass the
+            // remaining scene budget through root and nested preparation:
+            // late siblings must reject before allocating the float buffer.
+            let remaining_coverage_samples = MAX_SHADOW_COVERAGE_BYTES
+                .checked_sub(retained_coverage_bytes)
+                .and_then(|remaining| usize::try_from(remaining / 8).ok())
+                .ok_or_else(|| {
+                    shadow_resource(path, "remaining retained coverage budget overflow")
+                })?;
             let coverage = if let Some(ancestor) = parent_affine {
                 if remaining_spread >= 0.0 && (effect.sigma() > 0.0 || remaining_spread > 0.0) {
                     let [a, b, c, d, _, _] = ancestor.components();
@@ -342,6 +351,7 @@ pub(super) fn prepare(
                         sample_scale,
                         path,
                         &mut aggregate_coverage_work,
+                        remaining_coverage_samples,
                     )?
                 } else {
                     let mut projected = geometry_support::empty_mesh();
@@ -353,6 +363,7 @@ pub(super) fn prepare(
                         sample_scale,
                         path,
                         &mut aggregate_coverage_work,
+                        remaining_coverage_samples,
                     )?
                 }
             } else {
@@ -363,6 +374,7 @@ pub(super) fn prepare(
                     sample_scale,
                     path,
                     &mut aggregate_coverage_work,
+                    remaining_coverage_samples,
                 )?
             };
             let Some(coverage) = coverage else {

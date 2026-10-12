@@ -22,6 +22,23 @@ const MAX_GAUSSIAN_RADIUS_SAMPLES: u32 = 512;
 // across every authored effect in one contribution, not just one shadow.
 const MAX_AGGREGATE_SHADOW_PREPARATION_WORK: usize = 134_217_728;
 
+/// Retained f64 coverage belongs to the entire invocation, not one shadow.
+/// Reject before reserving disposable grid or float coverage storage.
+fn admit_retained_coverage_samples(
+    required: usize,
+    remaining: usize,
+    path: &[usize],
+) -> Result<(), crate::execution_2d::Render2dExecutionError> {
+    if required > remaining {
+        return Err(mask_failure(
+            path,
+            crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+            "aggregate retained shadow coverage exceeds preallocation budget",
+        ));
+    }
+    Ok(())
+}
+
 fn charge_shadow_preparation_work(
     used: &mut usize,
     cost: usize,
@@ -303,7 +320,9 @@ pub(super) fn rasterize_neutral_mesh(
     samples_per_logical_unit: f64,
     path: &[usize],
 ) -> Result<Option<NeutralMask>, crate::execution_2d::Render2dExecutionError> {
-    rasterize_mesh_with_positive_spread(mesh, samples_per_logical_unit, 0.0, path, None)
+    rasterize_mesh_with_positive_spread(
+        mesh, samples_per_logical_unit, 0.0, path, None, MAX_NEUTRAL_MASK_SAMPLES,
+    )
 }
 
 /// Tests the true tessellated geometric distance at each parent-frame sample,
@@ -315,6 +334,7 @@ fn rasterize_mesh_with_positive_spread(
     positive_spread: f64,
     path: &[usize],
     aggregate_work: Option<&mut usize>,
+    remaining_coverage_samples: usize,
 ) -> Result<Option<NeutralMask>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
@@ -395,6 +415,7 @@ fn rasterize_mesh_with_positive_spread(
             "neutral geometry sample grid exceeds bounded area",
         ));
     }
+    admit_retained_coverage_samples(cells, remaining_coverage_samples, path)?;
     let triangles = mesh.triangles.len() / 3;
     let work = cells
         .checked_mul(triangles)
@@ -719,9 +740,12 @@ fn rasterize_area_coverage(
     scale: f64,
     path: &[usize],
     aggregate_work: &mut usize,
+    remaining_coverage_samples: usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     let Some(grid) =
-        rasterize_mesh_with_positive_spread(mesh, scale, 0.0, path, Some(aggregate_work))?
+        rasterize_mesh_with_positive_spread(
+            mesh, scale, 0.0, path, Some(aggregate_work), remaining_coverage_samples,
+        )?
     else {
         return Ok(None);
     };
@@ -1354,6 +1378,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
     scale: f64,
     path: &[usize],
     aggregate_work: &mut usize,
+    remaining_coverage_samples: usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let ParentEffectKernel {
@@ -1432,6 +1457,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             "nested Gaussian root sample grid exceeds bounded area",
         ));
     }
+    admit_retained_coverage_samples(area, remaining_coverage_samples, path)?;
     let triangles_count = source.triangles.len() / 3;
     let scan_work = area
         .checked_mul(triangles_count)
@@ -2421,6 +2447,7 @@ fn rasterize_continuous_shadow_coverage(
     scale: f64,
     path: &[usize],
     aggregate_work: &mut usize,
+    remaining_coverage_samples: usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
@@ -2431,6 +2458,7 @@ fn rasterize_continuous_shadow_coverage(
         signed_spread.max(0.0),
         path,
         Some(aggregate_work),
+        remaining_coverage_samples,
     )?
     else {
         return Ok(None);
@@ -2472,6 +2500,7 @@ fn rasterize_continuous_shadow_coverage(
             "continuous Gaussian coverage exceeds bounded sample area",
         ));
     }
+    admit_retained_coverage_samples(area, remaining_coverage_samples, path)?;
     // The original source-lattice budget does not include the expanded
     // 3sigma halo. Every halo cell scans the triangle inventory before local
     // active-set selection, so preflight total traversal work before new
@@ -2856,6 +2885,7 @@ pub(super) fn prepare_untranslated_shadow_coverage(
         samples_per_logical_unit,
         path,
         &mut aggregate_work,
+        MAX_NEUTRAL_MASK_SAMPLES,
     )
 }
 
@@ -2868,6 +2898,7 @@ pub(super) fn prepare_shadow_coverage_admitted(
     samples_per_logical_unit: f64,
     path: &[usize],
     aggregate_work: &mut usize,
+    remaining_coverage_samples: usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     if !spread.is_finite() || !sigma.is_finite() || sigma < 0.0 {
@@ -2905,9 +2936,12 @@ pub(super) fn prepare_shadow_coverage_admitted(
                 samples_per_logical_unit,
                 path,
                 aggregate_work,
+                remaining_coverage_samples,
             );
         }
-        return rasterize_area_coverage(mesh, samples_per_logical_unit, path, aggregate_work);
+        return rasterize_area_coverage(
+            mesh, samples_per_logical_unit, path, aggregate_work, remaining_coverage_samples,
+        );
     }
     if spread > 0.0 {
         return rasterize_continuous_shadow_coverage(
@@ -2917,6 +2951,7 @@ pub(super) fn prepare_shadow_coverage_admitted(
             samples_per_logical_unit,
             path,
             aggregate_work,
+            remaining_coverage_samples,
         );
     }
     // Continuous negative Euclidean erosion uses the boundary-certified
@@ -2931,6 +2966,7 @@ pub(super) fn prepare_shadow_coverage_admitted(
         samples_per_logical_unit,
         path,
         aggregate_work,
+        remaining_coverage_samples,
     )?;
     if coverage
         .as_ref()
@@ -3351,7 +3387,9 @@ mod tests {
             bounds: [0.0, 0.0, 2.0, 2.0],
         };
         let mut shared = 0_usize;
-        let first = prepare_shadow_coverage_admitted(&mesh, 0.0, 0.0, 4.0, &[0], &mut shared)
+        let first = prepare_shadow_coverage_admitted(
+            &mesh, 0.0, 0.0, 4.0, &[0], &mut shared, MAX_NEUTRAL_MASK_SAMPLES,
+        )
             .unwrap()
             .unwrap();
         assert!(
@@ -3359,7 +3397,9 @@ mod tests {
             "geometry and area integration must both charge work"
         );
         let after_first = shared;
-        let second = prepare_shadow_coverage_admitted(&mesh, 0.0, 0.0, 4.0, &[1], &mut shared)
+        let second = prepare_shadow_coverage_admitted(
+            &mesh, 0.0, 0.0, 4.0, &[1], &mut shared, MAX_NEUTRAL_MASK_SAMPLES,
+        )
             .unwrap()
             .unwrap();
         assert!(
@@ -3381,6 +3421,7 @@ mod tests {
                 4.0,
                 &[5, 2],
                 &mut nearly_exhausted,
+                MAX_NEUTRAL_MASK_SAMPLES,
             ),
             Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
                 kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
@@ -3388,6 +3429,52 @@ mod tests {
                 ..
             }) if path == [5, 2]
         ));
+    }
+
+    #[test]
+    fn retained_shadow_coverage_preallocation_rejects_with_exact_path() {
+        use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
+        let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [0.0, 0.0], [2.0, 0.0], [2.0, 2.0],
+                [0.0, 0.0], [2.0, 2.0], [0.0, 2.0],
+            ],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        for (spread, sigma) in [(0.0, 0.0), (0.0, 0.25), (0.2, 0.25)] {
+            let mut used = 0;
+            let error = prepare_shadow_coverage_admitted(
+                &mesh, spread, sigma, 4.0, &[7, 2], &mut used, 0,
+            ).expect_err("zero remaining coverage must reject before materialization");
+            assert!(matches!(error, Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            } if path == [7, 2]));
+            assert_eq!(used, 0, "rejected source grid cannot charge work");
+        }
+        let mut used = 0;
+        let error = affine_parent_effect_coverage_admitted(
+            &mesh,
+            ParentEffectKernel { positive_spread: 0.0, sigma: 0.25 },
+            crate::composition_2d::Render2dAffineTransform::IDENTITY,
+            [-1.0, -1.0, 3.0, 3.0],
+            4.0,
+            &[8, 5],
+            &mut used,
+            0,
+        ).expect_err("nested root-sample grid must reject before allocation");
+        assert!(matches!(error, Render2dExecutionError::SampleSpace {
+            kind: Render2dSampleSpaceError::ResourceLimit,
+            path: Some(path), ..
+        } if path == [8, 5]));
+        assert_eq!(used, 0);
+
+        let mut used = 0;
+        let coverage = prepare_shadow_coverage_admitted(
+            &mesh, 0.0, 0.0, 4.0, &[7, 3], &mut used, 64,
+        ).unwrap().expect("8x8 coverage uses exactly 64 admitted f64 samples");
+        assert_eq!(coverage.values.len(), 64);
     }
 
     #[test]
@@ -3402,7 +3489,9 @@ mod tests {
         // Reject at the originating occurrence before coverage allocation.
         let mut used = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 100;
         assert!(matches!(
-            prepare_shadow_coverage_admitted(&mesh, 0.0, 0.25, 4.0, &[4, 3], &mut used),
+            prepare_shadow_coverage_admitted(
+                &mesh, 0.0, 0.25, 4.0, &[4, 3], &mut used, MAX_NEUTRAL_MASK_SAMPLES,
+            ),
             Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
                 kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path),
@@ -3996,7 +4085,7 @@ mod tests {
             mesh.triangles.extend([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
         }
         assert!(matches!(
-            rasterize_area_coverage(&mesh, 4.0, &[9, 7], &mut 0),
+            rasterize_area_coverage(&mesh, 4.0, &[9, 7], &mut 0, MAX_NEUTRAL_MASK_SAMPLES),
             Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
                 kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path),
