@@ -10,8 +10,8 @@
 use super::interval::Interval;
 use super::*;
 use crate::composition_2d::{
-    Render2dClip, Render2dItem, Render2dPath, Render2dPathCommand, Render2dPrimitive,
-    Render2dRect, Render2dShape,
+    Render2dClip, Render2dItem, Render2dPath, Render2dPathCommand, Render2dPrimitive, Render2dRect,
+    Render2dShape,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -238,7 +238,10 @@ fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCert
             let Some(turn) = orientation(
                 a,
                 b,
-                [Interval::scalar(c[0]).unwrap(), Interval::scalar(c[1]).unwrap()],
+                [
+                    Interval::scalar(c[0]).unwrap(),
+                    Interval::scalar(c[1]).unwrap(),
+                ],
             ) else {
                 return CellCertificate::Unknown;
             };
@@ -703,8 +706,8 @@ fn group_ellipse_clip_certifies_inside_outside_and_budget_exhaustion() {
 #[test]
 fn original_f1_convex_line_path_certifies_both_windings_and_edge_uncertainty() {
     use crate::composition_2d::{
-        Render2dBrush, Render2dColorRgba8, Render2dFillRule, Render2dOpacity,
-        Render2dPath, Render2dPoint,
+        Render2dBrush, Render2dColorRgba8, Render2dFillRule, Render2dOpacity, Render2dPath,
+        Render2dPoint,
     };
     let p = |x, y| Render2dPoint::new(x, y).unwrap();
     let make = |points: [(f64, f64); 3], rule| {
@@ -731,8 +734,14 @@ fn original_f1_convex_line_path_certifies_both_windings_and_edge_uncertainty() {
         )
     };
     for (points, rule) in [
-        ([(0.0, 0.0), (8.0, 0.0), (0.0, 8.0)], Render2dFillRule::NonZero),
-        ([(0.0, 8.0), (8.0, 0.0), (0.0, 0.0)], Render2dFillRule::EvenOdd),
+        (
+            [(0.0, 0.0), (8.0, 0.0), (0.0, 8.0)],
+            Render2dFillRule::NonZero,
+        ),
+        (
+            [(0.0, 8.0), (8.0, 0.0), (0.0, 0.0)],
+            Render2dFillRule::EvenOdd,
+        ),
     ] {
         let item = make(points, rule);
         let mut graph = builder();
@@ -743,8 +752,12 @@ fn original_f1_convex_line_path_certifies_both_windings_and_edge_uncertainty() {
                 support::NeutralMesh {
                     units_per_parent_logical_unit: 1.0,
                     triangles: vec![
-                        [0.0, 0.0], [8.0, 0.0], [8.0, 8.0],
-                        [0.0, 0.0], [8.0, 8.0], [0.0, 8.0],
+                        [0.0, 0.0],
+                        [8.0, 0.0],
+                        [8.0, 8.0],
+                        [0.0, 0.0],
+                        [8.0, 8.0],
+                        [0.0, 8.0],
                     ],
                     bounds: [0.0, 0.0, 8.0, 8.0],
                 },
@@ -752,9 +765,18 @@ fn original_f1_convex_line_path_certifies_both_windings_and_edge_uncertainty() {
                 &[0],
             )
             .unwrap();
-        assert_eq!(certify(&source, [1.0, 1.0, 2.0, 2.0]), CellCertificate::Inside);
-        assert_eq!(certify(&source, [6.0, 6.0, 7.0, 7.0]), CellCertificate::Outside);
-        assert_eq!(certify(&source, [3.9, 3.9, 4.1, 4.1]), CellCertificate::Unknown);
+        assert_eq!(
+            certify(&source, [1.0, 1.0, 2.0, 2.0]),
+            CellCertificate::Inside
+        );
+        assert_eq!(
+            certify(&source, [6.0, 6.0, 7.0, 7.0]),
+            CellCertificate::Outside
+        );
+        assert_eq!(
+            certify(&source, [3.9, 3.9, 4.1, 4.1]),
+            CellCertificate::Unknown
+        );
     }
 }
 
@@ -816,9 +838,16 @@ fn original_f1_curves_and_multiple_contours_can_only_prove_control_hull_exterior
     );
     let mut visits = 100;
     let cell = Cell::new([6.0, 1.0, 7.0, 2.0]).unwrap();
-    assert_eq!(certify_shape(&cubic, cell, &mut visits), CellCertificate::Outside);
     assert_eq!(
-        certify_shape(&cubic, Cell::new([1.0, 1.0, 2.0, 2.0]).unwrap(), &mut visits),
+        certify_shape(&cubic, cell, &mut visits),
+        CellCertificate::Outside
+    );
+    assert_eq!(
+        certify_shape(
+            &cubic,
+            Cell::new([1.0, 1.0, 2.0, 2.0]).unwrap(),
+            &mut visits
+        ),
         CellCertificate::Unknown
     );
     let multi = Render2dShape::path(
@@ -838,16 +867,28 @@ fn original_f1_curves_and_multiple_contours_can_only_prove_control_hull_exterior
         .unwrap(),
     );
     assert_eq!(
-        certify_shape(&multi, Cell::new([1.2, 1.2, 1.4, 1.4]).unwrap(), &mut visits),
+        certify_shape(
+            &multi,
+            Cell::new([1.2, 1.2, 1.4, 1.4]).unwrap(),
+            &mut visits
+        ),
         CellCertificate::Unknown
     );
     assert_eq!(
-        certify_shape(&multi, Cell::new([7.0, 7.0, 8.0, 8.0]).unwrap(), &mut visits),
+        certify_shape(
+            &multi,
+            Cell::new([7.0, 7.0, 8.0, 8.0]).unwrap(),
+            &mut visits
+        ),
         CellCertificate::Outside
     );
     let mut exhausted = 1;
     assert_eq!(
-        certify_shape(&multi, Cell::new([7.0, 7.0, 8.0, 8.0]).unwrap(), &mut exhausted),
+        certify_shape(
+            &multi,
+            Cell::new([7.0, 7.0, 8.0, 8.0]).unwrap(),
+            &mut exhausted
+        ),
         CellCertificate::Unknown
     );
     assert_eq!(exhausted, 0);
