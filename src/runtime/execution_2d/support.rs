@@ -3514,11 +3514,17 @@ mod tests {
                 .expect("8x8 coverage uses exactly 64 admitted f64 samples");
         assert_eq!(coverage.values.len(), 64);
 
-        // At the exact radius of a 2x2 rectangle's inradius the eroded
-        // indicator has zero area. This must be accepted as no-work even
-        // when no bytes remain for another retained shadow float buffer.
+        // The 2x2 right triangle has true inradius 2-sqrt(2) < 0.8,
+        // while its bounding box's half-minimum extent is 1. AABB reach
+        // alone cannot prove complete erosion: the exposed supporting
+        // planes must certify this valid no-work outcome first.
+        let thin = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
         let mut used = 0;
-        let empty = prepare_shadow_coverage_admitted(&mesh, -1.0, 0.25, 4.0, &[7, 4], &mut used, 0)
+        let empty = prepare_shadow_coverage_admitted(&thin, -0.8, 0.25, 4.0, &[7, 4], &mut used, 0)
             .unwrap();
         assert!(
             empty.is_none(),
