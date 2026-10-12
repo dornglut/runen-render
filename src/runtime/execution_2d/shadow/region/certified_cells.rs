@@ -128,17 +128,9 @@ impl Cell {
     fn classify_rectangle(self, [x0, y0, x1, y1]: [Interval; 4]) -> CellCertificate {
         // A physical vertex divided by its source scale may round in either
         // direction. A definite answer must account for BOTH possibilities.
-        if self.x.lo > x0.hi
-            && self.x.hi < x1.lo
-            && self.y.lo > y0.hi
-            && self.y.hi < y1.lo
-        {
+        if self.x.lo > x0.hi && self.x.hi < x1.lo && self.y.lo > y0.hi && self.y.hi < y1.lo {
             CellCertificate::Inside
-        } else if self.x.hi < x0.lo
-            || self.x.lo > x1.hi
-            || self.y.hi < y0.lo
-            || self.y.lo > y1.hi
-        {
+        } else if self.x.hi < x0.lo || self.x.lo > x1.hi || self.y.hi < y0.lo || self.y.lo > y1.hi {
             CellCertificate::Outside
         } else {
             CellCertificate::Unknown
@@ -353,8 +345,12 @@ fn scaled_source_certificate_uses_outward_rounded_rectangle_division() {
     let mesh = support::NeutralMesh {
         units_per_parent_logical_unit: 3.0,
         triangles: vec![
-            [0.0, 0.0], [9.0, 0.0], [9.0, 9.0],
-            [0.0, 0.0], [9.0, 9.0], [0.0, 9.0],
+            [0.0, 0.0],
+            [9.0, 0.0],
+            [9.0, 9.0],
+            [0.0, 0.0],
+            [9.0, 9.0],
+            [0.0, 9.0],
         ],
         bounds: [0.0, 0.0, 9.0, 9.0],
     };
