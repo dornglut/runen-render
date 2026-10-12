@@ -517,6 +517,46 @@ impl NeutralRegionBuilder {
         self.node(Kind::Effect { source, shadow }, path, depth, None)
     }
 
+    /// This narrow polygon-to-rounded-disk specialization may only promote
+    /// a rectangle proven from original F1 polygonal geometry. A disposable
+    /// Lyon mesh alone cannot certify an ellipse, rounded corner, Bézier,
+    /// stroke or curved clip merely because its triangles happen to form a
+    /// bounding rectangle. Resolved image destinations and plain rectangular
+    /// fills remain exact polygonal sources, independent of color alpha.
+    fn polygonal_source_proven<'a>(region: &NeutralRegion<'a>) -> bool {
+        match &region.kind {
+            Kind::Source(_) => {
+                let Some(item) = region.semantic_item else {
+                    return false;
+                };
+                let source_is_polygonal = match item.primitive() {
+                    crate::composition_2d::Render2dPrimitive::Fill { shape, .. } => {
+                        shape.as_rect().is_some()
+                    }
+                    crate::composition_2d::Render2dPrimitive::Image(_) => true,
+                    crate::composition_2d::Render2dPrimitive::Stroke { .. }
+                    | crate::composition_2d::Render2dPrimitive::ShapedText(_) => false,
+                };
+                source_is_polygonal
+                    && item
+                        .clips()
+                        .iter()
+                        .all(|clip| clip.shape().as_rect().is_some())
+            }
+            Kind::Union(children) => children
+                .iter()
+                .all(|child| Self::polygonal_source_proven(child)),
+            Kind::Affine { source, .. } => Self::polygonal_source_proven(source),
+            Kind::Clip { source, clips } => {
+                clips
+                    .iter()
+                    .all(|clip| clip.shape().as_rect().is_some())
+                    && Self::polygonal_source_proven(source)
+            }
+            Kind::Effect { .. } => false,
+        }
+    }
+
     /// Recognize only the exact existing F1 DAG: C union (C ⊕ disk(r)).
     /// The child source must be a whole, certified axis-aligned rectangle,
     /// with identity frames, no clip, zero blur and no effect translation.
@@ -551,6 +591,7 @@ impl NeutralRegionBuilder {
             return Ok(None);
         };
         if !Arc::ptr_eq(original, source)
+            || !Self::polygonal_source_proven(original)
             || shadow.spread() <= 0.0
             || shadow.sigma() != 0.0
             || shadow.offset_x() != 0.0
@@ -1018,6 +1059,67 @@ mod tests {
             .expect("the child C is still a complete physical rectangle");
         let scale = qualified.rectangle.units_per_parent_logical_unit;
         assert_eq!(rect.map(|v| v / scale), [10.0, 10.0, 20.0, 20.0]);
+    }
+
+    #[test]
+    fn rounded_rectangle_specialization_requires_original_f1_source_proof() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dRect,
+            Render2dShape,
+        };
+        let rect = Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap();
+        // Deliberately forge identical disposable tessellations for two
+        // DIFFERENT original F1 shapes. The mesh is not a semantic witness.
+        let physical = || support::NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [0.0, 0.0], [2.0, 0.0], [2.0, 2.0],
+                [0.0, 0.0], [2.0, 2.0], [0.0, 2.0],
+            ],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let valid = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(rect),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let curved = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::ellipse(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let disk = Render2dDropShadow::new(
+            0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT,
+        )
+        .unwrap();
+        let mut graph = builder();
+        let plain_source = graph.source_from_item(physical(), &valid, &[0, 0]).unwrap();
+        let plain_disk = graph.effect(Arc::clone(&plain_source), disk, &[0, 1]).unwrap();
+        let plain = graph.union(vec![plain_source, plain_disk], &[0]).unwrap();
+        assert!(graph.qualified_rounded_rectangle(&plain).unwrap().is_some());
+
+        let ellipse_source = graph.source_from_item(physical(), &curved, &[1, 0]).unwrap();
+        let ellipse_disk = graph.effect(Arc::clone(&ellipse_source), disk, &[1, 1]).unwrap();
+        let ellipse = graph.union(vec![ellipse_source, ellipse_disk], &[1]).unwrap();
+        assert!(
+            graph.qualified_rounded_rectangle(&ellipse).unwrap().is_none(),
+            "an F1 ellipse may not be promoted from a rectangular Lyon mesh"
+        );
+        assert!(matches!(
+            graph.materialize(&ellipse),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Shadows { root_index: 1 },
+            }) if path == [1, 1]
+        ));
     }
 
     #[test]
