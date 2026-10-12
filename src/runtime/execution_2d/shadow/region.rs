@@ -1171,8 +1171,10 @@ mod tests {
     #[test]
     fn nested_affine_encloses_sub_ulp_parent_translation() {
         let mut builder = builder();
-        let src = builder.source(triangle(), &[6, 0]).unwrap();
-        let combined = builder.union(vec![src], &[6, 1]).unwrap();
+        let first = builder.source(triangle(), &[6, 0]).unwrap();
+        let second = builder.source(triangle(), &[6, 3]).unwrap();
+        let combined = builder.union(vec![first, second], &[6, 1]).unwrap();
+        assert!(matches!(&combined.kind, Kind::Union(_)));
         let tiny = 2.0_f64.powi(-54);
         let motion = Render2dAffineTransform::new(1.0, 0.0, 0.0, 1.0, tiny, 0.0).unwrap();
         let moved = builder.affine(combined, motion, &[6, 2]).unwrap();
