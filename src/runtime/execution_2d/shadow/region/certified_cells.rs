@@ -384,6 +384,11 @@ fn gaussian_density_enclosure(x: Interval, y: Interval) -> Option<Interval> {
     Interval::new(lower.max(0.0), upper.min(1.0))
 }
 
+// One bounded density/area/query-coordinate evaluation entails fewer than
+// 256 scalar arithmetic operations, including directed-rounding endpoints.
+// The separate region classifier decrements this same fuel for its own work.
+const GAUSSIAN_WEIGHT_WORK: usize = 256;
+
 /// Test-only normalized finite Gaussian coverage certificate. The coordinates
 /// are in the shadow owner's parent frame, NOT root or raster coordinates.
 /// Unknown region cells contribute zero to the lower mass and their full
@@ -414,9 +419,10 @@ fn certified_finite_gaussian_coverage(
         let y1 = y0 + width;
         let ty = Interval::new(y0, y1)?;
         for ix in 0..side {
-            if *visits == 0 {
+            if *visits < GAUSSIAN_WEIGHT_WORK {
                 return None;
             }
+            *visits -= GAUSSIAN_WEIGHT_WORK;
             let x0 = -3.0 + ix as f64 * width;
             let x1 = x0 + width;
             let tx = Interval::new(x0, x1)?;
@@ -463,6 +469,215 @@ fn certified_finite_gaussian_coverage(
         return None;
     }
     Some([lower, upper])
+}
+
+/// A single bounded owner's-frame Gaussian cell. The rectangle spans a
+/// subset of the NORMALIZED [-3,3]^2 domain, not a root-frame image cache.
+#[derive(Clone, Copy)]
+struct GaussianQuadCell {
+    x: Interval,
+    y: Interval,
+    depth: usize,
+}
+
+struct AdaptiveGaussianMass {
+    total: Interval,
+    definite: Interval,
+    uncertain: Interval,
+    inside: usize,
+    outside: usize,
+    leaves: usize,
+}
+
+impl AdaptiveGaussianMass {
+    fn empty() -> Option<Self> {
+        Some(Self {
+            total: Interval::scalar(0.0)?,
+            definite: Interval::scalar(0.0)?,
+            uncertain: Interval::scalar(0.0)?,
+            inside: 0,
+            outside: 0,
+            leaves: 0,
+        })
+    }
+
+    fn add(&mut self, weight: Interval, certificate: CellCertificate) -> Option<()> {
+        self.total = self.total.add(weight)?;
+        match certificate {
+            CellCertificate::Inside => {
+                self.definite = self.definite.add(weight)?;
+                self.inside += 1;
+            }
+            CellCertificate::Outside => self.outside += 1,
+            CellCertificate::Unknown => self.uncertain = self.uncertain.add(weight)?,
+        }
+        self.leaves += 1;
+        Some(())
+    }
+
+    fn coverage(&self) -> Option<[f64; 2]> {
+        if self.inside == self.leaves {
+            return Some([1.0, 1.0]);
+        }
+        if self.outside == self.leaves {
+            return Some([0.0, 0.0]);
+        }
+        if self.total.lo <= 0.0 {
+            return None;
+        }
+        let lower = Interval::scalar(self.definite.lo)?
+            .div(Interval::scalar(self.total.hi)?)?
+            .lo
+            .max(0.0);
+        let upper = self
+            .definite
+            .add(self.uncertain)?
+            .div(Interval::scalar(self.total.lo)?)?
+            .hi
+            .min(1.0);
+        if lower > upper {
+            return None;
+        }
+        Some([lower, upper])
+    }
+}
+
+/// Subdivide ALL uncertain geometry cells, and definite cells with a
+/// significant remaining Gaussian integration enclosure width. Never refine
+/// only geometric boundaries while leaving normalization uncertainty unbound.
+/// Every visited node costs its conservative numerical work plus the actual
+/// region evaluator's visit charges; depth and total nodes are capped.
+fn refine_gaussian_cell(
+    region: &NeutralRegion<'_>,
+    query_center: [Interval; 2],
+    sigma: Interval,
+    cell: GaussianQuadCell,
+    max_depth: usize,
+    mass_threshold: f64,
+    remaining_nodes: &mut usize,
+    visits: &mut usize,
+    accumulator: &mut AdaptiveGaussianMass,
+) -> Option<()> {
+    if *remaining_nodes == 0 || *visits < GAUSSIAN_WEIGHT_WORK {
+        return None;
+    }
+    *remaining_nodes -= 1;
+    *visits -= GAUSSIAN_WEIGHT_WORK;
+
+    let area = Interval::scalar(cell.x.hi)?
+        .sub(Interval::scalar(cell.x.lo)?)?
+        .mul(Interval::scalar(cell.y.hi)?.sub(Interval::scalar(cell.y.lo)?)?)?;
+    let weight = area.mul(gaussian_density_enclosure(cell.x, cell.y)?)?;
+    let query = Cell {
+        x: query_center[0].add(sigma.mul(cell.x)?)?,
+        y: query_center[1].add(sigma.mul(cell.y)?)?,
+    };
+    let certificate = region.certify_cell(query, visits);
+    if certificate == CellCertificate::Unknown && *visits == 0 {
+        return None;
+    }
+    let should_refine = cell.depth < max_depth
+        && (certificate == CellCertificate::Unknown
+            || weight.hi - weight.lo > mass_threshold);
+    if !should_refine {
+        return accumulator.add(weight, certificate);
+    }
+    let mx = cell.x.lo + (cell.x.hi - cell.x.lo) * 0.5;
+    let my = cell.y.lo + (cell.y.hi - cell.y.lo) * 0.5;
+    let left = Interval::new(cell.x.lo, mx)?;
+    let right = Interval::new(mx, cell.x.hi)?;
+    let top = Interval::new(cell.y.lo, my)?;
+    let bottom = Interval::new(my, cell.y.hi)?;
+    for (x, y) in [
+        (left, top),
+        (right, top),
+        (left, bottom),
+        (right, bottom),
+    ] {
+        refine_gaussian_cell(
+            region,
+            query_center,
+            sigma,
+            GaussianQuadCell {
+                x,
+                y,
+                depth: cell.depth + 1,
+            },
+            max_depth,
+            mass_threshold,
+            remaining_nodes,
+            visits,
+            accumulator,
+        )?;
+    }
+    Some(())
+}
+
+/// Feasibility only: a deterministic bounded quadtree certificate over the
+/// normalized finite parent-frame Gaussian. A target error that cannot be
+/// proven within admitted query/numeric work returns None, never a guessed
+/// midpoint, a false 0 or a false 1.
+fn certified_adaptive_finite_gaussian_coverage(
+    region: &NeutralRegion<'_>,
+    center: [f64; 2],
+    sigma: f64,
+    max_depth: usize,
+    max_nodes: usize,
+    max_width: f64,
+    visits: &mut usize,
+) -> Option<([f64; 2], usize)> {
+    if !sigma.is_finite()
+        || sigma <= 0.0
+        || max_depth > 6
+        || max_nodes == 0
+        || max_nodes > 5_461
+        || !max_width.is_finite()
+        || max_width <= 0.0
+        || max_width >= 1.0
+    {
+        return None;
+    }
+    let center = [Interval::scalar(center[0])?, Interval::scalar(center[1])?];
+    let sigma = Interval::scalar(sigma)?;
+    // Exactly normalized all-kernel cases are proved by ONE semantic region
+    // query. Do not force needless numeric subdivision at f64 extremes when
+    // every point of the Gaussian support has the same classification.
+    if *visits == 0 {
+        return None;
+    }
+    let full_kernel = Interval::new(-3.0, 3.0)?;
+    let query = Cell {
+        x: center[0].add(sigma.mul(full_kernel)?)?,
+        y: center[1].add(sigma.mul(full_kernel)?)?,
+    };
+    match region.certify_cell(query, visits) {
+        CellCertificate::Inside => return Some(([1.0, 1.0], 1)),
+        CellCertificate::Outside => return Some(([0.0, 0.0], 1)),
+        CellCertificate::Unknown if *visits == 0 => return None,
+        CellCertificate::Unknown => {}
+    }
+    let mut result = AdaptiveGaussianMass::empty()?;
+    let mut remaining_nodes = max_nodes;
+    refine_gaussian_cell(
+        region,
+        center,
+        sigma,
+        GaussianQuadCell {
+            x: Interval::new(-3.0, 3.0)?,
+            y: Interval::new(-3.0, 3.0)?,
+            depth: 0,
+        },
+        max_depth,
+        max_width / 128.0,
+        &mut remaining_nodes,
+        visits,
+        &mut result,
+    )?;
+    let coverage = result.coverage()?;
+    if coverage[1] - coverage[0] > max_width {
+        return None;
+    }
+    Some((coverage, max_nodes - remaining_nodes))
 }
 
 impl NeutralRegion<'_> {
@@ -1064,12 +1279,12 @@ fn finite_gaussian_certifies_full_and_empty_kernel_mass() {
     let mut builder = builder();
     let large = rectangle(&mut builder, [-10.0, -10.0, 10.0, 10.0], &[0]);
     let distant = rectangle(&mut builder, [10.0, 10.0, 11.0, 11.0], &[1]);
-    let mut visits = 4096;
+    let mut visits = 200_000;
     assert_eq!(
         certified_finite_gaussian_coverage(&large, [0.0, 0.0], 0.25, 16, &mut visits),
         Some([1.0, 1.0])
     );
-    let mut visits = 4096;
+    let mut visits = 200_000;
     assert_eq!(
         certified_finite_gaussian_coverage(&distant, [0.0, 0.0], 0.25, 16, &mut visits),
         Some([0.0, 0.0])
@@ -1080,12 +1295,12 @@ fn finite_gaussian_certifies_full_and_empty_kernel_mass() {
 fn finite_gaussian_symmetry_halfplane_has_certified_half_coverage() {
     let mut builder = builder();
     let half = rectangle(&mut builder, [-10.0, -10.0, 0.0, 10.0], &[0]);
-    let mut visits = 8192;
+    let mut visits = 1_200_000;
     let [lo, hi] =
         certified_finite_gaussian_coverage(&half, [0.0, 0.0], 0.25, 64, &mut visits).unwrap();
     assert!(lo < 0.5 && hi > 0.5, "{lo}..{hi}");
     assert!(lo > 0.25 && hi < 0.75, "{lo}..{hi}");
-    assert!(visits < 8192);
+    assert!(visits < 1_200_000);
 }
 
 #[test]
@@ -1097,10 +1312,73 @@ fn finite_gaussian_uncertainty_and_work_exhaustion_are_not_zero_alpha() {
         certified_finite_gaussian_coverage(&source, [0.5, 0.5], 0.25, 16, &mut visits),
         None
     );
-    let mut visits = 4096;
+    let mut visits = 200_000;
     let [lo, hi] =
         certified_finite_gaussian_coverage(&source, [1.0, 0.5], 0.25, 16, &mut visits).unwrap();
     assert!(lo >= 0.0 && hi <= 1.0 && lo < hi);
+}
+
+
+#[test]
+fn adaptive_gaussian_refinement_proves_halfplane_with_finite_total_work() {
+    let mut graph = builder();
+    let half = rectangle(&mut graph, [-10.0, -10.0, 0.0, 10.0], &[0]);
+    let mut fuel = 2_000_000;
+    let (bounds, nodes) = certified_adaptive_finite_gaussian_coverage(
+        &half,
+        [0.0, 0.0],
+        0.25,
+        6,
+        5_461,
+        0.35,
+        &mut fuel,
+    )
+    .unwrap();
+    assert!(bounds[0] < 0.5 && bounds[1] > 0.5);
+    assert!(bounds[1] - bounds[0] <= 0.35);
+    assert!(nodes > 1 && nodes <= 5_461 && fuel < 2_000_000);
+}
+
+#[test]
+fn adaptive_gaussian_never_uses_a_partial_work_budget_as_alpha() {
+    let mut graph = builder();
+    let source = rectangle(&mut graph, [0.0, 0.0, 1.0, 1.0], &[0]);
+    let mut fuel = 1;
+    assert_eq!(
+        certified_adaptive_finite_gaussian_coverage(
+            &source, [1.0, 0.5], 0.25, 6, 5_461, 0.35, &mut fuel
+        ),
+        None
+    );
+    let mut fuel = 2_000_000;
+    assert_eq!(
+        certified_adaptive_finite_gaussian_coverage(
+            &source, [1.0, 0.5], 0.25, 6, 1, 0.01, &mut fuel
+        ),
+        None,
+        "node exhaustion cannot silently certify narrow Gaussian coverage"
+    );
+}
+
+#[test]
+fn adaptive_gaussian_certifies_all_inside_and_outside_without_exhaustive_grid() {
+    let mut graph = builder();
+    let large = rectangle(&mut graph, [-10.0, -10.0, 10.0, 10.0], &[0]);
+    let distant = rectangle(&mut graph, [10.0, 10.0, 11.0, 11.0], &[1]);
+    let mut fuel = 2_000;
+    assert_eq!(
+        certified_adaptive_finite_gaussian_coverage(
+            &large, [0.0, 0.0], 0.25, 6, 5_461, 0.01, &mut fuel
+        ),
+        Some(([1.0, 1.0], 1))
+    );
+    let mut fuel = 2_000;
+    assert_eq!(
+        certified_adaptive_finite_gaussian_coverage(
+            &distant, [0.0, 0.0], 0.25, 6, 5_461, 0.01, &mut fuel
+        ),
+        Some(([0.0, 0.0], 1))
+    );
 }
 
 #[test]
