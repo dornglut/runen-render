@@ -125,6 +125,84 @@ fn affine_leaf_envelope(
 /// Gaussian coverage. In particular, Clip may shrink but cannot enlarge its
 /// source, and negative Euclidean erosion may shrink or erase but cannot grow.
 /// Retaining the larger original extent avoids guessing curved clip geometry.
+/// Certify the axis-aligned reach of a non-leaf affine without treating
+/// the enclosing rectangle as the exact source geometry. The source-leaf
+/// vertex-tight path above remains separate: projecting unused AABB corners
+/// can overflow even when every actual triangle vertex is representable.
+fn nested_affine_envelope(
+    bounds: [f64; 4],
+    transform: Render2dAffineTransform,
+    path: &[usize],
+) -> Result<[f64; 4], Render2dExecutionError> {
+    if transform == Render2dAffineTransform::IDENTITY {
+        return Ok(bounds);
+    }
+    use interval::Interval;
+    let x = Interval::new(bounds[0], bounds[2])
+        .ok_or_else(|| precision(path, "nested affine x bounds are invalid"))?;
+    let y = Interval::new(bounds[1], bounds[3])
+        .ok_or_else(|| precision(path, "nested affine y bounds are invalid"))?;
+    let [a, b, c, d, tx, ty] = transform.components().map(Interval::scalar);
+    let [Some(a), Some(b), Some(c), Some(d), Some(tx), Some(ty)] = [a, b, c, d, tx, ty]
+    else {
+        return Err(precision(path, "nested affine coefficients are not finite"));
+    };
+    let interval_x = a
+        .mul(x)
+        .and_then(|term| term.add(c.mul(y)?))
+        .and_then(|sum| sum.add(tx))
+        .ok_or_else(|| precision(path, "nested affine x reach cannot be enclosed"))?;
+    let interval_y = b
+        .mul(x)
+        .and_then(|term| term.add(d.mul(y)?))
+        .and_then(|sum| sum.add(ty))
+        .ok_or_else(|| precision(path, "nested affine y reach cannot be enclosed"))?;
+    Ok([interval_x.lo, interval_y.lo, interval_x.hi, interval_y.hi])
+}
+
+/// A signed Euclidean spread can enlarge support by at most max(spread, 0)
+/// on each axis; a Gaussian has a separate finite square support halo.
+/// Conservative bounds are not membership or Gaussian coverage certificates.
+fn nested_effect_envelope(
+    bounds: [f64; 4],
+    effect: Render2dDropShadow,
+    path: &[usize],
+) -> Result<[f64; 4], Render2dExecutionError> {
+    use interval::Interval;
+    let x = Interval::new(bounds[0], bounds[2])
+        .ok_or_else(|| precision(path, "nested effect x bounds are invalid"))?;
+    let y = Interval::new(bounds[1], bounds[3])
+        .ok_or_else(|| precision(path, "nested effect y bounds are invalid"))?;
+    if effect.offset_x() == 0.0
+        && effect.offset_y() == 0.0
+        && effect.sigma() == 0.0
+        && effect.spread() <= 0.0
+    {
+        // Identity or erosion-only cannot enlarge support; this also avoids
+        // a false precision failure from rounding a finite f64::MAX endpoint.
+        return Ok(bounds);
+    }
+    let margin = Interval::scalar(effect.spread().max(0.0))
+        .and_then(|spread| spread.add(Interval::scalar(3.0)?.mul(Interval::scalar(effect.sigma())?)?))
+        .ok_or_else(|| precision(path, "nested effect halo is not representable"))?
+        .hi;
+    let pad = Interval::new(-margin, margin)
+        .ok_or_else(|| precision(path, "nested effect padding is not finite"))?;
+    let offset_x = Interval::scalar(effect.offset_x())
+        .ok_or_else(|| precision(path, "nested effect horizontal offset is not finite"))?;
+    let offset_y = Interval::scalar(effect.offset_y())
+        .ok_or_else(|| precision(path, "nested effect vertical offset is not finite"))?;
+    let horizontal = x
+        .add(offset_x)
+        .and_then(|shifted| shifted.add(pad))
+        .ok_or_else(|| precision(path, "nested effect horizontal reach cannot be enclosed"))?;
+    let vertical = y
+        .add(offset_y)
+        .and_then(|shifted| shifted.add(pad))
+        .ok_or_else(|| precision(path, "nested effect vertical reach cannot be enclosed"))?;
+    Ok([horizontal.lo, vertical.lo, horizontal.hi, vertical.hi])
+}
+
 fn region_envelope(
     kind: &Kind<'_>,
     semantic_item: Option<&Render2dItem>,
@@ -195,7 +273,7 @@ fn region_envelope(
             } else {
                 source
                     .envelope
-                    .map(|bounds| shadow::transform_envelope(bounds, *to_parent, path))
+                    .map(|bounds| nested_affine_envelope(bounds, *to_parent, path))
                     .transpose()?
             }
         }
@@ -203,18 +281,10 @@ fn region_envelope(
         Kind::Effect {
             source,
             shadow: effect,
-        } => source.envelope.map(|bounds| {
-            // Spread is a Euclidean DISK while sigma>0 has a finite axis-aligned
-            // square envelope. The sum is conservative for support reach, not
-            // a square substituted as the positive disk's actual membership.
-            let pad = effect.spread().max(0.0) + 3.0 * effect.sigma();
-            [
-                bounds[0] + effect.offset_x() - pad,
-                bounds[1] + effect.offset_y() - pad,
-                bounds[2] + effect.offset_x() + pad,
-                bounds[3] + effect.offset_y() + pad,
-            ]
-        }),
+        } => source
+            .envelope
+            .map(|bounds| nested_effect_envelope(bounds, *effect, path))
+            .transpose()?,
     };
     if let Some(bounds) = result
         && (!bounds.iter().all(|value| value.is_finite())
@@ -1084,7 +1154,10 @@ mod tests {
         let effect =
             Render2dDropShadow::new(1.0, -2.0, 0.5, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let curved = builder.effect(in_parent, effect, &[5, 2]).unwrap();
-        assert_eq!(curved.envelope, Some([-1.5, -4.5, 11.5, 4.5]));
+        let extent = curved.envelope.unwrap();
+        assert!(extent.iter().all(|v| v.is_finite()));
+        assert!(extent[0] <= -1.5 && extent[1] <= -4.5);
+        assert!(extent[2] >= 11.5 && extent[3] >= 4.5);
         assert!(matches!(
             builder.materialize(&curved),
             Err(Render2dExecutionError::UnsupportedEntry {
@@ -1092,6 +1165,53 @@ mod tests {
                 kind: Render2dUnsupportedContent::Shadows { root_index: 5 },
             }) if path == [5, 2]
         ));
+    }
+
+    #[test]
+    fn nested_affine_encloses_sub_ulp_parent_translation() {
+        let mut builder = builder();
+        let src = builder.source(triangle(), &[6, 0]).unwrap();
+        let combined = builder.union(vec![src], &[6, 1]).unwrap();
+        let tiny = 2.0_f64.powi(-54);
+        let motion = Render2dAffineTransform::new(1.0, 0.0, 0.0, 1.0, tiny, 0.0).unwrap();
+        let moved = builder.affine(combined, motion, &[6, 2]).unwrap();
+        let bounds = moved.envelope.unwrap();
+        assert!(bounds[2] > 4.0, "nearest-rounded 4 + tiny would incorrectly remain 4");
+        assert!(bounds[0] <= tiny);
+        assert!(bounds[1] <= 0.0 && bounds[3] >= 4.0);
+    }
+
+    #[test]
+    fn nested_effect_encloses_sub_ulp_offset_and_halo() {
+        let mut builder = builder();
+        let src = builder.source(triangle(), &[7, 0]).unwrap();
+        let tiny = 2.0_f64.powi(-54);
+        let offset = Render2dDropShadow::new(
+            tiny, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT
+        ).unwrap();
+        let moved = builder.effect(src, offset, &[7, 1]).unwrap();
+        let bounds = moved.envelope.unwrap();
+        assert!(bounds[2] > 4.0, "outward effect reach must include sub-ULP translation");
+        assert!(bounds[0] <= tiny);
+        let blur = Render2dDropShadow::new(
+            0.0, 0.0, tiny, 0.0, Render2dColorRgba8::TRANSPARENT
+        ).unwrap();
+        let widened = builder.effect(moved, blur, &[7, 2]).unwrap();
+        let reach = widened.envelope.unwrap();
+        assert!(reach[0] < bounds[0] && reach[2] > bounds[2]);
+    }
+
+    #[test]
+    fn nested_identity_retains_representable_extreme_extent() {
+        let bounds = [0.0, 0.0, f64::MAX, 1.0];
+        assert_eq!(
+            nested_affine_envelope(bounds, Render2dAffineTransform::IDENTITY, &[8]).unwrap(),
+            bounds
+        );
+        let zero = Render2dDropShadow::new(
+            0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT
+        ).unwrap();
+        assert_eq!(nested_effect_envelope(bounds, zero, &[8]).unwrap(), bounds);
     }
 
     #[test]
