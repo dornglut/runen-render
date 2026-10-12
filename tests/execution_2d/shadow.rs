@@ -1084,6 +1084,78 @@ fn qualified_child_positive_disk_exhausted_radius_erodes_original_rectangle() {
     assert_eq!(pixel(&image, 9, 9), [0, 0, 0, 0]);
 }
 
+/// The borrowed F1 ellipse is curved; disposable tessellation is not an
+/// exact signed Euclidean erosion witness. A radius-6 disk cannot fit in
+/// the source's certified 8x8 original reach, so its negative spread is
+/// geometrically EMPTY even when the inner group is transparent. The
+/// transparent inner shadow cannot erase the pristine caster used by a
+/// separately authored opaque ancestor shadow.
+#[test]
+fn nested_curved_f1_complete_erosion_preserves_ancestor_gpu_paint() {
+    let Some(context) = context() else { return };
+    let scene = |with_erasure: bool| {
+        let ellipse = Render2dEntry::item(Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::ellipse(
+                    Render2dRect::new(10.0, 10.0, 8.0, 8.0).unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        ));
+        let nested = Render2dEntry::group(Render2dGroup::new(
+            vec![ellipse],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            if with_erasure {
+                vec![effect(
+                    2.0,
+                    -1.0,
+                    0.1,
+                    -6.0,
+                    Render2dColorRgba8::TRANSPARENT,
+                )]
+            } else {
+                Vec::new()
+            },
+        ));
+        group(
+            vec![nested],
+            vec![effect(
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                Render2dColorRgba8::new(255, 0, 0, 255),
+            )],
+            1.0,
+        )
+    };
+    let plain = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene(false),
+        &Render2dResourceBindings::default(),
+        "F3F original ellipse without child erasure",
+    );
+    let actual = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene(true),
+        &Render2dResourceBindings::default(),
+        "F3F original ellipse with complete child erosion",
+    );
+    assert_eq!(
+        actual, plain,
+        "certified-empty curved child shadow must not alter original-F1 ancestor paint"
+    );
+    pixel_near(pixel(&actual, 14, 14), [255, 0, 0, 255]);
+    assert_eq!(pixel(&actual, 5, 5), [0, 0, 0, 0]);
+}
+
 #[test]
 fn nested_positive_disk_is_unsupported_when_ancestor_needs_neutral_caster() {
     let Some(context) = context() else { return };
