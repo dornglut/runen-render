@@ -416,9 +416,10 @@ impl<'a> OrthogonalExterior<'a> {
     pub(super) fn gaussian_row(
         &self,
         query: GaussianRow,
+        values: &mut [f64],
         work: &mut usize,
         path: &[usize],
-    ) -> Result<Vec<f64>, Render2dExecutionError> {
+    ) -> Result<(), Render2dExecutionError> {
         let GaussianRow {
             y,
             origin_x,
@@ -441,6 +442,7 @@ impl<'a> OrthogonalExterior<'a> {
             || y0 >= y1
             || !(origin_x + width as f64).is_finite()
             || width > super::MAX_NEUTRAL_MASK_SAMPLES
+            || values.len() != width
         {
             return Err(precision(
                 path,
@@ -460,11 +462,10 @@ impl<'a> OrthogonalExterior<'a> {
         }
         cuts.sort_by(f64::total_cmp);
         cuts.dedup();
-        let mut values = Vec::new();
-        values
-            .try_reserve_exact(width)
-            .map_err(|_| resource(path, "Gaussian row buffer allocation failed"))?;
-        values.resize(width, 0.0_f64);
+        // The caller has already admitted and allocated the complete
+        // invocation-owned f64 coverage. Reusing its row slice avoids a
+        // second width-sized allocation for every Gaussian row.
+        values.fill(0.0);
         let mut crossings = Vec::<f64>::new();
         let mut forbidden = Vec::<[f64; 2]>::new();
         let mut allowed = Vec::<[f64; 2]>::new();
@@ -602,13 +603,13 @@ impl<'a> OrthogonalExterior<'a> {
                 }
             }
         }
-        for value in &mut values {
+        for value in values {
             if !value.is_finite() || !(-1.0e-8..=1.0 + 1.0e-8).contains(value) {
                 return Err(precision(path, "Gaussian row coverage not normalized"));
             }
             *value = value.clamp(0.0, 1.0);
         }
-        Ok(values)
+        Ok(())
     }
 
     /// Certified continuous area over one actual physical sample cell.
@@ -857,7 +858,8 @@ mod tests {
         let region = OrthogonalExterior::new(&L, &[3], &mut work)
             .unwrap()
             .unwrap();
-        let near = region
+        let mut near = [9.0; 6];
+        region
             .gaussian_row(
                 GaussianRow {
                     y: 2.0,
@@ -866,11 +868,13 @@ mod tests {
                     radius: 0.5,
                     sigma: 0.1,
                 },
+                &mut near,
                 &mut work,
                 &[3],
             )
             .unwrap();
-        let notch = region
+        let mut notch = [9.0; 6];
+        region
             .gaussian_row(
                 GaussianRow {
                     y: 6.0,
@@ -879,6 +883,7 @@ mod tests {
                     radius: 0.5,
                     sigma: 0.1,
                 },
+                &mut notch,
                 &mut work,
                 &[3],
             )
@@ -906,6 +911,7 @@ mod tests {
                     radius: 0.5,
                     sigma: 0.1,
                 },
+                &mut [0.0; 6],
                 &mut exhausted,
                 &[8, 4],
             ),
@@ -916,6 +922,39 @@ mod tests {
             }) if path == [8, 4]
         ));
         assert_eq!(exhausted, MAX_GLOBAL_WORK);
+    }
+
+    #[test]
+    fn gaussian_row_requires_exact_caller_admitted_span_without_mutation() {
+        let mut work = 0;
+        let region = OrthogonalExterior::new(&L, &[6], &mut work)
+            .unwrap()
+            .unwrap();
+        let original_work = work;
+        let mut incorrect = [7.0; 5];
+        let error = region
+            .gaussian_row(
+                GaussianRow {
+                    y: 2.0,
+                    origin_x: 1.0,
+                    width: 6,
+                    radius: 0.5,
+                    sigma: 0.1,
+                },
+                &mut incorrect,
+                &mut work,
+                &[6, 2],
+            )
+            .expect_err("a mismatched destination cannot allocate or rasterize");
+        assert!(matches!(
+            error,
+            Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path), ..
+            } if path == [6, 2]
+        ));
+        assert_eq!(incorrect, [7.0; 5]);
+        assert_eq!(work, original_work);
     }
 
     #[test]

@@ -2685,7 +2685,7 @@ fn rasterize_continuous_shadow_coverage(
             && physical_sigma > 0.0
         {
             let center_y = (origin_y as f64 + as_f64(row)) + 0.5;
-            let row_values = orthogonal.gaussian_row(
+            orthogonal.gaussian_row(
                 GaussianRow {
                     y: center_y,
                     origin_x: origin_x as f64,
@@ -2693,10 +2693,10 @@ fn rasterize_continuous_shadow_coverage(
                     radius: -physical_spread,
                     sigma: physical_sigma,
                 },
+                &mut values[row * width..(row + 1) * width],
                 aggregate_work,
                 path,
             )?;
-            values[row * width..(row + 1) * width].copy_from_slice(&row_values);
             continue;
         }
         for column in 0..width {
