@@ -523,11 +523,20 @@ impl NeutralRegionBuilder {
     /// stroke or curved clip merely because its triangles happen to form a
     /// bounding rectangle. Resolved image destinations and plain rectangular
     /// fills remain exact polygonal sources, independent of color alpha.
-    fn polygonal_source_proven<'a>(region: &NeutralRegion<'a>) -> bool {
-        match &region.kind {
+    fn polygonal_source_proven<'a>(
+        region: &NeutralRegion<'a>,
+        remaining_visits: &mut usize,
+    ) -> Result<bool, Render2dExecutionError> {
+        // The graph may share arbitrary subtrees, so its bounded *node*
+        // count does not bound naive recursive edge traversals. Fail with
+        // the original occurrence path after one fixed whole-query budget.
+        *remaining_visits = remaining_visits
+            .checked_sub(1)
+            .ok_or_else(|| resource(&region.path, "original F1 provenance query exceeds work budget"))?;
+        Ok(match &region.kind {
             Kind::Source(_) => {
                 let Some(item) = region.semantic_item else {
-                    return false;
+                    return Ok(false);
                 };
                 let source_is_polygonal = match item.primitive() {
                     crate::composition_2d::Render2dPrimitive::Fill { shape, .. } => {
@@ -543,16 +552,21 @@ impl NeutralRegionBuilder {
                         .iter()
                         .all(|clip| clip.shape().as_rect().is_some())
             }
-            Kind::Union(children) => children
-                .iter()
-                .all(|child| Self::polygonal_source_proven(child)),
-            Kind::Affine { source, .. } => Self::polygonal_source_proven(source),
+            Kind::Union(children) => {
+                for child in children {
+                    if !Self::polygonal_source_proven(child, remaining_visits)? {
+                        return Ok(false);
+                    }
+                }
+                true
+            }
+            Kind::Affine { source, .. } => Self::polygonal_source_proven(source, remaining_visits)?,
             Kind::Clip { source, clips } => {
                 clips.iter().all(|clip| clip.shape().as_rect().is_some())
-                    && Self::polygonal_source_proven(source)
+                    && Self::polygonal_source_proven(source, remaining_visits)?
             }
             Kind::Effect { .. } => false,
-        }
+        })
     }
 
     /// Recognize only the exact existing F1 DAG: C union (C ⊕ disk(r)).
@@ -589,12 +603,15 @@ impl NeutralRegionBuilder {
             return Ok(None);
         };
         if !Arc::ptr_eq(original, source)
-            || !Self::polygonal_source_proven(original)
             || shadow.spread() <= 0.0
             || shadow.sigma() != 0.0
             || shadow.offset_x() != 0.0
             || shadow.offset_y() != 0.0
         {
+            return Ok(None);
+        }
+        let mut remaining_visits = MAX_REGION_NODES;
+        if !Self::polygonal_source_proven(original, &mut remaining_visits)? {
             return Ok(None);
         }
         let rectangle = self.materialize(original)?;
@@ -1131,6 +1148,54 @@ mod tests {
                 kind: Render2dUnsupportedContent::Shadows { root_index: 1 },
             }) if path == [1, 1]
         ));
+    }
+
+    #[test]
+    fn original_f1_provenance_checks_share_one_bounded_dag_visit_budget() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dRect,
+            Render2dShape,
+        };
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let physical = support::NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
+            ],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let mut builder = builder();
+        let mut shared = builder.source_from_item(physical, &item, &[2, 0]).unwrap();
+        // Twelve nodes create a DAG with more than 4,000 naive proof
+        // visits; a node-count limit alone cannot bound this traversal.
+        for _ in 0..12 {
+            shared = builder
+                .union(vec![Arc::clone(&shared), Arc::clone(&shared)], &[2, 9])
+                .unwrap();
+        }
+        let mut visits = 32;
+        assert!(matches!(
+            NeutralRegionBuilder::polygonal_source_proven(&shared, &mut visits),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path.first() == Some(&2)
+        ));
+        assert_eq!(visits, 0);
+        assert!(builder.materialized.is_empty());
     }
 
     #[test]
