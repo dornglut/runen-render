@@ -347,6 +347,124 @@ fn certify_clipped(
     }
 }
 
+/// Return a conservative axis-aligned OUTER halo for positive spread
+/// and the normalized Gaussian's finite ±3σ square support. Plain f64
+/// multiplication and addition can round down and fabricate Outside at
+/// the edge of the kernel. Unrepresentable work is Unknown, not empty.
+fn certified_effect_outer_halo(spread: f64, sigma: f64) -> Option<f64> {
+    Interval::scalar(3.0)?
+        .mul(Interval::scalar(sigma)?)?
+        .add(Interval::scalar(spread.max(0.0))?)
+        .map(|halo| halo.hi)
+}
+
+/// Certified bounds on exp(-(x²+y²)/2). For 0<=u<n, the
+/// inequalities (1-u/n)^n <= exp(-u) <= (1+u/n)^(-n) are exact.
+/// All interval operations round outward; no platform libm guarantee is used.
+fn gaussian_density_enclosure(x: Interval, y: Interval) -> Option<Interval> {
+    let exponent = squared_interval(x)?
+        .add(squared_interval(y)?)?
+        .div(Interval::scalar(2.0)?)?;
+    let one = Interval::scalar(1.0)?;
+    let n = Interval::scalar(128.0)?;
+    let lower_base = one.sub(Interval::scalar(exponent.hi)?.div(n)?)?.lo;
+    let upper_base = one.add(Interval::scalar(exponent.lo)?.div(n)?)?.lo;
+    if lower_base <= 0.0 || upper_base <= 0.0 {
+        return None;
+    }
+    let power = |base: f64| -> Option<Interval> {
+        let mut value = Interval::scalar(base)?;
+        for _ in 0..7 {
+            value = value.mul(value)?;
+        }
+        Some(value)
+    };
+    let lower = power(lower_base)?.lo;
+    let upper = one.div(power(upper_base)?)?.hi;
+    Interval::new(lower.max(0.0), upper.min(1.0))
+}
+
+/// Test-only normalized finite Gaussian coverage certificate. The coordinates
+/// are in the shadow owner's parent frame, NOT root or raster coordinates.
+/// Unknown region cells contribute zero to the lower mass and their full
+/// possible mass to the upper bound. There is no guessed alpha or SDF.
+/// The caller admits all grid work and every region query through visits.
+fn certified_finite_gaussian_coverage(
+    region: &NeutralRegion<'_>,
+    center: [f64; 2],
+    sigma: f64,
+    side: usize,
+    visits: &mut usize,
+) -> Option<[f64; 2]> {
+    if !sigma.is_finite() || sigma <= 0.0 || !side.is_power_of_two() || !(8..=64).contains(&side) {
+        return None;
+    }
+    let sigma = Interval::scalar(sigma)?;
+    let [qx, qy] = center.map(Interval::scalar);
+    let (qx, qy) = (qx?, qy?);
+    let mut total = Interval::scalar(0.0)?;
+    let mut certain = Interval::scalar(0.0)?;
+    let mut unknown = Interval::scalar(0.0)?;
+    let mut inside = 0_usize;
+    let mut outside = 0_usize;
+    // Power-of-two grids have exactly representable finite kernel endpoints.
+    let width = 6.0 / side as f64;
+    for iy in 0..side {
+        let y0 = -3.0 + iy as f64 * width;
+        let y1 = y0 + width;
+        let ty = Interval::new(y0, y1)?;
+        for ix in 0..side {
+            if *visits == 0 {
+                return None;
+            }
+            let x0 = -3.0 + ix as f64 * width;
+            let x1 = x0 + width;
+            let tx = Interval::new(x0, x1)?;
+            let area = Interval::scalar(x1)?
+                .sub(Interval::scalar(x0)?)?
+                .mul(Interval::scalar(y1)?.sub(Interval::scalar(y0)?)?)?;
+            let weight = area.mul(gaussian_density_enclosure(tx, ty)?)?;
+            total = total.add(weight)?;
+            let query = Cell {
+                x: qx.add(sigma.mul(tx)?)?,
+                y: qy.add(sigma.mul(ty)?)?,
+            };
+            match region.certify_cell(query, visits) {
+                CellCertificate::Inside => {
+                    certain = certain.add(weight)?;
+                    inside += 1;
+                }
+                CellCertificate::Outside => outside += 1,
+                CellCertificate::Unknown => unknown = unknown.add(weight)?,
+            }
+        }
+    }
+    // Both extrema follow exactly from finite normalized mass, regardless of
+    // the numerical integration interval when every cell agrees.
+    if inside == side * side {
+        return Some([1.0, 1.0]);
+    }
+    if outside == side * side {
+        return Some([0.0, 0.0]);
+    }
+    if total.lo <= 0.0 {
+        return None;
+    }
+    let lower = Interval::scalar(certain.lo)?
+        .div(Interval::scalar(total.hi)?)?
+        .lo
+        .max(0.0);
+    let upper = certain
+        .add(unknown)?
+        .div(Interval::scalar(total.lo)?)?
+        .hi
+        .min(1.0);
+    if lower > upper {
+        return None;
+    }
+    Some([lower, upper])
+}
+
 impl NeutralRegion<'_> {
     fn certify_cell(&self, cell: Cell, visits: &mut usize) -> CellCertificate {
         if *visits == 0 {
@@ -407,7 +525,6 @@ impl NeutralRegion<'_> {
                     return CellCertificate::Unknown;
                 };
                 let spread = shadow.spread();
-                let halo = 3.0 * shadow.sigma();
                 // A spread region is contained in its own finite-Gaussian
                 // support, but this says NOTHING about blurred alpha.
                 let definite_inside = if spread < 0.0 {
@@ -420,7 +537,12 @@ impl NeutralRegion<'_> {
                 if definite_inside == Some(CellCertificate::Inside) {
                     return CellCertificate::Inside;
                 }
-                let Some(outer) = translated.expanded(halo + spread.max(0.0)) else {
+                let Some(outer_halo) =
+                    certified_effect_outer_halo(spread, shadow.sigma())
+                else {
+                    return CellCertificate::Unknown;
+                };
+                let Some(outer) = translated.expanded(outer_halo) else {
                     return CellCertificate::Unknown;
                 };
                 if source.certify_cell(outer, visits) == CellCertificate::Outside {
@@ -894,6 +1016,93 @@ fn original_f1_curves_and_multiple_contours_can_only_prove_control_hull_exterior
         CellCertificate::Unknown
     );
     assert_eq!(exhausted, 0);
+}
+
+#[test]
+fn outer_effect_halo_does_not_round_down_or_invent_absence() {
+    // This exact pair has a true halo greater than a nearest-rounded f64
+    // result. Its certified outer reach MUST include the rounding residue.
+    let sigma = 0.3;
+    let spread = 0.2;
+    let nearest = 3.0 * sigma + spread;
+    let certified = certified_effect_outer_halo(spread, sigma).unwrap();
+    assert!(certified > nearest);
+    assert!(certified >= nearest.next_up());
+
+    // With negative spread, only the finite Gaussian halo enlarges the
+    // source; a negative disk erosion cannot enlarge source support.
+    let eroded = certified_effect_outer_halo(-2.0, sigma).unwrap();
+    assert!(eroded >= 3.0 * sigma);
+    assert!(eroded < certified);
+
+    let mut graph = builder();
+    let source = rectangle(&mut graph, [0.0, 0.0, 1.0, 1.0], &[0, 0]);
+    let outer = graph
+        .effect(
+            source,
+            Render2dDropShadow::new(
+                0.0,
+                0.0,
+                sigma,
+                spread,
+                crate::composition_2d::Render2dColorRgba8::TRANSPARENT,
+            )
+            .unwrap(),
+            &[0],
+        )
+        .unwrap();
+    assert_eq!(
+        certify(&outer, [2.5, 0.25, 2.6, 0.3]),
+        CellCertificate::Outside
+    );
+    assert_eq!(
+        certify(&outer, [1.0, 0.25, 1.0, 0.25]),
+        CellCertificate::Unknown
+    );
+}
+
+#[test]
+fn finite_gaussian_certifies_full_and_empty_kernel_mass() {
+    let mut builder = builder();
+    let large = rectangle(&mut builder, [-10.0, -10.0, 10.0, 10.0], &[0]);
+    let distant = rectangle(&mut builder, [10.0, 10.0, 11.0, 11.0], &[1]);
+    let mut visits = 4096;
+    assert_eq!(
+        certified_finite_gaussian_coverage(&large, [0.0, 0.0], 0.25, 16, &mut visits),
+        Some([1.0, 1.0])
+    );
+    let mut visits = 4096;
+    assert_eq!(
+        certified_finite_gaussian_coverage(&distant, [0.0, 0.0], 0.25, 16, &mut visits),
+        Some([0.0, 0.0])
+    );
+}
+
+#[test]
+fn finite_gaussian_symmetry_halfplane_has_certified_half_coverage() {
+    let mut builder = builder();
+    let half = rectangle(&mut builder, [-10.0, -10.0, 0.0, 10.0], &[0]);
+    let mut visits = 8192;
+    let [lo, hi] =
+        certified_finite_gaussian_coverage(&half, [0.0, 0.0], 0.25, 64, &mut visits).unwrap();
+    assert!(lo < 0.5 && hi > 0.5, "{lo}..{hi}");
+    assert!(lo > 0.25 && hi < 0.75, "{lo}..{hi}");
+    assert!(visits < 8192);
+}
+
+#[test]
+fn finite_gaussian_uncertainty_and_work_exhaustion_are_not_zero_alpha() {
+    let mut builder = builder();
+    let source = rectangle(&mut builder, [0.0, 0.0, 1.0, 1.0], &[0]);
+    let mut visits = 1;
+    assert_eq!(
+        certified_finite_gaussian_coverage(&source, [0.5, 0.5], 0.25, 16, &mut visits),
+        None
+    );
+    let mut visits = 4096;
+    let [lo, hi] =
+        certified_finite_gaussian_coverage(&source, [1.0, 0.5], 0.25, 16, &mut visits).unwrap();
+    assert!(lo >= 0.0 && hi <= 1.0 && lo < hi);
 }
 
 #[test]
