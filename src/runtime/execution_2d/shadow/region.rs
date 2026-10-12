@@ -34,6 +34,11 @@ pub(super) struct NeutralRegion<'a> {
     /// Conservative logical bounds in this node's owning frame. Bounds
     /// certify reach/finite preflight only; they are NEVER membership.
     envelope: Option<[f64; 4]>,
+    /// Only true when every original F1 source's authored reach is enclosed
+    /// by the graph envelope, independent of disposable tessellation.
+    /// Shaped-text curves require separate outline/control-hull admission;
+    /// a physical glyph mesh bound cannot authorize complete signed erosion.
+    certified_source_reach: bool,
 }
 
 enum Kind<'a> {
@@ -436,6 +441,23 @@ impl NeutralRegionBuilder {
         // Validate every finite support reach before committing either graph
         // or work admission. Curved region bounds remain reach-only.
         let envelope = region_envelope(&kind, semantic_item, path)?;
+        // Carry original-source reach provenance through the same immutable
+        // DAG. A glyph outline reconstructed into physical triangles is NOT
+        // a conservative authored Bézier control-hull certificate.
+        let certified_source_reach = match &kind {
+            Kind::Source(_) => semantic_item.is_none_or(|item| {
+                !matches!(
+                    item.primitive(),
+                    crate::composition_2d::Render2dPrimitive::ShapedText(_)
+                )
+            }),
+            Kind::Union(children) => children
+                .iter()
+                .all(|child| child.certified_source_reach),
+            Kind::Affine { source, .. }
+            | Kind::Clip { source, .. }
+            | Kind::Effect { source, .. } => source.certified_source_reach,
+        };
         self.nodes = next;
         self.retained_path_units = paths;
         self.graph_work = affine_work;
@@ -446,6 +468,7 @@ impl NeutralRegionBuilder {
             id: next,
             depth,
             envelope,
+            certified_source_reach,
         }))
     }
 
@@ -873,6 +896,12 @@ impl NeutralRegionBuilder {
                 // symbolic effect). Blur of the empty eroded set remains
                 // empty; a near-threshold radius is never guessed empty.
                 // This is independent of disposable Lyon mesh fidelity.
+                // Shaped glyph contours currently lack an independently
+                // certified original outline reach: never infer emptiness
+                // OR signed erosion from their sampled physical bounds.
+                if effect.spread() < 0.0 && !source.certified_source_reach {
+                    return Err(unsupported(path));
+                }
                 if certified_complete_disk_erosion(source.envelope, effect.spread()) {
                     Arc::new(shadow::empty_mesh())
                 } else {
@@ -1558,6 +1587,52 @@ mod tests {
     }
 
     #[test]
+    fn glyph_mesh_bounds_cannot_certify_original_f1_signed_erosion() {
+        use crate::composition_2d::{
+            Render2dItem, Render2dOpacity, Render2dPoint, Render2dPrimitive,
+            Render2dResourceId, Render2dShapedTextPrimitive,
+        };
+        // Deliberately attach a small disposable physical triangle to a
+        // borrowed shaped-text item. The glyph's actual original font-curve
+        // extent is NOT derivable from these vertices or their AABB.
+        let text = Render2dItem::new(
+            Render2dPrimitive::ShapedText(Render2dShapedTextPrimitive::new(
+                Render2dResourceId::new(17).unwrap(),
+                Render2dPoint::new(0.0, 0.0).unwrap(),
+                Render2dColorRgba8::TRANSPARENT,
+            )),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let mut graph = builder();
+        let leaf = graph.source_from_item(triangle(), &text, &[10, 0]).unwrap();
+        assert!(!leaf.certified_source_reach);
+        let eroded = graph
+            .effect(
+                Arc::clone(&leaf),
+                Render2dDropShadow::new(
+                    0.0, 0.0, 0.2, -10.0, Render2dColorRgba8::TRANSPARENT,
+                ).unwrap(),
+                &[10, 1],
+            )
+            .unwrap();
+        // The physical 4x4 box would appear smaller than the disk, but
+        // original font outlines can escape it. This cannot be empty proof.
+        assert!(certified_complete_disk_erosion(leaf.envelope, -10.0));
+        assert!(!eroded.certified_source_reach);
+        assert!(matches!(
+            graph.materialize(&eroded),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Shadows { root_index: 10 },
+            }) if path == [10, 1]
+        ));
+        assert_eq!(graph.erosion_work, 0);
+        assert!(graph.materialized.get(leaf.id).is_none_or(Option::is_none));
+    }
+
+    #[test]
     fn authored_curve_nested_disk_erosion_can_prove_exact_empty_without_faceting() {
         use crate::composition_2d::{
             Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dRect,
@@ -1588,6 +1663,7 @@ mod tests {
         let expanded = graph
             .effect(Arc::clone(&source), positive, &[7, 1])
             .unwrap();
+        assert!(expanded.certified_source_reach);
         let shrink =
             Render2dDropShadow::new(3.0, -2.0, 0.5, -2.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let empty = graph

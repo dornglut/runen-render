@@ -1096,9 +1096,7 @@ fn nested_curved_f1_complete_erosion_preserves_ancestor_gpu_paint() {
     let scene = |with_erasure: bool| {
         let ellipse = Render2dEntry::item(Render2dItem::new(
             Render2dPrimitive::Fill {
-                shape: Render2dShape::ellipse(
-                    Render2dRect::new(10.0, 10.0, 8.0, 8.0).unwrap(),
-                ),
+                shape: Render2dShape::ellipse(Render2dRect::new(10.0, 10.0, 8.0, 8.0).unwrap()),
                 brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
             },
             Render2dAffineTransform::IDENTITY,
