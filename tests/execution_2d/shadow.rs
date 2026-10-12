@@ -2154,20 +2154,8 @@ fn finite_gaussian_shadow_retains_continuous_coverage_across_two_gpu_tiles() {
 #[test]
 fn finite_gaussian_shadows_preserve_order_at_fractional_boundary_on_vulkan() {
     let Some(context) = context() else { return };
-    let red = effect(
-        0.0,
-        0.0,
-        0.25,
-        0.0,
-        Render2dColorRgba8::new(255, 0, 0, 128),
-    );
-    let blue = effect(
-        0.0,
-        0.0,
-        0.25,
-        0.0,
-        Render2dColorRgba8::new(0, 0, 255, 128),
-    );
+    let red = effect(0.0, 0.0, 0.25, 0.0, Render2dColorRgba8::new(255, 0, 0, 128));
+    let blue = effect(0.0, 0.0, 0.25, 0.0, Render2dColorRgba8::new(0, 0, 255, 128));
 
     // Original neutral source: [10,20]^2. For pixel [10,10], the four
     // correlated sample centers are 10.125, 10.375, 10.625, 10.875
