@@ -125,10 +125,20 @@ impl Cell {
         })
     }
 
-    fn classify_rectangle(self, [x0, y0, x1, y1]: [f64; 4]) -> CellCertificate {
-        if self.x.lo > x0 && self.x.hi < x1 && self.y.lo > y0 && self.y.hi < y1 {
+    fn classify_rectangle(self, [x0, y0, x1, y1]: [Interval; 4]) -> CellCertificate {
+        // A physical vertex divided by its source scale may round in either
+        // direction. A definite answer must account for BOTH possibilities.
+        if self.x.lo > x0.hi
+            && self.x.hi < x1.lo
+            && self.y.lo > y0.hi
+            && self.y.hi < y1.lo
+        {
             CellCertificate::Inside
-        } else if self.x.hi < x0 || self.x.lo > x1 || self.y.hi < y0 || self.y.lo > y1 {
+        } else if self.x.hi < x0.lo
+            || self.x.lo > x1.hi
+            || self.y.hi < y0.lo
+            || self.y.lo > y1.hi
+        {
             CellCertificate::Outside
         } else {
             CellCertificate::Unknown
@@ -154,12 +164,14 @@ impl NeutralRegion<'_> {
                 if !scale.is_finite() || scale <= 0.0 {
                     return CellCertificate::Unknown;
                 }
-                let rect = rect.map(|v| v / scale);
-                if rect.iter().all(|v| v.is_finite()) {
-                    cell.classify_rectangle(rect)
-                } else {
-                    CellCertificate::Unknown
-                }
+                let Some(scale) = Interval::scalar(scale) else {
+                    return CellCertificate::Unknown;
+                };
+                let intervals = rect.map(|v| Interval::scalar(v).and_then(|v| v.div(scale)));
+                let [Some(x0), Some(y0), Some(x1), Some(y1)] = intervals else {
+                    return CellCertificate::Unknown;
+                };
+                cell.classify_rectangle([x0, y0, x1, y1])
             }
             Kind::Union(children) => {
                 let mut unknown = false;
@@ -331,6 +343,32 @@ fn affine_cell_preimage_is_outward_bounded_and_rejects_singular_certainty() {
         .unwrap();
     assert_eq!(
         certify(&singular_region, [1.0, 1.0, 2.0, 2.0]),
+        CellCertificate::Unknown
+    );
+}
+
+#[test]
+fn scaled_source_certificate_uses_outward_rounded_rectangle_division() {
+    let mut builder = builder();
+    let mesh = support::NeutralMesh {
+        units_per_parent_logical_unit: 3.0,
+        triangles: vec![
+            [0.0, 0.0], [9.0, 0.0], [9.0, 9.0],
+            [0.0, 0.0], [9.0, 9.0], [0.0, 9.0],
+        ],
+        bounds: [0.0, 0.0, 9.0, 9.0],
+    };
+    let source = builder.source(mesh, &[4, 0]).unwrap();
+    assert_eq!(
+        certify(&source, [1.0, 1.0, 2.0, 2.0]),
+        CellCertificate::Inside
+    );
+    assert_eq!(
+        certify(&source, [-1.0, -1.0, -0.5, -0.5]),
+        CellCertificate::Outside
+    );
+    assert_eq!(
+        certify(&source, [3.0, 1.0, 3.0, 2.0]),
         CellCertificate::Unknown
     );
 }
