@@ -23,7 +23,8 @@ const MAX_GAUSSIAN_RADIUS_SAMPLES: u32 = 512;
 const MAX_AGGREGATE_SHADOW_PREPARATION_WORK: usize = 134_217_728;
 
 /// Retained f64 coverage belongs to the entire invocation, not one shadow.
-/// Reject before reserving disposable grid or float coverage storage.
+/// Reject before reserving retained float coverage storage. Bounded temporary
+/// geometry work may first certify that a shadow erodes completely.
 fn admit_retained_coverage_samples(
     required: usize,
     remaining: usize,
@@ -320,14 +321,7 @@ pub(super) fn rasterize_neutral_mesh(
     samples_per_logical_unit: f64,
     path: &[usize],
 ) -> Result<Option<NeutralMask>, crate::execution_2d::Render2dExecutionError> {
-    rasterize_mesh_with_positive_spread(
-        mesh,
-        samples_per_logical_unit,
-        0.0,
-        path,
-        None,
-        MAX_NEUTRAL_MASK_SAMPLES,
-    )
+    rasterize_mesh_with_positive_spread(mesh, samples_per_logical_unit, 0.0, path, None)
 }
 
 /// Tests the true tessellated geometric distance at each parent-frame sample,
@@ -339,7 +333,6 @@ fn rasterize_mesh_with_positive_spread(
     positive_spread: f64,
     path: &[usize],
     aggregate_work: Option<&mut usize>,
-    remaining_coverage_samples: usize,
 ) -> Result<Option<NeutralMask>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
@@ -420,7 +413,6 @@ fn rasterize_mesh_with_positive_spread(
             "neutral geometry sample grid exceeds bounded area",
         ));
     }
-    admit_retained_coverage_samples(cells, remaining_coverage_samples, path)?;
     let triangles = mesh.triangles.len() / 3;
     let work = cells
         .checked_mul(triangles)
@@ -747,17 +739,12 @@ fn rasterize_area_coverage(
     aggregate_work: &mut usize,
     remaining_coverage_samples: usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
-    let Some(grid) = rasterize_mesh_with_positive_spread(
-        mesh,
-        scale,
-        0.0,
-        path,
-        Some(aggregate_work),
-        remaining_coverage_samples,
-    )?
+    let Some(grid) =
+        rasterize_mesh_with_positive_spread(mesh, scale, 0.0, path, Some(aggregate_work))?
     else {
         return Ok(None);
     };
+    admit_retained_coverage_samples(grid.samples.len(), remaining_coverage_samples, path)?;
     let transform = scale / mesh.units_per_parent_logical_unit;
     let mut triangles = filled(mesh.triangles.len(), [0.0; 2], path)?;
     for (out, &[x, y]) in triangles.iter_mut().zip(&mesh.triangles) {
@@ -2467,7 +2454,6 @@ fn rasterize_continuous_shadow_coverage(
         signed_spread.max(0.0),
         path,
         Some(aggregate_work),
-        remaining_coverage_samples,
     )?
     else {
         return Ok(None);
@@ -2509,7 +2495,6 @@ fn rasterize_continuous_shadow_coverage(
             "continuous Gaussian coverage exceeds bounded sample area",
         ));
     }
-    admit_retained_coverage_samples(area, remaining_coverage_samples, path)?;
     // The original source-lattice budget does not include the expanded
     // 3sigma halo. Every halo cell scans the triangle inventory before local
     // active-set selection, so preflight total traversal work before new
@@ -2617,6 +2602,9 @@ fn rasterize_continuous_shadow_coverage(
     } else {
         None
     };
+    // Complete-erosion certificates above can return without retained
+    // coverage even when the scene's prior shadows exhausted its allowance.
+    admit_retained_coverage_samples(area, remaining_coverage_samples, path)?;
     let mut values = filled(area, 0.0_f64, path)?;
     for row in 0..height {
         if let Some(orthogonal) = &orthogonal
@@ -3480,7 +3468,7 @@ mod tests {
                 kind: Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path), ..
             } if path == [7, 2]));
-            assert_eq!(used, 0, "rejected source grid cannot charge work");
+            assert!(used > 0, "temporary geometry proof work is charged before coverage");
         }
         let mut used = 0;
         let error = affine_parent_effect_coverage_admitted(
@@ -3509,6 +3497,16 @@ mod tests {
                 .unwrap()
                 .expect("8x8 coverage uses exactly 64 admitted f64 samples");
         assert_eq!(coverage.values.len(), 64);
+
+        // At the exact radius of a 2x2 rectangle's inradius the eroded
+        // indicator has zero area. This must be accepted as no-work even
+        // when no bytes remain for another retained shadow float buffer.
+        let mut used = 0;
+        let empty = prepare_shadow_coverage_admitted(
+            &mesh, -1.0, 0.25, 4.0, &[7, 4], &mut used, 0,
+        )
+        .unwrap();
+        assert!(empty.is_none(), "certified complete erosion needs no coverage buffer");
     }
 
     #[test]
