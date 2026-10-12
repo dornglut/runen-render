@@ -7,8 +7,8 @@
 //! must separately establish source enclosures and Gaussian *coverage* bounds.
 //! A certificate concerns SUPPORT membership, not alpha or Gaussian weights.
 
-use super::*;
 use super::interval::Interval;
+use super::*;
 use crate::composition_2d::{Render2dItem, Render2dPrimitive};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

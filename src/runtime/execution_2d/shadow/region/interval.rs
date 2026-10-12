@@ -64,4 +64,3 @@ impl Interval {
         Self::new(lo.next_down(), hi.next_up())
     }
 }
-

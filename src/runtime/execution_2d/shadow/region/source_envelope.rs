@@ -21,8 +21,7 @@ fn precision(path: &[usize]) -> Render2dExecutionError {
 /// count is an upper bound even when contours contain only move/close events.
 pub(super) fn control_visits(item: &Render2dItem) -> usize {
     let shape = match item.primitive() {
-        Render2dPrimitive::Fill { shape, .. }
-        | Render2dPrimitive::Stroke { shape, .. } => shape,
+        Render2dPrimitive::Fill { shape, .. } | Render2dPrimitive::Stroke { shape, .. } => shape,
         _ => return 0,
     };
     shape
@@ -82,10 +81,26 @@ pub(super) fn bounds(
     let fail = || precision(path);
     let mut coverage: Option<[f64; 4]> = None;
     let mut visit = |x: Interval, y: Interval| -> Result<(), Render2dExecutionError> {
-        let px = a.mul(x).and_then(|v| v.add(c.mul(y)?)).and_then(|v| v.add(tx)).ok_or_else(fail)?;
-        let py = b.mul(x).and_then(|v| v.add(d.mul(y)?)).and_then(|v| v.add(ty)).ok_or_else(fail)?;
-        let xx = aa.mul(px).and_then(|v| v.add(cc.mul(py)?)).and_then(|v| v.add(ttx)).ok_or_else(fail)?;
-        let yy = bb.mul(px).and_then(|v| v.add(dd.mul(py)?)).and_then(|v| v.add(tty)).ok_or_else(fail)?;
+        let px = a
+            .mul(x)
+            .and_then(|v| v.add(c.mul(y)?))
+            .and_then(|v| v.add(tx))
+            .ok_or_else(fail)?;
+        let py = b
+            .mul(x)
+            .and_then(|v| v.add(d.mul(y)?))
+            .and_then(|v| v.add(ty))
+            .ok_or_else(fail)?;
+        let xx = aa
+            .mul(px)
+            .and_then(|v| v.add(cc.mul(py)?))
+            .and_then(|v| v.add(ttx))
+            .ok_or_else(fail)?;
+        let yy = bb
+            .mul(px)
+            .and_then(|v| v.add(dd.mul(py)?))
+            .and_then(|v| v.add(tty))
+            .ok_or_else(fail)?;
         coverage = Some(match coverage {
             Some([x0, y0, x1, y1]) => [x0.min(xx.lo), y0.min(yy.lo), x1.max(xx.hi), y1.max(yy.hi)],
             None => [xx.lo, yy.lo, xx.hi, yy.hi],
@@ -102,8 +117,12 @@ pub(super) fn bounds(
         }
         let x0 = Interval::scalar(rect.x()).ok_or_else(fail)?;
         let y0 = Interval::scalar(rect.y()).ok_or_else(fail)?;
-        let x1 = x0.add(Interval::scalar(rect.width()).ok_or_else(fail)?).ok_or_else(fail)?;
-        let y1 = y0.add(Interval::scalar(rect.height()).ok_or_else(fail)?).ok_or_else(fail)?;
+        let x1 = x0
+            .add(Interval::scalar(rect.width()).ok_or_else(fail)?)
+            .ok_or_else(fail)?;
+        let y1 = y0
+            .add(Interval::scalar(rect.height()).ok_or_else(fail)?)
+            .ok_or_else(fail)?;
         for (x, y) in [(x0, y0), (x0, y1), (x1, y0), (x1, y1)] {
             visit(x, y)?;
         }
@@ -116,12 +135,18 @@ pub(super) fn bounds(
         };
         for command in authored.commands() {
             match *command {
-                Render2dPathCommand::MoveTo(to) | Render2dPathCommand::LineTo(to) => visit_point(to)?,
+                Render2dPathCommand::MoveTo(to) | Render2dPathCommand::LineTo(to) => {
+                    visit_point(to)?
+                }
                 Render2dPathCommand::QuadraticTo { control, to } => {
                     visit_point(control)?;
                     visit_point(to)?;
                 }
-                Render2dPathCommand::CubicTo { control1, control2, to } => {
+                Render2dPathCommand::CubicTo {
+                    control1,
+                    control2,
+                    to,
+                } => {
                     visit_point(control1)?;
                     visit_point(control2)?;
                     visit_point(to)?;
