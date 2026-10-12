@@ -1632,8 +1632,7 @@ fn adaptively_subdivided_shared_tiles_account_for_all_4x4_centers() {
     let mut graph = builder();
     let region = rectangle(&mut graph, [18.0, 18.0, 46.0, 46.0], &[0]);
     let mut work = 200_000;
-    let counts =
-        certified_shared_tile_quadtree(&region, 64, 8, 0.25, 5_440, &mut work).unwrap();
+    let counts = certified_shared_tile_quadtree(&region, 64, 8, 0.25, 5_440, &mut work).unwrap();
 
     // Independent rectangular support oracle over the full pixel-center
     // envelope of each correlated 4x4 phase, not an alpha/sample mask.
@@ -1660,10 +1659,7 @@ fn adaptively_subdivided_shared_tiles_account_for_all_4x4_centers() {
     assert_eq!(counts.outside_samples, 3_196 * 16);
     assert_eq!(counts.unresolved_samples, 224 * 16);
     assert_eq!(counts.queries, 672);
-    assert_eq!(
-        200_000 - work,
-        counts.queries * (GAUSSIAN_WEIGHT_WORK + 1)
-    );
+    assert_eq!(200_000 - work, counts.queries * (GAUSSIAN_WEIGHT_WORK + 1));
     assert_eq!(
         counts.inside_samples + counts.outside_samples + counts.unresolved_samples,
         64 * 64 * 16
