@@ -366,12 +366,19 @@ fn certified_effect_outer_halo(spread: f64, sigma: f64) -> Option<f64> {
 /// recover exp(-16t), always rounding outward. No reliance on libm,
 /// measured samples, transcendental rounding, or unbudgeted convergence.
 fn gaussian_density_enclosure(x: Interval, y: Interval) -> Option<Interval> {
+    if x.lo == 0.0 && x.hi == 0.0 && y.lo == 0.0 && y.hi == 0.0 {
+        return Interval::scalar(1.0);
+    }
     let exponent = squared_interval(x)?
         .add(squared_interval(y)?)?
         .div(Interval::scalar(2.0)?)?;
     let one = Interval::scalar(1.0)?;
     let t = exponent.div(Interval::scalar(16.0)?)?;
-    if t.lo < 0.0 || t.hi >= 1.0 {
+    // The true exponent is a sum of squares and is nonnegative. Directed
+    // rounding around zero may extend its numeric enclosure below zero;
+    // intersecting with this independently proved domain is safe.
+    let t = Interval::new(t.lo.max(0.0), t.hi)?;
+    if t.hi >= 1.0 {
         return None;
     }
     let mut term = one;
@@ -1287,7 +1294,7 @@ fn outer_effect_halo_does_not_round_down_or_invent_absence() {
 
 #[test]
 fn bounded_gaussian_density_encloses_independent_reference_at_kernel_extremes() {
-    let samples = [
+    let samples: [([f64; 2], f64); 3] = [
         ([0.0, 0.0], 1.0),
         ([1.0, 1.0], 0.36787944117144233),
         ([3.0, 3.0], 0.00012340980408667956),
