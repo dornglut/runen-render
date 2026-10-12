@@ -21,6 +21,7 @@ const MAX_GAUSSIAN_RADIUS_SAMPLES: u32 = 512;
 // Covers repeated neutral grid traversal AND continuous support integration
 // across every authored effect in one contribution, not just one shadow.
 const MAX_AGGREGATE_SHADOW_PREPARATION_WORK: usize = 134_217_728;
+const MAX_CERTIFIED_RECTANGLE_AXIS_WORK: usize = 16_777_216;
 
 /// Retained f64 coverage belongs to the entire invocation, not one shadow.
 /// Reject before reserving retained float coverage storage. Bounded temporary
@@ -2234,7 +2235,7 @@ fn charge_certified_rectangle_axis_work(
         .and_then(|axes| axes.checked_mul(axis_cost))
         .and_then(|work| work.checked_add(area))
         .ok_or_else(|| resource("certified rectangle axis work overflow"))?;
-    if axis_work > MAX_GLOBAL_SPREAD_WORK {
+    if axis_work > MAX_CERTIFIED_RECTANGLE_AXIS_WORK {
         return Err(resource(
             "certified rectangle axis work exceeds bounded admission",
         ));
