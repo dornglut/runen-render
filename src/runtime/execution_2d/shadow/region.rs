@@ -582,6 +582,70 @@ impl NeutralRegionBuilder {
         self.node(Kind::Effect { source, shadow }, path, depth, None)
     }
 
+    /// An authored rectangle classification does not certify that a
+    /// disposable tessellation contains the SAME support. A forged, stale or
+    /// rounded physical rectangle may not silently replace the original F1
+    /// extent in a curved Minkowski specialization. Prove each source's four
+    /// transformed corners exactly in its own immediate-parent physical frame.
+    ///
+    /// This is intentionally a narrow *exact* shortcut. Multi-patch images,
+    /// any clips and coordinates requiring tessellation rounding must use
+    /// the future general original-F1 integration path instead.
+    fn exact_original_rectangle_source(
+        mesh: &support::NeutralMesh,
+        item: &Render2dItem,
+    ) -> bool {
+        let rect = match item.primitive() {
+            crate::composition_2d::Render2dPrimitive::Fill { shape, .. } => {
+                shape.as_rect()
+            }
+            crate::composition_2d::Render2dPrimitive::Image(image) => {
+                if image.patches().len() != 1 {
+                    return false;
+                }
+                Some(image.patches()[0].destination())
+            }
+            crate::composition_2d::Render2dPrimitive::Stroke { .. }
+            | crate::composition_2d::Render2dPrimitive::ShapedText(_) => None,
+        };
+        let Some(rect) = rect else {
+            return false;
+        };
+        if rect.is_empty() || !item.clips().is_empty() {
+            return false;
+        }
+        let Some(actual) = support::certified_axis_aligned_rectangle(&mesh.triangles)
+        else {
+            return false;
+        };
+        let [a, b, c, d, tx, ty] = item.local_to_parent().components();
+        let x0 = rect.x();
+        let x1 = rect.x() + rect.width();
+        let y0 = rect.y();
+        let y1 = rect.y() + rect.height();
+        let mut seen = 0_u8;
+        for (x, y) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)] {
+            let px = a.mul_add(x, c.mul_add(y, tx))
+                * mesh.units_per_parent_logical_unit;
+            let py = b.mul_add(x, d.mul_add(y, ty))
+                * mesh.units_per_parent_logical_unit;
+            if !px.is_finite() || !py.is_finite() {
+                return false;
+            }
+            let corners = [
+                [actual[0], actual[1]],
+                [actual[2], actual[1]],
+                [actual[2], actual[3]],
+                [actual[0], actual[3]],
+            ];
+            let Some(index) = corners.iter().position(|corner| *corner == [px, py]) else {
+                return false;
+            };
+            seen |= 1 << index;
+        }
+        seen == 0b1111
+    }
+
     /// This narrow polygon-to-rounded-disk specialization may only promote
     /// a rectangle proven from original F1 polygonal geometry. A disposable
     /// Lyon mesh alone cannot certify an ellipse, rounded corner, Bézier,
@@ -606,20 +670,8 @@ impl NeutralRegionBuilder {
             )
         })?;
         let result = match &region.kind {
-            Kind::Source(_) => region.semantic_item.is_some_and(|item| {
-                let source_is_polygonal = match item.primitive() {
-                    crate::composition_2d::Render2dPrimitive::Fill { shape, .. } => {
-                        shape.as_rect().is_some()
-                    }
-                    crate::composition_2d::Render2dPrimitive::Image(_) => true,
-                    crate::composition_2d::Render2dPrimitive::Stroke { .. }
-                    | crate::composition_2d::Render2dPrimitive::ShapedText(_) => false,
-                };
-                source_is_polygonal
-                    && item
-                        .clips()
-                        .iter()
-                        .all(|clip| clip.shape().as_rect().is_some())
+            Kind::Source(mesh) => region.semantic_item.is_some_and(|item| {
+                Self::exact_original_rectangle_source(mesh, item)
             }),
             Kind::Union(children) => {
                 let mut proven = true;
@@ -1252,6 +1304,33 @@ mod tests {
                 path,
                 kind: Render2dUnsupportedContent::Shadows { root_index: 1 },
             }) if path == [1, 1]
+        ));
+
+        // Even the exact same F1 primitive *type* must not authorize an
+        // unrelated physical rectangle with different source extent.
+        let forged = support::NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [0.0, 0.0], [3.0, 0.0], [3.0, 2.0],
+                [0.0, 0.0], [3.0, 2.0], [0.0, 2.0],
+            ],
+            bounds: [0.0, 0.0, 3.0, 2.0],
+        };
+        let forged_source = graph.source_from_item(forged, &valid, &[2, 0]).unwrap();
+        let forged_disk = graph
+            .effect(Arc::clone(&forged_source), disk, &[2, 1])
+            .unwrap();
+        let forged_union = graph.union(vec![forged_source, forged_disk], &[2]).unwrap();
+        assert!(
+            graph.qualified_rounded_rectangle(&forged_union).unwrap().is_none(),
+            "a 2x2 authored F1 rect cannot acquire a 3x2 semantic support"
+        );
+        assert!(matches!(
+            graph.materialize(&forged_union),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Shadows { root_index: 2 },
+            }) if path == [2, 1]
         ));
     }
 
