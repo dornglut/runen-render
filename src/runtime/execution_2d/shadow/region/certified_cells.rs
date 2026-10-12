@@ -836,7 +836,9 @@ fn original_f1_curves_and_multiple_contours_can_only_prove_control_hull_exterior
         )
         .unwrap(),
     );
-    let mut visits = 100;
+    // Independent positive checks have an admitted budget large enough for
+    // convexity feasibility. Explicit exhaustion is tested separately below.
+    let mut visits = 4096;
     let cell = Cell::new([6.0, 1.0, 7.0, 2.0]).unwrap();
     assert_eq!(
         certify_shape(&cubic, cell, &mut visits),
