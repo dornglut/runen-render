@@ -5,7 +5,7 @@
 //! realization is merely one *certified* disposable query path; an unsupported
 //! curved consumer fails before target mutation instead of inventing triangles
 //! from bounds, alpha or a sampled distance field.
-use crate::composition_2d::{Render2dAffineTransform, Render2dClip, Render2dDropShadow};
+use crate::composition_2d::{Render2dAffineTransform, Render2dClip, Render2dDropShadow, Render2dItem};
 use crate::execution_2d::{
     Render2dExecutionError, Render2dSampleSpaceError, Render2dUnsupportedContent,
 };
@@ -19,6 +19,10 @@ const MAX_REGION_AFFINE_VERTEX_WORK: usize = 16_777_216;
 
 pub(super) struct NeutralRegion<'a> {
     kind: Kind<'a>,
+    // Borrow the original F1 item. A disposable source tessellation is NOT
+    // a certificate of semantic curves, clips, strokes or affine geometry.
+    #[allow(dead_code, reason = "reserved for certified F1 source-region queries")]
+    semantic_item: Option<&'a Render2dItem>,
     path: Vec<usize>,
     id: usize,
     depth: usize,
@@ -236,6 +240,7 @@ impl NeutralRegionBuilder {
         kind: Kind<'a>,
         path: &[usize],
         depth: usize,
+        semantic_item: Option<&'a Render2dItem>,
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
         let next = self
             .nodes
@@ -279,6 +284,7 @@ impl NeutralRegionBuilder {
         self.affine_vertex_work = affine_work;
         Ok(Arc::new(NeutralRegion {
             kind,
+            semantic_item,
             path: path.to_vec(),
             id: next,
             depth,
@@ -286,9 +292,32 @@ impl NeutralRegionBuilder {
         }))
     }
 
+    /// Synthetic test fixtures have no original F1 item to borrow. They may
+    /// certify physical mesh geometry only, not arbitrary authoring semantics.
+    #[cfg(test)]
     pub(super) fn source<'a>(
         &mut self,
+        mesh: support::NeutralMesh,
+        path: &[usize],
+    ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
+        self.source_impl(mesh, None, path)
+    }
+
+    /// Preserve the original borrowed F1 authoring item beside disposable
+    /// tessellation without cloning it or constructing a second semantic tree.
+    pub(super) fn source_from_item<'a>(
+        &mut self,
+        mesh: support::NeutralMesh,
+        item: &'a Render2dItem,
+        path: &[usize],
+    ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
+        self.source_impl(mesh, Some(item), path)
+    }
+
+    fn source_impl<'a>(
+        &mut self,
         mut mesh: support::NeutralMesh,
+        semantic_item: Option<&'a Render2dItem>,
         path: &[usize],
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
         // The cached tessellation AABB is disposable physical metadata, not
@@ -324,7 +353,7 @@ impl NeutralRegionBuilder {
         // A rejected graph node MUST NOT consume retained geometry budget.
         let mut retained = self.retained_vertices;
         shadow::charge_vertices(&mut retained, mesh.triangles.len(), path)?;
-        let node = self.node(Kind::Source(Arc::new(mesh)), path, 1)?;
+        let node = self.node(Kind::Source(Arc::new(mesh)), path, 1, semantic_item)?;
         self.retained_vertices = retained;
         Ok(node)
     }
@@ -338,7 +367,7 @@ impl NeutralRegionBuilder {
             return Ok(children.pop().expect("single union member"));
         }
         let depth = children.iter().map(|node| node.depth).max().unwrap_or(0) + 1;
-        self.node(Kind::Union(children), path, depth)
+        self.node(Kind::Union(children), path, depth, None)
     }
 
     pub(super) fn affine<'a>(
@@ -348,7 +377,7 @@ impl NeutralRegionBuilder {
         path: &[usize],
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
         let depth = source.depth + 1;
-        self.node(Kind::Affine { source, to_parent }, path, depth)
+        self.node(Kind::Affine { source, to_parent }, path, depth, None)
     }
 
     pub(super) fn clip<'a>(
@@ -361,7 +390,7 @@ impl NeutralRegionBuilder {
             return Ok(source);
         }
         let depth = source.depth + 1;
-        self.node(Kind::Clip { source, clips }, path, depth)
+        self.node(Kind::Clip { source, clips }, path, depth, None)
     }
 
     pub(super) fn effect<'a>(
@@ -371,7 +400,7 @@ impl NeutralRegionBuilder {
         path: &[usize],
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
         let depth = source.depth + 1;
-        self.node(Kind::Effect { source, shadow }, path, depth)
+        self.node(Kind::Effect { source, shadow }, path, depth, None)
     }
 
     /// Recognize only the exact existing F1 DAG: C union (C ⊕ disk(r)).

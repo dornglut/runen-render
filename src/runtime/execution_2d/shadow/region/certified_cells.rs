@@ -8,6 +8,7 @@
 //! A certificate concerns SUPPORT membership, not alpha or Gaussian weights.
 
 use super::*;
+use crate::composition_2d::{Render2dItem, Render2dPrimitive};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CellCertificate {
@@ -146,6 +147,11 @@ impl NeutralRegion<'_> {
         *visits -= 1;
         match &self.kind {
             Kind::Source(mesh) => {
+                if let Some(item) = self.semantic_item {
+                    return certify_authored_item(item, cell);
+                }
+                // Synthetic private fixture only. Real renderable F1 leaves
+                // always borrow their original item through source_from_item.
                 if mesh.triangles.is_empty() {
                     return CellCertificate::Outside;
                 }
@@ -221,6 +227,49 @@ impl NeutralRegion<'_> {
                 }
             }
         }
+    }
+}
+
+/// Classify only geometry proved by ORIGINAL F1 source values. A Lyon mesh
+/// alone can never certify a curve or a shaped/stroked primitive. Item clips
+/// are conjunctive in parent coordinates: an unclipped outside stays outside,
+/// while inside must remain Unknown until the clip is separately certified.
+fn certify_authored_item(item: &Render2dItem, cell: Cell) -> CellCertificate {
+    let Render2dPrimitive::Fill { shape, .. } = item.primitive() else {
+        return CellCertificate::Unknown;
+    };
+    let Some(rect) = shape.as_rect() else {
+        return CellCertificate::Unknown;
+    };
+    if rect.is_empty() {
+        return CellCertificate::Outside;
+    }
+    let Some(local) = cell.preimage(item.local_to_parent()) else {
+        return CellCertificate::Unknown;
+    };
+    let Some(x0) = Interval::scalar(rect.x()) else {
+        return CellCertificate::Unknown;
+    };
+    let Some(y0) = Interval::scalar(rect.y()) else {
+        return CellCertificate::Unknown;
+    };
+    let Some(width) = Interval::scalar(rect.width()) else {
+        return CellCertificate::Unknown;
+    };
+    let Some(height) = Interval::scalar(rect.height()) else {
+        return CellCertificate::Unknown;
+    };
+    let Some(x1) = x0.add(width) else {
+        return CellCertificate::Unknown;
+    };
+    let Some(y1) = y0.add(height) else {
+        return CellCertificate::Unknown;
+    };
+    let certificate = local.classify_rectangle([x0, y0, x1, y1]);
+    if certificate == CellCertificate::Inside && !item.clips().is_empty() {
+        CellCertificate::Unknown
+    } else {
+        certificate
     }
 }
 
@@ -335,6 +384,112 @@ fn affine_cell_preimage_is_outward_bounded_and_rejects_singular_certainty() {
         .unwrap();
     assert_eq!(
         certify(&singular_region, [1.0, 1.0, 2.0, 2.0]),
+        CellCertificate::Unknown
+    );
+}
+
+#[test]
+fn actual_f1_rectangle_is_queried_before_disposable_lyon_triangles() {
+    use crate::composition_2d::{
+        Render2dBrush, Render2dClip, Render2dColorRgba8, Render2dOpacity, Render2dRect,
+        Render2dShape,
+    };
+    use crate::runtime::execution_2d::vector;
+    let rectangle = Render2dShape::rect(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap());
+    let shear = Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 4.0, 3.0).unwrap();
+    let item = Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: rectangle.clone(),
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        shear,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    );
+    let mesh = vector::neutral_support(&item, 0, 4.0, 1_048_576)
+        .unwrap()
+        .expect("a real F1 rectangle tessellates");
+    let mut graph = builder();
+    let region = graph.source_from_item(mesh, &item, &[0, 0]).unwrap();
+    assert_eq!(
+        certify(&region, [4.5, 3.5, 4.6, 3.6]),
+        CellCertificate::Inside
+    );
+    assert_eq!(
+        certify(&region, [0.0, 0.0, 1.0, 1.0]),
+        CellCertificate::Outside
+    );
+    assert_eq!(
+        certify(&region, [4.0, 3.0, 4.0, 3.0]),
+        CellCertificate::Unknown
+    );
+
+    let clip = Render2dClip::new(
+        Render2dShape::rect(Render2dRect::new(0.0, 0.0, 0.25, 0.25).unwrap()),
+        Render2dAffineTransform::IDENTITY,
+    );
+    let clipped = Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: rectangle,
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        shear,
+        vec![clip],
+        Render2dOpacity::TRANSPARENT,
+    );
+    // A deliberately independent physical mesh cannot authorize an Inside
+    // result through a real clip without first proving its geometry.
+    let physical = support::NeutralMesh {
+        units_per_parent_logical_unit: 1.0,
+        triangles: vec![
+            [4.0, 3.0], [6.0, 3.0], [6.0, 5.0],
+            [4.0, 3.0], [6.0, 5.0], [4.0, 5.0],
+        ],
+        bounds: [4.0, 3.0, 6.0, 5.0],
+    };
+    let clipped_region = graph.source_from_item(physical, &clipped, &[0, 1]).unwrap();
+    assert_eq!(
+        certify(&clipped_region, [4.5, 3.5, 4.6, 3.6]),
+        CellCertificate::Unknown
+    );
+    assert_eq!(
+        certify(&clipped_region, [0.0, 0.0, 1.0, 1.0]),
+        CellCertificate::Outside
+    );
+}
+
+#[test]
+fn original_f1_ellipse_cannot_inherit_certainty_from_rectangle_mesh() {
+    use crate::composition_2d::{
+        Render2dBrush, Render2dColorRgba8, Render2dOpacity, Render2dRect, Render2dShape,
+    };
+    let item = Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::ellipse(
+                Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap(),
+            ),
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    );
+    let mut graph = builder();
+    let mesh = support::NeutralMesh {
+        units_per_parent_logical_unit: 1.0,
+        triangles: vec![
+            [0.0, 0.0], [2.0, 0.0], [2.0, 2.0],
+            [0.0, 0.0], [2.0, 2.0], [0.0, 2.0],
+        ],
+        bounds: [0.0, 0.0, 2.0, 2.0],
+    };
+    let source = graph.source_from_item(mesh, &item, &[0, 0]).unwrap();
+    assert_eq!(
+        certify(&source, [0.5, 0.5, 1.5, 1.5]),
+        CellCertificate::Unknown
+    );
+    assert_eq!(
+        certify(&source, [-2.0, -2.0, -1.0, -1.0]),
         CellCertificate::Unknown
     );
 }

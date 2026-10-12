@@ -362,7 +362,7 @@ fn group_child_sources_with_probe<'a>(
                     max_buffer_bytes,
                     &mut graph.clip_work,
                 )? {
-                    let leaf = graph.source(mesh, path)?;
+                    let leaf = graph.source_from_item(mesh, item, path)?;
                     active
                         .last_mut()
                         .expect("active source group")
