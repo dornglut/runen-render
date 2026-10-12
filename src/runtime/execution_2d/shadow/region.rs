@@ -548,9 +548,7 @@ impl NeutralRegionBuilder {
                 .all(|child| Self::polygonal_source_proven(child)),
             Kind::Affine { source, .. } => Self::polygonal_source_proven(source),
             Kind::Clip { source, clips } => {
-                clips
-                    .iter()
-                    .all(|clip| clip.shape().as_rect().is_some())
+                clips.iter().all(|clip| clip.shape().as_rect().is_some())
                     && Self::polygonal_source_proven(source)
             }
             Kind::Effect { .. } => false,
@@ -1073,8 +1071,12 @@ mod tests {
         let physical = || support::NeutralMesh {
             units_per_parent_logical_unit: 1.0,
             triangles: vec![
-                [0.0, 0.0], [2.0, 0.0], [2.0, 2.0],
-                [0.0, 0.0], [2.0, 2.0], [0.0, 2.0],
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
             ],
             bounds: [0.0, 0.0, 2.0, 2.0],
         };
@@ -1096,21 +1098,30 @@ mod tests {
             vec![],
             Render2dOpacity::TRANSPARENT,
         );
-        let disk = Render2dDropShadow::new(
-            0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT,
-        )
-        .unwrap();
+        let disk =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let mut graph = builder();
         let plain_source = graph.source_from_item(physical(), &valid, &[0, 0]).unwrap();
-        let plain_disk = graph.effect(Arc::clone(&plain_source), disk, &[0, 1]).unwrap();
+        let plain_disk = graph
+            .effect(Arc::clone(&plain_source), disk, &[0, 1])
+            .unwrap();
         let plain = graph.union(vec![plain_source, plain_disk], &[0]).unwrap();
         assert!(graph.qualified_rounded_rectangle(&plain).unwrap().is_some());
 
-        let ellipse_source = graph.source_from_item(physical(), &curved, &[1, 0]).unwrap();
-        let ellipse_disk = graph.effect(Arc::clone(&ellipse_source), disk, &[1, 1]).unwrap();
-        let ellipse = graph.union(vec![ellipse_source, ellipse_disk], &[1]).unwrap();
+        let ellipse_source = graph
+            .source_from_item(physical(), &curved, &[1, 0])
+            .unwrap();
+        let ellipse_disk = graph
+            .effect(Arc::clone(&ellipse_source), disk, &[1, 1])
+            .unwrap();
+        let ellipse = graph
+            .union(vec![ellipse_source, ellipse_disk], &[1])
+            .unwrap();
         assert!(
-            graph.qualified_rounded_rectangle(&ellipse).unwrap().is_none(),
+            graph
+                .qualified_rounded_rectangle(&ellipse)
+                .unwrap()
+                .is_none(),
             "an F1 ellipse may not be promoted from a rectangular Lyon mesh"
         );
         assert!(matches!(
