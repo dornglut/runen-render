@@ -577,8 +577,7 @@ fn refine_gaussian_cell(
         return None;
     }
     let should_refine = cell.depth < max_depth
-        && (certificate == CellCertificate::Unknown
-            || weight.hi - weight.lo > mass_threshold);
+        && (certificate == CellCertificate::Unknown || weight.hi - weight.lo > mass_threshold);
     if !should_refine {
         return accumulator.add(weight, certificate);
     }
@@ -588,12 +587,7 @@ fn refine_gaussian_cell(
     let right = Interval::new(mx, cell.x.hi)?;
     let top = Interval::new(cell.y.lo, my)?;
     let bottom = Interval::new(my, cell.y.hi)?;
-    for (x, y) in [
-        (left, top),
-        (right, top),
-        (left, bottom),
-        (right, bottom),
-    ] {
+    for (x, y) in [(left, top), (right, top), (left, bottom), (right, bottom)] {
         refine_gaussian_cell(
             region,
             query_center,
@@ -1318,7 +1312,6 @@ fn finite_gaussian_uncertainty_and_work_exhaustion_are_not_zero_alpha() {
     assert!(lo >= 0.0 && hi <= 1.0 && lo < hi);
 }
 
-
 #[test]
 fn adaptive_gaussian_refinement_proves_halfplane_with_finite_total_work() {
     let mut graph = builder();
@@ -1346,14 +1339,26 @@ fn adaptive_gaussian_never_uses_a_partial_work_budget_as_alpha() {
     let mut fuel = 1;
     assert_eq!(
         certified_adaptive_finite_gaussian_coverage(
-            &source, [1.0, 0.5], 0.25, 6, 5_461, 0.35, &mut fuel
+            &source,
+            [1.0, 0.5],
+            0.25,
+            6,
+            5_461,
+            0.35,
+            &mut fuel
         ),
         None
     );
     let mut fuel = 2_000_000;
     assert_eq!(
         certified_adaptive_finite_gaussian_coverage(
-            &source, [1.0, 0.5], 0.25, 6, 1, 0.01, &mut fuel
+            &source,
+            [1.0, 0.5],
+            0.25,
+            6,
+            1,
+            0.01,
+            &mut fuel
         ),
         None,
         "node exhaustion cannot silently certify narrow Gaussian coverage"
@@ -1368,14 +1373,26 @@ fn adaptive_gaussian_certifies_all_inside_and_outside_without_exhaustive_grid() 
     let mut fuel = 2_000;
     assert_eq!(
         certified_adaptive_finite_gaussian_coverage(
-            &large, [0.0, 0.0], 0.25, 6, 5_461, 0.01, &mut fuel
+            &large,
+            [0.0, 0.0],
+            0.25,
+            6,
+            5_461,
+            0.01,
+            &mut fuel
         ),
         Some(([1.0, 1.0], 1))
     );
     let mut fuel = 2_000;
     assert_eq!(
         certified_adaptive_finite_gaussian_coverage(
-            &distant, [0.0, 0.0], 0.25, 6, 5_461, 0.01, &mut fuel
+            &distant,
+            [0.0, 0.0],
+            0.25,
+            6,
+            5_461,
+            0.01,
+            &mut fuel
         ),
         Some(([0.0, 0.0], 1))
     );
