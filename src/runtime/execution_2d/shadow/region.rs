@@ -497,7 +497,10 @@ impl NeutralRegionBuilder {
                 .checked_add(children.len())
                 .ok_or_else(|| resource(path, "neutral union scan work overflow"))?;
             if next_work > MAX_REGION_GRAPH_WORK {
-                return Err(resource(path, "neutral union scan exceeds whole-invocation work"));
+                return Err(resource(
+                    path,
+                    "neutral union scan exceeds whole-invocation work",
+                ));
             }
             let epoch = self
                 .union_epoch
@@ -1281,14 +1284,14 @@ mod tests {
         let nodes = graph.nodes;
         for _ in 0..12 {
             repeated = graph
-                .union(
-                    vec![Arc::clone(&repeated), Arc::clone(&repeated)],
-                    &[4, 2],
-                )
+                .union(vec![Arc::clone(&repeated), Arc::clone(&repeated)], &[4, 2])
                 .unwrap();
         }
         assert!(Arc::ptr_eq(&repeated, &first));
-        assert_eq!(graph.nodes, nodes, "union idempotence must not mint fake nodes");
+        assert_eq!(
+            graph.nodes, nodes,
+            "union idempotence must not mint fake nodes"
+        );
         // Four real entries plus 24 repeated references, all admitted.
         assert_eq!(graph.graph_work, 28);
 
@@ -1647,10 +1650,7 @@ mod tests {
             }) if path == [4, 1]
         ));
         assert_eq!(builder.nodes, before_nodes);
-        assert_eq!(
-            builder.graph_work,
-            MAX_REGION_GRAPH_WORK - 2
-        );
+        assert_eq!(builder.graph_work, MAX_REGION_GRAPH_WORK - 2);
     }
 
     #[test]
