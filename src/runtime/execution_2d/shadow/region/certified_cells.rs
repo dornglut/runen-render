@@ -627,6 +627,34 @@ fn refine_gaussian_cell(
     Some(())
 }
 
+/// Certify an ENTIRE region of possible correlated 4x4 sample centers
+/// against the full finite Gaussian kernel. The owner-frame Minkowski sum
+/// encloses all sample kernels in a tile: if the original F1 region is
+/// definitely Inside/Outside, every center has exact normalized coverage
+/// 1/0 without any per-sample Gaussian density work.
+fn certified_uniform_kernel_coverage(
+    region: &NeutralRegion<'_>,
+    centers: Cell,
+    sigma: Interval,
+    visits: &mut usize,
+) -> Option<[f64; 2]> {
+    if sigma.lo <= 0.0 || *visits < GAUSSIAN_WEIGHT_WORK {
+        return None;
+    }
+    *visits -= GAUSSIAN_WEIGHT_WORK;
+    let cutoff = Interval::new(-3.0, 3.0)?;
+    let halo = sigma.mul(cutoff)?;
+    let swept = Cell {
+        x: centers.x.add(halo)?,
+        y: centers.y.add(halo)?,
+    };
+    match region.certify_cell(swept, visits) {
+        CellCertificate::Inside => Some([1.0, 1.0]),
+        CellCertificate::Outside => Some([0.0, 0.0]),
+        CellCertificate::Unknown => None,
+    }
+}
+
 /// Feasibility only: a deterministic bounded quadtree certificate over the
 /// normalized finite parent-frame Gaussian. A target error that cannot be
 /// proven within admitted query/numeric work returns None, never a guessed
@@ -653,23 +681,21 @@ fn certified_adaptive_finite_gaussian_coverage(
     }
     let center = [Interval::scalar(center[0])?, Interval::scalar(center[1])?];
     let sigma = Interval::scalar(sigma)?;
-    // Exactly normalized all-kernel cases are proved by ONE semantic region
-    // query. Do not force needless numeric subdivision at f64 extremes when
-    // every point of the Gaussian support has the same classification.
-    if *visits < GAUSSIAN_WEIGHT_WORK {
-        return None;
+    // One full-kernel query is also shareable among every correlated sample
+    // center in a certified tile, without changing F1 source ownership.
+    if let Some(exact) = certified_uniform_kernel_coverage(
+        region,
+        Cell {
+            x: center[0],
+            y: center[1],
+        },
+        sigma,
+        visits,
+    ) {
+        return Some((exact, 1));
     }
-    *visits -= GAUSSIAN_WEIGHT_WORK;
-    let full_kernel = Interval::new(-3.0, 3.0)?;
-    let query = Cell {
-        x: center[0].add(sigma.mul(full_kernel)?)?,
-        y: center[1].add(sigma.mul(full_kernel)?)?,
-    };
-    match region.certify_cell(query, visits) {
-        CellCertificate::Inside => return Some(([1.0, 1.0], 1)),
-        CellCertificate::Outside => return Some(([0.0, 0.0], 1)),
-        CellCertificate::Unknown if *visits == 0 => return None,
-        CellCertificate::Unknown => {}
+    if *visits == 0 {
+        return None;
     }
     let mut result = AdaptiveGaussianMass::empty()?;
     let mut remaining_nodes = max_nodes;
@@ -1377,6 +1403,127 @@ fn finite_gaussian_uncertainty_and_work_exhaustion_are_not_zero_alpha() {
     let [lo, hi] =
         certified_finite_gaussian_coverage(&source, [1.0, 0.5], 0.25, 16, &mut visits).unwrap();
     assert!(lo >= 0.0 && hi <= 1.0 && lo < hi);
+}
+
+#[test]
+fn shared_gaussian_tiles_certify_4x4_samples_from_original_f1_geometry() {
+    use crate::composition_2d::{
+        Render2dBrush, Render2dColorRgba8, Render2dOpacity, Render2dRect, Render2dShape,
+    };
+    // Authoritative transparent F1 geometry. The deliberately overlarge
+    // physical mesh is NOT allowed to certify support or coverage.
+    let item = Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::rect(Render2dRect::new(18.0, 18.0, 28.0, 28.0).unwrap()),
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    );
+    let physical = support::NeutralMesh {
+        units_per_parent_logical_unit: 1.0,
+        triangles: vec![
+            [0.0, 0.0],
+            [64.0, 0.0],
+            [64.0, 64.0],
+            [0.0, 0.0],
+            [64.0, 64.0],
+            [0.0, 64.0],
+        ],
+        bounds: [0.0, 0.0, 64.0, 64.0],
+    };
+    let mut graph = builder();
+    let source = graph.source_from_item(physical, &item, &[0]).unwrap();
+    let mut work = 20_000;
+    let mut exact_inside_tiles = 0_usize;
+    let mut exact_outside_tiles = 0_usize;
+    let mut uncertain_tiles = 0_usize;
+    let halo = 0.75;
+    for tile_y in 0..8 {
+        for tile_x in 0..8 {
+            let x = tile_x as f64 * 8.0;
+            let y = tile_y as f64 * 8.0;
+            let centers = Cell::new([x + 0.125, y + 0.125, x + 7.875, y + 7.875]).unwrap();
+            let result = certified_uniform_kernel_coverage(
+                &source,
+                centers,
+                Interval::scalar(0.25).unwrap(),
+                &mut work,
+            );
+            match result {
+                Some([1.0, 1.0]) => exact_inside_tiles += 1,
+                Some([0.0, 0.0]) => exact_outside_tiles += 1,
+                None => uncertain_tiles += 1,
+                _ => panic!("a shared tile may only certify exact zero or one"),
+            }
+            if let Some([lo, hi]) = result {
+                assert_eq!(lo, hi);
+                // Independently check EVERY 4x4 sample in the tile against
+                // the exact rect⊕finite-Gaussian-square geometry.
+                for py in 0..8 {
+                    for px in 0..8 {
+                        for sy in 0..4 {
+                            for sx in 0..4 {
+                                let cx = x + px as f64 + (sx as f64 + 0.5) / 4.0;
+                                let cy = y + py as f64 + (sy as f64 + 0.5) / 4.0;
+                                let certainly_inside = cx - halo > 18.0
+                                    && cx + halo < 46.0
+                                    && cy - halo > 18.0
+                                    && cy + halo < 46.0;
+                                let certainly_outside = cx + halo < 18.0
+                                    || cx - halo > 46.0
+                                    || cy + halo < 18.0
+                                    || cy - halo > 46.0;
+                                assert!(
+                                    if lo == 1.0 {
+                                        certainly_inside
+                                    } else {
+                                        certainly_outside
+                                    },
+                                    "tile ({tile_x},{tile_y}) falsely certified {lo}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(exact_inside_tiles, 4);
+    assert_eq!(exact_outside_tiles, 48);
+    assert_eq!(uncertain_tiles, 12);
+    let certified_sample_sites = (exact_inside_tiles + exact_outside_tiles) * 8 * 8 * 16;
+    assert_eq!(certified_sample_sites, 53_248);
+    assert_eq!(
+        certified_sample_sites + uncertain_tiles * 8 * 8 * 16,
+        64 * 64 * 16
+    );
+    // 52*8*8*16 = 53,248 certified centers require just 64
+    // source-region queries, not one Gaussian integral per center.
+    // Every tile charges 256 numerical units plus one source-node visit.
+    assert_eq!(20_000 - work, 64 * (GAUSSIAN_WEIGHT_WORK + 1));
+}
+
+#[test]
+fn shared_gaussian_tiles_fail_closed_at_boundaries_and_under_work_exhaustion() {
+    let mut graph = builder();
+    let source = rectangle(&mut graph, [18.0, 18.0, 46.0, 46.0], &[0]);
+    let centers = Cell::new([16.125, 24.125, 23.875, 31.875]).unwrap();
+    let sigma = Interval::scalar(0.25).unwrap();
+    let mut work = 10_000;
+    assert_eq!(
+        certified_uniform_kernel_coverage(&source, centers, sigma, &mut work),
+        None,
+        "a mixed boundary tile cannot be treated as empty"
+    );
+    let outside = Cell::new([0.125, 0.125, 7.875, 7.875]).unwrap();
+    let mut exhausted = GAUSSIAN_WEIGHT_WORK - 1;
+    assert_eq!(
+        certified_uniform_kernel_coverage(&source, outside, sigma, &mut exhausted),
+        None
+    );
+    assert_eq!(exhausted, GAUSSIAN_WEIGHT_WORK - 1);
 }
 
 #[test]
