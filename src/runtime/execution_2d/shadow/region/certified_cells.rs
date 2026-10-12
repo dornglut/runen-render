@@ -537,9 +537,7 @@ impl NeutralRegion<'_> {
                 if definite_inside == Some(CellCertificate::Inside) {
                     return CellCertificate::Inside;
                 }
-                let Some(outer_halo) =
-                    certified_effect_outer_halo(spread, shadow.sigma())
-                else {
+                let Some(outer_halo) = certified_effect_outer_halo(spread, shadow.sigma()) else {
                     return CellCertificate::Unknown;
                 };
                 let Some(outer) = translated.expanded(outer_halo) else {
