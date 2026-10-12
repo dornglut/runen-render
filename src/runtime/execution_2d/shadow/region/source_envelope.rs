@@ -114,8 +114,7 @@ pub(super) fn bounds(
             .as_rect()
             .or_else(|| shape.as_rounded_rect().map(|(rect, _)| rect))
             .or_else(|| shape.as_ellipse())
-    })
-    {
+    }) {
         if rect.is_empty() {
             return Ok(None);
         }
@@ -250,8 +249,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let item_transform =
-            Render2dAffineTransform::new(1.0, 0.5, 0.25, 1.0, 3.0, -2.0).unwrap();
+        let item_transform = Render2dAffineTransform::new(1.0, 0.5, 0.25, 1.0, 3.0, -2.0).unwrap();
         let parent_transform =
             Render2dAffineTransform::new(0.5, 0.0, -1.0, 1.0, 7.0, -3.0).unwrap();
         let item = Render2dItem::new(
@@ -261,7 +259,9 @@ mod tests {
             Render2dOpacity::TRANSPARENT,
         );
         assert_eq!(control_visits(&item), 8);
-        let extent = bounds(&item, Some(parent_transform), &[0]).unwrap().unwrap();
+        let extent = bounds(&item, Some(parent_transform), &[0])
+            .unwrap()
+            .unwrap();
         for [x, y] in [
             [-8.0, -3.0],
             [-4.0, -3.0],
