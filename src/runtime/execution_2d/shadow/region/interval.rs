@@ -134,7 +134,10 @@ mod tests {
         assert_eq!(largest.mul(zero).unwrap().hi, 0.0);
         assert_eq!(negative_one.mul(largest).unwrap().lo, -f64::MAX);
         assert_eq!(largest.div(negative_one).unwrap().lo, -f64::MAX);
-        assert!(largest.add(one).is_none(), "a truly overflowing sum must reject");
+        assert!(
+            largest.add(one).is_none(),
+            "a truly overflowing sum must reject"
+        );
     }
 
     #[test]

@@ -1211,14 +1211,12 @@ mod tests {
     #[test]
     fn nested_axis_reflection_preserves_extreme_finite_reach() {
         let bounds = [0.0, 0.0, f64::MAX, 1.0];
-        let reflected =
-            Render2dAffineTransform::new(-1.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap();
+        let reflected = Render2dAffineTransform::new(-1.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap();
         assert_eq!(
             nested_affine_envelope(bounds, reflected, &[8]).unwrap(),
             [-f64::MAX, 0.0, 0.0, 1.0]
         );
-        let reflected_y =
-            Render2dAffineTransform::new(1.0, 0.0, 0.0, -1.0, 0.0, 0.0).unwrap();
+        let reflected_y = Render2dAffineTransform::new(1.0, 0.0, 0.0, -1.0, 0.0, 0.0).unwrap();
         assert_eq!(
             nested_affine_envelope(bounds, reflected_y, &[8]).unwrap(),
             [0.0, -1.0, f64::MAX, 0.0]
