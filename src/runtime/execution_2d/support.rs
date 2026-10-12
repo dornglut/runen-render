@@ -2198,23 +2198,53 @@ pub(super) fn certified_axis_aligned_rectangle(triangles: &[[f64; 2]]) -> Option
 /// the identity blur (one physical sample cell) or the normalized finite
 /// 3sigma Gaussian. A rectangular footprint never requires adaptive
 /// triangulation or an approximated discrete source mask.
-fn inset_rectangle_sample(rect: [f64; 4], center: [f64; 2], sigma: f64) -> f64 {
+/// Exact clipped one-axis intersection (identity blur) or the same
+/// normalized continuous 16-node Gaussian used by the single-site reference.
+/// A certified rectangle is separable; do not recompute an identical x-axis
+/// integral for every y row or introduce a sampled-alpha approximation.
+fn inset_rectangle_axis_mass(start: f64, end: f64, center: f64, sigma: f64) -> f64 {
     let reach = if sigma > 0.0 { 3.0 * sigma } else { 0.5 };
-    let x0 = rect[0].max(center[0] - reach);
-    let x1 = rect[2].min(center[0] + reach);
-    let y0 = rect[1].max(center[1] - reach);
-    let y1 = rect[3].min(center[1] + reach);
-    if x0 >= x1 || y0 >= y1 {
+    let a = start.max(center - reach);
+    let b = end.min(center + reach);
+    if a >= b {
         return 0.0;
     }
-    let (x_mass, y_mass) = if sigma > 0.0 {
-        (
-            gaussian_axis_mass(x0, x1, center[0], sigma),
-            gaussian_axis_mass(y0, y1, center[1], sigma),
-        )
+    if sigma > 0.0 {
+        gaussian_axis_mass(a, b, center, sigma)
     } else {
-        (x1 - x0, y1 - y0)
-    };
+        b - a
+    }
+}
+
+/// Charge both axes and per-site multiplications before reserving private
+/// x-axis or retained coverage storage. Failure leaves sibling work unchanged.
+fn charge_certified_rectangle_axis_work(
+    width: usize,
+    height: usize,
+    area: usize,
+    sigma: f64,
+    aggregate_work: &mut usize,
+    path: &[usize],
+) -> Result<(), crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    let axis_cost = if sigma > 0.0 { GAUSS_NODES.len() } else { 1 };
+    let axis_work = width
+        .checked_add(height)
+        .and_then(|axes| axes.checked_mul(axis_cost))
+        .and_then(|work| work.checked_add(area))
+        .ok_or_else(|| resource("certified rectangle axis work overflow"))?;
+    if axis_work > MAX_GLOBAL_SPREAD_WORK {
+        return Err(resource("certified rectangle axis work exceeds bounded admission"));
+    }
+    charge_shadow_preparation_work(aggregate_work, axis_work, path)
+}
+
+/// Independent per-site comparator for the production shared-axis evaluator.
+#[cfg(test)]
+fn inset_rectangle_sample(rect: [f64; 4], center: [f64; 2], sigma: f64) -> f64 {
+    let x_mass = inset_rectangle_axis_mass(rect[0], rect[2], center[0], sigma);
+    let y_mass = inset_rectangle_axis_mass(rect[1], rect[3], center[1], sigma);
     (x_mass * y_mass).clamp(0.0, 1.0)
 }
 
@@ -2616,8 +2646,34 @@ fn rasterize_continuous_shadow_coverage(
     // Complete-erosion certificates above can return without retained
     // coverage even when the scene's prior shadows exhausted its allowance.
     admit_retained_coverage_samples(area, remaining_coverage_samples, path)?;
+    // The certified rectangular inset is a separable continuous integral.
+    // Reuse ONE horizontal axis over all rows; each vertical axis is evaluated
+    // once per row. Admit *actual* quadrature and multiplication work before
+    // even allocating the bounded horizontal f64 workspace or float coverage.
+    // The path is strictly private to an already-certified axis rectangle:
+    // other F1 source shapes retain their existing exact union evaluator.
+    let x_axis = if let Some(rect) = inset {
+        charge_certified_rectangle_axis_work(
+            width, height, area, physical_sigma, aggregate_work, path,
+        )?;
+        // width <= admitted area <= MAX_NEUTRAL_MASK_SAMPLES, so the
+        // temporary x-axis buffer is at most 8 MiB with checked allocation.
+        let mut xs = filled(width, 0.0_f64, path)?;
+        for (column, x_mass) in xs.iter_mut().enumerate() {
+            let center_x = (origin_x as f64 + as_f64(column)) + 0.5;
+            *x_mass =
+                inset_rectangle_axis_mass(rect[0], rect[2], center_x, physical_sigma);
+        }
+        Some(xs)
+    } else {
+        None
+    };
     let mut values = filled(area, 0.0_f64, path)?;
     for row in 0..height {
+        let y_mass = inset.map(|rect| {
+            let center_y = (origin_y as f64 + as_f64(row)) + 0.5;
+            inset_rectangle_axis_mass(rect[1], rect[3], center_y, physical_sigma)
+        });
         if let Some(orthogonal) = &orthogonal
             && physical_sigma > 0.0
         {
@@ -2641,8 +2697,8 @@ fn rasterize_continuous_shadow_coverage(
                 (origin_x as f64 + as_f64(column)) + 0.5,
                 (origin_y as f64 + as_f64(row)) + 0.5,
             ];
-            values[row * width + column] = if let Some(rect) = inset {
-                inset_rectangle_sample(rect, center, physical_sigma)
+            values[row * width + column] = if let (Some(xs), Some(y_mass)) = (&x_axis, y_mass) {
+                (xs[column] * y_mass).clamp(0.0, 1.0)
             } else if let Some(polygon) = &convex_inset {
                 if physical_sigma > 0.0 {
                     gaussian_union_sample(polygon, center, physical_sigma, aggregate_work, path)?
@@ -4238,6 +4294,86 @@ mod tests {
             .unwrap()
             .expect("sigma-zero caster retains its exact integrated area");
         assert!((exact_identity.values.iter().sum::<f64>() - 0.0016).abs() < 1.0e-10);
+    }
+
+    #[test]
+    fn certified_rectangle_axes_share_continuous_integrals_without_changing_samples() {
+        // The production evaluator must return exactly the independently
+        // composed per-site x*y integrals for identity and finite Gaussians.
+        // No sample-alpha raster mask or Gaussian tap approximation is used.
+        let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
+            ],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        for sigma in [0.0, 0.125, 0.25, 0.5] {
+            let mut work = 0;
+            let actual = prepare_shadow_coverage_admitted(
+                &mesh,
+                -0.25,
+                sigma,
+                4.0,
+                &[9, 2],
+                &mut work,
+                MAX_NEUTRAL_MASK_SAMPLES,
+            )
+            .unwrap()
+            .unwrap();
+            let rectangle = [1.0, 1.0, 7.0, 7.0];
+            for row in 0..actual.height {
+                for column in 0..actual.width {
+                    let center = [
+                        actual.origin_x as f64 + as_f64(column) + 0.5,
+                        actual.origin_y as f64 + as_f64(row) + 0.5,
+                    ];
+                    let independent =
+                        inset_rectangle_sample(rectangle, center, sigma * 4.0);
+                    let shared = actual.values[row * actual.width + column];
+                    assert_eq!(shared, independent, "sigma={sigma}, x={column}, y={row}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn certified_rectangle_axis_work_is_charged_before_float_allocation() {
+        use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
+        // Two 14-element axes, 16 quadrature nodes and 196 products: 644
+        // work units. The charge is shared across all sibling effects and
+        // must reject atomically without allocating or consuming work.
+        let axis_work = 16 * (14 + 14) + 14 * 14;
+        let mut charged = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - axis_work + 1;
+        assert!(matches!(
+            charge_certified_rectangle_axis_work(14, 14, 14 * 14, 1.0, &mut charged, &[9, 4]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [9, 4]
+        ));
+        assert_eq!(
+            charged,
+            MAX_AGGREGATE_SHADOW_PREPARATION_WORK - axis_work + 1
+        );
+        let mut exact = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - axis_work;
+        charge_certified_rectangle_axis_work(14, 14, 14 * 14, 1.0, &mut exact, &[9, 5])
+            .unwrap();
+        assert_eq!(exact, MAX_AGGREGATE_SHADOW_PREPARATION_WORK);
+        assert!(matches!(
+            charge_certified_rectangle_axis_work(
+                usize::MAX, 14, 14 * 14, 1.0, &mut 0, &[9, 6],
+            ),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [9, 6]
+        ));
     }
 
     #[test]
