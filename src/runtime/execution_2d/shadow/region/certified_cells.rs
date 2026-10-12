@@ -108,10 +108,8 @@ impl Cell {
             return None;
         }
         Some(Self {
-            x: Interval::new(self.x.lo, self.x.hi)?
-                .add(Interval::new(-r.hi, r.hi)?)?,
-            y: Interval::new(self.y.lo, self.y.hi)?
-                .add(Interval::new(-r.hi, r.hi)?)?,
+            x: Interval::new(self.x.lo, self.x.hi)?.add(Interval::new(-r.hi, r.hi)?)?,
+            y: Interval::new(self.y.lo, self.y.hi)?.add(Interval::new(-r.hi, r.hi)?)?,
         })
     }
 
