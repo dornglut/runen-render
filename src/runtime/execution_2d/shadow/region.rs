@@ -1600,15 +1600,24 @@ mod tests {
         let vertices = graph.retained_vertices;
         let erosion_work = graph.erosion_work;
         let result = graph.materialize(&empty).unwrap();
-        assert!(result.triangles.is_empty(), "empty support stays empty under finite blur");
+        assert!(
+            result.triangles.is_empty(),
+            "empty support stays empty under finite blur"
+        );
         assert_eq!(graph.retained_vertices, vertices);
         assert_eq!(graph.erosion_work, erosion_work);
         assert!(
-            graph.materialized.get(expanded.id).is_none_or(Option::is_none),
+            graph
+                .materialized
+                .get(expanded.id)
+                .is_none_or(Option::is_none),
             "the unsupported positive-disk child must not be materialized"
         );
         assert!(
-            graph.materialized.get(source.id).is_none_or(Option::is_none),
+            graph
+                .materialized
+                .get(source.id)
+                .is_none_or(Option::is_none),
             "the disposable F1 mesh is not needed for the exact absence proof"
         );
         // Prove that the success is the geometric erasure, not a broad
@@ -1626,7 +1635,10 @@ mod tests {
     fn complete_erosion_certificates_fail_closed_at_thresholds_and_overflow() {
         // A 2x2 region with r=1 has at most a measure-zero survivor.
         // Keep equality and adjacent float uncertainty unresolved.
-        assert!(!certified_complete_disk_erosion(Some([0.0, 0.0, 2.0, 2.0]), -1.0));
+        assert!(!certified_complete_disk_erosion(
+            Some([0.0, 0.0, 2.0, 2.0]),
+            -1.0
+        ));
         assert!(!certified_complete_disk_erosion(
             Some([0.0, 0.0, 2.0, 2.0]),
             -1.0_f64.next_up(),
@@ -1640,22 +1652,23 @@ mod tests {
             -1.0,
         ));
         assert!(!certified_complete_disk_erosion(None, -100.0));
-        assert!(!certified_complete_disk_erosion(Some([0.0, 0.0, 2.0, 2.0]), 1.25));
+        assert!(!certified_complete_disk_erosion(
+            Some([0.0, 0.0, 2.0, 2.0]),
+            1.25
+        ));
 
         let mut graph = builder();
         let source = graph.source(triangle(), &[8, 0]).unwrap();
-        let borderline = graph.effect(
-            source,
-            Render2dDropShadow::new(
-                0.0, 0.0, 0.0, -0.5, Render2dColorRgba8::TRANSPARENT,
-            ).unwrap(),
-            &[8, 1],
-        ).unwrap();
+        let borderline = graph
+            .effect(
+                source,
+                Render2dDropShadow::new(0.0, 0.0, 0.0, -0.5, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+                &[8, 1],
+            )
+            .unwrap();
         assert!(
-            !certified_complete_disk_erosion(
-                borderline.envelope,
-                -0.5,
-            ),
+            !certified_complete_disk_erosion(borderline.envelope, -0.5,),
             "a prior erosion reach cannot be interpreted as a new exact membership claim"
         );
         let nonempty = graph.materialize(&borderline).unwrap();
@@ -1668,14 +1681,12 @@ mod tests {
     #[test]
     fn original_f1_curved_affine_and_clip_reach_can_certify_empty_nested_erosion() {
         use crate::composition_2d::{
-            Render2dBrush, Render2dClip, Render2dItem, Render2dOpacity,
-            Render2dPrimitive, Render2dRect, Render2dShape,
+            Render2dBrush, Render2dClip, Render2dItem, Render2dOpacity, Render2dPrimitive,
+            Render2dRect, Render2dShape,
         };
         let item = Render2dItem::new(
             Render2dPrimitive::Fill {
-                shape: Render2dShape::ellipse(
-                    Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap(),
-                ),
+                shape: Render2dShape::ellipse(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
                 brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
             },
             Render2dAffineTransform::IDENTITY,
@@ -1684,31 +1695,31 @@ mod tests {
         );
         let mut graph = builder();
         let leaf = graph.source_from_item(triangle(), &item, &[9, 0]).unwrap();
-        let shear = Render2dAffineTransform::new(
-            1.0, 0.5, 0.25, 1.0, 3.0, -1.0,
-        ).unwrap();
+        let shear = Render2dAffineTransform::new(1.0, 0.5, 0.25, 1.0, 3.0, -1.0).unwrap();
         let affined = graph.affine(leaf, shear, &[9, 1]).unwrap();
         let clip = [Render2dClip::new(
-            Render2dShape::rect(
-                Render2dRect::new(-100.0, -100.0, 200.0, 200.0).unwrap(),
-            ),
+            Render2dShape::rect(Render2dRect::new(-100.0, -100.0, 200.0, 200.0).unwrap()),
             Render2dAffineTransform::IDENTITY,
         )];
         let clipped = graph.clip(affined, &clip, &[9, 2]).unwrap();
-        let effect = graph.effect(
-            Arc::clone(&clipped),
-            Render2dDropShadow::new(
-                1.5, -0.75, 0.1, -6.0, Render2dColorRgba8::TRANSPARENT,
-            ).unwrap(),
-            &[9, 3],
-        ).unwrap();
+        let effect = graph
+            .effect(
+                Arc::clone(&clipped),
+                Render2dDropShadow::new(1.5, -0.75, 0.1, -6.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+                &[9, 3],
+            )
+            .unwrap();
         assert!(
             certified_complete_disk_erosion(clipped.envelope, -6.0),
             "the sheared original-F1 reach conservatively proves complete erosion"
         );
         assert!(graph.materialize(&effect).unwrap().triangles.is_empty());
         assert!(
-            graph.materialized.get(clipped.id).is_none_or(Option::is_none),
+            graph
+                .materialized
+                .get(clipped.id)
+                .is_none_or(Option::is_none),
             "exact complete erosion cannot require or guess the clipped tessellation"
         );
     }
