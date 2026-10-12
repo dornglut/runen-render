@@ -655,6 +655,128 @@ fn certified_uniform_kernel_coverage(
     }
 }
 
+/// Counts only exact all-kernel coverage results, not opaque masks,
+/// per-sample colors, GPU costs or an approximation of unresolved pixels.
+#[derive(Default, Debug, PartialEq, Eq)]
+struct SharedTileCoverage {
+    inside_samples: usize,
+    outside_samples: usize,
+    unresolved_samples: usize,
+    queries: usize,
+}
+
+/// Spatially share FULL-kernel certificates over correlated sample centers.
+/// Subdivision is over pixel tiles, not Gaussian integration cells. Unknown
+/// tiles at single-pixel granularity retain all 16 unresolved samples.
+fn visit_shared_tile(
+    region: &NeutralRegion<'_>,
+    origin: [usize; 2],
+    side: usize,
+    sigma: Interval,
+    nodes: &mut usize,
+    visits: &mut usize,
+    audit: &mut SharedTileCoverage,
+) -> Option<()> {
+    // Reserve at least the numeric allowance and one root classifier visit.
+    // Exact admission is shared across tiles, not charged once per subpixel.
+    if *nodes == 0 || *visits <= GAUSSIAN_WEIGHT_WORK {
+        return None;
+    }
+    *nodes -= 1;
+    audit.queries = audit.queries.checked_add(1)?;
+    let xmax = origin[0].checked_add(side)? as f64 - 0.125;
+    let ymax = origin[1].checked_add(side)? as f64 - 0.125;
+    let centers = Cell::new([
+        origin[0] as f64 + 0.125,
+        origin[1] as f64 + 0.125,
+        xmax,
+        ymax,
+    ])?;
+    let sites = side.checked_mul(side)?.checked_mul(16)?;
+    match certified_uniform_kernel_coverage(region, centers, sigma, visits) {
+        Some([1.0, 1.0]) => {
+            audit.inside_samples = audit.inside_samples.checked_add(sites)?;
+        }
+        Some([0.0, 0.0]) => {
+            audit.outside_samples = audit.outside_samples.checked_add(sites)?;
+        }
+        Some(_) => return None,
+        None if side == 1 => {
+            if *visits == 0 {
+                return None;
+            }
+            audit.unresolved_samples = audit.unresolved_samples.checked_add(sites)?;
+        }
+        None => {
+            let half = side / 2;
+            for dy in [0, half] {
+                for dx in [0, half] {
+                    visit_shared_tile(
+                        region,
+                        [origin[0].checked_add(dx)?, origin[1].checked_add(dy)?],
+                        half,
+                        sigma,
+                        nodes,
+                        visits,
+                        audit,
+                    )?;
+                }
+            }
+        }
+    }
+    Some(())
+}
+
+/// Atomic test-only feasibility report: no partially counted scene results
+/// escape if global node or numerical/geometry admission is exhausted.
+fn certified_shared_tile_quadtree(
+    region: &NeutralRegion<'_>,
+    canvas_side: usize,
+    tile_side: usize,
+    sigma: f64,
+    max_nodes: usize,
+    visits: &mut usize,
+) -> Option<SharedTileCoverage> {
+    if canvas_side == 0
+        || canvas_side > 64
+        || !canvas_side.is_power_of_two()
+        || tile_side == 0
+        || tile_side > 8
+        || !tile_side.is_power_of_two()
+        || !canvas_side.is_multiple_of(tile_side)
+        || max_nodes == 0
+        || max_nodes > 5_440
+        || !sigma.is_finite()
+        || sigma <= 0.0
+    {
+        return None;
+    }
+    let mut audit = SharedTileCoverage::default();
+    let mut remaining_nodes = max_nodes;
+    let sigma = Interval::scalar(sigma)?;
+    for y in (0..canvas_side).step_by(tile_side) {
+        for x in (0..canvas_side).step_by(tile_side) {
+            visit_shared_tile(
+                region,
+                [x, y],
+                tile_side,
+                sigma,
+                &mut remaining_nodes,
+                visits,
+                &mut audit,
+            )?;
+        }
+    }
+    let counted = audit
+        .inside_samples
+        .checked_add(audit.outside_samples)?
+        .checked_add(audit.unresolved_samples)?;
+    if counted != canvas_side.checked_mul(canvas_side)?.checked_mul(16)? {
+        return None;
+    }
+    Some(audit)
+}
+
 /// Feasibility only: a deterministic bounded quadtree certificate over the
 /// normalized finite parent-frame Gaussian. A target error that cannot be
 /// proven within admitted query/numeric work returns None, never a guessed
@@ -1503,6 +1625,67 @@ fn shared_gaussian_tiles_certify_4x4_samples_from_original_f1_geometry() {
     // source-region queries, not one Gaussian integral per center.
     // Every tile charges 256 numerical units plus one source-node visit.
     assert_eq!(20_000 - work, 64 * (GAUSSIAN_WEIGHT_WORK + 1));
+}
+
+#[test]
+fn adaptively_subdivided_shared_tiles_account_for_all_4x4_centers() {
+    let mut graph = builder();
+    let region = rectangle(&mut graph, [18.0, 18.0, 46.0, 46.0], &[0]);
+    let mut work = 200_000;
+    let counts =
+        certified_shared_tile_quadtree(&region, 64, 8, 0.25, 5_440, &mut work).unwrap();
+
+    // Independent rectangular support oracle over the full pixel-center
+    // envelope of each correlated 4x4 phase, not an alpha/sample mask.
+    let mut independent = SharedTileCoverage::default();
+    for py in 0..64 {
+        for px in 0..64 {
+            let x0 = px as f64 + 0.125 - 0.75;
+            let x1 = px as f64 + 0.875 + 0.75;
+            let y0 = py as f64 + 0.125 - 0.75;
+            let y1 = py as f64 + 0.875 + 0.75;
+            if x0 > 18.0 && x1 < 46.0 && y0 > 18.0 && y1 < 46.0 {
+                independent.inside_samples += 16;
+            } else if x1 < 18.0 || x0 > 46.0 || y1 < 18.0 || y0 > 46.0 {
+                independent.outside_samples += 16;
+            } else {
+                independent.unresolved_samples += 16;
+            }
+        }
+    }
+    assert_eq!(counts.inside_samples, independent.inside_samples);
+    assert_eq!(counts.outside_samples, independent.outside_samples);
+    assert_eq!(counts.unresolved_samples, independent.unresolved_samples);
+    assert_eq!(counts.inside_samples, 676 * 16);
+    assert_eq!(counts.outside_samples, 3_196 * 16);
+    assert_eq!(counts.unresolved_samples, 224 * 16);
+    assert_eq!(counts.queries, 672);
+    assert_eq!(
+        200_000 - work,
+        counts.queries * (GAUSSIAN_WEIGHT_WORK + 1)
+    );
+    assert_eq!(
+        counts.inside_samples + counts.outside_samples + counts.unresolved_samples,
+        64 * 64 * 16
+    );
+}
+
+#[test]
+fn shared_tile_refinement_rejects_partial_node_or_work_admission() {
+    let mut graph = builder();
+    let region = rectangle(&mut graph, [18.0, 18.0, 46.0, 46.0], &[0]);
+    let mut work = 200_000;
+    assert_eq!(
+        certified_shared_tile_quadtree(&region, 64, 8, 0.25, 64, &mut work),
+        None,
+        "the partial 64-tile budget cannot escape as an alpha certificate"
+    );
+    let mut work = GAUSSIAN_WEIGHT_WORK - 1;
+    assert_eq!(
+        certified_shared_tile_quadtree(&region, 64, 8, 0.25, 5_440, &mut work),
+        None,
+        "the shared first tile must not bypass its numerical admission"
+    );
 }
 
 #[test]
