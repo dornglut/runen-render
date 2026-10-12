@@ -640,9 +640,10 @@ fn certified_adaptive_finite_gaussian_coverage(
     // Exactly normalized all-kernel cases are proved by ONE semantic region
     // query. Do not force needless numeric subdivision at f64 extremes when
     // every point of the Gaussian support has the same classification.
-    if *visits == 0 {
+    if *visits < GAUSSIAN_WEIGHT_WORK {
         return None;
     }
+    *visits -= GAUSSIAN_WEIGHT_WORK;
     let full_kernel = Interval::new(-3.0, 3.0)?;
     let query = Cell {
         x: center[0].add(sigma.mul(full_kernel)?)?,
@@ -1389,6 +1390,20 @@ fn adaptive_gaussian_certifies_all_inside_and_outside_without_exhaustive_grid() 
             &mut fuel
         ),
         Some(([1.0, 1.0], 1))
+    );
+    let mut exhausted = 1;
+    assert_eq!(
+        certified_adaptive_finite_gaussian_coverage(
+            &large,
+            [0.0, 0.0],
+            0.25,
+            6,
+            5_461,
+            0.01,
+            &mut exhausted
+        ),
+        None,
+        "even full-support shortcuts charge bounded interval work"
     );
     let mut fuel = 2_000;
     assert_eq!(
