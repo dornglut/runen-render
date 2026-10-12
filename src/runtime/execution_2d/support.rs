@@ -2235,7 +2235,9 @@ fn charge_certified_rectangle_axis_work(
         .and_then(|work| work.checked_add(area))
         .ok_or_else(|| resource("certified rectangle axis work overflow"))?;
     if axis_work > MAX_GLOBAL_SPREAD_WORK {
-        return Err(resource("certified rectangle axis work exceeds bounded admission"));
+        return Err(resource(
+            "certified rectangle axis work exceeds bounded admission",
+        ));
     }
     charge_shadow_preparation_work(aggregate_work, axis_work, path)
 }
@@ -2654,15 +2656,19 @@ fn rasterize_continuous_shadow_coverage(
     // other F1 source shapes retain their existing exact union evaluator.
     let x_axis = if let Some(rect) = inset {
         charge_certified_rectangle_axis_work(
-            width, height, area, physical_sigma, aggregate_work, path,
+            width,
+            height,
+            area,
+            physical_sigma,
+            aggregate_work,
+            path,
         )?;
         // width <= admitted area <= MAX_NEUTRAL_MASK_SAMPLES, so the
         // temporary x-axis buffer is at most 8 MiB with checked allocation.
         let mut xs = filled(width, 0.0_f64, path)?;
         for (column, x_mass) in xs.iter_mut().enumerate() {
             let center_x = (origin_x as f64 + as_f64(column)) + 0.5;
-            *x_mass =
-                inset_rectangle_axis_mass(rect[0], rect[2], center_x, physical_sigma);
+            *x_mass = inset_rectangle_axis_mass(rect[0], rect[2], center_x, physical_sigma);
         }
         Some(xs)
     } else {
@@ -4333,8 +4339,7 @@ mod tests {
                         actual.origin_x as f64 + as_f64(column) + 0.5,
                         actual.origin_y as f64 + as_f64(row) + 0.5,
                     ];
-                    let independent =
-                        inset_rectangle_sample(rectangle, center, sigma * 4.0);
+                    let independent = inset_rectangle_sample(rectangle, center, sigma * 4.0);
                     let shared = actual.values[row * actual.width + column];
                     assert_eq!(shared, independent, "sigma={sigma}, x={column}, y={row}");
                 }
@@ -4362,8 +4367,7 @@ mod tests {
             MAX_AGGREGATE_SHADOW_PREPARATION_WORK - axis_work + 1
         );
         let mut exact = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - axis_work;
-        charge_certified_rectangle_axis_work(14, 14, 14 * 14, 1.0, &mut exact, &[9, 5])
-            .unwrap();
+        charge_certified_rectangle_axis_work(14, 14, 14 * 14, 1.0, &mut exact, &[9, 5]).unwrap();
         assert_eq!(exact, MAX_AGGREGATE_SHADOW_PREPARATION_WORK);
         assert!(matches!(
             charge_certified_rectangle_axis_work(
