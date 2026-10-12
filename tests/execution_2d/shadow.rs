@@ -1154,6 +1154,69 @@ fn nested_curved_f1_complete_erosion_preserves_ancestor_gpu_paint() {
     assert_eq!(pixel(&actual, 5, 5), [0, 0, 0, 0]);
 }
 
+/// A nonconvex original source needs no polygonal signed inset when a
+/// disk larger than half its rigorously enclosing extent erodes it fully.
+/// Real Vulkan must render precisely the same pristine L-shaped ancestor
+/// caster with or without the fully erased transparent nested shadow.
+#[test]
+fn nested_nonconvex_l_complete_erosion_preserves_gpu_ancestor_caster() {
+    let Some(context) = context() else { return };
+    let scene = |with_erasure: bool| {
+        let inner = Render2dEntry::group(Render2dGroup::new(
+            vec![
+                caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 8.0, 4.0),
+                caster(Render2dColorRgba8::TRANSPARENT, 10.0, 14.0, 4.0, 4.0),
+            ],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            if with_erasure {
+                vec![effect(
+                    1.5,
+                    -0.5,
+                    0.25,
+                    -5.0,
+                    Render2dColorRgba8::TRANSPARENT,
+                )]
+            } else {
+                Vec::new()
+            },
+        ));
+        group(
+            vec![inner],
+            vec![effect(
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                Render2dColorRgba8::new(255, 0, 0, 255),
+            )],
+            1.0,
+        )
+    };
+    let reference = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene(false),
+        &Render2dResourceBindings::default(),
+        "F3F L-shaped original caster without child erasure",
+    );
+    let actual = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene(true),
+        &Render2dResourceBindings::default(),
+        "F3F L-shaped original caster with empty signed child shadow",
+    );
+    assert_eq!(
+        actual, reference,
+        "provably empty nested erosion must preserve the original nonconvex caster"
+    );
+    pixel_near(pixel(&actual, 12, 12), [255, 0, 0, 255]);
+    pixel_near(pixel(&actual, 12, 16), [255, 0, 0, 255]);
+    assert_eq!(pixel(&actual, 16, 16), [0, 0, 0, 0]);
+}
+
 #[test]
 fn nested_positive_disk_is_unsupported_when_ancestor_needs_neutral_caster() {
     let Some(context) = context() else { return };
