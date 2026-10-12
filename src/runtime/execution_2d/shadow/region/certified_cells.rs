@@ -8,6 +8,7 @@
 //! A certificate concerns SUPPORT membership, not alpha or Gaussian weights.
 
 use super::*;
+use super::interval::Interval;
 use crate::composition_2d::{Render2dItem, Render2dPrimitive};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,68 +20,6 @@ enum CellCertificate {
 
 // All calculated bounds are outward-rounded. Any arithmetic uncertainty,
 // nonfinite result or singular transform yields Unknown, never fake geometry.
-#[derive(Clone, Copy, Debug)]
-struct Interval {
-    lo: f64,
-    hi: f64,
-}
-
-impl Interval {
-    fn new(lo: f64, hi: f64) -> Option<Self> {
-        (lo.is_finite() && hi.is_finite() && lo <= hi).then_some(Self { lo, hi })
-    }
-
-    fn scalar(value: f64) -> Option<Self> {
-        Self::new(value, value)
-    }
-
-    fn add(self, other: Self) -> Option<Self> {
-        Self::new(
-            (self.lo + other.lo).next_down(),
-            (self.hi + other.hi).next_up(),
-        )
-    }
-
-    fn sub(self, other: Self) -> Option<Self> {
-        Self::new(
-            (self.lo - other.hi).next_down(),
-            (self.hi - other.lo).next_up(),
-        )
-    }
-
-    fn mul(self, other: Self) -> Option<Self> {
-        let candidates = [
-            self.lo * other.lo,
-            self.lo * other.hi,
-            self.hi * other.lo,
-            self.hi * other.hi,
-        ];
-        if !candidates.iter().all(|x| x.is_finite()) {
-            return None;
-        }
-        let lo = candidates.iter().copied().fold(f64::INFINITY, f64::min);
-        let hi = candidates.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        Self::new(lo.next_down(), hi.next_up())
-    }
-
-    fn div(self, other: Self) -> Option<Self> {
-        if other.lo <= 0.0 && other.hi >= 0.0 {
-            return None;
-        }
-        let candidates = [
-            self.lo / other.lo,
-            self.lo / other.hi,
-            self.hi / other.lo,
-            self.hi / other.hi,
-        ];
-        if !candidates.iter().all(|x| x.is_finite()) {
-            return None;
-        }
-        let lo = candidates.iter().copied().fold(f64::INFINITY, f64::min);
-        let hi = candidates.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        Self::new(lo.next_down(), hi.next_up())
-    }
-}
 
 #[derive(Clone, Copy)]
 struct Cell {

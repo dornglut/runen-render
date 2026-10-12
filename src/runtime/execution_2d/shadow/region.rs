@@ -14,6 +14,9 @@ use crate::execution_2d::{
 use crate::runtime::execution_2d::{shadow, support};
 use std::sync::Arc;
 
+mod interval;
+mod source_envelope;
+
 const MAX_REGION_NODES: usize = 65_536;
 const MAX_REGION_DEPTH: usize = 512;
 const MAX_REGION_PATH_UNITS: usize = 1_048_576;
@@ -124,6 +127,7 @@ fn affine_leaf_envelope(
 /// Retaining the larger original extent avoids guessing curved clip geometry.
 fn region_envelope(
     kind: &Kind<'_>,
+    semantic_item: Option<&Render2dItem>,
     path: &[usize],
 ) -> Result<Option<[f64; 4]>, Render2dExecutionError> {
     let result = match kind {
@@ -138,7 +142,19 @@ fn region_envelope(
                         "neutral-region source scale is unrepresentable",
                     ));
                 }
-                Some(mesh.bounds.map(|coordinate| coordinate / scale))
+                let physical = mesh.bounds.map(|coordinate| coordinate / scale);
+                if let Some(item) = semantic_item
+                    && let Some(authored) = source_envelope::bounds(item, None, path)?
+                {
+                    Some([
+                        physical[0].min(authored[0]),
+                        physical[1].min(authored[1]),
+                        physical[2].max(authored[2]),
+                        physical[3].max(authored[3]),
+                    ])
+                } else {
+                    Some(physical)
+                }
             }
         }
         Kind::Union(children) => {
@@ -160,7 +176,23 @@ fn region_envelope(
         }
         Kind::Affine { source, to_parent } => {
             if let Kind::Source(mesh) = &source.kind {
-                affine_leaf_envelope(mesh, *to_parent, path)?
+                let physical = affine_leaf_envelope(mesh, *to_parent, path)?;
+                if let Some(item) = source.semantic_item
+                    && let Some(authored) =
+                        source_envelope::bounds(item, Some(*to_parent), path)?
+                {
+                    Some(match physical {
+                        Some(bounds) => [
+                            bounds[0].min(authored[0]),
+                            bounds[1].min(authored[1]),
+                            bounds[2].max(authored[2]),
+                            bounds[3].max(authored[3]),
+                        ],
+                        None => authored,
+                    })
+                } else {
+                    physical
+                }
             } else {
                 source
                     .envelope
@@ -261,13 +293,23 @@ impl NeutralRegionBuilder {
         // A tight direct-leaf projection visits its ACTUAL mesh vertices;
         // admit that work invocation-wide rather than hiding an unbounded
         // traversal behind a cached semantic-looking rectangle.
-        let visits = match &kind {
+        let mesh_visits = match &kind {
             Kind::Affine { source, .. } => match &source.kind {
                 Kind::Source(mesh) => mesh.triangles.len(),
                 _ => 0,
             },
             _ => 0,
         };
+        let original_visits = match &kind {
+            Kind::Source(_) => semantic_item.map_or(0, source_envelope::control_visits),
+            Kind::Affine { source, .. } => {
+                source.semantic_item.map_or(0, source_envelope::control_visits)
+            }
+            _ => 0,
+        };
+        let visits = mesh_visits
+            .checked_add(original_visits)
+            .ok_or_else(|| resource(path, "original F1 source-reach work overflow"))?;
         let affine_work = self
             .affine_vertex_work
             .checked_add(visits)
@@ -280,7 +322,7 @@ impl NeutralRegionBuilder {
         }
         // Validate every finite support reach before committing either graph
         // or work admission. Curved region bounds remain reach-only.
-        let envelope = region_envelope(&kind, path)?;
+        let envelope = region_envelope(&kind, semantic_item, path)?;
         self.nodes = next;
         self.retained_path_units = paths;
         self.affine_vertex_work = affine_work;
@@ -705,6 +747,100 @@ mod tests {
             },
             1_048_576,
         )
+    }
+
+    #[test]
+    fn original_cubic_control_hull_survives_a_coarser_physical_tessellation() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dFillRule, Render2dItem, Render2dOpacity, Render2dPath,
+            Render2dPathCommand, Render2dPoint, Render2dPrimitive, Render2dShape,
+        };
+        use crate::runtime::execution_2d::vector;
+        let point = |x, y| Render2dPoint::new(x, y).unwrap();
+        let path = Render2dPath::new(
+            Render2dFillRule::NonZero,
+            vec![
+                Render2dPathCommand::MoveTo(point(0.0, 0.0)),
+                Render2dPathCommand::CubicTo {
+                    control1: point(2.0, 7.0),
+                    control2: point(8.0, 7.0),
+                    to: point(10.0, 0.0),
+                },
+                Render2dPathCommand::LineTo(point(0.0, 0.0)),
+                Render2dPathCommand::Close,
+            ],
+        )
+        .unwrap();
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::path(path),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let physical = vector::neutral_support(&item, 0, 4.0, 1_048_576)
+            .unwrap()
+            .unwrap();
+        let physical_top = physical.bounds[3] / physical.units_per_parent_logical_unit;
+        let mut graph = builder();
+        let leaf = graph.source_from_item(physical, &item, &[0, 0]).unwrap();
+        assert!(physical_top < 7.0, "a physical curve is below its authored control hull");
+        assert!(leaf.envelope.unwrap()[3] >= 7.0, "original F1 control hull encloses the curve");
+        let shear = Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 0.0, 0.0).unwrap();
+        let transformed = graph.affine(leaf, shear, &[0]).unwrap();
+        assert!(
+            transformed.envelope.unwrap()[3] >= 7.0,
+            "parent-affine reach must preserve exact authored control hull"
+        );
+    }
+
+    #[test]
+    fn semantic_source_bounds_are_still_not_membership_certificates() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive,
+            Render2dRect, Render2dShape,
+        };
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::ellipse(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let bounds = source_envelope::bounds(&item, None, &[0]).unwrap().unwrap();
+        assert!(bounds[0] <= 0.0 && bounds[1] <= 0.0);
+        assert!(bounds[2] >= 2.0 && bounds[3] >= 2.0);
+    }
+
+    #[test]
+    fn original_stroke_caps_miters_and_shear_increase_conservative_reach() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive,
+            Render2dRect, Render2dShape, Render2dStrokeCap, Render2dStrokeJoin,
+            Render2dStrokeStyle,
+        };
+        let item = Render2dItem::new(
+            Render2dPrimitive::Stroke {
+                shape: Render2dShape::rect(Render2dRect::new(10.0, 10.0, 4.0, 4.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+                style: Render2dStrokeStyle::new(
+                    2.0, Render2dStrokeCap::Square, Render2dStrokeJoin::Miter, 5.0
+                ).unwrap(),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let bound = source_envelope::bounds(&item, None, &[0]).unwrap().unwrap();
+        assert!(bound[0] <= 5.0 && bound[1] <= 5.0);
+        assert!(bound[2] >= 19.0 && bound[3] >= 19.0);
+        let shear = Render2dAffineTransform::new(1.0, 0.0, 1.0, 1.0, 0.0, 0.0).unwrap();
+        let transformed = source_envelope::bounds(&item, Some(shear), &[0]).unwrap().unwrap();
+        assert!(transformed[0] <= 10.0 && transformed[2] >= 33.0);
     }
 
     #[test]
