@@ -358,30 +358,39 @@ fn certified_effect_outer_halo(spread: f64, sigma: f64) -> Option<f64> {
         .map(|halo| halo.hi)
 }
 
-/// Certified bounds on exp(-(x²+y²)/2). For 0<=u<n, the
-/// inequalities (1-u/n)^n <= exp(-u) <= (1+u/n)^(-n) are exact.
-/// All interval operations round outward; no platform libm guarantee is used.
+/// Certified exp(-(x²+y²)/2) on the truncated Gaussian square.
+/// Let t=(x²+y²)/32, so 0<=t<=9/16. For positive t the eighth
+/// Maclaurin partial sum P8(t) underestimates exp(t); its positive tail
+/// is <= t^9/(9! * (1-t/10)), since subsequent term ratios decrease.
+/// Thus 1/(P8+tail) <= exp(-t) <= 1/P8. Four interval squarings
+/// recover exp(-16t), always rounding outward. No reliance on libm,
+/// measured samples, transcendental rounding, or unbudgeted convergence.
 fn gaussian_density_enclosure(x: Interval, y: Interval) -> Option<Interval> {
     let exponent = squared_interval(x)?
         .add(squared_interval(y)?)?
         .div(Interval::scalar(2.0)?)?;
     let one = Interval::scalar(1.0)?;
-    let n = Interval::scalar(128.0)?;
-    let lower_base = one.sub(Interval::scalar(exponent.hi)?.div(n)?)?.lo;
-    let upper_base = one.add(Interval::scalar(exponent.lo)?.div(n)?)?.lo;
-    if lower_base <= 0.0 || upper_base <= 0.0 {
+    let t = exponent.div(Interval::scalar(16.0)?)?;
+    if t.lo < 0.0 || t.hi >= 1.0 {
         return None;
     }
-    let power = |base: f64| -> Option<Interval> {
-        let mut value = Interval::scalar(base)?;
-        for _ in 0..7 {
-            value = value.mul(value)?;
-        }
-        Some(value)
-    };
-    let lower = power(lower_base)?.lo;
-    let upper = one.div(power(upper_base)?)?.hi;
-    Interval::new(lower.max(0.0), upper.min(1.0))
+    let mut term = one;
+    let mut sum = one;
+    for order in 1..=8 {
+        term = term.mul(t)?.div(Interval::scalar(order as f64)?)?;
+        sum = sum.add(term)?;
+    }
+    let first_omitted = term.mul(t)?.div(Interval::scalar(9.0)?)?;
+    let denominator = one.sub(t.div(Interval::scalar(10.0)?)?)?;
+    if denominator.lo <= 0.0 {
+        return None;
+    }
+    let exp_upper = sum.add(first_omitted.div(denominator)?)?;
+    let mut density = one.div(Interval::new(sum.lo, exp_upper.hi)?)?;
+    for _ in 0..4 {
+        density = density.mul(density)?;
+    }
+    Interval::new(density.lo.max(0.0), density.hi.min(1.0))
 }
 
 // One bounded density/area/query-coordinate evaluation entails fewer than
@@ -1274,6 +1283,46 @@ fn outer_effect_halo_does_not_round_down_or_invent_absence() {
         certify(&outer, [1.0, 0.25, 1.0, 0.25]),
         CellCertificate::Unknown
     );
+}
+
+#[test]
+fn bounded_gaussian_density_encloses_independent_reference_at_kernel_extremes() {
+    let samples = [
+        ([0.0, 0.0], 1.0),
+        ([1.0, 1.0], 0.36787944117144233),
+        ([3.0, 3.0], 0.00012340980408667956),
+    ];
+    for (point, reference) in samples {
+        let x = Interval::scalar(point[0]).unwrap();
+        let y = Interval::scalar(point[1]).unwrap();
+        let bounds = gaussian_density_enclosure(x, y).unwrap();
+        if point == [0.0, 0.0] {
+            assert_eq!([bounds.lo, bounds.hi], [1.0, 1.0]);
+        } else {
+            // The independent reference is rounded; permit one representable
+            // unit of reference uncertainty rather than trusting host libm.
+            assert!(
+                bounds.lo <= reference.next_down() && bounds.hi >= reference.next_up(),
+                "density enclosure failed for {point:?}: {}..{} vs {reference}",
+                bounds.lo,
+                bounds.hi
+            );
+        }
+        assert!(
+            bounds.hi - bounds.lo < 1.0e-7,
+            "kernel density uncertainty must not consume the whole 8-bit budget"
+        );
+    }
+}
+
+#[test]
+fn bounded_gaussian_density_keeps_cell_variation_and_numeric_error_distinct() {
+    let x = Interval::new(-0.5, 0.5).unwrap();
+    let y = Interval::new(-0.5, 0.5).unwrap();
+    let bounds = gaussian_density_enclosure(x, y).unwrap();
+    assert!(bounds.lo < 1.0 && bounds.hi >= 1.0);
+    assert!(bounds.lo < 0.8, "spatial cell variation still needs refinement");
+    assert!(bounds.hi >= bounds.lo);
 }
 
 #[test]
