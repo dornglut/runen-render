@@ -679,7 +679,11 @@ impl NeutralRegionBuilder {
                 Self::polygonal_source_proven(source, remaining_visits, memo)?
             }
             Kind::Clip { source, clips } => {
-                clips.iter().all(|clip| clip.shape().as_rect().is_some())
+                // A rectangular *shape type* is not proof that its separate
+                // clip_to_parent affine and physical intersection preserve
+                // the original F1 rectangle. Only the identity/no-op clip
+                // wrapper qualifies for this exact rounded-caster shortcut.
+                clips.is_empty()
                     && Self::polygonal_source_proven(source, remaining_visits, memo)?
             }
             Kind::Effect { .. } => false,
@@ -1330,6 +1334,34 @@ mod tests {
                 path,
                 kind: Render2dUnsupportedContent::Shadows { root_index: 2 },
             }) if path == [2, 1]
+        ));
+
+        // A group clip carries its OWN affine. A raw rectangular clip type
+        // cannot certify correspondence of the authored clipped source to a
+        // disposable triangle intersection, even when the clip is a no-op
+        // for this particular fixture.
+        let group_clip = crate::composition_2d::Render2dClip::new(
+            Render2dShape::rect(rect),
+            Render2dAffineTransform::IDENTITY,
+        );
+        let clip_source = graph.source_from_item(physical(), &valid, &[3, 0]).unwrap();
+        let clip_source = graph
+            .clip(clip_source, std::slice::from_ref(&group_clip), &[3, 0])
+            .unwrap();
+        let clip_disk = graph
+            .effect(Arc::clone(&clip_source), disk, &[3, 1])
+            .unwrap();
+        let clipped = graph.union(vec![clip_source, clip_disk], &[3]).unwrap();
+        assert!(
+            graph.qualified_rounded_rectangle(&clipped).unwrap().is_none(),
+            "the clip's authored affine/intersection needs its own exact F1 proof"
+        );
+        assert!(matches!(
+            graph.materialize(&clipped),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Shadows { root_index: 3 },
+            }) if path == [3, 1]
         ));
     }
 
