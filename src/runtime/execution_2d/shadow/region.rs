@@ -311,10 +311,7 @@ fn region_envelope(
 ///
 /// Outward-rounded differences and halves avoid deleting a thin surviving
 /// shape at a floating-point boundary. Unrepresentable spans return Unknown.
-fn certified_complete_disk_erosion(
-    bounds: Option<[f64; 4]>,
-    spread: f64,
-) -> bool {
+fn certified_complete_disk_erosion(bounds: Option<[f64; 4]>, spread: f64) -> bool {
     use interval::Interval;
     if !spread.is_finite() || spread >= 0.0 {
         return false;
@@ -879,49 +876,53 @@ impl NeutralRegionBuilder {
                 if certified_complete_disk_erosion(source.envelope, effect.spread()) {
                     Arc::new(shadow::empty_mesh())
                 } else {
-                let mesh = self.materialize(source)?;
-                // A positive disk is retained as a precise expression but
-                // cannot be *polygonalized* as finite triangles. A consuming
-                // ancestor needs certified curved-region evaluation.
-                if effect.spread() > 0.0 {
-                    return Err(unsupported(path));
-                }
-                let erased = if effect.spread() < 0.0 {
-                    support::certified_convex_erosion_mesh(
-                        &mesh,
-                        -effect.spread(),
-                        path,
-                        &mut self.erosion_work,
-                    )?
-                    .ok_or_else(|| unsupported(path))?
-                } else {
-                    shadow::empty_mesh()
-                };
-                let caster: &support::NeutralMesh = if effect.spread() < 0.0 {
-                    &erased
-                } else {
-                    mesh.as_ref()
-                };
-                let offset =
-                    Render2dAffineTransform::translation(effect.offset_x(), effect.offset_y())
-                        .map_err(|_| {
-                            precision(path, "neutral effect offset cannot be represented")
-                        })?;
-                shadow::charge_vertices(&mut self.retained_vertices, caster.triangles.len(), path)?;
-                let mut shifted = shadow::empty_mesh();
-                shadow::append(&mut shifted, caster, offset, path)?;
-                if effect.sigma() > 0.0 && !shifted.triangles.is_empty() {
-                    let square =
-                        shadow::gaussian_square_support(&shifted, effect.sigma() * 3.0, path)?;
+                    let mesh = self.materialize(source)?;
+                    // A positive disk is retained as a precise expression but
+                    // cannot be *polygonalized* as finite triangles. A consuming
+                    // ancestor needs certified curved-region evaluation.
+                    if effect.spread() > 0.0 {
+                        return Err(unsupported(path));
+                    }
+                    let erased = if effect.spread() < 0.0 {
+                        support::certified_convex_erosion_mesh(
+                            &mesh,
+                            -effect.spread(),
+                            path,
+                            &mut self.erosion_work,
+                        )?
+                        .ok_or_else(|| unsupported(path))?
+                    } else {
+                        shadow::empty_mesh()
+                    };
+                    let caster: &support::NeutralMesh = if effect.spread() < 0.0 {
+                        &erased
+                    } else {
+                        mesh.as_ref()
+                    };
+                    let offset =
+                        Render2dAffineTransform::translation(effect.offset_x(), effect.offset_y())
+                            .map_err(|_| {
+                                precision(path, "neutral effect offset cannot be represented")
+                            })?;
                     shadow::charge_vertices(
                         &mut self.retained_vertices,
-                        square.triangles.len(),
+                        caster.triangles.len(),
                         path,
                     )?;
-                    Arc::new(square)
-                } else {
-                    Arc::new(shifted)
-                }
+                    let mut shifted = shadow::empty_mesh();
+                    shadow::append(&mut shifted, caster, offset, path)?;
+                    if effect.sigma() > 0.0 && !shifted.triangles.is_empty() {
+                        let square =
+                            shadow::gaussian_square_support(&shifted, effect.sigma() * 3.0, path)?;
+                        shadow::charge_vertices(
+                            &mut self.retained_vertices,
+                            square.triangles.len(),
+                            path,
+                        )?;
+                        Arc::new(square)
+                    } else {
+                        Arc::new(shifted)
+                    }
                 }
             }
         };
@@ -1559,8 +1560,8 @@ mod tests {
     #[test]
     fn authored_curve_nested_disk_erosion_can_prove_exact_empty_without_faceting() {
         use crate::composition_2d::{
-            Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive,
-            Render2dRect, Render2dShape,
+            Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dRect,
+            Render2dShape,
         };
         // The borrowed F1 ELLIPSE is not a polygonal rectangle. Its physical
         // mesh is only an auxiliary reach witness. A positive disk remains
@@ -1568,9 +1569,7 @@ mod tests {
         // subsequent negative disk has provably EMPTY original support.
         let ellipse = Render2dItem::new(
             Render2dPrimitive::Fill {
-                shape: Render2dShape::ellipse(
-                    Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap(),
-                ),
+                shape: Render2dShape::ellipse(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
                 brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
             },
             Render2dAffineTransform::IDENTITY,
@@ -1584,16 +1583,16 @@ mod tests {
             bounds: [0.0, 0.0, 2.0, 2.0],
         };
         let source = graph.source_from_item(mesh, &ellipse, &[7, 0]).unwrap();
-        let positive = Render2dDropShadow::new(
-            0.0, 0.0, 0.0, 0.25, Render2dColorRgba8::TRANSPARENT,
-        )
-        .unwrap();
-        let expanded = graph.effect(Arc::clone(&source), positive, &[7, 1]).unwrap();
-        let shrink = Render2dDropShadow::new(
-            3.0, -2.0, 0.5, -2.0, Render2dColorRgba8::TRANSPARENT,
-        )
-        .unwrap();
-        let empty = graph.effect(Arc::clone(&expanded), shrink, &[7, 2]).unwrap();
+        let positive =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 0.25, Render2dColorRgba8::TRANSPARENT).unwrap();
+        let expanded = graph
+            .effect(Arc::clone(&source), positive, &[7, 1])
+            .unwrap();
+        let shrink =
+            Render2dDropShadow::new(3.0, -2.0, 0.5, -2.0, Render2dColorRgba8::TRANSPARENT).unwrap();
+        let empty = graph
+            .effect(Arc::clone(&expanded), shrink, &[7, 2])
+            .unwrap();
         // Source width 2 plus 2*0.25 outward spread = 2.5. An erosion
         // disk r=2 cannot fit in its original-F1 reach in EITHER axis.
         assert!(certified_complete_disk_erosion(expanded.envelope, -2.0));
