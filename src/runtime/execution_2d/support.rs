@@ -321,7 +321,12 @@ pub(super) fn rasterize_neutral_mesh(
     path: &[usize],
 ) -> Result<Option<NeutralMask>, crate::execution_2d::Render2dExecutionError> {
     rasterize_mesh_with_positive_spread(
-        mesh, samples_per_logical_unit, 0.0, path, None, MAX_NEUTRAL_MASK_SAMPLES,
+        mesh,
+        samples_per_logical_unit,
+        0.0,
+        path,
+        None,
+        MAX_NEUTRAL_MASK_SAMPLES,
     )
 }
 
@@ -742,10 +747,14 @@ fn rasterize_area_coverage(
     aggregate_work: &mut usize,
     remaining_coverage_samples: usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
-    let Some(grid) =
-        rasterize_mesh_with_positive_spread(
-            mesh, scale, 0.0, path, Some(aggregate_work), remaining_coverage_samples,
-        )?
+    let Some(grid) = rasterize_mesh_with_positive_spread(
+        mesh,
+        scale,
+        0.0,
+        path,
+        Some(aggregate_work),
+        remaining_coverage_samples,
+    )?
     else {
         return Ok(None);
     };
@@ -2940,7 +2949,11 @@ pub(super) fn prepare_shadow_coverage_admitted(
             );
         }
         return rasterize_area_coverage(
-            mesh, samples_per_logical_unit, path, aggregate_work, remaining_coverage_samples,
+            mesh,
+            samples_per_logical_unit,
+            path,
+            aggregate_work,
+            remaining_coverage_samples,
         );
     }
     if spread > 0.0 {
@@ -3388,20 +3401,32 @@ mod tests {
         };
         let mut shared = 0_usize;
         let first = prepare_shadow_coverage_admitted(
-            &mesh, 0.0, 0.0, 4.0, &[0], &mut shared, MAX_NEUTRAL_MASK_SAMPLES,
+            &mesh,
+            0.0,
+            0.0,
+            4.0,
+            &[0],
+            &mut shared,
+            MAX_NEUTRAL_MASK_SAMPLES,
         )
-            .unwrap()
-            .unwrap();
+        .unwrap()
+        .unwrap();
         assert!(
             shared > 0,
             "geometry and area integration must both charge work"
         );
         let after_first = shared;
         let second = prepare_shadow_coverage_admitted(
-            &mesh, 0.0, 0.0, 4.0, &[1], &mut shared, MAX_NEUTRAL_MASK_SAMPLES,
+            &mesh,
+            0.0,
+            0.0,
+            4.0,
+            &[1],
+            &mut shared,
+            MAX_NEUTRAL_MASK_SAMPLES,
         )
-            .unwrap()
-            .unwrap();
+        .unwrap()
+        .unwrap();
         assert!(
             shared > after_first,
             "sibling preparation cannot reset the budget"
@@ -3437,16 +3462,20 @@ mod tests {
         let mesh = NeutralMesh {
             units_per_parent_logical_unit: 1.0,
             triangles: vec![
-                [0.0, 0.0], [2.0, 0.0], [2.0, 2.0],
-                [0.0, 0.0], [2.0, 2.0], [0.0, 2.0],
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
             ],
             bounds: [0.0, 0.0, 2.0, 2.0],
         };
         for (spread, sigma) in [(0.0, 0.0), (0.0, 0.25), (0.2, 0.25)] {
             let mut used = 0;
-            let error = prepare_shadow_coverage_admitted(
-                &mesh, spread, sigma, 4.0, &[7, 2], &mut used, 0,
-            ).expect_err("zero remaining coverage must reject before materialization");
+            let error =
+                prepare_shadow_coverage_admitted(&mesh, spread, sigma, 4.0, &[7, 2], &mut used, 0)
+                    .expect_err("zero remaining coverage must reject before materialization");
             assert!(matches!(error, Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path), ..
@@ -3456,14 +3485,18 @@ mod tests {
         let mut used = 0;
         let error = affine_parent_effect_coverage_admitted(
             &mesh,
-            ParentEffectKernel { positive_spread: 0.0, sigma: 0.25 },
+            ParentEffectKernel {
+                positive_spread: 0.0,
+                sigma: 0.25,
+            },
             crate::composition_2d::Render2dAffineTransform::IDENTITY,
             [-1.0, -1.0, 3.0, 3.0],
             4.0,
             &[8, 5],
             &mut used,
             0,
-        ).expect_err("nested root-sample grid must reject before allocation");
+        )
+        .expect_err("nested root-sample grid must reject before allocation");
         assert!(matches!(error, Render2dExecutionError::SampleSpace {
             kind: Render2dSampleSpaceError::ResourceLimit,
             path: Some(path), ..
@@ -3471,9 +3504,10 @@ mod tests {
         assert_eq!(used, 0);
 
         let mut used = 0;
-        let coverage = prepare_shadow_coverage_admitted(
-            &mesh, 0.0, 0.0, 4.0, &[7, 3], &mut used, 64,
-        ).unwrap().expect("8x8 coverage uses exactly 64 admitted f64 samples");
+        let coverage =
+            prepare_shadow_coverage_admitted(&mesh, 0.0, 0.0, 4.0, &[7, 3], &mut used, 64)
+                .unwrap()
+                .expect("8x8 coverage uses exactly 64 admitted f64 samples");
         assert_eq!(coverage.values.len(), 64);
     }
 
