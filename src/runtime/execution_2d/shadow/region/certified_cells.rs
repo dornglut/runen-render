@@ -10,7 +10,8 @@
 use super::interval::Interval;
 use super::*;
 use crate::composition_2d::{
-    Render2dClip, Render2dItem, Render2dPrimitive, Render2dRect, Render2dShape,
+    Render2dClip, Render2dItem, Render2dPath, Render2dPathCommand, Render2dPrimitive,
+    Render2dRect, Render2dShape,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,7 +129,159 @@ fn squared_interval(v: Interval) -> Option<Interval> {
     Interval::new(lo, a.max(b).next_up())
 }
 
-fn certify_shape(shape: &Render2dShape, cell: Cell) -> CellCertificate {
+/// A path has exact authored control-point containment, even when its
+/// disposable tessellation uses a coarser approximation. Every polynomial
+/// Bézier segment lies in the convex hull of its control points. This gives a
+/// conservative OUTSIDE result for arbitrary multi-contour paths. A single
+/// strictly convex straight-line contour additionally permits exact halfplane
+/// membership, independently of the original fill rule and Lyon triangles.
+fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCertificate {
+    let commands = path.commands();
+    // Proving strict convexity checks EVERY vertex against EVERY edge,
+    // not merely neighboring turns: pentagrams can have consistent turns.
+    let Some(cost) = commands
+        .len()
+        .checked_add(6)
+        .and_then(|n| n.checked_mul(commands.len()))
+    else {
+        return CellCertificate::Unknown;
+    };
+    if *visits < cost {
+        *visits = 0;
+        return CellCertificate::Unknown;
+    }
+    *visits -= cost;
+
+    let mut vertices = Vec::new();
+    if vertices.try_reserve_exact(commands.len()).is_err() {
+        return CellCertificate::Unknown;
+    }
+    let mut hull: Option<[f64; 4]> = None;
+    let mut contours = 0_usize;
+    let mut straight = true;
+    let mut segment_count = 0_usize;
+    let mut point = |p: crate::composition_2d::Render2dPoint| {
+        let (x, y) = (p.x(), p.y());
+        hull = Some(match hull {
+            Some([x0, y0, x1, y1]) => [x0.min(x), y0.min(y), x1.max(x), y1.max(y)],
+            None => [x, y, x, y],
+        });
+    };
+    for command in commands {
+        match *command {
+            Render2dPathCommand::MoveTo(p) => {
+                contours += 1;
+                point(p);
+                vertices.push([p.x(), p.y()]);
+            }
+            Render2dPathCommand::LineTo(p) => {
+                segment_count += 1;
+                point(p);
+                vertices.push([p.x(), p.y()]);
+            }
+            Render2dPathCommand::QuadraticTo { control, to } => {
+                straight = false;
+                segment_count += 1;
+                point(control);
+                point(to);
+            }
+            Render2dPathCommand::CubicTo {
+                control1,
+                control2,
+                to,
+            } => {
+                straight = false;
+                segment_count += 1;
+                point(control1);
+                point(control2);
+                point(to);
+            }
+            Render2dPathCommand::Close => {}
+        }
+    }
+    if segment_count == 0 {
+        return CellCertificate::Outside;
+    }
+    let Some([x0, y0, x1, y1]) = hull else {
+        return CellCertificate::Unknown;
+    };
+    // Strict separation from the control-point hull is sufficient even for
+    // curves, self-overlaps, alternate fill rules and multiple contours.
+    if cell.x.hi < x0 || cell.x.lo > x1 || cell.y.hi < y0 || cell.y.lo > y1 {
+        return CellCertificate::Outside;
+    }
+    if !straight || contours != 1 {
+        return CellCertificate::Unknown;
+    }
+    if vertices.len() >= 2 && vertices.first() == vertices.last() {
+        vertices.pop();
+    }
+    if vertices.len() < 3 {
+        return CellCertificate::Unknown;
+    }
+
+    let orientation = |a: [f64; 2], b: [f64; 2], c: [Interval; 2]| {
+        let dx = Interval::scalar(b[0])?.sub(Interval::scalar(a[0])?)?;
+        let dy = Interval::scalar(b[1])?.sub(Interval::scalar(a[1])?)?;
+        let px = c[0].sub(Interval::scalar(a[0])?)?;
+        let py = c[1].sub(Interval::scalar(a[1])?)?;
+        dx.mul(py)?.sub(dy.mul(px)?)
+    };
+    let mut winding = 0_i8;
+    for i in 0..vertices.len() {
+        let a = vertices[i];
+        let b = vertices[(i + 1) % vertices.len()];
+        for (j, &c) in vertices.iter().enumerate() {
+            if j == i || j == (i + 1) % vertices.len() {
+                continue;
+            }
+            let Some(turn) = orientation(
+                a,
+                b,
+                [Interval::scalar(c[0]).unwrap(), Interval::scalar(c[1]).unwrap()],
+            ) else {
+                return CellCertificate::Unknown;
+            };
+            let sign = if turn.lo > 0.0 {
+                1
+            } else if turn.hi < 0.0 {
+                -1
+            } else {
+                return CellCertificate::Unknown;
+            };
+            if winding != 0 && winding != sign {
+                // A supporting halfplane of a genuine convex polygon
+                // contains ALL other vertices. Stars and concave polygons
+                // fail here even when their local turns have the same sign.
+                return CellCertificate::Unknown;
+            }
+            winding = sign;
+        }
+    }
+    let mut uncertain = false;
+    for i in 0..vertices.len() {
+        let Some(side) = orientation(
+            vertices[i],
+            vertices[(i + 1) % vertices.len()],
+            [cell.x, cell.y],
+        ) else {
+            return CellCertificate::Unknown;
+        };
+        if (winding > 0 && side.hi < 0.0) || (winding < 0 && side.lo > 0.0) {
+            return CellCertificate::Outside;
+        }
+        if (winding > 0 && side.lo <= 0.0) || (winding < 0 && side.hi >= 0.0) {
+            uncertain = true;
+        }
+    }
+    if uncertain {
+        CellCertificate::Unknown
+    } else {
+        CellCertificate::Inside
+    }
+}
+
+fn certify_shape(shape: &Render2dShape, cell: Cell, visits: &mut usize) -> CellCertificate {
     if let Some(rect) = shape.as_rect() {
         if rect.is_empty() {
             return CellCertificate::Outside;
@@ -148,6 +301,8 @@ fn certify_shape(shape: &Render2dShape, cell: Cell) -> CellCertificate {
         cell.classify_rectangle([x0, y0, x1, y1])
     } else if let Some(ellipse) = shape.as_ellipse() {
         cell.classify_ellipse(ellipse)
+    } else if let Some(path) = shape.as_path() {
+        certify_path(path, cell, visits)
     } else {
         // Paths, centered strokes and rounded corners still need their own
         // independently certified source geometry. Never infer from meshes.
@@ -174,7 +329,7 @@ fn certify_clipped(
         *visits -= 1;
         let certificate = parent_cell
             .preimage(clip.clip_to_parent())
-            .map(|local| certify_shape(clip.shape(), local))
+            .map(|local| certify_shape(clip.shape(), local, visits))
             .unwrap_or(CellCertificate::Unknown);
         match certificate {
             CellCertificate::Outside => return CellCertificate::Outside,
@@ -283,7 +438,7 @@ fn certify_authored_item(item: &Render2dItem, cell: Cell, visits: &mut usize) ->
     };
     let source = cell
         .preimage(item.local_to_parent())
-        .map(|local| certify_shape(shape, local))
+        .map(|local| certify_shape(shape, local, visits))
         .unwrap_or(CellCertificate::Unknown);
     certify_clipped(source, cell, item.clips(), visits)
 }
@@ -543,6 +698,159 @@ fn group_ellipse_clip_certifies_inside_outside_and_budget_exhaustion() {
         CellCertificate::Unknown
     );
     assert_eq!(work, 0);
+}
+
+#[test]
+fn original_f1_convex_line_path_certifies_both_windings_and_edge_uncertainty() {
+    use crate::composition_2d::{
+        Render2dBrush, Render2dColorRgba8, Render2dFillRule, Render2dOpacity,
+        Render2dPath, Render2dPoint,
+    };
+    let p = |x, y| Render2dPoint::new(x, y).unwrap();
+    let make = |points: [(f64, f64); 3], rule| {
+        let shape = Render2dShape::path(
+            Render2dPath::new(
+                rule,
+                vec![
+                    Render2dPathCommand::MoveTo(p(points[0].0, points[0].1)),
+                    Render2dPathCommand::LineTo(p(points[1].0, points[1].1)),
+                    Render2dPathCommand::LineTo(p(points[2].0, points[2].1)),
+                    Render2dPathCommand::Close,
+                ],
+            )
+            .unwrap(),
+        );
+        Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape,
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        )
+    };
+    for (points, rule) in [
+        ([(0.0, 0.0), (8.0, 0.0), (0.0, 8.0)], Render2dFillRule::NonZero),
+        ([(0.0, 8.0), (8.0, 0.0), (0.0, 0.0)], Render2dFillRule::EvenOdd),
+    ] {
+        let item = make(points, rule);
+        let mut graph = builder();
+        // An intentionally misleading physical rectangle may not override
+        // the original triangle's genuine diagonal boundary.
+        let source = graph
+            .source_from_item(
+                support::NeutralMesh {
+                    units_per_parent_logical_unit: 1.0,
+                    triangles: vec![
+                        [0.0, 0.0], [8.0, 0.0], [8.0, 8.0],
+                        [0.0, 0.0], [8.0, 8.0], [0.0, 8.0],
+                    ],
+                    bounds: [0.0, 0.0, 8.0, 8.0],
+                },
+                &item,
+                &[0],
+            )
+            .unwrap();
+        assert_eq!(certify(&source, [1.0, 1.0, 2.0, 2.0]), CellCertificate::Inside);
+        assert_eq!(certify(&source, [6.0, 6.0, 7.0, 7.0]), CellCertificate::Outside);
+        assert_eq!(certify(&source, [3.9, 3.9, 4.1, 4.1]), CellCertificate::Unknown);
+    }
+}
+
+#[test]
+fn self_intersecting_star_cannot_be_certified_from_consistent_local_turns() {
+    use crate::composition_2d::{Render2dFillRule, Render2dPath, Render2dPoint};
+    let p = |x, y| Render2dPoint::new(x, y).unwrap();
+    let star = Render2dShape::path(
+        Render2dPath::new(
+            Render2dFillRule::EvenOdd,
+            vec![
+                Render2dPathCommand::MoveTo(p(0.0, 10.0)),
+                Render2dPathCommand::LineTo(p(-5.8778525, -8.0901699)),
+                Render2dPathCommand::LineTo(p(9.5105652, 3.0901699)),
+                Render2dPathCommand::LineTo(p(-9.5105652, 3.0901699)),
+                Render2dPathCommand::LineTo(p(5.8778525, -8.0901699)),
+                Render2dPathCommand::Close,
+            ],
+        )
+        .unwrap(),
+    );
+    let mut visits = 4096;
+    assert_eq!(
+        certify_shape(
+            &star,
+            Cell::new([-0.1, -0.1, 0.1, 0.1]).unwrap(),
+            &mut visits,
+        ),
+        CellCertificate::Unknown
+    );
+    assert_eq!(
+        certify_shape(
+            &star,
+            Cell::new([12.0, 12.0, 13.0, 13.0]).unwrap(),
+            &mut visits,
+        ),
+        CellCertificate::Outside
+    );
+}
+
+#[test]
+fn original_f1_curves_and_multiple_contours_can_only_prove_control_hull_exterior() {
+    use crate::composition_2d::{Render2dFillRule, Render2dPath, Render2dPoint};
+    let p = |x, y| Render2dPoint::new(x, y).unwrap();
+    let cubic = Render2dShape::path(
+        Render2dPath::new(
+            Render2dFillRule::NonZero,
+            vec![
+                Render2dPathCommand::MoveTo(p(0.0, 0.0)),
+                Render2dPathCommand::CubicTo {
+                    control1: p(0.0, 5.0),
+                    control2: p(5.0, 5.0),
+                    to: p(5.0, 0.0),
+                },
+                Render2dPathCommand::Close,
+            ],
+        )
+        .unwrap(),
+    );
+    let mut visits = 100;
+    let cell = Cell::new([6.0, 1.0, 7.0, 2.0]).unwrap();
+    assert_eq!(certify_shape(&cubic, cell, &mut visits), CellCertificate::Outside);
+    assert_eq!(
+        certify_shape(&cubic, Cell::new([1.0, 1.0, 2.0, 2.0]).unwrap(), &mut visits),
+        CellCertificate::Unknown
+    );
+    let multi = Render2dShape::path(
+        Render2dPath::new(
+            Render2dFillRule::EvenOdd,
+            vec![
+                Render2dPathCommand::MoveTo(p(0.0, 0.0)),
+                Render2dPathCommand::LineTo(p(4.0, 0.0)),
+                Render2dPathCommand::LineTo(p(4.0, 4.0)),
+                Render2dPathCommand::Close,
+                Render2dPathCommand::MoveTo(p(1.0, 1.0)),
+                Render2dPathCommand::LineTo(p(2.0, 1.0)),
+                Render2dPathCommand::LineTo(p(2.0, 2.0)),
+                Render2dPathCommand::Close,
+            ],
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        certify_shape(&multi, Cell::new([1.2, 1.2, 1.4, 1.4]).unwrap(), &mut visits),
+        CellCertificate::Unknown
+    );
+    assert_eq!(
+        certify_shape(&multi, Cell::new([7.0, 7.0, 8.0, 8.0]).unwrap(), &mut visits),
+        CellCertificate::Outside
+    );
+    let mut exhausted = 1;
+    assert_eq!(
+        certify_shape(&multi, Cell::new([7.0, 7.0, 8.0, 8.0]).unwrap(), &mut exhausted),
+        CellCertificate::Unknown
+    );
+    assert_eq!(exhausted, 0);
 }
 
 #[test]
