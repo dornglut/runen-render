@@ -530,9 +530,12 @@ impl NeutralRegionBuilder {
         // The graph may share arbitrary subtrees, so its bounded *node*
         // count does not bound naive recursive edge traversals. Fail with
         // the original occurrence path after one fixed whole-query budget.
-        *remaining_visits = remaining_visits
-            .checked_sub(1)
-            .ok_or_else(|| resource(&region.path, "original F1 provenance query exceeds work budget"))?;
+        *remaining_visits = remaining_visits.checked_sub(1).ok_or_else(|| {
+            resource(
+                &region.path,
+                "original F1 provenance query exceeds work budget",
+            )
+        })?;
         Ok(match &region.kind {
             Kind::Source(_) => {
                 let Some(item) = region.semantic_item else {
