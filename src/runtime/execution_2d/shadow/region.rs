@@ -651,6 +651,9 @@ impl NeutralRegion<'_> {
 }
 
 #[cfg(test)]
+mod certified_cells;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::composition_2d::Render2dColorRgba8;
