@@ -4,7 +4,7 @@
 //! Arbitrary clips, transforms, strokes, curves and nested regions are NOT
 //! certified by separability, and may never silently enter this fast path.
 
-use super::{gaussian_density_enclosure, Interval};
+use super::{Interval, gaussian_density_enclosure};
 use crate::composition_2d::Render2dRect;
 
 const BINS: usize = 16_384;
@@ -113,7 +113,10 @@ impl NormalizedGaussianCdf {
         let start = Interval::scalar(start)?;
         let center = Interval::scalar(center)?;
         let near = start.sub(center)?.div(sigma)?;
-        let far = start.add(Interval::scalar(extent)?)?.sub(center)?.div(sigma)?;
+        let far = start
+            .add(Interval::scalar(extent)?)?
+            .sub(center)?
+            .div(sigma)?;
         // Complete support exclusion and inclusion are exact, independent
         // of how broad the integration's finite numeric enclosure is.
         if near.lo >= 3.0 || far.hi <= -3.0 {
@@ -123,10 +126,7 @@ impl NormalizedGaussianCdf {
             return Interval::scalar(1.0);
         }
         let bound = self.cumulative(far)?.sub(self.cumulative(near)?)?;
-        let numerator = Interval::new(
-            bound.lo.max(0.0),
-            bound.hi.min(self.normalization.hi),
-        )?;
+        let numerator = Interval::new(bound.lo.max(0.0), bound.hi.min(self.normalization.hi))?;
         let normalized = numerator.div(self.normalization)?;
         Interval::new(normalized.lo.max(0.0), normalized.hi.min(1.0))
     }
@@ -222,7 +222,7 @@ fn certify_rectangle_scene(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::composition_2d::{Render2dColorRgba8, Render2dShape};
+    use crate::composition_2d::Render2dShape;
 
     fn original_f1_rect() -> Render2dRect {
         let shape = Render2dShape::rect(Render2dRect::new(18.0, 18.0, 28.0, 28.0).unwrap());
@@ -270,7 +270,6 @@ mod tests {
             "table's peak buffer must be part of admission"
         );
         assert!(certify_rectangle_scene(rect, 64, 0.25, MAX_SCENE_WORK, MAX_PROOF_BYTES).is_some());
-        let _ = Render2dColorRgba8::TRANSPARENT;
     }
 
     #[test]
@@ -278,9 +277,13 @@ mod tests {
         let mut work = MAX_SCENE_WORK;
         let table = NormalizedGaussianCdf::new(&mut work).unwrap();
         let sigma = Interval::scalar(0.25).unwrap();
-        let zero = table.axis_coverage(18.0, 28.0, 0.0, sigma, &mut work).unwrap();
+        let zero = table
+            .axis_coverage(18.0, 28.0, 0.0, sigma, &mut work)
+            .unwrap();
         assert_eq!([zero.lo, zero.hi], [0.0, 0.0]);
-        let one = table.axis_coverage(18.0, 28.0, 32.0, sigma, &mut work).unwrap();
+        let one = table
+            .axis_coverage(18.0, 28.0, 32.0, sigma, &mut work)
+            .unwrap();
         assert_eq!([one.lo, one.hi], [1.0, 1.0]);
     }
 }
