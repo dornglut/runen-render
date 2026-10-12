@@ -5,7 +5,9 @@
 //! realization is merely one *certified* disposable query path; an unsupported
 //! curved consumer fails before target mutation instead of inventing triangles
 //! from bounds, alpha or a sampled distance field.
-use crate::composition_2d::{Render2dAffineTransform, Render2dClip, Render2dDropShadow, Render2dItem};
+use crate::composition_2d::{
+    Render2dAffineTransform, Render2dClip, Render2dDropShadow, Render2dItem,
+};
 use crate::execution_2d::{
     Render2dExecutionError, Render2dSampleSpaceError, Render2dUnsupportedContent,
 };

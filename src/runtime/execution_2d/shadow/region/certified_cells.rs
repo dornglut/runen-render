@@ -442,8 +442,12 @@ fn actual_f1_rectangle_is_queried_before_disposable_lyon_triangles() {
     let physical = support::NeutralMesh {
         units_per_parent_logical_unit: 1.0,
         triangles: vec![
-            [4.0, 3.0], [6.0, 3.0], [6.0, 5.0],
-            [4.0, 3.0], [6.0, 5.0], [4.0, 5.0],
+            [4.0, 3.0],
+            [6.0, 3.0],
+            [6.0, 5.0],
+            [4.0, 3.0],
+            [6.0, 5.0],
+            [4.0, 5.0],
         ],
         bounds: [4.0, 3.0, 6.0, 5.0],
     };
@@ -465,9 +469,7 @@ fn original_f1_ellipse_cannot_inherit_certainty_from_rectangle_mesh() {
     };
     let item = Render2dItem::new(
         Render2dPrimitive::Fill {
-            shape: Render2dShape::ellipse(
-                Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap(),
-            ),
+            shape: Render2dShape::ellipse(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
             brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
         },
         Render2dAffineTransform::IDENTITY,
@@ -478,8 +480,12 @@ fn original_f1_ellipse_cannot_inherit_certainty_from_rectangle_mesh() {
     let mesh = support::NeutralMesh {
         units_per_parent_logical_unit: 1.0,
         triangles: vec![
-            [0.0, 0.0], [2.0, 0.0], [2.0, 2.0],
-            [0.0, 0.0], [2.0, 2.0], [0.0, 2.0],
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 2.0],
+            [0.0, 0.0],
+            [2.0, 2.0],
+            [0.0, 2.0],
         ],
         bounds: [0.0, 0.0, 2.0, 2.0],
     };
