@@ -9,7 +9,7 @@
 
 use super::interval::Interval;
 use super::*;
-use crate::composition_2d::{Render2dItem, Render2dPrimitive};
+use crate::composition_2d::{Render2dClip, Render2dItem, Render2dPrimitive, Render2dRect, Render2dShape};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CellCertificate {
@@ -76,6 +76,115 @@ impl Cell {
             CellCertificate::Unknown
         }
     }
+
+    fn classify_ellipse(self, rect: Render2dRect) -> CellCertificate {
+        if rect.is_empty() {
+            return CellCertificate::Outside;
+        }
+        // Normalized ellipse equation, without approximating the curve by
+        // an inscribed polygon or by its enclosing rectangle.
+        let normalized = |coordinate: Interval, origin: f64, extent: f64| {
+            coordinate
+                .sub(Interval::scalar(origin)?)?
+                .div(Interval::scalar(extent)?)?
+                .mul(Interval::scalar(2.0)?)?
+                .sub(Interval::scalar(1.0)?)
+        };
+        let Some(x) = normalized(self.x, rect.x(), rect.width()) else {
+            return CellCertificate::Unknown;
+        };
+        let Some(y) = normalized(self.y, rect.y(), rect.height()) else {
+            return CellCertificate::Unknown;
+        };
+        let Some(square_sum) = squared_interval(x).and_then(|xx| xx.add(squared_interval(y)?))
+        else {
+            return CellCertificate::Unknown;
+        };
+        if square_sum.hi < 1.0 {
+            CellCertificate::Inside
+        } else if square_sum.lo > 1.0 {
+            CellCertificate::Outside
+        } else {
+            CellCertificate::Unknown
+        }
+    }
+}
+
+/// Square an interval without the sign-induced underestimation of a naive
+/// interval product. The result still encloses every possible square.
+fn squared_interval(v: Interval) -> Option<Interval> {
+    let a = v.lo * v.lo;
+    let b = v.hi * v.hi;
+    if !a.is_finite() || !b.is_finite() {
+        return None;
+    }
+    let lo = if v.lo <= 0.0 && v.hi >= 0.0 {
+        0.0
+    } else {
+        a.min(b).next_down().max(0.0)
+    };
+    Interval::new(lo, a.max(b).next_up())
+}
+
+fn certify_shape(shape: &Render2dShape, cell: Cell) -> CellCertificate {
+    if let Some(rect) = shape.as_rect() {
+        if rect.is_empty() {
+            return CellCertificate::Outside;
+        }
+        let Some(x0) = Interval::scalar(rect.x()) else {
+            return CellCertificate::Unknown;
+        };
+        let Some(y0) = Interval::scalar(rect.y()) else {
+            return CellCertificate::Unknown;
+        };
+        let Some(x1) = x0.add(Interval::scalar(rect.width()).expect("valid finite width")) else {
+            return CellCertificate::Unknown;
+        };
+        let Some(y1) = y0.add(Interval::scalar(rect.height()).expect("valid finite height")) else {
+            return CellCertificate::Unknown;
+        };
+        cell.classify_rectangle([x0, y0, x1, y1])
+    } else if let Some(ellipse) = shape.as_ellipse() {
+        cell.classify_ellipse(ellipse)
+    } else {
+        // Paths, centered strokes and rounded corners still need their own
+        // independently certified source geometry. Never infer from meshes.
+        CellCertificate::Unknown
+    }
+}
+
+/// A clip is authored in the OWNER PARENT frame, not source-local space.
+/// This same operation applies to F1 item clips and immutable group clip DAGs.
+fn certify_clipped(
+    source: CellCertificate,
+    parent_cell: Cell,
+    clips: &[Render2dClip],
+    visits: &mut usize,
+) -> CellCertificate {
+    if source == CellCertificate::Outside {
+        return CellCertificate::Outside;
+    }
+    let mut uncertain = source == CellCertificate::Unknown;
+    for clip in clips {
+        if *visits == 0 {
+            return CellCertificate::Unknown;
+        }
+        *visits -= 1;
+        let certificate = parent_cell
+            .preimage(clip.clip_to_parent())
+            .map(|local| certify_shape(clip.shape(), local))
+            .unwrap_or(CellCertificate::Unknown);
+        match certificate {
+            CellCertificate::Outside => return CellCertificate::Outside,
+            CellCertificate::Unknown => uncertain = true,
+            CellCertificate::Inside => {}
+        }
+    }
+    if uncertain {
+        CellCertificate::Unknown
+    } else {
+        CellCertificate::Inside
+    }
 }
 
 impl NeutralRegion<'_> {
@@ -87,7 +196,7 @@ impl NeutralRegion<'_> {
         match &self.kind {
             Kind::Source(mesh) => {
                 if let Some(item) = self.semantic_item {
-                    return certify_authored_item(item, cell);
+                    return certify_authored_item(item, cell, visits);
                 }
                 // Synthetic private fixture only. Real renderable F1 leaves
                 // always borrow their original item through source_from_item.
@@ -131,12 +240,7 @@ impl NeutralRegion<'_> {
                 .unwrap_or(CellCertificate::Unknown),
             Kind::Clip { source, clips } => {
                 let child = source.certify_cell(cell, visits);
-                if clips.is_empty() || child == CellCertificate::Outside {
-                    child
-                } else {
-                    // Actual clip geometry requires a separate certification.
-                    CellCertificate::Unknown
-                }
+                certify_clipped(child, cell, clips, visits)
             }
             Kind::Effect { source, shadow } => {
                 let Some(translated) = cell.shift(shadow.offset_x(), shadow.offset_y()) else {
@@ -169,47 +273,21 @@ impl NeutralRegion<'_> {
     }
 }
 
-/// Classify only geometry proved by ORIGINAL F1 source values. A Lyon mesh
-/// alone can never certify a curve or a shaped/stroked primitive. Item clips
-/// are conjunctive in parent coordinates: an unclipped outside stays outside,
-/// while inside must remain Unknown until the clip is separately certified.
-fn certify_authored_item(item: &Render2dItem, cell: Cell) -> CellCertificate {
+/// Certify original F1 fill geometry first; apply item clips independently
+/// in their declared immediate-parent space. Painter color/opacity are ignored.
+fn certify_authored_item(
+    item: &Render2dItem,
+    cell: Cell,
+    visits: &mut usize,
+) -> CellCertificate {
     let Render2dPrimitive::Fill { shape, .. } = item.primitive() else {
         return CellCertificate::Unknown;
     };
-    let Some(rect) = shape.as_rect() else {
-        return CellCertificate::Unknown;
-    };
-    if rect.is_empty() {
-        return CellCertificate::Outside;
-    }
-    let Some(local) = cell.preimage(item.local_to_parent()) else {
-        return CellCertificate::Unknown;
-    };
-    let Some(x0) = Interval::scalar(rect.x()) else {
-        return CellCertificate::Unknown;
-    };
-    let Some(y0) = Interval::scalar(rect.y()) else {
-        return CellCertificate::Unknown;
-    };
-    let Some(width) = Interval::scalar(rect.width()) else {
-        return CellCertificate::Unknown;
-    };
-    let Some(height) = Interval::scalar(rect.height()) else {
-        return CellCertificate::Unknown;
-    };
-    let Some(x1) = x0.add(width) else {
-        return CellCertificate::Unknown;
-    };
-    let Some(y1) = y0.add(height) else {
-        return CellCertificate::Unknown;
-    };
-    let certificate = local.classify_rectangle([x0, y0, x1, y1]);
-    if certificate == CellCertificate::Inside && !item.clips().is_empty() {
-        CellCertificate::Unknown
-    } else {
-        certificate
-    }
+    let source = cell
+        .preimage(item.local_to_parent())
+        .map(|local| certify_shape(shape, local))
+        .unwrap_or(CellCertificate::Unknown);
+    certify_clipped(source, cell, item.clips(), visits)
 }
 
 fn certify(region: &NeutralRegion<'_>, bounds: [f64; 4]) -> CellCertificate {
@@ -393,7 +471,7 @@ fn actual_f1_rectangle_is_queried_before_disposable_lyon_triangles() {
     let clipped_region = graph.source_from_item(physical, &clipped, &[0, 1]).unwrap();
     assert_eq!(
         certify(&clipped_region, [4.5, 3.5, 4.6, 3.6]),
-        CellCertificate::Unknown
+        CellCertificate::Outside
     );
     assert_eq!(
         certify(&clipped_region, [0.0, 0.0, 1.0, 1.0]),
@@ -402,7 +480,7 @@ fn actual_f1_rectangle_is_queried_before_disposable_lyon_triangles() {
 }
 
 #[test]
-fn original_f1_ellipse_cannot_inherit_certainty_from_rectangle_mesh() {
+fn original_f1_ellipse_uses_exact_semantics_instead_of_rectangle_mesh() {
     use crate::composition_2d::{
         Render2dBrush, Render2dColorRgba8, Render2dOpacity, Render2dRect, Render2dShape,
     };
@@ -431,12 +509,45 @@ fn original_f1_ellipse_cannot_inherit_certainty_from_rectangle_mesh() {
     let source = graph.source_from_item(mesh, &item, &[0, 0]).unwrap();
     assert_eq!(
         certify(&source, [0.5, 0.5, 1.5, 1.5]),
-        CellCertificate::Unknown
+        CellCertificate::Inside
     );
     assert_eq!(
         certify(&source, [-2.0, -2.0, -1.0, -1.0]),
+        CellCertificate::Outside
+    );
+}
+
+#[test]
+fn group_ellipse_clip_certifies_inside_outside_and_budget_exhaustion() {
+    use crate::composition_2d::{Render2dClip, Render2dRect, Render2dShape};
+    let mut graph = builder();
+    let source = rectangle(&mut graph, [0.0, 0.0, 6.0, 6.0], &[0, 0]);
+    let clips = vec![Render2dClip::new(
+        Render2dShape::ellipse(Render2dRect::new(1.0, 1.0, 4.0, 4.0).unwrap()),
+        Render2dAffineTransform::IDENTITY,
+    )];
+    let clipped = graph.clip(source, &clips, &[0]).unwrap();
+    assert_eq!(
+        certify(&clipped, [2.75, 2.75, 3.25, 3.25]),
+        CellCertificate::Inside
+    );
+    assert_eq!(
+        certify(&clipped, [1.1, 1.1, 1.2, 1.2]),
+        CellCertificate::Outside
+    );
+    assert_eq!(
+        certify(&clipped, [5.0, 3.0, 5.0, 3.0]),
         CellCertificate::Unknown
     );
+    let mut work = 2;
+    assert_eq!(
+        clipped.certify_cell(
+            Cell::new([2.75, 2.75, 3.25, 3.25]).unwrap(),
+            &mut work,
+        ),
+        CellCertificate::Unknown
+    );
+    assert_eq!(work, 0);
 }
 
 #[test]
