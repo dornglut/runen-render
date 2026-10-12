@@ -203,7 +203,7 @@ fn certify_rectangle_scene(
             let result = xmass.mul(ymass)?;
             let interval = Interval::new(result.lo.max(0.0), result.hi.min(1.0))?;
             maximum_width = maximum_width.max(interval.hi - interval.lo);
-            for (k, [px, py]) in [(72, 72), (73, 73), (71, 72)].into_iter().enumerate() {
+            for (k, (px, py)) in [(72, 72), (73, 73), (71, 72)].into_iter().enumerate() {
                 if (x, y) == (px, py) {
                     probe_intervals[k] = [interval.lo, interval.hi];
                 }
