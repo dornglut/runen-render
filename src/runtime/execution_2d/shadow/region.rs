@@ -300,6 +300,45 @@ fn region_envelope(
     Ok(result)
 }
 
+/// Certify that NO translated/blurred shadow support can survive signed
+/// Euclidean erosion by a disk. Any disk of radius r contained in C requires
+/// both the horizontal and vertical span of C to be at least 2r.
+///
+/// The enclosing box is deliberately used only to prove ABSENCE: it never
+/// supplies inside membership, a manufactured erosion polygon, an alpha mask,
+/// or a Gaussian weight. Original borrowed-F1 controls, affine ancestors and
+/// true positive-effect envelopes are already included in source.envelope.
+///
+/// Outward-rounded differences and halves avoid deleting a thin surviving
+/// shape at a floating-point boundary. Unrepresentable spans return Unknown.
+fn certified_complete_disk_erosion(
+    bounds: Option<[f64; 4]>,
+    spread: f64,
+) -> bool {
+    use interval::Interval;
+    if !spread.is_finite() || spread >= 0.0 {
+        return false;
+    }
+    let Some([left, top, right, bottom]) = bounds else {
+        return false;
+    };
+    let Some(radius) = Interval::scalar(-spread) else {
+        return false;
+    };
+    let Some(two) = Interval::scalar(2.0) else {
+        return false;
+    };
+    for (lo, hi) in [(left, right), (top, bottom)] {
+        let half_span = Interval::scalar(hi)
+            .and_then(|end| end.sub(Interval::scalar(lo)?))
+            .and_then(|width| width.div(two));
+        if half_span.is_some_and(|half| radius.lo > half.hi) {
+            return true;
+        }
+    }
+    false
+}
+
 /// One invocation-owned bounded graph and memoized polygonal realization.
 /// Memo keys are monotonic graph IDs, NEVER F1 semantic or cache IDs.
 pub(super) struct NeutralRegionBuilder {
@@ -832,6 +871,14 @@ impl NeutralRegionBuilder {
                 source,
                 shadow: effect,
             } => {
+                // Prove truly complete erosion from original F1 *outer reach*
+                // BEFORE touching child polygons (which may be a curved
+                // symbolic effect). Blur of the empty eroded set remains
+                // empty; a near-threshold radius is never guessed empty.
+                // This is independent of disposable Lyon mesh fidelity.
+                if certified_complete_disk_erosion(source.envelope, effect.spread()) {
+                    Arc::new(shadow::empty_mesh())
+                } else {
                 let mesh = self.materialize(source)?;
                 // A positive disk is retained as a precise expression but
                 // cannot be *polygonalized* as finite triangles. A consuming
@@ -874,6 +921,7 @@ impl NeutralRegionBuilder {
                     Arc::new(square)
                 } else {
                     Arc::new(shifted)
+                }
                 }
             }
         };
@@ -1506,6 +1554,163 @@ mod tests {
         ));
         assert_eq!(insufficient, 0);
         assert!(builder.materialized.is_empty());
+    }
+
+    #[test]
+    fn authored_curve_nested_disk_erosion_can_prove_exact_empty_without_faceting() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive,
+            Render2dRect, Render2dShape,
+        };
+        // The borrowed F1 ELLIPSE is not a polygonal rectangle. Its physical
+        // mesh is only an auxiliary reach witness. A positive disk remains
+        // symbolic and unsupported for materialization; a sufficiently large
+        // subsequent negative disk has provably EMPTY original support.
+        let ellipse = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::ellipse(
+                    Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let mut graph = builder();
+        let mesh = support::NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let source = graph.source_from_item(mesh, &ellipse, &[7, 0]).unwrap();
+        let positive = Render2dDropShadow::new(
+            0.0, 0.0, 0.0, 0.25, Render2dColorRgba8::TRANSPARENT,
+        )
+        .unwrap();
+        let expanded = graph.effect(Arc::clone(&source), positive, &[7, 1]).unwrap();
+        let shrink = Render2dDropShadow::new(
+            3.0, -2.0, 0.5, -2.0, Render2dColorRgba8::TRANSPARENT,
+        )
+        .unwrap();
+        let empty = graph.effect(Arc::clone(&expanded), shrink, &[7, 2]).unwrap();
+        // Source width 2 plus 2*0.25 outward spread = 2.5. An erosion
+        // disk r=2 cannot fit in its original-F1 reach in EITHER axis.
+        assert!(certified_complete_disk_erosion(expanded.envelope, -2.0));
+        let vertices = graph.retained_vertices;
+        let erosion_work = graph.erosion_work;
+        let result = graph.materialize(&empty).unwrap();
+        assert!(result.triangles.is_empty(), "empty support stays empty under finite blur");
+        assert_eq!(graph.retained_vertices, vertices);
+        assert_eq!(graph.erosion_work, erosion_work);
+        assert!(
+            graph.materialized.get(expanded.id).is_none_or(Option::is_none),
+            "the unsupported positive-disk child must not be materialized"
+        );
+        assert!(
+            graph.materialized.get(source.id).is_none_or(Option::is_none),
+            "the disposable F1 mesh is not needed for the exact absence proof"
+        );
+        // Prove that the success is the geometric erasure, not a broad
+        // fallback quietly replacing unsupported curved morphology.
+        assert!(matches!(
+            graph.materialize(&expanded),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Shadows { root_index: 7 },
+            }) if path == [7, 1]
+        ));
+    }
+
+    #[test]
+    fn complete_erosion_certificates_fail_closed_at_thresholds_and_overflow() {
+        // A 2x2 region with r=1 has at most a measure-zero survivor.
+        // Keep equality and adjacent float uncertainty unresolved.
+        assert!(!certified_complete_disk_erosion(Some([0.0, 0.0, 2.0, 2.0]), -1.0));
+        assert!(!certified_complete_disk_erosion(
+            Some([0.0, 0.0, 2.0, 2.0]),
+            -1.0_f64.next_up(),
+        ));
+        assert!(certified_complete_disk_erosion(
+            Some([0.0, 0.0, 2.0, 2.0]),
+            -1.25,
+        ));
+        assert!(!certified_complete_disk_erosion(
+            Some([-f64::MAX, 0.0, f64::MAX, 2.0]),
+            -1.0,
+        ));
+        assert!(!certified_complete_disk_erosion(None, -100.0));
+        assert!(!certified_complete_disk_erosion(Some([0.0, 0.0, 2.0, 2.0]), 1.25));
+
+        let mut graph = builder();
+        let source = graph.source(triangle(), &[8, 0]).unwrap();
+        let borderline = graph.effect(
+            source,
+            Render2dDropShadow::new(
+                0.0, 0.0, 0.0, -0.5, Render2dColorRgba8::TRANSPARENT,
+            ).unwrap(),
+            &[8, 1],
+        ).unwrap();
+        assert!(
+            !certified_complete_disk_erosion(
+                borderline.envelope,
+                -0.5,
+            ),
+            "a prior erosion reach cannot be interpreted as a new exact membership claim"
+        );
+        let nonempty = graph.materialize(&borderline).unwrap();
+        assert!(
+            !nonempty.triangles.is_empty(),
+            "uncertain enclosure must take the existing actual geometric erosion path"
+        );
+    }
+
+    #[test]
+    fn original_f1_curved_affine_and_clip_reach_can_certify_empty_nested_erosion() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dClip, Render2dItem, Render2dOpacity,
+            Render2dPrimitive, Render2dRect, Render2dShape,
+        };
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::ellipse(
+                    Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let mut graph = builder();
+        let leaf = graph.source_from_item(triangle(), &item, &[9, 0]).unwrap();
+        let shear = Render2dAffineTransform::new(
+            1.0, 0.5, 0.25, 1.0, 3.0, -1.0,
+        ).unwrap();
+        let affined = graph.affine(leaf, shear, &[9, 1]).unwrap();
+        let clip = [Render2dClip::new(
+            Render2dShape::rect(
+                Render2dRect::new(-100.0, -100.0, 200.0, 200.0).unwrap(),
+            ),
+            Render2dAffineTransform::IDENTITY,
+        )];
+        let clipped = graph.clip(affined, &clip, &[9, 2]).unwrap();
+        let effect = graph.effect(
+            Arc::clone(&clipped),
+            Render2dDropShadow::new(
+                1.5, -0.75, 0.1, -6.0, Render2dColorRgba8::TRANSPARENT,
+            ).unwrap(),
+            &[9, 3],
+        ).unwrap();
+        assert!(
+            certified_complete_disk_erosion(clipped.envelope, -6.0),
+            "the sheared original-F1 reach conservatively proves complete erosion"
+        );
+        assert!(graph.materialize(&effect).unwrap().triangles.is_empty());
+        assert!(
+            graph.materialized.get(clipped.id).is_none_or(Option::is_none),
+            "exact complete erosion cannot require or guess the clipped tessellation"
+        );
     }
 
     #[test]
