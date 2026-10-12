@@ -20,7 +20,7 @@ mod source_envelope;
 const MAX_REGION_NODES: usize = 65_536;
 const MAX_REGION_DEPTH: usize = 512;
 const MAX_REGION_PATH_UNITS: usize = 1_048_576;
-const MAX_REGION_AFFINE_VERTEX_WORK: usize = 16_777_216;
+const MAX_REGION_GRAPH_WORK: usize = 16_777_216;
 
 pub(super) struct NeutralRegion<'a> {
     kind: Kind<'a>,
@@ -306,12 +306,17 @@ pub(super) struct NeutralRegionBuilder {
     nodes: usize,
     retained_path_units: usize,
     retained_vertices: usize,
-    affine_vertex_work: usize,
+    /// One invocation-wide original reach AND stable neutral-union scan budget.
+    graph_work: usize,
     pub(super) clip_work: usize,
     erosion_work: usize,
     // Dense, fallibly allocated by monotonic node ID; no implicit per-entry
     // tree allocation and no aliasing if a prior node is dropped.
     materialized: Vec<Option<Arc<support::NeutralMesh>>>,
+    // One bounded transient stamp table for idempotent support union.
+    // Stable first-source order is preserved for owner-path diagnostics.
+    union_seen: Vec<usize>,
+    union_epoch: usize,
     scales: shadow::NeutralPreparationScale,
     max_buffer_bytes: u64,
 }
@@ -330,10 +335,12 @@ impl NeutralRegionBuilder {
             nodes: 0,
             retained_path_units: 0,
             retained_vertices: 0,
-            affine_vertex_work: 0,
+            graph_work: 0,
             clip_work: 0,
             erosion_work: 0,
             materialized: Vec::new(),
+            union_seen: Vec::new(),
+            union_epoch: 0,
             scales,
             max_buffer_bytes,
         }
@@ -381,10 +388,10 @@ impl NeutralRegionBuilder {
             .checked_add(original_visits)
             .ok_or_else(|| resource(path, "original F1 source-reach work overflow"))?;
         let affine_work = self
-            .affine_vertex_work
+            .graph_work
             .checked_add(visits)
             .ok_or_else(|| resource(path, "neutral affine reach work overflow"))?;
-        if affine_work > MAX_REGION_AFFINE_VERTEX_WORK {
+        if affine_work > MAX_REGION_GRAPH_WORK {
             return Err(resource(
                 path,
                 "neutral affine reach exceeds bounded whole-invocation work",
@@ -395,7 +402,7 @@ impl NeutralRegionBuilder {
         let envelope = region_envelope(&kind, semantic_item, path)?;
         self.nodes = next;
         self.retained_path_units = paths;
-        self.affine_vertex_work = affine_work;
+        self.graph_work = affine_work;
         Ok(Arc::new(NeutralRegion {
             kind,
             semantic_item,
@@ -480,8 +487,63 @@ impl NeutralRegionBuilder {
         if children.len() == 1 {
             return Ok(children.pop().expect("single union member"));
         }
-        let depth = children.iter().map(|node| node.depth).max().unwrap_or(0) + 1;
-        self.node(Kind::Union(children), path, depth, None)
+        if children.len() > 1 {
+            // Exact set-union idempotence, not paint-order deduplication.
+            // Keep the FIRST occurrence to preserve authored error paths.
+            // A bounded stamp table avoids the O(n^2) duplicate search and
+            // O(total DAG nodes) repeated allocation per group.
+            let next_work = self
+                .graph_work
+                .checked_add(children.len())
+                .ok_or_else(|| resource(path, "neutral union scan work overflow"))?;
+            if next_work > MAX_REGION_GRAPH_WORK {
+                return Err(resource(path, "neutral union scan exceeds whole-invocation work"));
+            }
+            let epoch = self
+                .union_epoch
+                .checked_add(1)
+                .ok_or_else(|| resource(path, "neutral union stamp overflow"))?;
+            let needed = children
+                .iter()
+                .map(|node| node.id)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| resource(path, "neutral union stamp size overflow"))?;
+            let bytes = needed
+                .checked_mul(std::mem::size_of::<usize>())
+                .ok_or_else(|| resource(path, "neutral union stamp bytes overflow"))?;
+            if needed > MAX_REGION_NODES + 1
+                || u64::try_from(bytes)
+                    .ok()
+                    .is_none_or(|bytes| bytes > self.max_buffer_bytes)
+            {
+                return Err(resource(path, "neutral union stamp exceeds bounded memory"));
+            }
+            if needed > self.union_seen.len() {
+                self.union_seen
+                    .try_reserve_exact(needed - self.union_seen.len())
+                    .map_err(|_| resource(path, "neutral union stamp allocation failed"))?;
+                self.union_seen.resize(needed, 0);
+            }
+            // Even when node admission fails after normalization, advance
+            // the transient stamp generation so a subsequent safe retry can
+            // never mistake the rejected attempt's IDs for current marks.
+            self.union_epoch = epoch;
+            children.retain(|child| {
+                let old = std::mem::replace(&mut self.union_seen[child.id], epoch);
+                old != epoch
+            });
+            let result = if children.len() == 1 {
+                children.pop().expect("deduplicated single union member")
+            } else {
+                let depth = children.iter().map(|node| node.depth).max().unwrap_or(0) + 1;
+                self.node(Kind::Union(children), path, depth, None)?
+            };
+            self.graph_work = next_work;
+            return Ok(result);
+        }
+        self.node(Kind::Union(children), path, 1, None)
     }
 
     pub(super) fn affine<'a>(
@@ -1191,6 +1253,73 @@ mod tests {
     }
 
     #[test]
+    fn neutral_union_is_idempotent_without_reordering_authored_first_occurrences() {
+        let mut graph = builder();
+        let first = graph.source(triangle(), &[4, 0]).unwrap();
+        let second = graph.source(triangle(), &[4, 1]).unwrap();
+        let combined = graph
+            .union(
+                vec![
+                    Arc::clone(&first),
+                    Arc::clone(&second),
+                    Arc::clone(&first),
+                    Arc::clone(&second),
+                ],
+                &[4],
+            )
+            .unwrap();
+        let Kind::Union(children) = &combined.kind else {
+            panic!("two distinct authored sources must remain one union");
+        };
+        assert_eq!(children.len(), 2);
+        assert!(Arc::ptr_eq(&children[0], &first));
+        assert!(Arc::ptr_eq(&children[1], &second));
+        let mesh = graph.materialize(&combined).unwrap();
+        assert_eq!(mesh.triangles.len(), triangle().triangles.len() * 2);
+
+        let mut repeated = Arc::clone(&first);
+        let nodes = graph.nodes;
+        for _ in 0..12 {
+            repeated = graph
+                .union(
+                    vec![Arc::clone(&repeated), Arc::clone(&repeated)],
+                    &[4, 2],
+                )
+                .unwrap();
+        }
+        assert!(Arc::ptr_eq(&repeated, &first));
+        assert_eq!(graph.nodes, nodes, "union idempotence must not mint fake nodes");
+        // Four real entries plus 24 repeated references, all admitted.
+        assert_eq!(graph.graph_work, 28);
+
+        // An admitted stamp scan is not an authored node commitment.
+        // Trigger a late owner-path rejection, restore that test-only
+        // counter and ensure the very next identical union remains intact.
+        let committed = graph.graph_work;
+        let paths = graph.retained_path_units;
+        graph.retained_path_units = MAX_REGION_PATH_UNITS;
+        assert!(matches!(
+            graph.union(
+                vec![Arc::clone(&first), Arc::clone(&second)],
+                &[4, 3],
+            ),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [4, 3]
+        ));
+        assert_eq!(graph.graph_work, committed);
+        graph.retained_path_units = paths;
+        let retried = graph
+            .union(vec![Arc::clone(&first), Arc::clone(&second)], &[4, 3])
+            .unwrap();
+        let Kind::Union(children) = &retried.kind else {
+            panic!("late rejection cannot poison the next union epoch");
+        };
+        assert_eq!(children.len(), 2);
+    }
+
+    #[test]
     fn original_f1_provenance_reuses_shared_dag_proofs_with_atomic_budget() {
         use crate::composition_2d::{
             Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dRect,
@@ -1222,8 +1351,16 @@ mod tests {
         // Twelve union nodes create more than 4,000 naive repeated visits,
         // although the borrowed F1 source graph itself has only 13 nodes.
         for _ in 0..12 {
+            // Construct a deliberately unnormalized historical DAG to test
+            // the memo itself. The production union builder now deduplicates
+            // these identical Arc children before materialization.
             shared = builder
-                .union(vec![Arc::clone(&shared), Arc::clone(&shared)], &[2, 9])
+                .node(
+                    Kind::Union(vec![Arc::clone(&shared), Arc::clone(&shared)]),
+                    &[2, 9],
+                    shared.depth + 1,
+                    None,
+                )
                 .unwrap();
         }
         // One unique leaf and 12 unique union nodes: 13 semantic checks,
@@ -1489,7 +1626,7 @@ mod tests {
         let affine = Render2dAffineTransform::new(f64::MAX, 0.0, f64::MAX, 1.0, 0.0, 0.0).unwrap();
         let projected = builder.affine(leaf, affine, &[9, 1]).unwrap();
         assert_eq!(projected.envelope, Some([0.0, 0.0, f64::MAX, 1.0]));
-        assert_eq!(builder.affine_vertex_work, 3);
+        assert_eq!(builder.graph_work, 3);
         let realized = builder.materialize(&projected).unwrap();
         assert_eq!(realized.bounds, [0.0, 0.0, f64::MAX, 1.0]);
         assert_eq!(realized.triangles.len(), 3);
@@ -1499,7 +1636,7 @@ mod tests {
     fn affine_vertex_budget_rejects_without_mutating_invocation_admission() {
         let mut builder = builder();
         let leaf = builder.source(triangle(), &[4, 0]).unwrap();
-        builder.affine_vertex_work = MAX_REGION_AFFINE_VERTEX_WORK - 2;
+        builder.graph_work = MAX_REGION_GRAPH_WORK - 2;
         let before_nodes = builder.nodes;
         assert!(matches!(
             builder.affine(leaf, Render2dAffineTransform::IDENTITY, &[4, 1]),
@@ -1511,8 +1648,8 @@ mod tests {
         ));
         assert_eq!(builder.nodes, before_nodes);
         assert_eq!(
-            builder.affine_vertex_work,
-            MAX_REGION_AFFINE_VERTEX_WORK - 2
+            builder.graph_work,
+            MAX_REGION_GRAPH_WORK - 2
         );
     }
 
