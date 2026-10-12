@@ -451,9 +451,7 @@ impl NeutralRegionBuilder {
                     crate::composition_2d::Render2dPrimitive::ShapedText(_)
                 )
             }),
-            Kind::Union(children) => children
-                .iter()
-                .all(|child| child.certified_source_reach),
+            Kind::Union(children) => children.iter().all(|child| child.certified_source_reach),
             Kind::Affine { source, .. }
             | Kind::Clip { source, .. }
             | Kind::Effect { source, .. } => source.certified_source_reach,
@@ -1589,8 +1587,8 @@ mod tests {
     #[test]
     fn glyph_mesh_bounds_cannot_certify_original_f1_signed_erosion() {
         use crate::composition_2d::{
-            Render2dItem, Render2dOpacity, Render2dPoint, Render2dPrimitive,
-            Render2dResourceId, Render2dShapedTextPrimitive,
+            Render2dItem, Render2dOpacity, Render2dPoint, Render2dPrimitive, Render2dResourceId,
+            Render2dShapedTextPrimitive,
         };
         // Deliberately attach a small disposable physical triangle to a
         // borrowed shaped-text item. The glyph's actual original font-curve
@@ -1611,9 +1609,8 @@ mod tests {
         let eroded = graph
             .effect(
                 Arc::clone(&leaf),
-                Render2dDropShadow::new(
-                    0.0, 0.0, 0.2, -10.0, Render2dColorRgba8::TRANSPARENT,
-                ).unwrap(),
+                Render2dDropShadow::new(0.0, 0.0, 0.2, -10.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
                 &[10, 1],
             )
             .unwrap();
