@@ -526,21 +526,22 @@ impl NeutralRegionBuilder {
     fn polygonal_source_proven<'a>(
         region: &NeutralRegion<'a>,
         remaining_visits: &mut usize,
+        memo: &mut [Option<bool>],
     ) -> Result<bool, Render2dExecutionError> {
-        // The graph may share arbitrary subtrees, so its bounded *node*
-        // count does not bound naive recursive edge traversals. Fail with
-        // the original occurrence path after one fixed whole-query budget.
+        // Node IDs are immutable, unique within this builder and bounded.
+        // Every retained Arc branch must reuse the same source verdict:
+        // the 65_536-node budget cannot permit 2^depth repeated work.
+        if let Some(cached) = memo.get(region.id).copied().flatten() {
+            return Ok(cached);
+        }
         *remaining_visits = remaining_visits.checked_sub(1).ok_or_else(|| {
             resource(
                 &region.path,
                 "original F1 provenance query exceeds work budget",
             )
         })?;
-        Ok(match &region.kind {
-            Kind::Source(_) => {
-                let Some(item) = region.semantic_item else {
-                    return Ok(false);
-                };
+        let result = match &region.kind {
+            Kind::Source(_) => region.semantic_item.is_some_and(|item| {
                 let source_is_polygonal = match item.primitive() {
                     crate::composition_2d::Render2dPrimitive::Fill { shape, .. } => {
                         shape.as_rect().is_some()
@@ -554,22 +555,34 @@ impl NeutralRegionBuilder {
                         .clips()
                         .iter()
                         .all(|clip| clip.shape().as_rect().is_some())
-            }
+            }),
             Kind::Union(children) => {
+                let mut proven = true;
                 for child in children {
-                    if !Self::polygonal_source_proven(child, remaining_visits)? {
-                        return Ok(false);
+                    if !Self::polygonal_source_proven(child, remaining_visits, memo)? {
+                        proven = false;
+                        break;
                     }
                 }
-                true
+                proven
             }
-            Kind::Affine { source, .. } => Self::polygonal_source_proven(source, remaining_visits)?,
+            Kind::Affine { source, .. } => {
+                Self::polygonal_source_proven(source, remaining_visits, memo)?
+            }
             Kind::Clip { source, clips } => {
                 clips.iter().all(|clip| clip.shape().as_rect().is_some())
-                    && Self::polygonal_source_proven(source, remaining_visits)?
+                    && Self::polygonal_source_proven(source, remaining_visits, memo)?
             }
             Kind::Effect { .. } => false,
-        })
+        };
+        let Some(slot) = memo.get_mut(region.id) else {
+            return Err(resource(
+                &region.path,
+                "original F1 provenance cache index exceeds admitted graph",
+            ));
+        };
+        *slot = Some(result);
+        Ok(result)
     }
 
     /// Recognize only the exact existing F1 DAG: C union (C ⊕ disk(r)).
@@ -613,8 +626,31 @@ impl NeutralRegionBuilder {
         {
             return Ok(None);
         }
+        // One fallibly admitted dense per-query cache, keyed by unique
+        // immutable F1 graph ID. Repeated Arc edges never re-evaluate a
+        // shared subtree; no exponential proof walk or global scene cache.
+        let cache_entries = original
+            .id
+            .checked_add(1)
+            .ok_or_else(|| resource(&original.path, "original F1 proof cache size overflow"))?;
+        let cache_bytes = cache_entries
+            .checked_mul(std::mem::size_of::<Option<bool>>())
+            .ok_or_else(|| resource(&original.path, "original F1 proof cache bytes overflow"))?;
+        if cache_entries > MAX_REGION_NODES + 1
+            || u64::try_from(cache_bytes).ok().is_none_or(|bytes| bytes > self.max_buffer_bytes)
+        {
+            return Err(resource(
+                &original.path,
+                "original F1 proof cache exceeds bounded memory",
+            ));
+        }
+        let mut memo = Vec::<Option<bool>>::new();
+        memo.try_reserve_exact(cache_entries).map_err(|_| {
+            resource(&original.path, "original F1 proof cache allocation failed")
+        })?;
+        memo.resize(cache_entries, None);
         let mut remaining_visits = MAX_REGION_NODES;
-        if !Self::polygonal_source_proven(original, &mut remaining_visits)? {
+        if !Self::polygonal_source_proven(original, &mut remaining_visits, &mut memo)? {
             return Ok(None);
         }
         let rectangle = self.materialize(original)?;
@@ -1154,7 +1190,7 @@ mod tests {
     }
 
     #[test]
-    fn original_f1_provenance_checks_share_one_bounded_dag_visit_budget() {
+    fn original_f1_provenance_reuses_shared_dag_proofs_with_atomic_budget() {
         use crate::composition_2d::{
             Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dRect,
             Render2dShape,
@@ -1182,22 +1218,40 @@ mod tests {
         };
         let mut builder = builder();
         let mut shared = builder.source_from_item(physical, &item, &[2, 0]).unwrap();
-        // Twelve nodes create a DAG with more than 4,000 naive proof
-        // visits; a node-count limit alone cannot bound this traversal.
+        // Twelve union nodes create more than 4,000 naive repeated visits,
+        // although the borrowed F1 source graph itself has only 13 nodes.
         for _ in 0..12 {
             shared = builder
                 .union(vec![Arc::clone(&shared), Arc::clone(&shared)], &[2, 9])
                 .unwrap();
         }
-        let mut visits = 32;
+        // One unique leaf and 12 unique union nodes: 13 semantic checks,
+        // NOT 8191 visits through duplicated immutable Arc branches.
+        let mut memo = [None; 14];
+        let mut visits = 13;
+        assert!(NeutralRegionBuilder::polygonal_source_proven(
+            &shared, &mut visits, &mut memo,
+        )
+        .unwrap());
+        assert_eq!(visits, 0);
+        assert!(memo[1..14].iter().all(|entry| *entry == Some(true)));
+        // Even a cached query with an exhausted budget remains deterministic.
+        assert!(NeutralRegionBuilder::polygonal_source_proven(
+            &shared, &mut visits, &mut memo,
+        )
+        .unwrap());
+        let mut cold = [None; 14];
+        let mut insufficient = 12;
         assert!(matches!(
-            NeutralRegionBuilder::polygonal_source_proven(&shared, &mut visits),
+            NeutralRegionBuilder::polygonal_source_proven(
+                &shared, &mut insufficient, &mut cold,
+            ),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path), ..
             }) if path.first() == Some(&2)
         ));
-        assert_eq!(visits, 0);
+        assert_eq!(insufficient, 0);
         assert!(builder.materialized.is_empty());
     }
 
