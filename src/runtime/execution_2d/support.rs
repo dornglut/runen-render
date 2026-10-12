@@ -1366,12 +1366,18 @@ pub(super) struct ParentEffectKernel {
     pub(super) sigma: f64,
 }
 
+/// One owner-frame projection: these coupled facts describe a single
+/// root-sample lattice, not separately configurable shadow semantics.
+pub(super) struct ParentEffectFrame {
+    pub(super) to_root: crate::composition_2d::Render2dAffineTransform,
+    pub(super) root_envelope: [f64; 4],
+    pub(super) sample_scale: f64,
+}
+
 pub(super) fn affine_parent_effect_coverage_admitted(
     source: &NeutralMesh,
     kernel: ParentEffectKernel,
-    parent_to_root: crate::composition_2d::Render2dAffineTransform,
-    root_envelope: [f64; 4],
-    scale: f64,
+    frame: ParentEffectFrame,
     path: &[usize],
     aggregate_work: &mut usize,
     remaining_coverage_samples: usize,
@@ -1381,6 +1387,11 @@ pub(super) fn affine_parent_effect_coverage_admitted(
         positive_spread,
         sigma,
     } = kernel;
+    let ParentEffectFrame {
+        to_root: parent_to_root,
+        root_envelope,
+        sample_scale: scale,
+    } = frame;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     if source.triangles.is_empty() {
@@ -3468,7 +3479,10 @@ mod tests {
                 kind: Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path), ..
             } if path == [7, 2]));
-            assert!(used > 0, "temporary geometry proof work is charged before coverage");
+            assert!(
+                used > 0,
+                "temporary geometry proof work is charged before coverage"
+            );
         }
         let mut used = 0;
         let error = affine_parent_effect_coverage_admitted(
@@ -3477,9 +3491,11 @@ mod tests {
                 positive_spread: 0.0,
                 sigma: 0.25,
             },
-            crate::composition_2d::Render2dAffineTransform::IDENTITY,
-            [-1.0, -1.0, 3.0, 3.0],
-            4.0,
+            ParentEffectFrame {
+                to_root: crate::composition_2d::Render2dAffineTransform::IDENTITY,
+                root_envelope: [-1.0, -1.0, 3.0, 3.0],
+                sample_scale: 4.0,
+            },
             &[8, 5],
             &mut used,
             0,
@@ -3502,11 +3518,12 @@ mod tests {
         // indicator has zero area. This must be accepted as no-work even
         // when no bytes remain for another retained shadow float buffer.
         let mut used = 0;
-        let empty = prepare_shadow_coverage_admitted(
-            &mesh, -1.0, 0.25, 4.0, &[7, 4], &mut used, 0,
-        )
-        .unwrap();
-        assert!(empty.is_none(), "certified complete erosion needs no coverage buffer");
+        let empty = prepare_shadow_coverage_admitted(&mesh, -1.0, 0.25, 4.0, &[7, 4], &mut used, 0)
+            .unwrap();
+        assert!(
+            empty.is_none(),
+            "certified complete erosion needs no coverage buffer"
+        );
     }
 
     #[test]
