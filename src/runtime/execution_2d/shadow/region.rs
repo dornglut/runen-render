@@ -178,8 +178,7 @@ fn region_envelope(
             if let Kind::Source(mesh) = &source.kind {
                 let physical = affine_leaf_envelope(mesh, *to_parent, path)?;
                 if let Some(item) = source.semantic_item
-                    && let Some(authored) =
-                        source_envelope::bounds(item, Some(*to_parent), path)?
+                    && let Some(authored) = source_envelope::bounds(item, Some(*to_parent), path)?
                 {
                     Some(match physical {
                         Some(bounds) => [
@@ -302,9 +301,9 @@ impl NeutralRegionBuilder {
         };
         let original_visits = match &kind {
             Kind::Source(_) => semantic_item.map_or(0, source_envelope::control_visits),
-            Kind::Affine { source, .. } => {
-                source.semantic_item.map_or(0, source_envelope::control_visits)
-            }
+            Kind::Affine { source, .. } => source
+                .semantic_item
+                .map_or(0, source_envelope::control_visits),
             _ => 0,
         };
         let visits = mesh_visits
@@ -786,8 +785,14 @@ mod tests {
         let physical_top = physical.bounds[3] / physical.units_per_parent_logical_unit;
         let mut graph = builder();
         let leaf = graph.source_from_item(physical, &item, &[0, 0]).unwrap();
-        assert!(physical_top < 7.0, "a physical curve is below its authored control hull");
-        assert!(leaf.envelope.unwrap()[3] >= 7.0, "original F1 control hull encloses the curve");
+        assert!(
+            physical_top < 7.0,
+            "a physical curve is below its authored control hull"
+        );
+        assert!(
+            leaf.envelope.unwrap()[3] >= 7.0,
+            "original F1 control hull encloses the curve"
+        );
         let shear = Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 0.0, 0.0).unwrap();
         let transformed = graph.affine(leaf, shear, &[0]).unwrap();
         assert!(
@@ -799,8 +804,8 @@ mod tests {
     #[test]
     fn semantic_source_bounds_are_still_not_membership_certificates() {
         use crate::composition_2d::{
-            Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive,
-            Render2dRect, Render2dShape,
+            Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dRect,
+            Render2dShape,
         };
         let item = Render2dItem::new(
             Render2dPrimitive::Fill {
@@ -819,17 +824,20 @@ mod tests {
     #[test]
     fn original_stroke_caps_miters_and_shear_increase_conservative_reach() {
         use crate::composition_2d::{
-            Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive,
-            Render2dRect, Render2dShape, Render2dStrokeCap, Render2dStrokeJoin,
-            Render2dStrokeStyle,
+            Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dRect,
+            Render2dShape, Render2dStrokeCap, Render2dStrokeJoin, Render2dStrokeStyle,
         };
         let item = Render2dItem::new(
             Render2dPrimitive::Stroke {
                 shape: Render2dShape::rect(Render2dRect::new(10.0, 10.0, 4.0, 4.0).unwrap()),
                 brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
                 style: Render2dStrokeStyle::new(
-                    2.0, Render2dStrokeCap::Square, Render2dStrokeJoin::Miter, 5.0
-                ).unwrap(),
+                    2.0,
+                    Render2dStrokeCap::Square,
+                    Render2dStrokeJoin::Miter,
+                    5.0,
+                )
+                .unwrap(),
             },
             Render2dAffineTransform::IDENTITY,
             Vec::new(),
@@ -839,7 +847,9 @@ mod tests {
         assert!(bound[0] <= 5.0 && bound[1] <= 5.0);
         assert!(bound[2] >= 19.0 && bound[3] >= 19.0);
         let shear = Render2dAffineTransform::new(1.0, 0.0, 1.0, 1.0, 0.0, 0.0).unwrap();
-        let transformed = source_envelope::bounds(&item, Some(shear), &[0]).unwrap().unwrap();
+        let transformed = source_envelope::bounds(&item, Some(shear), &[0])
+            .unwrap()
+            .unwrap();
         assert!(transformed[0] <= 10.0 && transformed[2] >= 33.0);
     }
 

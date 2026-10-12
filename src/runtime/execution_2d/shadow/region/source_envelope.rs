@@ -130,23 +130,47 @@ pub(super) fn bounds(
             }
         }
     }
-    let Some([x0, y0, x1, y1]) = coverage else { return Ok(None) };
+    let Some([x0, y0, x1, y1]) = coverage else {
+        return Ok(None);
+    };
     let (mut x0, mut y0, mut x1, mut y1) = (x0, y0, x1, y1);
     if let Some(style) = stroke {
-        let half_width = Interval::scalar(style.width()).and_then(|v| v.mul(Interval::scalar(0.5)?)).ok_or_else(fail)?;
-        let radius = half_width.mul(Interval::scalar(style.miter_limit().max(2.0)).ok_or_else(fail)?).ok_or_else(fail)?;
+        let half_width = Interval::scalar(style.width())
+            .and_then(|v| v.mul(Interval::scalar(0.5)?))
+            .ok_or_else(fail)?;
+        let radius = half_width
+            .mul(Interval::scalar(style.miter_limit().max(2.0)).ok_or_else(fail)?)
+            .ok_or_else(fail)?;
         let ex = aa.mul(a).and_then(|v| v.add(cc.mul(b)?)).ok_or_else(fail)?;
         let ey = aa.mul(c).and_then(|v| v.add(cc.mul(d)?)).ok_or_else(fail)?;
         let fx = bb.mul(a).and_then(|v| v.add(dd.mul(b)?)).ok_or_else(fail)?;
         let fy = bb.mul(c).and_then(|v| v.add(dd.mul(d)?)).ok_or_else(fail)?;
-        let margin_x = Interval::scalar(abs_upper(ex)).and_then(|v| v.add(Interval::scalar(abs_upper(ey))?))
-            .and_then(|v| v.mul(radius)).ok_or_else(fail)?.hi;
-        let margin_y = Interval::scalar(abs_upper(fx)).and_then(|v| v.add(Interval::scalar(abs_upper(fy))?))
-            .and_then(|v| v.mul(radius)).ok_or_else(fail)?.hi;
-        x0 = Interval::scalar(x0).and_then(|v| v.sub(Interval::scalar(margin_x)?)).ok_or_else(fail)?.lo;
-        x1 = Interval::scalar(x1).and_then(|v| v.add(Interval::scalar(margin_x)?)).ok_or_else(fail)?.hi;
-        y0 = Interval::scalar(y0).and_then(|v| v.sub(Interval::scalar(margin_y)?)).ok_or_else(fail)?.lo;
-        y1 = Interval::scalar(y1).and_then(|v| v.add(Interval::scalar(margin_y)?)).ok_or_else(fail)?.hi;
+        let margin_x = Interval::scalar(abs_upper(ex))
+            .and_then(|v| v.add(Interval::scalar(abs_upper(ey))?))
+            .and_then(|v| v.mul(radius))
+            .ok_or_else(fail)?
+            .hi;
+        let margin_y = Interval::scalar(abs_upper(fx))
+            .and_then(|v| v.add(Interval::scalar(abs_upper(fy))?))
+            .and_then(|v| v.mul(radius))
+            .ok_or_else(fail)?
+            .hi;
+        x0 = Interval::scalar(x0)
+            .and_then(|v| v.sub(Interval::scalar(margin_x)?))
+            .ok_or_else(fail)?
+            .lo;
+        x1 = Interval::scalar(x1)
+            .and_then(|v| v.add(Interval::scalar(margin_x)?))
+            .ok_or_else(fail)?
+            .hi;
+        y0 = Interval::scalar(y0)
+            .and_then(|v| v.sub(Interval::scalar(margin_y)?))
+            .ok_or_else(fail)?
+            .lo;
+        y1 = Interval::scalar(y1)
+            .and_then(|v| v.add(Interval::scalar(margin_y)?))
+            .ok_or_else(fail)?
+            .hi;
     }
     Ok(Some([x0, y0, x1, y1]))
 }
