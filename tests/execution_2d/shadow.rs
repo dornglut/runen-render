@@ -1147,7 +1147,8 @@ fn nested_curved_f1_complete_erosion_preserves_ancestor_gpu_paint() {
         "F3F original ellipse with complete child erosion",
     );
     assert_eq!(
-        actual.as_bytes(), plain.as_bytes(),
+        actual.as_bytes(),
+        plain.as_bytes(),
         "certified-empty curved child shadow must not alter original-F1 ancestor paint"
     );
     pixel_near(pixel(&actual, 14, 14), [255, 0, 0, 255]);
@@ -1209,7 +1210,8 @@ fn nested_nonconvex_l_complete_erosion_preserves_gpu_ancestor_caster() {
         "F3F L-shaped original caster with empty signed child shadow",
     );
     assert_eq!(
-        actual.as_bytes(), reference.as_bytes(),
+        actual.as_bytes(),
+        reference.as_bytes(),
         "provably empty nested erosion must preserve the original nonconvex caster"
     );
     pixel_near(pixel(&actual, 12, 12), [255, 0, 0, 255]);
