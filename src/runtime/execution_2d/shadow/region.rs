@@ -637,7 +637,9 @@ impl NeutralRegionBuilder {
             .checked_mul(std::mem::size_of::<Option<bool>>())
             .ok_or_else(|| resource(&original.path, "original F1 proof cache bytes overflow"))?;
         if cache_entries > MAX_REGION_NODES + 1
-            || u64::try_from(cache_bytes).ok().is_none_or(|bytes| bytes > self.max_buffer_bytes)
+            || u64::try_from(cache_bytes)
+                .ok()
+                .is_none_or(|bytes| bytes > self.max_buffer_bytes)
         {
             return Err(resource(
                 &original.path,
@@ -645,9 +647,8 @@ impl NeutralRegionBuilder {
             ));
         }
         let mut memo = Vec::<Option<bool>>::new();
-        memo.try_reserve_exact(cache_entries).map_err(|_| {
-            resource(&original.path, "original F1 proof cache allocation failed")
-        })?;
+        memo.try_reserve_exact(cache_entries)
+            .map_err(|_| resource(&original.path, "original F1 proof cache allocation failed"))?;
         memo.resize(cache_entries, None);
         let mut remaining_visits = MAX_REGION_NODES;
         if !Self::polygonal_source_proven(original, &mut remaining_visits, &mut memo)? {
@@ -1229,17 +1230,17 @@ mod tests {
         // NOT 8191 visits through duplicated immutable Arc branches.
         let mut memo = [None; 14];
         let mut visits = 13;
-        assert!(NeutralRegionBuilder::polygonal_source_proven(
-            &shared, &mut visits, &mut memo,
-        )
-        .unwrap());
+        assert!(
+            NeutralRegionBuilder::polygonal_source_proven(&shared, &mut visits, &mut memo,)
+                .unwrap()
+        );
         assert_eq!(visits, 0);
         assert!(memo[1..14].iter().all(|entry| *entry == Some(true)));
         // Even a cached query with an exhausted budget remains deterministic.
-        assert!(NeutralRegionBuilder::polygonal_source_proven(
-            &shared, &mut visits, &mut memo,
-        )
-        .unwrap());
+        assert!(
+            NeutralRegionBuilder::polygonal_source_proven(&shared, &mut visits, &mut memo,)
+                .unwrap()
+        );
         let mut cold = [None; 14];
         let mut insufficient = 12;
         assert!(matches!(
