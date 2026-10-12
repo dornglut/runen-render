@@ -143,8 +143,7 @@ fn nested_affine_envelope(
     let y = Interval::new(bounds[1], bounds[3])
         .ok_or_else(|| precision(path, "nested affine y bounds are invalid"))?;
     let [a, b, c, d, tx, ty] = transform.components().map(Interval::scalar);
-    let [Some(a), Some(b), Some(c), Some(d), Some(tx), Some(ty)] = [a, b, c, d, tx, ty]
-    else {
+    let [Some(a), Some(b), Some(c), Some(d), Some(tx), Some(ty)] = [a, b, c, d, tx, ty] else {
         return Err(precision(path, "nested affine coefficients are not finite"));
     };
     let interval_x = a
@@ -183,7 +182,9 @@ fn nested_effect_envelope(
         return Ok(bounds);
     }
     let margin = Interval::scalar(effect.spread().max(0.0))
-        .and_then(|spread| spread.add(Interval::scalar(3.0)?.mul(Interval::scalar(effect.sigma())?)?))
+        .and_then(|spread| {
+            spread.add(Interval::scalar(3.0)?.mul(Interval::scalar(effect.sigma())?)?)
+        })
         .ok_or_else(|| precision(path, "nested effect halo is not representable"))?
         .hi;
     let pad = Interval::new(-margin, margin)
@@ -1176,7 +1177,10 @@ mod tests {
         let motion = Render2dAffineTransform::new(1.0, 0.0, 0.0, 1.0, tiny, 0.0).unwrap();
         let moved = builder.affine(combined, motion, &[6, 2]).unwrap();
         let bounds = moved.envelope.unwrap();
-        assert!(bounds[2] > 4.0, "nearest-rounded 4 + tiny would incorrectly remain 4");
+        assert!(
+            bounds[2] > 4.0,
+            "nearest-rounded 4 + tiny would incorrectly remain 4"
+        );
         assert!(bounds[0] <= tiny);
         assert!(bounds[1] <= 0.0 && bounds[3] >= 4.0);
     }
@@ -1186,16 +1190,17 @@ mod tests {
         let mut builder = builder();
         let src = builder.source(triangle(), &[7, 0]).unwrap();
         let tiny = 2.0_f64.powi(-54);
-        let offset = Render2dDropShadow::new(
-            tiny, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT
-        ).unwrap();
+        let offset =
+            Render2dDropShadow::new(tiny, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let moved = builder.effect(src, offset, &[7, 1]).unwrap();
         let bounds = moved.envelope.unwrap();
-        assert!(bounds[2] > 4.0, "outward effect reach must include sub-ULP translation");
+        assert!(
+            bounds[2] > 4.0,
+            "outward effect reach must include sub-ULP translation"
+        );
         assert!(bounds[0] <= tiny);
-        let blur = Render2dDropShadow::new(
-            0.0, 0.0, tiny, 0.0, Render2dColorRgba8::TRANSPARENT
-        ).unwrap();
+        let blur =
+            Render2dDropShadow::new(0.0, 0.0, tiny, 0.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let widened = builder.effect(moved, blur, &[7, 2]).unwrap();
         let reach = widened.envelope.unwrap();
         assert!(reach[0] < bounds[0] && reach[2] > bounds[2]);
@@ -1208,9 +1213,8 @@ mod tests {
             nested_affine_envelope(bounds, Render2dAffineTransform::IDENTITY, &[8]).unwrap(),
             bounds
         );
-        let zero = Render2dDropShadow::new(
-            0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT
-        ).unwrap();
+        let zero =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         assert_eq!(nested_effect_envelope(bounds, zero, &[8]).unwrap(), bounds);
     }
 
