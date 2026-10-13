@@ -43,8 +43,7 @@ fn certify_monotone_graph_mass(
     work_limit: usize,
     byte_limit: usize,
 ) -> Option<GraphMassProof> {
-    let mut batch =
-        certify_monotone_graph_batch(path, &[center], sigma, work_limit, byte_limit)?;
+    let mut batch = certify_monotone_graph_batch(path, &[center], sigma, work_limit, byte_limit)?;
     Some(GraphMassProof {
         interval: batch.intervals.pop()?,
         work: batch.work,
@@ -163,9 +162,7 @@ fn certify_monotone_graph_batch(
             last_x = Some(x);
             let support = cx.add(kernel)?;
             // Endpoint caps are not covered by this one-graph proof.
-            if support.lo <= controls[0][0]
-                || support.hi >= controls[size - 1][0]
-            {
+            if support.lo <= controls[0][0] || support.hi >= controls[size - 1][0] {
                 return None;
             }
             curve_slabs.clear();
@@ -189,8 +186,7 @@ fn certify_monotone_graph_batch(
             work -= SLAB_CHARGE;
             // The single interval-end CDF call rigorously encloses both
             // curve-y extrema: two separate calls are unnecessary.
-            let y_mass =
-                cdf.interval_mass(bottom, curve_y, y, sigma_interval, &mut work)?;
+            let y_mass = cdf.interval_mass(bottom, curve_y, y, sigma_interval, &mut work)?;
             mass = mass.add(x_mass.mul(y_mass)?)?;
         }
         let result = [mass.lo.max(0.0), mass.hi.min(1.0)];
@@ -339,14 +335,9 @@ mod tests {
         // traversal must cover both under one unchanged owner budget.
         let source = authored_graph(&[[10.0, 10.0], [30.0, 40.0], [50.0, 10.0]]);
         let centers = [[30.125, 25.125], [30.125, 24.875]];
-        let batch = certify_monotone_graph_batch(
-            &source,
-            &centers,
-            0.25,
-            MAX_SCENE_WORK,
-            MAX_PROOF_BYTES,
-        )
-        .expect("one x-column must share authored F1 curve and normalized CDF");
+        let batch =
+            certify_monotone_graph_batch(&source, &centers, 0.25, MAX_SCENE_WORK, MAX_PROOF_BYTES)
+                .expect("one x-column must share authored F1 curve and normalized CDF");
         let independent_masses = [0.304_003_920_263_388, 0.687_900_311_266_600];
         assert_eq!(batch.columns, 1);
         assert_eq!(batch.intervals.len(), centers.len());
@@ -359,24 +350,10 @@ mod tests {
 
         // No response is possible from a partial prepared sample plane.
         assert!(
-            certify_monotone_graph_batch(
-                &source,
-                &centers,
-                0.25,
-                100,
-                MAX_PROOF_BYTES,
-            )
-            .is_none()
+            certify_monotone_graph_batch(&source, &centers, 0.25, 100, MAX_PROOF_BYTES,).is_none()
         );
         assert!(
-            certify_monotone_graph_batch(
-                &source,
-                &centers,
-                0.25,
-                MAX_SCENE_WORK,
-                1_024,
-            )
-            .is_none()
+            certify_monotone_graph_batch(&source, &centers, 0.25, MAX_SCENE_WORK, 1_024,).is_none()
         );
     }
 
