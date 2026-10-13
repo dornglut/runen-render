@@ -94,12 +94,7 @@ impl Bezier {
             .all(|pair| pair[0][0].hi < pair[1][0].lo)
     }
 
-    fn graph_y_slab(
-        self,
-        x: Interval,
-        work: &mut usize,
-        depth: usize,
-    ) -> Option<Option<Interval>> {
+    fn graph_y_slab(self, x: Interval, work: &mut usize, depth: usize) -> Option<Option<Interval>> {
         if *work < WORK_PER_CURVE_NODE {
             *work = 0;
             return None;

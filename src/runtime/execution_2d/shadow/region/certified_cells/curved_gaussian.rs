@@ -10,9 +10,9 @@
 //! axis_gaussian; no duplicate raster/SDF/shape authority.
 //!
 //! This is feasibility evidence, NOT the production general evaluator.
+use super::Interval;
 use super::axis_gaussian::{MAX_PROOF_BYTES, MAX_SCENE_WORK, NormalizedGaussianCdf};
 use super::bezier_winding::certified_graph_y_slab;
-use super::Interval;
 
 const STRIPS: usize = 512;
 const SLAB_CHARGE: usize = 64;
@@ -90,8 +90,20 @@ fn certify_monotone_graph_mass(
             return None;
         }
         let x_mass = cdf.equal_strip_mass(strip, STRIPS, &mut work)?;
-        let y_lower = cdf.interval_mass(bottom, Interval::scalar(curve_y.lo)?, center[1], sigma_interval, &mut work)?;
-        let y_upper = cdf.interval_mass(bottom, Interval::scalar(curve_y.hi)?, center[1], sigma_interval, &mut work)?;
+        let y_lower = cdf.interval_mass(
+            bottom,
+            Interval::scalar(curve_y.lo)?,
+            center[1],
+            sigma_interval,
+            &mut work,
+        )?;
+        let y_upper = cdf.interval_mass(
+            bottom,
+            Interval::scalar(curve_y.hi)?,
+            center[1],
+            sigma_interval,
+            &mut work,
+        )?;
         lower = lower.add(Interval::scalar(x_mass.lo)?.mul(Interval::scalar(y_lower.lo)?)?)?;
         upper = upper.add(Interval::scalar(x_mass.hi)?.mul(Interval::scalar(y_upper.hi)?)?)?;
     }
@@ -171,35 +183,41 @@ mod tests {
             MAX_PROOF_BYTES,
         )
         .is_none());
-        assert!(certify_monotone_graph_mass(
-            &quadratic,
-            10.0,
-            [30.0, 25.0],
-            0.25,
-            MAX_SCENE_WORK,
-            1_024,
-        )
-        .is_none());
+        assert!(
+            certify_monotone_graph_mass(
+                &quadratic,
+                10.0,
+                [30.0, 25.0],
+                0.25,
+                MAX_SCENE_WORK,
+                1_024,
+            )
+            .is_none()
+        );
         // The supported proof is only the horizontal-chord topology.
-        assert!(certify_monotone_graph_mass(
-            &[[10.0, 10.0], [30.0, 0.0], [50.0, 10.0]],
-            10.0,
-            [30.0, 10.0],
-            0.25,
-            MAX_SCENE_WORK,
-            MAX_PROOF_BYTES,
-        )
-        .is_none());
+        assert!(
+            certify_monotone_graph_mass(
+                &[[10.0, 10.0], [30.0, 0.0], [50.0, 10.0]],
+                10.0,
+                [30.0, 10.0],
+                0.25,
+                MAX_SCENE_WORK,
+                MAX_PROOF_BYTES,
+            )
+            .is_none()
+        );
         // The caller cannot use an x-overhanging source as a certified
         // graph between this same pair of endpoints.
-        assert!(certify_monotone_graph_mass(
-            &[[10.0, 10.0], [60.0, 40.0], [50.0, 10.0]],
-            10.0,
-            [30.0, 25.0],
-            0.25,
-            MAX_SCENE_WORK,
-            MAX_PROOF_BYTES,
-        )
-        .is_none());
+        assert!(
+            certify_monotone_graph_mass(
+                &[[10.0, 10.0], [60.0, 40.0], [50.0, 10.0]],
+                10.0,
+                [30.0, 25.0],
+                0.25,
+                MAX_SCENE_WORK,
+                MAX_PROOF_BYTES,
+            )
+            .is_none()
+        );
     }
 }

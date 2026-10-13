@@ -144,8 +144,11 @@ impl NormalizedGaussianCdf {
         strips: usize,
         work: &mut usize,
     ) -> Option<Interval> {
-        if strips == 0 || !strips.is_power_of_two() || strips > BINS
-            || !BINS.is_multiple_of(strips) || strip >= strips
+        if strips == 0
+            || !strips.is_power_of_two()
+            || strips > BINS
+            || !BINS.is_multiple_of(strips)
+            || strip >= strips
         {
             return None;
         }
@@ -254,13 +257,11 @@ fn certify_rectangle_scene(
         xs.push(table.axis_coverage(rect.x(), rect.width(), center, sigma, &mut remaining)?);
         ys.push(table.axis_coverage(rect.y(), rect.height(), center, sigma, &mut remaining)?);
     }
-    let bytes = table
-        .peak_buffer_bytes()?
-        .checked_add(
-            xs.capacity()
-                .checked_add(ys.capacity())?
-                .checked_mul(std::mem::size_of::<Interval>())?,
-        )?;
+    let bytes = table.peak_buffer_bytes()?.checked_add(
+        xs.capacity()
+            .checked_add(ys.capacity())?
+            .checked_mul(std::mem::size_of::<Interval>())?,
+    )?;
     if bytes > max_bytes {
         return None;
     }
