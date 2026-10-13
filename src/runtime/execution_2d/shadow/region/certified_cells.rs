@@ -221,8 +221,13 @@ fn certify_straight_path(
     for command in commands {
         match *command {
             Render2dPathCommand::MoveTo(p) => {
-                if has_segment && add_edge(previous?, first?).is_none() {
-                    return CellCertificate::Unknown;
+                if has_segment {
+                    let (Some(a), Some(b)) = (previous, first) else {
+                        return CellCertificate::Unknown;
+                    };
+                    if add_edge(a, b).is_none() {
+                        return CellCertificate::Unknown;
+                    }
                 }
                 first = Some([p.x(), p.y()]);
                 previous = first;
@@ -230,15 +235,23 @@ fn certify_straight_path(
             }
             Render2dPathCommand::LineTo(p) => {
                 let to = [p.x(), p.y()];
-                if add_edge(previous?, to).is_none() {
+                let Some(from) = previous else {
+                    return CellCertificate::Unknown;
+                };
+                if add_edge(from, to).is_none() {
                     return CellCertificate::Unknown;
                 }
                 previous = Some(to);
                 has_segment = true;
             }
             Render2dPathCommand::Close => {
-                if has_segment && add_edge(previous?, first?).is_none() {
-                    return CellCertificate::Unknown;
+                if has_segment {
+                    let (Some(a), Some(b)) = (previous, first) else {
+                        return CellCertificate::Unknown;
+                    };
+                    if add_edge(a, b).is_none() {
+                        return CellCertificate::Unknown;
+                    }
                 }
                 previous = first;
                 has_segment = false;
@@ -247,8 +260,13 @@ fn certify_straight_path(
             | Render2dPathCommand::CubicTo { .. } => return CellCertificate::Unknown,
         }
     }
-    if has_segment && add_edge(previous?, first?).is_none() {
-        return CellCertificate::Unknown;
+    if has_segment {
+        let (Some(a), Some(b)) = (previous, first) else {
+            return CellCertificate::Unknown;
+        };
+        if add_edge(a, b).is_none() {
+            return CellCertificate::Unknown;
+        }
     }
     let inside = match path.fill_rule() {
         crate::composition_2d::Render2dFillRule::EvenOdd => winding % 2 != 0,
