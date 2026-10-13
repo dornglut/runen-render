@@ -850,6 +850,17 @@ impl NeutralRegionBuilder {
         let mut memo = Vec::<Option<bool>>::new();
         memo.try_reserve_exact(entries)
             .map_err(|_| resource(&root.path, "original F1 provenance allocation failed"))?;
+        if memo
+            .capacity()
+            .checked_mul(std::mem::size_of::<Option<bool>>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .is_none_or(|bytes| bytes > self.max_buffer_bytes)
+        {
+            return Err(resource(
+                &root.path,
+                "original F1 provenance allocated capacity exceeds bounded memory",
+            ));
+        }
         memo.resize(entries, None);
         let mut remaining = MAX_REGION_NODES;
         let proof = Self::polygonal_source_proven(root, &mut remaining, &mut memo)?;

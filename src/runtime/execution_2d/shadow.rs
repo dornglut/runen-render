@@ -463,15 +463,18 @@ fn group_child_sources_with_probe<'a>(
                         //
                         // Conservative L1 bound: any (dx,dy) in the halo
                         // has Euclidean norm <= |dx|+|dy| <= 6*sigma.
-                        // A zero-offset negative shadow with radius at
-                        // least 6*sigma is therefore already absorbed by
+                        // Require 8*sigma instead: multiplication by a
+                        // power of two is exact for finite representable
+                        // results, leaving slack against directed numeric
+                        // boundary rounding. The disk fully encloses the
+                        // halo, so the shadow is already absorbed by
                         // C for ancestor SUPPORT, regardless of paint
                         // color/opacity. Its own shadow paint is still
                         // evaluated and independently budgeted below.
                         if effect.spread() < 0.0
                             && effect.offset_x() == 0.0
                             && effect.offset_y() == 0.0
-                            && -effect.spread() >= 6.0 * effect.sigma()
+                            && -effect.spread() >= 8.0 * effect.sigma()
                         {
                             continue;
                         }

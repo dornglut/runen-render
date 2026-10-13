@@ -1429,7 +1429,7 @@ fn nested_nonconvex_finite_erosion_dominated_by_original_source_renders_on_vulka
     // Original F1 alpha-zero concave L, made of two exact rectangles.
     // Its inner visible red shadow uses Euclidean radius-1 erosion
     // followed by normalized finite sigma=.1 Gaussian. The 3sigma
-    // square lies inside radius-1 disk (conservative bound 6sigma<1):
+    // square lies inside radius-1 disk (admission bound 8sigma<1):
     // the entire blurred eroded shadow support is contained in C.
     // Thus outer blue shadows consume exactly C, not the inner alpha,
     // a sampled mask, the eroded contour or a bounding rectangle.
@@ -1488,7 +1488,7 @@ fn nested_holed_finite_erosion_dominated_by_original_source_renders_on_vulkan() 
     // Original transparent F1 ring: the interior hole is genuine exterior.
     // Signed Euclidean disk erosion r=1 followed by finite sigma=.1
     // creates curved physical coverage, but the conservative 6sigma<=r
-    // support containment proof means its entire completed shadow is
+    // 8sigma support containment proof means its entire completed shadow is
     // still inside C. The ancestor's separate blue shadow MUST consume C,
     // including the hole, never a source alpha mask or AABB.
     let inner = Render2dEntry::group(Render2dGroup::new(
