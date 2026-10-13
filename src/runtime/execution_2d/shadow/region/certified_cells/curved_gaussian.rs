@@ -163,7 +163,7 @@ fn certify_monotone_graph_mass(
 mod tests {
     use super::*;
 
-    use super::super::axis_gaussian::{AXIS_WORK, BINS, BIN_WORK};
+    use super::super::axis_gaussian::{AXIS_WORK, BIN_WORK, BINS};
     use crate::composition_2d::{Render2dFillRule, Render2dPoint};
 
     fn authored_graph(points: &[[f64; 2]]) -> Render2dPath {
@@ -270,9 +270,7 @@ mod tests {
         // 16,777,216 owner-scene model budget. This does NOT exclude a
         // different batched/row-shared algorithm.
         let shared_cdf = BINS.checked_mul(BIN_WORK).unwrap();
-        let per_site = STRIPS
-            .checked_mul(SLAB_CHARGE + 2 * AXIS_WORK)
-            .unwrap();
+        let per_site = STRIPS.checked_mul(SLAB_CHARGE + 2 * AXIS_WORK).unwrap();
         let optimistic_minimum = shared_cdf
             .checked_add(mixed_sites.checked_mul(per_site).unwrap())
             .unwrap();
