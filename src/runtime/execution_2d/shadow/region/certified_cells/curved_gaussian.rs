@@ -408,14 +408,8 @@ mod tests {
         // whole-scene sample subset under unchanged aggregate admission,
         // never exposing early partial coverage as a valid color plane.
         assert!(
-            certify_monotone_graph_batch(
-                &source,
-                &centers,
-                0.25,
-                MAX_SCENE_WORK,
-                MAX_PROOF_BYTES,
-            )
-            .is_none()
+            certify_monotone_graph_batch(&source, &centers, 0.25, MAX_SCENE_WORK, MAX_PROOF_BYTES,)
+                .is_none()
         );
     }
 
