@@ -3598,7 +3598,7 @@ mod tests {
         let error = affine_parent_effect_coverage_admitted(
             &mesh,
             ParentEffectKernel {
-                positive_spread: 0.0,
+                signed_spread: 0.0,
                 sigma: 0.25,
             },
             ParentEffectFrame {

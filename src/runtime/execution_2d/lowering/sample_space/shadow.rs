@@ -315,8 +315,7 @@ pub(super) fn prepare(
                     &mut aggregate_coverage_work,
                 )? {
                     Some(convex) => Some(convex),
-                    None if original_rectangles && axis_isometry =>
-                    {
+                    None if original_rectangles && axis_isometry => {
                         // Signed axis permutation plus translation commutes
                         // with signed Euclidean disks AND the finite square
                         // Gaussian, preserving the
@@ -368,8 +367,7 @@ pub(super) fn prepare(
                 })?;
             let coverage = if let Some(ancestor) = parent_affine {
                 if affine_negative
-                    || (remaining_spread >= 0.0
-                        && (effect.sigma() > 0.0 || remaining_spread > 0.0))
+                    || (remaining_spread >= 0.0 && (effect.sigma() > 0.0 || remaining_spread > 0.0))
                 {
                     let [a, b, c, d, _, _] = ancestor.components();
                     let determinant = a.mul_add(d, -(b * c));

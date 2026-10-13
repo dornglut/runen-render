@@ -1668,7 +1668,11 @@ fn nested_nonconvex_negative_gaussian_under_shear_matches_independent_vulkan_ora
         Vec::new(),
         Render2dOpacity::OPAQUE,
         vec![effect(
-            0.0, 0.0, 0.1, -1.0, Render2dColorRgba8::new(255, 0, 0, 255),
+            0.0,
+            0.0,
+            0.1,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
         )],
     ));
     let outer = Render2dEntry::group(Render2dGroup::new(
@@ -1679,7 +1683,11 @@ fn nested_nonconvex_negative_gaussian_under_shear_matches_independent_vulkan_ora
         Vec::new(),
         Render2dOpacity::OPAQUE,
         vec![effect(
-            0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 255),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
         )],
     ));
     let scene = Render2dComposition::new(vec![outer]).unwrap();
