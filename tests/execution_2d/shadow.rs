@@ -1483,7 +1483,7 @@ fn nested_nonconvex_finite_erosion_dominated_by_original_source_renders_on_vulka
 }
 
 #[test]
-fn nested_nonconvex_disk_erosion_rejects_with_authored_path_before_gpu_work() {
+fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
         vec![
@@ -1493,8 +1493,11 @@ fn nested_nonconvex_disk_erosion_rejects_with_authored_path_before_gpu_work() {
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::OPAQUE,
+        // Shifted erosion is NOT a subset of the original C, so a
+        // nonconvex nested region without a general symbolic consumer
+        // must remain UnsupportedEntry with the exact F1 owner path.
         vec![effect(
-            0.0,
+            0.5,
             0.0,
             0.0,
             -0.25,
@@ -1518,7 +1521,7 @@ fn nested_nonconvex_disk_erosion_rejects_with_authored_path_before_gpu_work() {
         &target,
     );
     let failure = match result {
-        Ok(_) => panic!("nonconvex disk erosion cannot become a convex rectangle"),
+        Ok(_) => panic!("nonabsorbed shifted nonconvex erosion must not become a fake rectangle"),
         Err(error) => error,
     };
     assert!(matches!(
