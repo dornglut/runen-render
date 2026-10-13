@@ -1042,13 +1042,29 @@ impl NeutralRegionBuilder {
                         return Err(unsupported(path));
                     }
                     let erased = if effect.spread() < 0.0 {
-                        support::certified_convex_erosion_mesh(
+                        // Source-proven, strictly disconnected rectangles
+                        // admit exact per-component disk erosion without
+                        // spending the general O(triangles^2) arrangement.
+                        let separated = support::certified_separated_rectangles_erosion_mesh(
                             &mesh,
                             -effect.spread(),
                             path,
                             &mut self.erosion_work,
-                        )?
-                        .ok_or_else(|| unsupported(path))?
+                        )?;
+                        if let Some(separated) = separated {
+                            separated
+                        } else {
+                            // Touching, overlapping, rotated or otherwise
+                            // unqualified sources retain the existing exact
+                            // convex proof and its typed fallback.
+                            support::certified_convex_erosion_mesh(
+                                &mesh,
+                                -effect.spread(),
+                                path,
+                                &mut self.erosion_work,
+                            )?
+                            .ok_or_else(|| unsupported(path))?
+                        }
                     } else {
                         shadow::empty_mesh()
                     };

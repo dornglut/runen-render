@@ -2236,6 +2236,136 @@ pub(super) fn certified_convex_erosion_mesh(
     Ok(Some(result))
 }
 
+/// Qualify an exact signed Euclidean erosion of multiple disconnected,
+/// original-F1-proven axis-aligned rectangles. The caller MUST first prove
+/// that every physical source rectangle corresponds to its original F1 item.
+///
+/// A Euclidean disk is connected: if closed rectangles are separated by a
+/// strictly positive gap, any disk contained in their union lies entirely in
+/// ONE rectangle. Therefore erosion distributes across these components,
+/// and the exact eroded regions are inset rectangles. Touching/overlapping
+/// rectangles, facets, foreign transforms and uncertain separation reject.
+/// This is disposable geometry, never a source-neutral semantic authority.
+pub(super) fn certified_separated_rectangles_erosion_mesh(
+    source: &NeutralMesh,
+    radius: f64,
+    path: &[usize],
+    aggregate_work: &mut usize,
+) -> Result<Option<NeutralMesh>, crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
+    if !radius.is_finite()
+        || radius <= 0.0
+        || !source.units_per_parent_logical_unit.is_finite()
+        || source.units_per_parent_logical_unit <= 0.0
+    {
+        return Err(precision("separated F1 rectangle erosion parameters invalid"));
+    }
+    if source.triangles.len() < 12 || !source.triangles.len().is_multiple_of(6) {
+        return Ok(None);
+    }
+    let count = source.triangles.len() / 6;
+    // An unchanged 16M invocation budget bounds BOTH full input
+    // inspection and quadratic pairwise component-separation admission.
+    let charge = count
+        .checked_mul(count)
+        .and_then(|n| n.checked_add(source.triangles.len()))
+        .ok_or_else(|| resource("separated rectangle erosion work overflow"))?;
+    let next = aggregate_work
+        .checked_add(charge)
+        .ok_or_else(|| resource("separated rectangle scene work overflow"))?;
+    if next > MAX_CERTIFIED_RECTANGLE_AXIS_WORK {
+        return Err(resource(
+            "separated rectangle erosion exceeds 16M scene work",
+        ));
+    }
+    charge_shadow_preparation_work(aggregate_work, charge, path)?;
+    let mut rectangles = Vec::<[f64; 4]>::new();
+    rectangles
+        .try_reserve_exact(count)
+        .map_err(|_| resource("separated rectangle proof allocation failed"))?;
+    let mut largest = 0.0_f64;
+    for triangles in source.triangles.chunks_exact(6) {
+        let Some(bounds) = certified_axis_aligned_rectangle(triangles) else {
+            return Ok(None);
+        };
+        let rect = bounds.map(|x| x / source.units_per_parent_logical_unit);
+        if !rect.iter().all(|value| value.is_finite()) {
+            return Err(precision("separated rectangle normalization lost precision"));
+        }
+        largest = rect.iter().fold(largest, |max, x| max.max(x.abs()));
+        rectangles.push(rect);
+    }
+    if radius <= largest * (16.0 * f64::EPSILON) {
+        return Err(precision(
+            "separated rectangle erosion radius below coordinate precision",
+        ));
+    }
+    // Strict outward margin ensures near-touching floating geometries do
+    // not masquerade as topologically disconnected original rectangles.
+    let separation_margin = largest.max(1.0) * (16.0 * f64::EPSILON);
+    if !separation_margin.is_finite() {
+        return Err(precision("separated rectangle distance lost precision"));
+    }
+    for (index, a) in rectangles.iter().enumerate() {
+        for b in rectangles.iter().skip(index + 1) {
+            if !(a[2] + separation_margin < b[0]
+                || b[2] + separation_margin < a[0]
+                || a[3] + separation_margin < b[1]
+                || b[3] + separation_margin < a[1])
+            {
+                return Ok(None);
+            }
+        }
+    }
+    let mut result = NeutralMesh {
+        units_per_parent_logical_unit: 1.0,
+        triangles: Vec::new(),
+        bounds: [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+    };
+    let maximum_vertices = count
+        .checked_mul(6)
+        .ok_or_else(|| resource("separated rectangle output count overflow"))?;
+    if maximum_vertices > MAX_NEUTRAL_MASK_SAMPLES {
+        return Err(resource("separated rectangle output exceeds vertex limit"));
+    }
+    result
+        .triangles
+        .try_reserve_exact(maximum_vertices)
+        .map_err(|_| resource("separated rectangle output allocation failed"))?;
+    for [x0, y0, x1, y1] in rectangles {
+        let inset = [x0 + radius, y0 + radius, x1 - radius, y1 - radius];
+        if !inset.iter().all(|value| value.is_finite()) {
+            return Err(precision("separated rectangle inset lost precision"));
+        }
+        if inset[0] >= inset[2] || inset[1] >= inset[3] {
+            continue;
+        }
+        let [left, top, right, bottom] = inset;
+        for point in [
+            [left, top],
+            [right, top],
+            [left, bottom],
+            [right, top],
+            [right, bottom],
+            [left, bottom],
+        ] {
+            result.bounds[0] = result.bounds[0].min(point[0]);
+            result.bounds[1] = result.bounds[1].min(point[1]);
+            result.bounds[2] = result.bounds[2].max(point[0]);
+            result.bounds[3] = result.bounds[3].max(point[1]);
+            result.triangles.push(point);
+        }
+    }
+    Ok(Some(result))
+}
+
 /// Certify that the complete triangle UNION is exactly one axis-aligned
 /// rectangle. Each nondegenerate triangle must use three distinct rectangle
 /// corners; two triangles missing opposite corners cover the whole rectangle.
@@ -3471,6 +3601,67 @@ mod tests {
                 ..
             }) if path == [7]
         ));
+    }
+
+    #[test]
+    fn disjoint_original_rectangles_have_exact_nonabsorbed_erosion() {
+        // Original-F1 rectangle provenance is established by the caller.
+        // The physical representation is exactly two separated rectangles.
+        let one = |x: f64| -> Vec<[f64; 2]> {
+            vec![
+                [x, 10.0],
+                [x + 4.0, 10.0],
+                [x, 14.0],
+                [x + 4.0, 10.0],
+                [x + 4.0, 14.0],
+                [x, 14.0],
+            ]
+        };
+        let mut triangles = one(10.0);
+        triangles.extend(one(22.0));
+        let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles,
+            bounds: [10.0, 10.0, 26.0, 14.0],
+        };
+        let mut work = 0;
+        let exact = certified_separated_rectangles_erosion_mesh(&mesh, 0.5, &[0, 0], &mut work)
+            .unwrap()
+            .expect("separated original rectangles admit exact erosion");
+        assert!(work > 0);
+        assert_eq!(exact.triangles.len(), 12);
+        assert_eq!(neutral_union_distance(&exact.triangles, [11.0, 11.0]), 0.0);
+        assert_eq!(neutral_union_distance(&exact.triangles, [23.0, 11.0]), 0.0);
+        assert!(neutral_union_distance(&exact.triangles, [18.0, 11.0]) > 0.0);
+        assert!(neutral_union_distance(&exact.triangles, [10.25, 11.0]) > 0.0);
+
+        // A source gap lost at the geometry precision boundary cannot
+        // assert disconnectedness merely because it was triangulated.
+        let mut touching = one(10.0);
+        touching.extend(one(14.0));
+        let touching = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: touching,
+            bounds: [10.0, 10.0, 18.0, 14.0],
+        };
+        let mut budget = 0;
+        assert!(
+            certified_separated_rectangles_erosion_mesh(&touching, 0.5, &[0, 1], &mut budget)
+                .unwrap()
+                .is_none()
+        );
+
+        // The 16M scene-work limit is retained with atomic rejection.
+        let mut exhausted = MAX_CERTIFIED_RECTANGLE_AXIS_WORK;
+        assert!(matches!(
+            certified_separated_rectangles_erosion_mesh(&mesh, 0.5, &[5, 4], &mut exhausted),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [5, 4]
+        ));
+        assert_eq!(exhausted, MAX_CERTIFIED_RECTANGLE_AXIS_WORK);
     }
 
     #[test]

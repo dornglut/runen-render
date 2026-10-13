@@ -1955,6 +1955,63 @@ fn nested_nonconvex_sigma_zero_erosion_does_not_silently_admit_ancestor_shear() 
 }
 
 #[test]
+fn nested_nonabsorbed_disjoint_eroded_shadow_casts_ancestor_on_vulkan() {
+    let Some(context) = context() else { return };
+    // Two original, strictly separated alpha-zero F1 rectangles:
+    // A=[10,14]x[10,14], B=[22,26]x[10,14].
+    // Exact disk erosion of radius .5 distributes over disconnected
+    // components, yielding inset rectangles. Offset +6 and finite sigma
+    // .1 produce support envelopes [16.2,19.8] and [28.2,31.8].
+    // Neither envelope is contained in the original C.
+    let child = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 4.0, 4.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 22.0, 10.0, 4.0, 4.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(
+            6.0,
+            0.0,
+            0.1,
+            -0.5,
+            Render2dColorRgba8::TRANSPARENT,
+        )],
+    ));
+    let composition = group(
+        vec![child],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+        1.0,
+    );
+    let result = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F genuinely nonabsorbed shifted child erosion casts blue ancestor from exact neutral support",
+    );
+    // Each of the 16 correlated 4x4 sample CELLS contributes its
+    // exact geometric AREA, not a binary hit at its sample center.
+    // The x=16 row consists of four cells of width .25. The first
+    // [16,16.25] is covered over .05, the other three are fully inside
+    // the exact support envelope x>=16.2. All y cells are interior:
+    // (0.05+3*0.25)/1=0.8 linear coverage, independent premul-sRGB8
+    // blue=231, alpha=204.
+    pixel_near(pixel(&result, 16, 11), [0, 0, 231, 204]);
+    assert_eq!(pixel(&result, 17, 11), [0, 0, 255, 255]);
+    assert_eq!(pixel(&result, 29, 11), [0, 0, 255, 255]);
+    assert_eq!(pixel(&result, 11, 11), [0, 0, 255, 255]);
+    assert_eq!(pixel(&result, 20, 11), [0, 0, 0, 0]);
+}
+
+#[test]
 fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
