@@ -17,6 +17,7 @@ pub(super) const MAX_PROOF_BYTES: usize = 1_048_576;
 
 pub(super) struct NormalizedGaussianCdf {
     prefix: Vec<Interval>,
+    bin_masses: Vec<Interval>,
     normalization: Interval,
 }
 
@@ -36,6 +37,8 @@ impl NormalizedGaussianCdf {
         *work -= charge;
         let mut prefix = Vec::new();
         prefix.try_reserve_exact(BINS + 1).ok()?;
+        let mut bin_masses = Vec::new();
+        bin_masses.try_reserve_exact(BINS).ok()?;
         let mut cumulative = Interval::scalar(0.0)?;
         prefix.push(cumulative);
         let zero = Interval::scalar(0.0)?;
@@ -46,7 +49,9 @@ impl NormalizedGaussianCdf {
             // enclosure over its entire exact coordinate range.
             let coordinates = Interval::new(Self::knot(i), Self::knot(i + 1))?;
             let density = gaussian_density_enclosure(coordinates, zero)?;
-            cumulative = cumulative.add(density.mul(width)?)?;
+            let mass = density.mul(width)?;
+            cumulative = cumulative.add(mass)?;
+            bin_masses.push(mass);
             prefix.push(cumulative);
         }
         if cumulative.lo <= 0.0 {
@@ -54,6 +59,7 @@ impl NormalizedGaussianCdf {
         }
         Some(Self {
             prefix,
+            bin_masses,
             normalization: cumulative,
         })
     }
@@ -128,9 +134,41 @@ impl NormalizedGaussianCdf {
         Interval::new(mass.lo.max(0.0), mass.hi.min(1.0))
     }
 
+    /// Avoid dependent-prefix subtraction for an exact CDF grid-aligned
+    /// x-slab: sums ORIGINAL cached 1D Gaussian bin enclosures directly.
+    /// Separate prefix subtraction would compound uncertainty over every
+    /// earlier bin and fail the boundary precision gate.
+    pub(super) fn equal_strip_mass(
+        &self,
+        strip: usize,
+        strips: usize,
+        work: &mut usize,
+    ) -> Option<Interval> {
+        if strips == 0 || !strips.is_power_of_two() || strips > BINS
+            || !BINS.is_multiple_of(strips) || strip >= strips
+        {
+            return None;
+        }
+        let per_strip = BINS / strips;
+        let charge = per_strip.checked_mul(8)?;
+        if *work < charge {
+            *work = 0;
+            return None;
+        }
+        *work -= charge;
+        let first = strip.checked_mul(per_strip)?;
+        let mut mass = Interval::scalar(0.0)?;
+        for bin in &self.bin_masses[first..first.checked_add(per_strip)?] {
+            mass = mass.add(*bin)?;
+        }
+        let normalized = mass.div(self.normalization)?;
+        Interval::new(normalized.lo.max(0.0), normalized.hi.min(1.0))
+    }
+
     pub(super) fn peak_buffer_bytes(&self) -> Option<usize> {
         self.prefix
             .capacity()
+            .checked_add(self.bin_masses.capacity())?
             .checked_mul(std::mem::size_of::<Interval>())
     }
 

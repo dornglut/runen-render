@@ -84,13 +84,7 @@ fn certify_monotone_graph_mass(
             // entire slab; this proof would not apply to that topology.
             return None;
         }
-        let x_mass = cdf.interval_mass(
-            Interval::scalar(x0)?,
-            Interval::scalar(x1)?,
-            0.0,
-            one,
-            &mut work,
-        )?;
+        let x_mass = cdf.equal_strip_mass(strip, STRIPS, &mut work)?;
         let y_lower = cdf.interval_mass(bottom, Interval::scalar(curve_y.lo)?, center[1], sigma_interval, &mut work)?;
         let y_upper = cdf.interval_mass(bottom, Interval::scalar(curve_y.hi)?, center[1], sigma_interval, &mut work)?;
         lower = lower.add(Interval::scalar(x_mass.lo)?.mul(Interval::scalar(y_lower.lo)?)?)?;
