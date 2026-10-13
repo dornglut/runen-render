@@ -61,11 +61,13 @@ impl Bezier {
         levels[0] = self.controls;
         for level in 1..=self.degree {
             for j in 0..=self.degree - level {
-                for axis in 0..2 {
-                    levels[level][j][axis] = levels[level - 1][j][axis]
+                let mut next = [zero; 2];
+                for (axis, coordinate) in next.iter_mut().enumerate() {
+                    *coordinate = levels[level - 1][j][axis]
                         .add(levels[level - 1][j + 1][axis])?
                         .mul(half)?;
                 }
+                levels[level][j] = next;
             }
         }
         let mut left = [[zero; 2]; 4];
