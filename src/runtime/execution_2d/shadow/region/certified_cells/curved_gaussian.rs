@@ -56,6 +56,11 @@ fn certify_monotone_graph_mass(
     if support.lo <= controls[0][0] || support.hi >= controls[controls.len() - 1][0] {
         return None;
     }
+    // This is a lower bound on the retained binary64 interval buffers.
+    // Reject impossible byte budgets BEFORE the shared CDF allocation.
+    if byte_limit < (16_384 * 2 + 1) * std::mem::size_of::<Interval>() {
+        return None;
+    }
     let mut work = work_limit;
     let cdf = NormalizedGaussianCdf::new(&mut work)?;
     let peak_bytes = cdf.peak_buffer_bytes()?;

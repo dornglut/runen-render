@@ -255,9 +255,7 @@ fn certify_rectangle_scene(
         ys.push(table.axis_coverage(rect.y(), rect.height(), center, sigma, &mut remaining)?);
     }
     let bytes = table
-        .prefix
-        .capacity()
-        .checked_mul(std::mem::size_of::<Interval>())?
+        .peak_buffer_bytes()?
         .checked_add(
             xs.capacity()
                 .checked_add(ys.capacity())?
