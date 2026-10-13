@@ -298,9 +298,18 @@ mod tests {
                 ],
             )
             .unwrap();
-            assert_eq!(query(&path, [25.0, 17.0, 27.0, 19.0]), CellCertificate::Inside);
-            assert_eq!(query(&path, [25.0, 34.0, 27.0, 36.0]), CellCertificate::Outside);
-            assert_eq!(query(&path, [60.0, 15.0, 62.0, 17.0]), CellCertificate::Outside);
+            assert_eq!(
+                query(&path, [25.0, 17.0, 27.0, 19.0]),
+                CellCertificate::Inside
+            );
+            assert_eq!(
+                query(&path, [25.0, 34.0, 27.0, 36.0]),
+                CellCertificate::Outside
+            );
+            assert_eq!(
+                query(&path, [60.0, 15.0, 62.0, 17.0]),
+                CellCertificate::Outside
+            );
         }
     }
 
@@ -329,8 +338,14 @@ mod tests {
             ];
             let even = Render2dPath::new(Render2dFillRule::EvenOdd, base.clone()).unwrap();
             let nonzero = Render2dPath::new(Render2dFillRule::NonZero, base).unwrap();
-            assert_eq!(query(&even, [30.0, 20.0, 32.0, 22.0]), CellCertificate::Outside);
-            assert_eq!(query(&nonzero, [30.0, 20.0, 32.0, 22.0]), CellCertificate::Inside);
+            assert_eq!(
+                query(&even, [30.0, 20.0, 32.0, 22.0]),
+                CellCertificate::Outside
+            );
+            assert_eq!(
+                query(&nonzero, [30.0, 20.0, 32.0, 22.0]),
+                CellCertificate::Inside
+            );
             assert_eq!(query(&even, [3.0, 3.0, 5.0, 5.0]), CellCertificate::Inside);
         }
     }
