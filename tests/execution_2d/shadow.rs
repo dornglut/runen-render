@@ -1122,14 +1122,13 @@ fn root_nonempty_curved_erosion_never_uses_disposable_convex_mesh() {
     assert!(
         matches!(
             &error,
-            Render2dExecutionError::UnsupportedEntry {
-                path,
-                kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
+            Render2dExecutionError::UnsupportedContent(
+                runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
                     root_index: 0,
                 },
-            } if path == &[0]
+            )
         ),
-        "root original-F1 curved erosion must reject with authored path: {error:?}"
+        "root original-F1 curved erosion must use the canonical root error: {error:?}"
     );
     drop(texture);
 }
