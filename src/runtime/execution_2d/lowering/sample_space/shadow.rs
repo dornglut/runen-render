@@ -298,12 +298,11 @@ pub(super) fn prepare(
                     &mut aggregate_coverage_work,
                 )? {
                     Some(convex) => Some(convex),
-                    None
-                        if original_rectangles
-                            && parent_affine.is_some_and(|ancestor| {
-                                let [a, b, c, d, _, _] = ancestor.components();
-                                a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0
-                            }) =>
+                    None if original_rectangles
+                        && parent_affine.is_some_and(|ancestor| {
+                            let [a, b, c, d, _, _] = ancestor.components();
+                            a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0
+                        }) =>
                     {
                         // Translation commutes with signed Euclidean disks
                         // and the finite square Gaussian. Preserve the
