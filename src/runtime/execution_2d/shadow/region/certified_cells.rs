@@ -1462,6 +1462,84 @@ fn authored_concave_and_holed_straight_paths_certify_actual_fill_rules_without_m
     assert_eq!(query(&open, [8.0, 8.0, 9.0, 9.0]), CellCertificate::Outside);
 }
 
+fn shared_authored_path_scene_certificate(commands: Vec<Render2dPathCommand>) {
+    use crate::composition_2d::{
+        Render2dBrush, Render2dColorRgba8, Render2dFillRule, Render2dOpacity, Render2dPath,
+    };
+    let path = Render2dPath::new(Render2dFillRule::EvenOdd, commands).unwrap();
+    let item = Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::path(path),
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    );
+    // The disposable physical triangles DELIBERATELY disagree with F1 path
+    // semantics. A proven inside/outside result must come from the path.
+    let fake_mesh = support::NeutralMesh {
+        units_per_parent_logical_unit: 1.0,
+        triangles: vec![
+            [0.0, 0.0],
+            [64.0, 0.0],
+            [64.0, 64.0],
+            [0.0, 0.0],
+            [64.0, 64.0],
+            [0.0, 64.0],
+        ],
+        bounds: [0.0, 0.0, 64.0, 64.0],
+    };
+    let mut graph = builder();
+    let source = graph.source_from_item(fake_mesh, &item, &[0]).unwrap();
+    let mut remaining = MAX_REGION_GRAPH_WORK;
+    let report = certified_shared_tile_quadtree(&source, 64, 8, 0.1, 5_440, &mut remaining)
+        .expect("source-authoritative shared tile classification must fit the unchanged budget");
+    assert_eq!(
+        report.inside_samples + report.outside_samples + report.unresolved_samples,
+        64 * 64 * 16
+    );
+    assert!(report.inside_samples > 0, "no original-path interiors proven");
+    assert!(report.outside_samples > 0, "no original-path exteriors proven");
+    assert!(report.unresolved_samples > 0, "boundary uncertainty was erased");
+    assert!(report.queries < 2_000, "not enough tile-level sharing");
+    let charged = MAX_REGION_GRAPH_WORK - remaining;
+    assert!(charged < 4_000_000, "scene-shared feasibility must avoid per-site query cost");
+}
+
+#[test]
+fn concave_f1_path_whole_scene_gaussian_tiles_share_certified_support() {
+    use crate::composition_2d::Render2dPoint;
+    let p = |x, y| Render2dPoint::new(x, y).unwrap();
+    shared_authored_path_scene_certificate(vec![
+        Render2dPathCommand::MoveTo(p(8.0, 8.0)),
+        Render2dPathCommand::LineTo(p(48.0, 8.0)),
+        Render2dPathCommand::LineTo(p(48.0, 20.0)),
+        Render2dPathCommand::LineTo(p(20.0, 20.0)),
+        Render2dPathCommand::LineTo(p(20.0, 48.0)),
+        Render2dPathCommand::LineTo(p(8.0, 48.0)),
+        Render2dPathCommand::Close,
+    ]);
+}
+
+#[test]
+fn holed_f1_path_whole_scene_gaussian_tiles_share_certified_support() {
+    use crate::composition_2d::Render2dPoint;
+    let p = |x, y| Render2dPoint::new(x, y).unwrap();
+    shared_authored_path_scene_certificate(vec![
+        Render2dPathCommand::MoveTo(p(8.0, 8.0)),
+        Render2dPathCommand::LineTo(p(56.0, 8.0)),
+        Render2dPathCommand::LineTo(p(56.0, 56.0)),
+        Render2dPathCommand::LineTo(p(8.0, 56.0)),
+        Render2dPathCommand::Close,
+        Render2dPathCommand::MoveTo(p(24.0, 24.0)),
+        Render2dPathCommand::LineTo(p(40.0, 24.0)),
+        Render2dPathCommand::LineTo(p(40.0, 40.0)),
+        Render2dPathCommand::LineTo(p(24.0, 40.0)),
+        Render2dPathCommand::Close,
+    ]);
+}
+
 #[test]
 fn linear_winding_certificate_fails_closed_at_exact_global_fuel_boundary() {
     use crate::composition_2d::{Render2dFillRule, Render2dPath, Render2dPoint};
