@@ -4716,10 +4716,8 @@ mod tests {
                     for dx in -1_i32..=1 {
                         let wx = kernel.weights[dx.unsigned_abs() as usize];
                         let wy = kernel.weights[dy.unsigned_abs() as usize];
-                        let sample = eroded_l_membership(
-                            x + f64::from(dx) * 0.25,
-                            y + f64::from(dy) * 0.25,
-                        );
+                        let sample =
+                            eroded_l_membership(x + f64::from(dx) * 0.25, y + f64::from(dy) * 0.25);
                         sum += wx * wy * sample;
                     }
                 }
