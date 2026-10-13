@@ -28,19 +28,25 @@ impl LinearXCurve {
             return None;
         }
         *fuel -= charge;
-        let [Render2dPathCommand::MoveTo(start),
+        let [
+            Render2dPathCommand::MoveTo(start),
             Render2dPathCommand::QuadraticTo { control, to },
-            Render2dPathCommand::Close] = commands else {
+            Render2dPathCommand::Close,
+        ] = commands
+        else {
             return None;
         };
         let [x0, x1, x2] = [start.x(), control.x(), to.x()];
         // Integral binary64 coordinates up to 2^40 have exact 2x and sums.
         // Hence this proves the ORIGINAL quadratic's x(t) is affine,
         // without assuming rounded equality or replacing its F1 source.
-        if ![x0, x1, x2].into_iter().all(|x| x.is_finite()
-            && x.fract() == 0.0 && x.abs() <= (1_u64 << 40) as f64)
-            || x2 <= x0 || 2.0 * x1 != x0 + x2
-            || start.y() != to.y() {
+        if ![x0, x1, x2]
+            .into_iter()
+            .all(|x| x.is_finite() && x.fract() == 0.0 && x.abs() <= (1_u64 << 40) as f64)
+            || x2 <= x0
+            || 2.0 * x1 != x0 + x2
+            || start.y() != to.y()
+        {
             return None;
         }
         let two = Interval::scalar(2.0)?;
@@ -68,7 +74,10 @@ impl LinearXCurve {
         // Mean-value theorem enclosure for EXACT polynomial
         // y(t)=a+b*t+c*t²: y(mid)+(b+2*c*[tlo,thi])*([tlo,thi]-mid).
         let mid = Interval::scalar(t.lo * 0.5 + t.hi * 0.5)?;
-        let ymid = self.a.add(self.b.mul(mid)?)?.add(self.c.mul(mid.mul(mid)?)?)?;
+        let ymid = self
+            .a
+            .add(self.b.mul(mid)?)?
+            .add(self.c.mul(mid.mul(mid)?)?)?;
         let slope = self.b.add(Interval::scalar(2.0)?.mul(self.c)?.mul(t)?)?;
         ymid.add(slope.mul(t.sub(mid)?)?)
     }
@@ -88,10 +97,14 @@ fn certify_compact_scene(
     budget: usize,
     byte_limit: usize,
 ) -> Option<CompactSceneProof> {
-    if centers.is_empty() || centers.len() > 256
+    if centers.is_empty()
+        || centers.len() > 256
         || !centers.iter().all(|p| p.iter().all(|n| n.is_finite()))
-        || !sigma.is_finite() || sigma <= 0.0
-        || budget > MAX_SCENE_WORK || byte_limit > MAX_PROOF_BYTES {
+        || !sigma.is_finite()
+        || sigma <= 0.0
+        || budget > MAX_SCENE_WORK
+        || byte_limit > MAX_PROOF_BYTES
+    {
         return None;
     }
     let mut fuel = budget;
@@ -110,7 +123,9 @@ fn certify_compact_scene(
     let mut intervals = Vec::new();
     intervals.try_reserve_exact(centers.len()).ok()?;
     let bytes = table.peak_buffer_bytes()?.checked_add(
-        weights.capacity().checked_add(intervals.capacity())?
+        weights
+            .capacity()
+            .checked_add(intervals.capacity())?
             .checked_mul(std::mem::size_of::<Interval>())?,
     )?;
     if bytes > byte_limit {
@@ -189,9 +204,9 @@ mod tests {
             assert!((phased - actual_y).abs() <= 0.125);
             sites.push([x, phased]);
         }
-        let cert = certify_compact_scene(
-            &source(30.0), &sites, 0.25, MAX_SCENE_WORK, MAX_PROOF_BYTES
-        ).expect("all 80 original F1 mixed sites must admit exact compact proof");
+        let cert =
+            certify_compact_scene(&source(30.0), &sites, 0.25, MAX_SCENE_WORK, MAX_PROOF_BYTES)
+                .expect("all 80 original F1 mixed sites must admit exact compact proof");
         assert_eq!(cert.intervals.len(), 80);
         assert!(cert.spent <= MAX_SCENE_WORK);
         assert!(cert.bytes < MAX_PROOF_BYTES);
@@ -203,15 +218,23 @@ mod tests {
     #[test]
     fn source_integer_linear_x_and_budget_reject_fail_closed() {
         let original = source(30.0);
-        assert!(certify_compact_scene(
-            &original, &[[30.125, 25.125]], 0.25, 100, MAX_PROOF_BYTES
-        ).is_none());
-        assert!(certify_compact_scene(
-            &original, &[[30.125, 25.125]], 0.25, MAX_SCENE_WORK, 128
-        ).is_none());
-        assert!(certify_compact_scene(
-            &source(30.25), &[[30.125, 25.125]],
-            0.25, MAX_SCENE_WORK, MAX_PROOF_BYTES
-        ).is_none());
+        assert!(
+            certify_compact_scene(&original, &[[30.125, 25.125]], 0.25, 100, MAX_PROOF_BYTES)
+                .is_none()
+        );
+        assert!(
+            certify_compact_scene(&original, &[[30.125, 25.125]], 0.25, MAX_SCENE_WORK, 128)
+                .is_none()
+        );
+        assert!(
+            certify_compact_scene(
+                &source(30.25),
+                &[[30.125, 25.125]],
+                0.25,
+                MAX_SCENE_WORK,
+                MAX_PROOF_BYTES
+            )
+            .is_none()
+        );
     }
 }
