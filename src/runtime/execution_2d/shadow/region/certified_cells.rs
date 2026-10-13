@@ -1424,9 +1424,9 @@ fn authored_concave_and_holed_straight_paths_certify_actual_fill_rules_without_m
     for path in [&evenodd, &nonzero] {
         assert_eq!(query(path, [1.0, 1.0, 2.0, 2.0]), CellCertificate::Inside);
         assert_eq!(
-        query(path, [12.0, 5.0, 13.0, 6.0]),
-        CellCertificate::Outside
-    );
+            query(path, [12.0, 5.0, 13.0, 6.0]),
+            CellCertificate::Outside
+        );
         assert_eq!(query(path, [2.9, 4.0, 3.1, 5.0]), CellCertificate::Unknown);
     }
     assert_eq!(
