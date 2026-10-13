@@ -1123,9 +1123,7 @@ fn root_nonempty_curved_erosion_never_uses_disposable_convex_mesh() {
         matches!(
             &error,
             Render2dExecutionError::UnsupportedContent(
-                runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
-                    root_index: 0,
-                },
+                runen_render::execution_2d::Render2dUnsupportedContent::Shadows { root_index: 0 },
             )
         ),
         "root original-F1 curved erosion must use the canonical root error: {error:?}"
