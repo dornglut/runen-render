@@ -288,6 +288,27 @@ fn gaussian_square_support(
     Ok(expanded)
 }
 
+/// Prove that a completed NEGATIVE disk shadow cannot add any neutral
+/// support to its unchanged source, including sources with holes, curves,
+/// clips or nested effects. If E=C⊖disk(r), then E+v⊆C for every
+/// displacement |v|₂≤r. The physical finite Gaussian's SUPPORT is
+/// translated E plus the entire parent-axis square [-3σ,3σ]², so
+/// |v|₂≤|offset_x|+|offset_y|+6σ suffices.
+///
+/// Use the stronger r≥2(|ox|+|oy|)+8σ certificate, preserving the
+/// existing offset-zero 8σ bound. The positive slack is deliberate
+/// against floating-point boundary uncertainty. Unrepresentable sums or
+/// products fail closed; this check never derives C from alpha or an AABB.
+fn negative_shadow_absorbed_by_source(effect: Render2dDropShadow) -> bool {
+    let radius = -effect.spread();
+    if radius <= 0.0 {
+        return false;
+    }
+    let displacement = effect.offset_x().abs() + effect.offset_y().abs();
+    let conservative = (2.0 * displacement) + (8.0 * effect.sigma());
+    conservative.is_finite() && radius >= conservative
+}
+
 /// Derives source-neutral F1 group support in each immediate-parent frame,
 /// independent of color alpha, materialization details or final-target culling.
 ///
@@ -472,27 +493,13 @@ fn group_child_sources_with_probe<'a>(
                             resource(&frame.path, "neutral effect graph allocation failed")
                         })?;
                     for &effect in frame.group.shadows() {
-                        // Erosion is a subset of C. If the entire finite
-                        // normalized square Gaussian halo fits in its
-                        // erosion disk, its completed shadow SUPPORT is
-                        // also a subset of C. C union shadow == C, even
-                        // for concave, holed or curved ORIGINAL F1 sources.
-                        //
-                        // Conservative L1 bound: any (dx,dy) in the halo
-                        // has Euclidean norm <= |dx|+|dy| <= 6*sigma.
-                        // Require 8*sigma instead: multiplication by a
-                        // power of two is exact for finite representable
-                        // results, leaving slack against directed numeric
-                        // boundary rounding. The disk fully encloses the
-                        // halo, so the shadow is already absorbed by
-                        // C for ancestor SUPPORT, regardless of paint
-                        // color/opacity. Its own shadow paint is still
-                        // evaluated and independently budgeted below.
-                        if effect.spread() < 0.0
-                            && effect.offset_x() == 0.0
-                            && effect.offset_y() == 0.0
-                            && -effect.spread() >= 8.0 * effect.sigma()
-                        {
+                        // Certified containment is valid even for a
+                        // translated finite Gaussian over a truly holed,
+                        // concave or curved original C: E(C,-r)+offset+
+                        // finite halo ⊆ C when the whole displacement
+                        // fits inside the erosion disk. Retain pristine C;
+                        // the independent physical shadow remains painted.
+                        if negative_shadow_absorbed_by_source(effect) {
                             continue;
                         }
                         let effect_region =
@@ -1158,6 +1165,31 @@ mod tests {
                 kind: Render2dUnsupportedContent::Shadows { root_index: 0 },
             }) if path == [0, 0]
         ));
+    }
+
+    #[test]
+    fn bounded_translated_erosion_absorption_is_conservative_and_fail_closed() {
+        let effect = |offset_x, offset_y, sigma, spread| {
+            Render2dDropShadow::new(
+                offset_x,
+                offset_y,
+                sigma,
+                spread,
+                Render2dColorRgba8::TRANSPARENT,
+            )
+            .unwrap()
+        };
+        assert!(negative_shadow_absorbed_by_source(effect(1.0, 0.0, 0.05, -2.5)));
+        assert!(negative_shadow_absorbed_by_source(effect(-1.0, 0.0, 0.05, -2.5)));
+        assert!(negative_shadow_absorbed_by_source(effect(0.0, 0.0, 0.25, -2.0)));
+        assert!(negative_shadow_absorbed_by_source(effect(0.0, 0.0, 0.0, -0.25)));
+        assert!(!negative_shadow_absorbed_by_source(effect(1.0, 0.0, 0.1, -2.5)));
+        assert!(!negative_shadow_absorbed_by_source(effect(2.0, 0.0, 0.05, -2.5)));
+        assert!(!negative_shadow_absorbed_by_source(effect(0.0, 0.0, 0.25, -1.0)));
+        assert!(!negative_shadow_absorbed_by_source(effect(0.0, 0.0, 0.0, 0.0)));
+        assert!(!negative_shadow_absorbed_by_source(effect(1.0, 0.0, 0.0, 0.5)));
+        // Bounds that overflow f64 never certify containment.
+        assert!(!negative_shadow_absorbed_by_source(effect(1.0e308, 1.0e308, 0.0, -1.0)));
     }
 
     #[test]

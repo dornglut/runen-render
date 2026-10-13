@@ -2255,6 +2255,126 @@ fn translated_holed_finite_gaussian_support_survives_ancestor_shear_on_vulkan() 
 }
 
 #[test]
+fn absorbed_translated_holed_erosion_paints_and_preserves_ancestor_sheared_support() {
+    let Some(context) = context() else { return };
+    // Genuine ring: C=[10,30]^2 minus the open square [18,22]^2.
+    // Four transparent original F1 rectangles, with touching seams.
+    // Neither an enclosing box nor separately eroded components may
+    // replace the actual holed UNION.
+    let ring = vec![
+        caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 20.0, 8.0),
+        caster(Render2dColorRgba8::TRANSPARENT, 10.0, 22.0, 20.0, 8.0),
+        caster(Render2dColorRgba8::TRANSPARENT, 10.0, 18.0, 8.0, 4.0),
+        caster(Render2dColorRgba8::TRANSPARENT, 22.0, 18.0, 8.0, 4.0),
+    ];
+    let child = Render2dEntry::group(Render2dGroup::new(
+        ring,
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        // Radius 2.5 encloses the complete +1 translation and ±.15
+        // Gaussian halo in BOTH immediate-parent axes:
+        // 2*(|1|+|0|)+8*.05 = 2.4 < 2.5.
+        // The negative shadow is still physically painted in RED and
+        // must not silently disappear when its neutral contribution
+        // to the ancestor is proven a subset of pristine C.
+        vec![effect(
+            1.0,
+            0.0,
+            0.05,
+            -2.5,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![child],
+        Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 0.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F absorbed offset negative ring physically paints under sheared ancestor",
+    );
+    // Root inverse x_parent=x_root-.5*y_root. [22,23]×[14,15]
+    // maps to x_parent=[14.5,16], y_parent=[14,15]; entirely
+    // within the finite-kernel eroded TOP bar (including +1 offset).
+    assert_eq!(pixel(&output, 22, 14), [255, 0, 0, 255]);
+    // [20,21]×[11,12] maps to the original top bar but outside
+    // its erosion, so only the ancestor's source-neutral BLUE paints.
+    assert_eq!(pixel(&output, 20, 11), [0, 0, 255, 255]);
+    // [30,31]×[19,20] inverse-maps inside the true hole,
+    // neither red erosion nor the blue C may fill it.
+    assert_eq!(pixel(&output, 30, 19), [0, 0, 0, 0]);
+    assert_eq!(pixel(&output, 46, 25), [0, 0, 0, 0]);
+}
+
+#[test]
+fn nonabsorbed_offset_holed_erosion_remains_typed_unsupported() {
+    let Some(context) = context() else { return };
+    let child = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 20.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 22.0, 20.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 18.0, 8.0, 4.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 22.0, 18.0, 8.0, 4.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        // Offset escapes the eroded source: no general holed curved
+        // materialization certificate exists. Transparency never
+        // licenses silent dropping of source-neutral geometry.
+        vec![effect(
+            4.0,
+            0.0,
+            0.05,
+            -2.5,
+            Render2dColorRgba8::TRANSPARENT,
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![child],
+        Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 0.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let (_, target) = target("F3F nonabsorbed holed signed cannot invent source mask");
+    let error = Render2dExecutor::new()
+        .prepare(&context, &scene, &Render2dResourceBindings::default(), &target)
+        .err()
+        .expect("nonabsorbed holed negative must remain rejected");
+    assert!(matches!(
+        error,
+        Render2dExecutionError::UnsupportedEntry {
+            path,
+            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
+                root_index: 0,
+            },
+        } if path == [0, 0]
+    ));
+}
+
+#[test]
 fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
