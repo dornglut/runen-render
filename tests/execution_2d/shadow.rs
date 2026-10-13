@@ -2469,15 +2469,15 @@ fn wholly_offscreen_curved_root_effects_preserve_actual_vulkan_child_paint() {
         Render2dColorRgba8::new(255, 0, 0, 255),
     );
     let (_, target) = target("F3F mixed offscreen and surviving root shadow");
-    let error = executor
-        .prepare(
-            &context,
-            &scene(vec![offscreen, visible]),
-            &Render2dResourceBindings::default(),
-            &target,
-        )
-        .err()
-        .expect("uncertified surviving curved root must reject before target work");
+    let error = match executor.prepare(
+        &context,
+        &scene(vec![offscreen, visible]),
+        &Render2dResourceBindings::default(),
+        &target,
+    ) {
+        Ok(_) => panic!("uncertified surviving curved root must reject before target work"),
+        Err(error) => error,
+    };
     assert!(matches!(
         error,
         Render2dExecutionError::UnsupportedEntry {
