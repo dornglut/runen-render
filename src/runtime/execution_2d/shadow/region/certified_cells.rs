@@ -167,12 +167,7 @@ fn certified_line_crossing(cell: Cell, a: [f64; 2], b: [f64; 2]) -> Option<i64> 
     if !upward && !downward {
         return Some(0);
     }
-    let side = line_side(
-        a,
-        b,
-        Interval::scalar(cell.x.lo)?,
-        Interval::scalar(y)?,
-    )?;
+    let side = line_side(a, b, Interval::scalar(cell.x.lo)?, Interval::scalar(y)?)?;
     if upward {
         if side.lo > 0.0 {
             Some(1)
@@ -194,11 +189,7 @@ fn certified_line_crossing(cell: Cell, a: [f64; 2], b: [f64; 2]) -> Option<i64> 
 /// ANY straight-line F1 fill path. Handles concavity, multiple contours,
 /// opposite or same contour winding, explicit and implicit closure, and the
 /// actual EvenOdd/NonZero law. A boundary/precision ambiguity is Unknown.
-fn certify_straight_path(
-    path: &Render2dPath,
-    cell: Cell,
-    visits: &mut usize,
-) -> CellCertificate {
+fn certify_straight_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCertificate {
     let commands = path.commands();
     // Worst-case work is linear in the entire authored command stream.
     // The fixed upper charge covers the interval edge and crossing queries.
@@ -256,8 +247,9 @@ fn certify_straight_path(
                 previous = first;
                 has_segment = false;
             }
-            Render2dPathCommand::QuadraticTo { .. }
-            | Render2dPathCommand::CubicTo { .. } => return CellCertificate::Unknown,
+            Render2dPathCommand::QuadraticTo { .. } | Render2dPathCommand::CubicTo { .. } => {
+                return CellCertificate::Unknown;
+            }
         }
     }
     if has_segment {
@@ -1409,9 +1401,18 @@ fn authored_concave_and_holed_straight_paths_certify_actual_fill_rules_without_m
         &mut l,
     );
     let concave = Render2dPath::new(Render2dFillRule::NonZero, l).unwrap();
-    assert_eq!(query(&concave, [0.5, 0.5, 1.0, 1.0]), CellCertificate::Inside);
-    assert_eq!(query(&concave, [5.0, 5.0, 6.0, 6.0]), CellCertificate::Outside);
-    assert_eq!(query(&concave, [1.9, 1.9, 2.1, 2.1]), CellCertificate::Unknown);
+    assert_eq!(
+        query(&concave, [0.5, 0.5, 1.0, 1.0]),
+        CellCertificate::Inside
+    );
+    assert_eq!(
+        query(&concave, [5.0, 5.0, 6.0, 6.0]),
+        CellCertificate::Outside
+    );
+    assert_eq!(
+        query(&concave, [1.9, 1.9, 2.1, 2.1]),
+        CellCertificate::Unknown
+    );
 
     let outer = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
     let inner = [(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0)];
@@ -1422,17 +1423,29 @@ fn authored_concave_and_holed_straight_paths_certify_actual_fill_rules_without_m
     let nonzero = Render2dPath::new(Render2dFillRule::NonZero, same).unwrap();
     for path in [&evenodd, &nonzero] {
         assert_eq!(query(path, [1.0, 1.0, 2.0, 2.0]), CellCertificate::Inside);
-        assert_eq!(query(path, [12.0, 5.0, 13.0, 6.0]), CellCertificate::Outside);
+        assert_eq!(
+        query(path, [12.0, 5.0, 13.0, 6.0]),
+        CellCertificate::Outside
+    );
         assert_eq!(query(path, [2.9, 4.0, 3.1, 5.0]), CellCertificate::Unknown);
     }
-    assert_eq!(query(&evenodd, [4.0, 4.0, 6.0, 6.0]), CellCertificate::Outside);
-    assert_eq!(query(&nonzero, [4.0, 4.0, 6.0, 6.0]), CellCertificate::Inside);
+    assert_eq!(
+        query(&evenodd, [4.0, 4.0, 6.0, 6.0]),
+        CellCertificate::Outside
+    );
+    assert_eq!(
+        query(&nonzero, [4.0, 4.0, 6.0, 6.0]),
+        CellCertificate::Inside
+    );
 
     let mut opposite = Vec::new();
     contour(&outer, &mut opposite);
     contour(&inner.into_iter().rev().collect::<Vec<_>>(), &mut opposite);
     let opposite = Render2dPath::new(Render2dFillRule::NonZero, opposite).unwrap();
-    assert_eq!(query(&opposite, [4.0, 4.0, 6.0, 6.0]), CellCertificate::Outside);
+    assert_eq!(
+        query(&opposite, [4.0, 4.0, 6.0, 6.0]),
+        CellCertificate::Outside
+    );
 
     // An open fill contour MUST close implicitly; neither clipping nor
     // physical tessellation is consulted.
@@ -1472,7 +1485,10 @@ fn linear_winding_certificate_fails_closed_at_exact_global_fuel_boundary() {
     );
     assert_eq!(insufficient, 0);
     let mut exact = cost;
-    assert_eq!(certify_path(&path, cell, &mut exact), CellCertificate::Inside);
+    assert_eq!(
+        certify_path(&path, cell, &mut exact),
+        CellCertificate::Inside
+    );
     assert_eq!(exact, 0);
 }
 
