@@ -1229,33 +1229,27 @@ fn completely_eroded_curved_root_caster_skips_only_its_shadow_on_vulkan() {
     let scene = |outer_shadow: Option<Render2dDropShadow>| {
         let child = Render2dEntry::group(Render2dGroup::new(
             vec![caster(
-                Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 8.0, 8.0,
+                Render2dColorRgba8::TRANSPARENT,
+                10.0,
+                10.0,
+                8.0,
+                8.0,
             )],
             Render2dAffineTransform::IDENTITY,
             Vec::new(),
             Render2dOpacity::TRANSPARENT,
-            vec![effect(
-                0.0, 0.0, 0.1, 1.0, Render2dColorRgba8::TRANSPARENT,
-            )],
+            vec![effect(0.0, 0.0, 0.1, 1.0, Render2dColorRgba8::TRANSPARENT)],
         ));
         let opaque = Render2dEntry::item(Render2dItem::new(
             Render2dPrimitive::Fill {
-                shape: Render2dShape::rect(
-                    Render2dRect::new(12.0, 12.0, 2.0, 2.0).unwrap(),
-                ),
-                brush: Render2dBrush::solid(
-                    Render2dColorRgba8::new(0, 255, 0, 255),
-                ),
+                shape: Render2dShape::rect(Render2dRect::new(12.0, 12.0, 2.0, 2.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::new(0, 255, 0, 255)),
             },
             Render2dAffineTransform::IDENTITY,
             Vec::new(),
             Render2dOpacity::OPAQUE,
         ));
-        group(
-            vec![child, opaque],
-            outer_shadow.into_iter().collect(),
-            1.0,
-        )
+        group(vec![child, opaque], outer_shadow.into_iter().collect(), 1.0)
     };
     let reference = execute(
         &context,
@@ -1268,7 +1262,10 @@ fn completely_eroded_curved_root_caster_skips_only_its_shadow_on_vulkan() {
         &context,
         &mut Render2dExecutor::new(),
         &scene(Some(effect(
-            2.0, -1.5, 0.25, -6.0,
+            2.0,
+            -1.5,
+            0.25,
+            -6.0,
             Render2dColorRgba8::new(255, 0, 0, 255),
         ))),
         &Render2dResourceBindings::default(),
