@@ -1219,6 +1219,70 @@ fn nested_nonconvex_l_complete_erosion_preserves_gpu_ancestor_caster() {
     assert_eq!(pixel(&actual, 16, 16), [0, 0, 0, 0]);
 }
 
+/// Independent complete-root-erasure proof: the outer negative Euclidean
+/// disk erases both the pristine 8x8 C and its nested positive disk + finite
+/// Gaussian halo BEFORE any attempt to polygonalize those curved regions.
+/// The separately authored opaque rectangle must still paint identically.
+#[test]
+fn completely_eroded_curved_root_caster_skips_only_its_shadow_on_vulkan() {
+    let Some(context) = context() else { return };
+    let scene = |outer_shadow: Option<Render2dDropShadow>| {
+        let child = Render2dEntry::group(Render2dGroup::new(
+            vec![caster(
+                Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 8.0, 8.0,
+            )],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            vec![effect(
+                0.0, 0.0, 0.1, 1.0, Render2dColorRgba8::TRANSPARENT,
+            )],
+        ));
+        let opaque = Render2dEntry::item(Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(
+                    Render2dRect::new(12.0, 12.0, 2.0, 2.0).unwrap(),
+                ),
+                brush: Render2dBrush::solid(
+                    Render2dColorRgba8::new(0, 255, 0, 255),
+                ),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+        ));
+        group(
+            vec![child, opaque],
+            outer_shadow.into_iter().collect(),
+            1.0,
+        )
+    };
+    let reference = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene(None),
+        &Render2dResourceBindings::default(),
+        "F3F nested curved source without outer negative shadow",
+    );
+    let actual = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene(Some(effect(
+            2.0, -1.5, 0.25, -6.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        ))),
+        &Render2dResourceBindings::default(),
+        "F3F nested curved source with provably empty outer shadow",
+    );
+    assert_eq!(
+        actual.as_bytes(),
+        reference.as_bytes(),
+        "empty outer shadow cannot mutate the original F3E painter"
+    );
+    pixel_near(pixel(&actual, 12, 12), [0, 255, 0, 255]);
+    assert_eq!(pixel(&actual, 9, 9), [0, 0, 0, 0]);
+}
+
 #[test]
 fn nested_positive_disk_is_unsupported_when_ancestor_needs_neutral_caster() {
     let Some(context) = context() else { return };
