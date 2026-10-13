@@ -714,34 +714,100 @@ impl NeutralRegionBuilder {
     /// This is intentionally a narrow *exact* shortcut. Multi-patch images,
     /// any clips and coordinates requiring tessellation rounding must use
     /// the future general original-F1 integration path instead.
+    /// A single structural F1 path can be proven rectangular only from
+    /// its ORIGINAL straight commands, never from an approximately similar
+    /// Lyon triangle union. Both fill rules agree on one simple contour.
+    /// Open fill contours use F1's specified implicit closing edge.
+    /// Any extra contour, Bézier, duplicated corner or crossed diagonal
+    /// is unproved and must retain the existing typed fallback.
+    fn original_rectangle_path_corners(
+        path: &crate::composition_2d::Render2dPath,
+    ) -> Option<[[f64; 2]; 4]> {
+        use crate::composition_2d::Render2dPathCommand as Command;
+        let [Command::MoveTo(a), Command::LineTo(b), Command::LineTo(c), Command::LineTo(d), rest @ ..] =
+            path.commands()
+        else {
+            return None;
+        };
+        if !(rest.is_empty()
+            || matches!(rest, [Command::Close])
+            || matches!(rest, [Command::LineTo(end)] if end == a)
+            || matches!(rest, [Command::LineTo(end), Command::Close] if end == a))
+        {
+            return None;
+        }
+        let points = [
+            [a.x(), a.y()],
+            [b.x(), b.y()],
+            [c.x(), c.y()],
+            [d.x(), d.y()],
+        ];
+        let x0 = points.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+        let x1 = points.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+        let y0 = points.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+        let y1 = points.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+        if !(x0 < x1 && y0 < y1) {
+            return None;
+        }
+        let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+        let mut seen = 0_u8;
+        for i in 0..4 {
+            let p = points[i];
+            let next = points[(i + 1) % 4];
+            // Exactly ONE coordinate changes along each boundary edge.
+            if (p[0] == next[0]) == (p[1] == next[1]) {
+                return None;
+            }
+            let index = corners.iter().position(|corner| *corner == p)?;
+            let bit = 1_u8 << index;
+            if seen & bit != 0 {
+                return None;
+            }
+            seen |= bit;
+        }
+        (seen == 0b1111).then_some(points)
+    }
+
     fn exact_original_rectangle_source(mesh: &support::NeutralMesh, item: &Render2dItem) -> bool {
-        let rect = match item.primitive() {
-            crate::composition_2d::Render2dPrimitive::Fill { shape, .. } => shape.as_rect(),
+        let (rect, path) = match item.primitive() {
+            crate::composition_2d::Render2dPrimitive::Fill { shape, .. } => {
+                (shape.as_rect(), shape.as_path())
+            }
             crate::composition_2d::Render2dPrimitive::Image(image) => {
                 if image.patches().len() != 1 {
                     return false;
                 }
-                Some(image.patches()[0].destination())
+                (Some(image.patches()[0].destination()), None)
             }
             crate::composition_2d::Render2dPrimitive::Stroke { .. }
-            | crate::composition_2d::Render2dPrimitive::ShapedText(_) => None,
+            | crate::composition_2d::Render2dPrimitive::ShapedText(_) => (None, None),
         };
-        let Some(rect) = rect else {
-            return false;
-        };
-        if rect.is_empty() || !item.clips().is_empty() {
+        if !item.clips().is_empty() {
             return false;
         }
+        let authored = if let Some(rect) = rect {
+            if rect.is_empty() {
+                return false;
+            }
+            let x0 = rect.x();
+            let x1 = rect.x() + rect.width();
+            let y0 = rect.y();
+            let y1 = rect.y() + rect.height();
+            [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+        } else if let Some(path) = path {
+            let Some(corners) = Self::original_rectangle_path_corners(path) else {
+                return false;
+            };
+            corners
+        } else {
+            return false;
+        };
         let Some(actual) = support::certified_axis_aligned_rectangle(&mesh.triangles) else {
             return false;
         };
         let [a, b, c, d, tx, ty] = item.local_to_parent().components();
-        let x0 = rect.x();
-        let x1 = rect.x() + rect.width();
-        let y0 = rect.y();
-        let y1 = rect.y() + rect.height();
         let mut seen = 0_u8;
-        for (x, y) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)] {
+        for [x, y] in authored {
             let px = a.mul_add(x, c.mul_add(y, tx)) * mesh.units_per_parent_logical_unit;
             let py = b.mul_add(x, d.mul_add(y, ty)) * mesh.units_per_parent_logical_unit;
             if !px.is_finite() || !py.is_finite() {
@@ -1450,6 +1516,130 @@ mod tests {
             .expect("the child C is still a complete physical rectangle");
         let scale = qualified.rectangle.units_per_parent_logical_unit;
         assert_eq!(rect.map(|v| v / scale), [10.0, 10.0, 20.0, 20.0]);
+    }
+
+    #[test]
+    fn original_f1_straight_rectangle_path_proof_rejects_crossings_and_curves() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dFillRule, Render2dItem, Render2dOpacity, Render2dPath,
+            Render2dPathCommand as Command, Render2dPoint, Render2dPrimitive, Render2dShape,
+        };
+        let point = |x, y| Render2dPoint::new(x, y).unwrap();
+        let p0 = point(0.0, 0.0);
+        let p1 = point(2.0, 0.0);
+        let p2 = point(2.0, 2.0);
+        let p3 = point(0.0, 2.0);
+        let physical = || support::NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
+            ],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let make_item = |path: Render2dPath| {
+            Render2dItem::new(
+                Render2dPrimitive::Fill {
+                    shape: Render2dShape::path(path),
+                    brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+                },
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::TRANSPARENT,
+            )
+        };
+        let mut builder = builder();
+        for (i, (fill, commands)) in [
+            (
+                Render2dFillRule::NonZero,
+                vec![
+                    Command::MoveTo(p0),
+                    Command::LineTo(p1),
+                    Command::LineTo(p2),
+                    Command::LineTo(p3),
+                    Command::Close,
+                ],
+            ),
+            (
+                Render2dFillRule::EvenOdd,
+                vec![
+                    Command::MoveTo(p2),
+                    Command::LineTo(p1),
+                    Command::LineTo(p0),
+                    Command::LineTo(p3),
+                ],
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let authored = make_item(Render2dPath::new(fill, commands).unwrap());
+            let leaf = builder
+                .source_from_item(physical(), &authored, &[i, 0])
+                .unwrap();
+            assert!(builder.proven_original_rectangle_union(&leaf).unwrap());
+            let disk = Render2dDropShadow::new(
+                0.0,
+                0.0,
+                0.0,
+                -0.25,
+                Render2dColorRgba8::TRANSPARENT,
+            )
+            .unwrap();
+            let erosion = builder.effect(leaf, disk, &[i, 1]).unwrap();
+            assert!(!builder.materialize(&erosion).unwrap().triangles.is_empty());
+        }
+        // A crossed four-corner path has the same bounding rectangle and
+        // may be forged with the same physical tessellation, but is NOT
+        // the same F1 filled region. Nor is a curved F1 path.
+        for commands in [
+            vec![
+                Command::MoveTo(p0),
+                Command::LineTo(p2),
+                Command::LineTo(p1),
+                Command::LineTo(p3),
+                Command::Close,
+            ],
+            vec![
+                Command::MoveTo(p0),
+                Command::LineTo(p1),
+                Command::QuadraticTo {
+                    control: p2,
+                    to: p3,
+                },
+                Command::LineTo(p0),
+                Command::Close,
+            ],
+        ] {
+            let authored =
+                make_item(Render2dPath::new(Render2dFillRule::EvenOdd, commands).unwrap());
+            let leaf = builder.source_from_item(physical(), &authored, &[7, 0]).unwrap();
+            assert!(!builder.proven_original_rectangle_union(&leaf).unwrap());
+        }
+        // An exact rectangular PATH with a forged mismatched 3x2 tessellation
+        // also cannot be certified merely because both shapes are rectangles.
+        let authored = make_item(
+            Render2dPath::new(
+                Render2dFillRule::NonZero,
+                vec![
+                    Command::MoveTo(p0),
+                    Command::LineTo(p1),
+                    Command::LineTo(p2),
+                    Command::LineTo(p3),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut stale = physical();
+        stale.triangles[1][0] = 3.0;
+        stale.triangles[2][0] = 3.0;
+        stale.triangles[4][0] = 3.0;
+        let forged = builder.source_from_item(stale, &authored, &[8, 0]).unwrap();
+        assert!(!builder.proven_original_rectangle_union(&forged).unwrap());
     }
 
     #[test]

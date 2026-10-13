@@ -2057,6 +2057,144 @@ fn nonabsorbed_disconnected_shadow_support_shears_before_ancestor_paint_on_vulka
 }
 
 #[test]
+fn authored_straight_rectangle_path_casts_nonabsorbed_nested_erosion_on_vulkan() {
+    use runen_render::composition_2d::{
+        Render2dFillRule, Render2dPath, Render2dPathCommand as Command, Render2dPoint,
+    };
+    let Some(context) = context() else { return };
+    let pt = |x, y| Render2dPoint::new(x, y).unwrap();
+    let a = pt(10.0, 10.0);
+    let b = pt(14.0, 10.0);
+    let c = pt(14.0, 14.0);
+    let d = pt(10.0, 14.0);
+    // Identical original F1 support is authored as a closed/nonzero and
+    // an open/even-odd path with opposite contour orientation. The path
+    // proof—not its disposable Lyon rectangle—must admit negative spread.
+    for (fill_rule, commands) in [
+        (
+            Render2dFillRule::NonZero,
+            vec![
+                Command::MoveTo(a),
+                Command::LineTo(b),
+                Command::LineTo(c),
+                Command::LineTo(d),
+                Command::Close,
+            ],
+        ),
+        (
+            Render2dFillRule::EvenOdd,
+            vec![
+                Command::MoveTo(c),
+                Command::LineTo(b),
+                Command::LineTo(a),
+                Command::LineTo(d),
+            ],
+        ),
+    ] {
+        let path = Render2dPath::new(fill_rule, commands).unwrap();
+        let item = Render2dEntry::item(Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::path(path),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        ));
+        let child = Render2dEntry::group(Render2dGroup::new(
+            vec![item],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            vec![effect(6.0, 0.0, 0.1, -0.5, Render2dColorRgba8::TRANSPARENT)],
+        ));
+        let scene = group(
+            vec![child],
+            vec![effect(
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                Render2dColorRgba8::new(0, 0, 255, 255),
+            )],
+            1.0,
+        );
+        let result = execute(
+            &context,
+            &mut Render2dExecutor::new(),
+            &scene,
+            &Render2dResourceBindings::default(),
+            "F3F authored rectangular structural path source-neutral nested erosion",
+        );
+        // Exact original [10,14]^2 → inset [10.5,13.5]^2,
+        // offset +6 and sigma=.1 cutoff .3 => outer left x=16.2.
+        // Area of pixel [16,17]x[11,12] is .8; sRGB blue 231,
+        // unorm alpha 204. Not a binary center sample or image alpha.
+        pixel_near(pixel(&result, 16, 11), [0, 0, 231, 204]);
+        assert_eq!(pixel(&result, 17, 11), [0, 0, 255, 255]);
+        assert_eq!(pixel(&result, 20, 11), [0, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn translated_holed_finite_gaussian_support_survives_ancestor_shear_on_vulkan() {
+    let Some(context) = context() else { return };
+    // C = outer [10,26]^2 minus real hole [15,21]^2.
+    // Every original rect is transparent; neither alpha nor bounding box
+    // can supply the ancestor's geometry or erase the central hole.
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 16.0, 5.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 21.0, 16.0, 5.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 15.0, 5.0, 6.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 21.0, 15.0, 5.0, 6.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        // An actual nonabsorbed completed shadow: +10 x, sigma=.25.
+        // Its square halo extends .75 per owning-frame axis; inner hole
+        // contracts but remains nonempty [25.75,30.25]x[15.75,20.25].
+        vec![effect(
+            10.0,
+            0.0,
+            0.25,
+            0.0,
+            Render2dColorRgba8::TRANSPARENT,
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 0.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F holed neutral Gaussian support offsets before affine ancestor",
+    );
+    // Root inverse: x_parent=x_root-0.5*y_root.
+    // At y=[18,19], x_root 37 maps inside the contracted hole:
+    // no original C and no finite-Gaussian support can cover any subcell.
+    assert_eq!(pixel(&output, 37, 18), [0, 0, 0, 0]);
+    // Adjacent translated support arms remain fully occupied in root:
+    assert_eq!(pixel(&output, 32, 18), [0, 0, 255, 255]);
+    assert_eq!(pixel(&output, 43, 18), [0, 0, 255, 255]);
+    assert_eq!(pixel(&output, 48, 18), [0, 0, 0, 0]);
+}
+
+#[test]
 fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
