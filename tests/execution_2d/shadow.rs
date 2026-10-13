@@ -1140,7 +1140,13 @@ fn nested_nonempty_ellipse_erosion_rejects_before_gpu_and_preserves_executor() {
     drop(texture);
     // An exact original rectangle remains supported on the SAME executor.
     let valid = group(
-        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 8.0, 8.0)],
+        vec![caster(
+            Render2dColorRgba8::TRANSPARENT,
+            10.0,
+            10.0,
+            8.0,
+            8.0,
+        )],
         vec![effect(
             0.0,
             0.0,

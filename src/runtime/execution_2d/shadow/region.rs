@@ -2014,8 +2014,7 @@ mod tests {
         let rectangle = original(Render2dShape::rect(rect));
         let ellipse = original(Render2dShape::ellipse(rect));
         let erode =
-            Render2dDropShadow::new(0.0, 0.0, 0.0, -0.25, Render2dColorRgba8::TRANSPARENT)
-                .unwrap();
+            Render2dDropShadow::new(0.0, 0.0, 0.0, -0.25, Render2dColorRgba8::TRANSPARENT).unwrap();
         let mut graph = builder();
         let curved_source = graph
             .source_from_item(physical(), &ellipse, &[7, 0])
