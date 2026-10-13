@@ -1985,6 +1985,97 @@ fn adaptive_gaussian_refinement_proves_halfplane_with_finite_total_work() {
     assert!(nodes > 1 && nodes <= 5_461 && fuel < 2_000_000);
 }
 
+
+#[test]
+fn original_quadratic_mixed_gaussian_boundary_has_independent_truncated_mass_oracle() {
+    use crate::composition_2d::{
+        Render2dBrush, Render2dColorRgba8, Render2dFillRule, Render2dOpacity, Render2dPath,
+        Render2dPoint,
+    };
+    let p = |x, y| Render2dPoint::new(x, y).unwrap();
+    // Exact original quadratic: x(t)=10+40t, y(t)=10+60t(1-t)
+    // ==> y=25-(3/80)(x-30)^2. Filled region lies BELOW the arch
+    // and above the implicit chord at y=10. For sigma=1/4 centered
+    // at the apex, normalized Gaussian coordinates X,Y in [-3,3] obey
+    // Y <= -(3/320)X^2. An independent 1D Gaussian/CDF integration,
+    // normalized on that exact finite 3-sigma square, gives
+    // 0.496350400653573 (not an alpha from the physical mesh).
+    let item = Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::path(
+                Render2dPath::new(
+                    Render2dFillRule::NonZero,
+                    vec![
+                        Render2dPathCommand::MoveTo(p(10.0, 10.0)),
+                        Render2dPathCommand::QuadraticTo {
+                            control: p(30.0, 40.0),
+                            to: p(50.0, 10.0),
+                        },
+                        Render2dPathCommand::Close,
+                    ],
+                )
+                .unwrap(),
+            ),
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    );
+    // Forged physical full-canvas mesh is deliberately inconsistent with
+    // the original F1 curve. It must not affect this coverage bound.
+    let fake = support::NeutralMesh {
+        units_per_parent_logical_unit: 1.0,
+        triangles: vec![
+            [0.0, 0.0],
+            [64.0, 0.0],
+            [64.0, 64.0],
+            [0.0, 0.0],
+            [64.0, 64.0],
+            [0.0, 64.0],
+        ],
+        bounds: [0.0, 0.0, 64.0, 64.0],
+    };
+    let mut graph = builder();
+    let region = graph.source_from_item(fake, &item, &[0]).unwrap();
+    let reference = 0.496_350_400_653_573;
+    let mut fuel = 16_777_216;
+    let (bounds, nodes) = certified_adaptive_finite_gaussian_coverage(
+        &region,
+        [30.0, 25.0],
+        0.25,
+        6,
+        5_461,
+        0.35,
+        &mut fuel,
+    )
+    .expect("bounded original F1 quadratic must admit a loose but honest Gaussian interval");
+    assert!(
+        bounds[0] < reference && reference < bounds[1],
+        "a certified Gaussian interval must enclose the independent exact-curve mass"
+    );
+    assert!(bounds[1] - bounds[0] <= 0.35);
+    assert!(nodes > 1 && nodes <= 5_461 && fuel < 16_777_216);
+
+    // This deliberately stricter error target exercises the same exact
+    // per-invocation budgets and bounded depth. Without a qualified tighter
+    // integration proof, it must reject instead of returning a color/alpha.
+    let mut tight_fuel = 16_777_216;
+    assert_eq!(
+        certified_adaptive_finite_gaussian_coverage(
+            &region,
+            [30.0, 25.0],
+            0.25,
+            6,
+            5_461,
+            0.005,
+            &mut tight_fuel,
+        ),
+        None,
+        "test-only Gaussian quadtree does not justify production-grade boundary precision"
+    );
+}
+
 #[test]
 fn adaptive_gaussian_never_uses_a_partial_work_budget_as_alpha() {
     let mut graph = builder();
