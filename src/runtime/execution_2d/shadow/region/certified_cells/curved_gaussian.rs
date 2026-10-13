@@ -238,23 +238,13 @@ mod tests {
     #[test]
     fn topology_uncertainty_work_and_retained_buffer_reject_before_alpha() {
         let quadratic = authored_graph(&[[10.0, 10.0], [30.0, 40.0], [50.0, 10.0]]);
-        assert!(certify_monotone_graph_mass(
-            &quadratic,
-            [30.0, 25.0],
-            0.25,
-            100,
-            MAX_PROOF_BYTES,
-        )
-        .is_none());
         assert!(
-            certify_monotone_graph_mass(
-                &quadratic,
-                [30.0, 25.0],
-                0.25,
-                MAX_SCENE_WORK,
-                1_024,
-            )
-            .is_none()
+            certify_monotone_graph_mass(&quadratic, [30.0, 25.0], 0.25, 100, MAX_PROOF_BYTES,)
+                .is_none()
+        );
+        assert!(
+            certify_monotone_graph_mass(&quadratic, [30.0, 25.0], 0.25, MAX_SCENE_WORK, 1_024,)
+                .is_none()
         );
         // The supported proof is only the horizontal-chord topology.
         assert!(
