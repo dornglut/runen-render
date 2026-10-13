@@ -2,12 +2,13 @@
 //! F1 neutral-region DAG. This does NOT admit a new production shadow class.
 //!
 //! Only synthetic physical rectangles may certify source geometry without an F1 item.
-//! Tessellated curves are deliberately Unknown: a physical triangle inventory
-//! is not a certificate of exact F1 source geometry. A production evaluator
-//! must separately establish source enclosures and Gaussian *coverage* bounds.
+//! Authored quadratic/cubic curves use test-only outward-rounded subdivision.
+//! A physical triangle inventory never certifies exact F1 source geometry.
+//! A production evaluator still needs source, morphology and coverage proofs.
 //! A certificate concerns SUPPORT membership, not alpha or Gaussian weights.
 
 mod axis_gaussian;
+mod bezier_winding;
 
 use super::interval::Interval;
 use super::*;
@@ -330,7 +331,7 @@ fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCert
     if cell.x.hi < x0 || cell.x.lo > x1 || cell.y.hi < y0 || cell.y.lo > y1 {
         CellCertificate::Outside
     } else {
-        CellCertificate::Unknown
+        bezier_winding::certify_curved_path(path, cell, visits)
     }
 }
 
@@ -1610,7 +1611,7 @@ fn curved_f1_path_hull_and_multicontour_boundaries_remain_fail_closed() {
             Cell::new([1.0, 1.0, 2.0, 2.0]).unwrap(),
             &mut visits
         ),
-        CellCertificate::Unknown
+        CellCertificate::Inside
     );
     let multi = Render2dShape::path(
         Render2dPath::new(
