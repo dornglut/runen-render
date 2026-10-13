@@ -378,13 +378,13 @@ impl NeutralRegion<'_> {
         if scale.lo <= 0.0 {
             return Ok(false);
         }
-        let Some(width) = interval::Interval::scalar(canvas[0])
-            .and_then(|extent| extent.div(scale))
+        let Some(width) =
+            interval::Interval::scalar(canvas[0]).and_then(|extent| extent.div(scale))
         else {
             return Ok(false);
         };
-        let Some(height) = interval::Interval::scalar(canvas[1])
-            .and_then(|extent| extent.div(scale))
+        let Some(height) =
+            interval::Interval::scalar(canvas[1]).and_then(|extent| extent.div(scale))
         else {
             return Ok(false);
         };
@@ -397,11 +397,7 @@ impl NeutralRegion<'_> {
         };
         for &shadow in shadows {
             let outer = nested_effect_envelope(bounds, shadow, &self.path)?;
-            if !(outer[2] < 0.0
-                || outer[3] < 0.0
-                || outer[0] > width.hi
-                || outer[1] > height.hi)
-            {
+            if !(outer[2] < 0.0 || outer[3] < 0.0 || outer[0] > width.hi || outer[1] > height.hi) {
                 return Ok(false);
             }
         }
@@ -1702,47 +1698,41 @@ mod tests {
     fn original_region_root_offscreen_proof_requires_every_effect_and_exact_canvas_extent() {
         let mut graph = builder();
         let source = graph.source(triangle(), &[6, 0]).unwrap();
-        let descendant = Render2dDropShadow::new(
-            0.0,
-            0.0,
-            0.1,
-            1.0,
-            Render2dColorRgba8::TRANSPARENT,
-        )
-        .unwrap();
-        let curved = graph.effect(Arc::clone(&source), descendant, &[6, 1]).unwrap();
+        let descendant =
+            Render2dDropShadow::new(0.0, 0.0, 0.1, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
+        let curved = graph
+            .effect(Arc::clone(&source), descendant, &[6, 1])
+            .unwrap();
         let root = graph.union(vec![source, curved], &[6]).unwrap();
-        let outside = Render2dDropShadow::new(
-            100.0,
-            0.0,
-            0.25,
-            -0.5,
-            Render2dColorRgba8::TRANSPARENT,
-        )
-        .unwrap();
-        let reaches = Render2dDropShadow::new(
-            0.0,
-            0.0,
-            0.25,
-            -0.5,
-            Render2dColorRgba8::TRANSPARENT,
-        )
-        .unwrap();
-        assert!(root
-            .all_root_shadows_provably_offscreen(&[outside, outside], [64.0, 64.0], 1.0)
-            .unwrap());
-        assert!(!root
-            .all_root_shadows_provably_offscreen(&[outside, reaches], [64.0, 64.0], 1.0)
-            .unwrap());
-        assert!(!root
-            .all_root_shadows_provably_offscreen(&[reaches, outside], [64.0, 64.0], 1.0)
-            .unwrap());
-        assert!(!root
-            .all_root_shadows_provably_offscreen(&[], [64.0, 64.0], 1.0)
-            .unwrap());
-        assert!(!root
-            .all_root_shadows_provably_offscreen(&[outside], [64.0, 64.0], 0.0)
-            .unwrap());
+        let outside =
+            Render2dDropShadow::new(100.0, 0.0, 0.25, -0.5, Render2dColorRgba8::TRANSPARENT)
+                .unwrap();
+        let reaches =
+            Render2dDropShadow::new(0.0, 0.0, 0.25, -0.5, Render2dColorRgba8::TRANSPARENT).unwrap();
+        assert!(
+            root.all_root_shadows_provably_offscreen(&[outside, outside], [64.0, 64.0], 1.0)
+                .unwrap()
+        );
+        assert!(
+            !root
+                .all_root_shadows_provably_offscreen(&[outside, reaches], [64.0, 64.0], 1.0)
+                .unwrap()
+        );
+        assert!(
+            !root
+                .all_root_shadows_provably_offscreen(&[reaches, outside], [64.0, 64.0], 1.0)
+                .unwrap()
+        );
+        assert!(
+            !root
+                .all_root_shadows_provably_offscreen(&[], [64.0, 64.0], 1.0)
+                .unwrap()
+        );
+        assert!(
+            !root
+                .all_root_shadows_provably_offscreen(&[outside], [64.0, 64.0], 0.0)
+                .unwrap()
+        );
         assert!(graph.materialize(&root).is_err());
     }
 
