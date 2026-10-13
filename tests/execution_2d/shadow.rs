@@ -1712,6 +1712,64 @@ fn nested_nonconvex_negative_gaussian_under_shear_matches_independent_vulkan_ora
 }
 
 #[test]
+fn nested_holed_negative_gaussian_under_shear_preserves_independent_hole_oracle() {
+    let Some(context) = context() else { return };
+    // Exact alpha-zero original F1 ring with interior hole
+    // [13,19]x[12,20]. Its left material strip at y=[15,17]
+    // erodes from x=[10,13] to x=[11,12] under radius 1.
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 12.0, 2.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 12.0, 3.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 19.0, 12.0, 3.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 20.0, 12.0, 2.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.1,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        // x_root=x_parent+.25*y_parent+.25, y_root=y_parent.
+        Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.25, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F source-proven holed negative finite Gaussian under ancestor shear",
+    );
+    // All 16 root pixel phases inverse-map into the parent frame.
+    // At (16,15), x_parent-12=(i+.5)/4-(j+.5)/16.
+    // The inner material is the OPPOSITE half-plane x<=12.
+    // Therefore continuous finite-Gaussian red=1-.870497447,
+    // and at (16,16), red=1-.625. The blue ancestor C covers both
+    // cells; the independent linear-premul sRGB8 references follow.
+    pixel_near(pixel(&image, 16, 15), [101, 0, 240, 255]);
+    pixel_near(pixel(&image, 16, 16), [165, 0, 207, 255]);
+    // The actual hole cannot be filled by bounding geometry or paint alpha.
+    assert_eq!(pixel(&image, 19, 15), [0, 0, 0, 0]);
+}
+
+#[test]
 fn nested_nonconvex_sigma_zero_erosion_does_not_silently_admit_ancestor_shear() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(

@@ -1508,6 +1508,20 @@ pub(super) fn affine_parent_effect_coverage_admitted(
     let erosion_boundary = (signed_spread < 0.0)
         .then(|| union_exterior_boundary(&triangles, path, Some(aggregate_work)))
         .transpose()?;
+    // For x-only shear (x_root=x_parent+c*y_parent+tx, y_root=y_parent+ty),
+    // every root sample row inverse-maps to a regularly spaced parent row.
+    // Reuse the existing original-exterior Gaussian row integrator rather
+    // than reclassifying the entire curved support at every sample.
+    // This is disposable coverage, not a replacement F1 neutral source.
+    let shared_row = if signed_spread < 0.0 && a == 1.0 && b == 0.0 && d == 1.0 {
+        erosion_boundary
+            .as_deref()
+            .map(|boundary| OrthogonalExterior::new(boundary, path, aggregate_work))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     if let Some(edges) = &erosion_boundary {
         // Admit the simultaneously live copied triangles, exposed union
         // edges, coverage grid and worst-case adaptive cell heap BEFORE
@@ -1532,6 +1546,11 @@ pub(super) fn affine_parent_effect_coverage_admitted(
                     .and_then(|v| n.checked_add(v))
             })
             .ok_or_else(|| resource("nested signed Gaussian temporary memory overflow"))?;
+        // Cached orthogonal crossing/section scratch remains below 256 KiB
+        // at the established 256-edge/16,384-crossing private ceilings.
+        let temporary_bytes = temporary_bytes
+            .checked_add(if shared_row.is_some() { 256 * 1024 } else { 0 })
+            .ok_or_else(|| resource("nested signed Gaussian row-memory overflow"))?;
         if temporary_bytes > 64 * 1024 * 1024 {
             return Err(resource(
                 "nested signed Gaussian peak temporary memory exceeds 64 MiB",
@@ -1539,6 +1558,33 @@ pub(super) fn affine_parent_effect_coverage_admitted(
         }
     }
     let mut values = filled(area, 0.0_f64, path)?;
+    if let Some(orthogonal) = shared_row {
+        for row in 0..height {
+            let root_y = f64::from(edges[1]) + as_f64(row) + 0.5;
+            let parent_y = root_y - ty * scale;
+            let parent_origin_x = f64::from(edges[0]) - tx * scale - c * parent_y;
+            let begin = row * width;
+            orthogonal.gaussian_row(
+                GaussianRow {
+                    y: parent_y,
+                    origin_x: parent_origin_x,
+                    width,
+                    radius: -physical_spread,
+                    sigma: physical_sigma,
+                },
+                &mut values[begin..begin + width],
+                aggregate_work,
+                path,
+            )?;
+        }
+        return Ok(Some(NeutralCoverage {
+            origin_x: i64::from(edges[0]),
+            origin_y: i64::from(edges[1]),
+            width,
+            height,
+            values,
+        }));
+    }
     for row in 0..height {
         for column in 0..width {
             let root_x = f64::from(edges[0]) + as_f64(column) + 0.5;
