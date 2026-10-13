@@ -1985,7 +1985,6 @@ fn adaptive_gaussian_refinement_proves_halfplane_with_finite_total_work() {
     assert!(nodes > 1 && nodes <= 5_461 && fuel < 2_000_000);
 }
 
-
 #[test]
 fn original_quadratic_mixed_gaussian_boundary_has_independent_truncated_mass_oracle() {
     use crate::composition_2d::{
