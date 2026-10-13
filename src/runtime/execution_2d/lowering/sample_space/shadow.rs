@@ -280,6 +280,20 @@ pub(super) fn prepare(
             if !paintable || color[3] == 0.0 {
                 continue;
             }
+            // Even when a negative shadow is absorbed for ancestor
+            // SUPPORT, its VISIBLE PAINT still needs a source-exact
+            // Euclidean erosion. Never promote a convex Lyon mesh,
+            // stroked curve, glyph outline or clipped F1 geometry into
+            // an exact polygonal distance predicate. A qualified rounded
+            // caster is separately proved from its original rectangle.
+            if effective.spread() < 0.0 && !original_rectangles && qualified_disk.is_none() {
+                return Err(crate::runtime::execution_2d::unsupported_at(
+                    path,
+                    crate::execution_2d::Render2dUnsupportedContent::Shadows {
+                        root_index: path[0],
+                    },
+                ));
+            }
             let offset = Render2dAffineTransform::translation(effect.offset_x(), effect.offset_y())
                 .map_err(|_| {
                     shadow_precision(path, "shadow offset transform is unrepresentable")

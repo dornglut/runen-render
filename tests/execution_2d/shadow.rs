@@ -1085,6 +1085,49 @@ fn qualified_child_positive_disk_exhausted_radius_erodes_original_rectangle() {
 }
 
 #[test]
+fn root_nonempty_curved_erosion_never_uses_disposable_convex_mesh() {
+    let Some(context) = context() else { return };
+    let ellipse = Render2dEntry::item(Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::ellipse(Render2dRect::new(10.0, 10.0, 8.0, 8.0).unwrap()),
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    ));
+    let composition = group(
+        vec![ellipse],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let (texture, target) = target("F3F curved F1 negative root source proof");
+    let mut executor = Render2dExecutor::new();
+    let result = executor.prepare(
+        &context,
+        &composition,
+        &Render2dResourceBindings::default(),
+        &target,
+    );
+    assert!(matches!(
+        result,
+        Err(Render2dExecutionError::UnsupportedEntry {
+            path,
+            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
+                root_index: 0,
+            },
+        }) if path == [0]
+    ));
+    drop(texture);
+}
+
+#[test]
 fn nested_nonempty_ellipse_erosion_rejects_before_gpu_and_preserves_executor() {
     let Some(context) = context() else { return };
     let ellipse = Render2dEntry::item(Render2dItem::new(

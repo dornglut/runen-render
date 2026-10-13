@@ -415,7 +415,24 @@ fn group_child_sources_with_probe<'a>(
                     } else if !nested {
                         match graph.qualified_rounded_rectangle(&in_parent)? {
                             Some(qualified) => NeutralCaster::RoundedRectangle(qualified),
-                            None => NeutralCaster::Mesh(graph.materialize(&in_parent)?),
+                            None => {
+                                // Root shadow paint is not exempt from
+                                // original-F1 negative-erosion provenance.
+                                // A convex Lyon tessellation never proves a
+                                // curved F1 fill/stroke is polygonal support.
+                                let proven = frame
+                                    .group
+                                    .shadows()
+                                    .iter()
+                                    .any(|shadow| shadow.spread() < 0.0)
+                                    && graph.proven_original_rectangle_union(&in_parent)?;
+                                let mesh = graph.materialize(&in_parent)?;
+                                if proven {
+                                    NeutralCaster::OriginalRectangleUnion(mesh)
+                                } else {
+                                    NeutralCaster::Mesh(mesh)
+                                }
+                            }
                         }
                     } else {
                         let exact_original_rectangles = frame
