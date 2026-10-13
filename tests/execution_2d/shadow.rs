@@ -2137,6 +2137,66 @@ fn authored_straight_rectangle_path_casts_nonabsorbed_nested_erosion_on_vulkan()
 }
 
 #[test]
+fn authored_rectangular_path_qualifies_exact_positive_disk_on_vulkan() {
+    use runen_render::composition_2d::{
+        Render2dFillRule, Render2dPath, Render2dPathCommand as Command, Render2dPoint,
+    };
+    let Some(context) = context() else { return };
+    let pt = |x, y| Render2dPoint::new(x, y).unwrap();
+    let path = Render2dPath::new(
+        Render2dFillRule::EvenOdd,
+        vec![
+            Command::MoveTo(pt(10.0, 10.0)),
+            Command::LineTo(pt(14.0, 10.0)),
+            Command::LineTo(pt(14.0, 14.0)),
+            Command::LineTo(pt(10.0, 14.0)),
+            Command::Close,
+        ],
+    )
+    .unwrap();
+    let source = Render2dEntry::item(Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::path(path),
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    ));
+    let child = Render2dEntry::group(Render2dGroup::new(
+        vec![source],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)],
+    ));
+    let scene = group(
+        vec![child],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let result = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F original rectangular F1 path positive Euclidean disks remain truly curved",
+    );
+    // (C ⊕ disk(1)) ⊕ disk(1)=C ⊕ disk(2).
+    // The [8,9]^2 corner has analytically derived circle area
+    // 0.31514674362772044 => premul sRGB8 [152,0,0,80].
+    pixel_near(pixel(&result, 8, 8), [152, 0, 0, 80]);
+    assert_eq!(pixel(&result, 8, 10), [255, 0, 0, 255]);
+    assert_eq!(pixel(&result, 7, 10), [0, 0, 0, 0]);
+}
+
+#[test]
 fn translated_holed_finite_gaussian_support_survives_ancestor_shear_on_vulkan() {
     let Some(context) = context() else { return };
     // C = outer [10,26]^2 minus real hole [15,21]^2.

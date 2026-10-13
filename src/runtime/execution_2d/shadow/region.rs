@@ -724,8 +724,13 @@ impl NeutralRegionBuilder {
         path: &crate::composition_2d::Render2dPath,
     ) -> Option<[[f64; 2]; 4]> {
         use crate::composition_2d::Render2dPathCommand as Command;
-        let [Command::MoveTo(a), Command::LineTo(b), Command::LineTo(c), Command::LineTo(d), rest @ ..] =
-            path.commands()
+        let [
+            Command::MoveTo(a),
+            Command::LineTo(b),
+            Command::LineTo(c),
+            Command::LineTo(d),
+            rest @ ..,
+        ] = path.commands()
         else {
             return None;
         };
@@ -743,9 +748,15 @@ impl NeutralRegionBuilder {
             [d.x(), d.y()],
         ];
         let x0 = points.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
-        let x1 = points.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+        let x1 = points
+            .iter()
+            .map(|p| p[0])
+            .fold(f64::NEG_INFINITY, f64::max);
         let y0 = points.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
-        let y1 = points.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+        let y1 = points
+            .iter()
+            .map(|p| p[1])
+            .fold(f64::NEG_INFINITY, f64::max);
         if !(x0 < x1 && y0 < y1) {
             return None;
         }
@@ -1582,14 +1593,9 @@ mod tests {
                 .source_from_item(physical(), &authored, &[i, 0])
                 .unwrap();
             assert!(builder.proven_original_rectangle_union(&leaf).unwrap());
-            let disk = Render2dDropShadow::new(
-                0.0,
-                0.0,
-                0.0,
-                -0.25,
-                Render2dColorRgba8::TRANSPARENT,
-            )
-            .unwrap();
+            let disk =
+                Render2dDropShadow::new(0.0, 0.0, 0.0, -0.25, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap();
             let erosion = builder.effect(leaf, disk, &[i, 1]).unwrap();
             assert!(!builder.materialize(&erosion).unwrap().triangles.is_empty());
         }
@@ -1617,7 +1623,9 @@ mod tests {
         ] {
             let authored =
                 make_item(Render2dPath::new(Render2dFillRule::EvenOdd, commands).unwrap());
-            let leaf = builder.source_from_item(physical(), &authored, &[7, 0]).unwrap();
+            let leaf = builder
+                .source_from_item(physical(), &authored, &[7, 0])
+                .unwrap();
             assert!(!builder.proven_original_rectangle_union(&leaf).unwrap());
         }
         // An exact rectangular PATH with a forged mismatched 3x2 tessellation
