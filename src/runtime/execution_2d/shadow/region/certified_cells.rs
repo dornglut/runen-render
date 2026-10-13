@@ -131,21 +131,78 @@ fn squared_interval(v: Interval) -> Option<Interval> {
     Interval::new(lo, a.max(b).next_up())
 }
 
-/// A path has exact authored control-point containment, even when its
-/// disposable tessellation uses a coarser approximation. Every polynomial
-/// Bézier segment lies in the convex hull of its control points. This gives a
-/// conservative OUTSIDE result for arbitrary multi-contour paths. A single
-/// strictly convex straight-line contour additionally permits exact halfplane
-/// membership, independently of the original fill rule and Lyon triangles.
-fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCertificate {
+/// The sign of a straight edge relative to an interval-enclosed cell is
+/// certified from the ORIGINAL authored endpoints, never Lyon's triangles.
+fn line_side(a: [f64; 2], b: [f64; 2], x: Interval, y: Interval) -> Option<Interval> {
+    let dx = Interval::scalar(b[0])?.sub(Interval::scalar(a[0])?)?;
+    let dy = Interval::scalar(b[1])?.sub(Interval::scalar(a[1])?)?;
+    let px = x.sub(Interval::scalar(a[0])?)?;
+    let py = y.sub(Interval::scalar(a[1])?)?;
+    dx.mul(py)?.sub(dy.mul(px)?)
+}
+
+/// Return the exact ray-crossing winding increment ONLY after proving that
+/// this segment cannot touch any point in the entire query cell. The witness
+/// is a representable corner of that enclosing cell. Consequently its winding
+/// applies to every point in the cell, including concave and holed paths.
+fn certified_line_crossing(cell: Cell, a: [f64; 2], b: [f64; 2]) -> Option<i64> {
+    if a == b {
+        return Some(0);
+    }
+    let separate_bounds = cell.x.hi < a[0].min(b[0])
+        || cell.x.lo > a[0].max(b[0])
+        || cell.y.hi < a[1].min(b[1])
+        || cell.y.lo > a[1].max(b[1]);
+    if !separate_bounds {
+        let side = line_side(a, b, cell.x, cell.y)?;
+        // A segment can meet the cell only if its supporting line can.
+        // A zero-straddling interval does not authorize either membership.
+        if side.lo <= 0.0 && side.hi >= 0.0 {
+            return None;
+        }
+    }
+    let y = cell.y.lo;
+    let upward = a[1] <= y && y < b[1];
+    let downward = b[1] <= y && y < a[1];
+    if !upward && !downward {
+        return Some(0);
+    }
+    let side = line_side(
+        a,
+        b,
+        Interval::scalar(cell.x.lo)?,
+        Interval::scalar(y)?,
+    )?;
+    if upward {
+        if side.lo > 0.0 {
+            Some(1)
+        } else if side.hi < 0.0 {
+            Some(0)
+        } else {
+            None
+        }
+    } else if side.hi < 0.0 {
+        Some(-1)
+    } else if side.lo > 0.0 {
+        Some(0)
+    } else {
+        None
+    }
+}
+
+/// Linear-time, zero-allocation source-authoritative winding certificate for
+/// ANY straight-line F1 fill path. Handles concavity, multiple contours,
+/// opposite or same contour winding, explicit and implicit closure, and the
+/// actual EvenOdd/NonZero law. A boundary/precision ambiguity is Unknown.
+fn certify_straight_path(
+    path: &Render2dPath,
+    cell: Cell,
+    visits: &mut usize,
+) -> CellCertificate {
     let commands = path.commands();
-    // Proving strict convexity checks EVERY vertex against EVERY edge,
-    // not merely neighboring turns: pentagrams can have consistent turns.
-    let Some(cost) = commands
-        .len()
-        .checked_add(6)
-        .and_then(|n| n.checked_mul(commands.len()))
-    else {
+    // Worst-case work is linear in the entire authored command stream.
+    // The fixed upper charge covers the interval edge and crossing queries.
+    let Some(cost) = commands.len().checked_mul(32) else {
         return CellCertificate::Unknown;
     };
     if *visits < cost {
@@ -153,15 +210,80 @@ fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCert
         return CellCertificate::Unknown;
     }
     *visits -= cost;
-
-    let mut vertices = Vec::new();
-    if vertices.try_reserve_exact(commands.len()).is_err() {
+    let mut first = None;
+    let mut previous = None;
+    let mut has_segment = false;
+    let mut winding = 0_i64;
+    let mut add_edge = |a: [f64; 2], b: [f64; 2]| -> Option<()> {
+        winding = winding.checked_add(certified_line_crossing(cell, a, b)?)?;
+        Some(())
+    };
+    for command in commands {
+        match *command {
+            Render2dPathCommand::MoveTo(p) => {
+                if has_segment && add_edge(previous?, first?).is_none() {
+                    return CellCertificate::Unknown;
+                }
+                first = Some([p.x(), p.y()]);
+                previous = first;
+                has_segment = false;
+            }
+            Render2dPathCommand::LineTo(p) => {
+                let to = [p.x(), p.y()];
+                if add_edge(previous?, to).is_none() {
+                    return CellCertificate::Unknown;
+                }
+                previous = Some(to);
+                has_segment = true;
+            }
+            Render2dPathCommand::Close => {
+                if has_segment && add_edge(previous?, first?).is_none() {
+                    return CellCertificate::Unknown;
+                }
+                previous = first;
+                has_segment = false;
+            }
+            Render2dPathCommand::QuadraticTo { .. }
+            | Render2dPathCommand::CubicTo { .. } => return CellCertificate::Unknown,
+        }
+    }
+    if has_segment && add_edge(previous?, first?).is_none() {
         return CellCertificate::Unknown;
     }
+    let inside = match path.fill_rule() {
+        crate::composition_2d::Render2dFillRule::EvenOdd => winding % 2 != 0,
+        crate::composition_2d::Render2dFillRule::NonZero => winding != 0,
+    };
+    if inside {
+        CellCertificate::Inside
+    } else {
+        CellCertificate::Outside
+    }
+}
+
+/// Curve control points certify the conservative exterior even if physical
+/// tessellation is arbitrarily coarse. Inside must be proved by a separate
+/// exact source query; no polygonization of authored Bézier control hulls.
+fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCertificate {
+    let commands = path.commands();
+    if !commands.iter().any(|command| {
+        matches!(
+            command,
+            Render2dPathCommand::QuadraticTo { .. } | Render2dPathCommand::CubicTo { .. }
+        )
+    }) {
+        return certify_straight_path(path, cell, visits);
+    }
+    let Some(cost) = commands.len().checked_mul(8) else {
+        return CellCertificate::Unknown;
+    };
+    if *visits < cost {
+        *visits = 0;
+        return CellCertificate::Unknown;
+    }
+    *visits -= cost;
     let mut hull: Option<[f64; 4]> = None;
-    let mut contours = 0_usize;
-    let mut straight = true;
-    let mut segment_count = 0_usize;
+    let mut segments = 0_usize;
     let mut point = |p: crate::composition_2d::Render2dPoint| {
         let (x, y) = (p.x(), p.y());
         hull = Some(match hull {
@@ -171,19 +293,13 @@ fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCert
     };
     for command in commands {
         match *command {
-            Render2dPathCommand::MoveTo(p) => {
-                contours += 1;
-                point(p);
-                vertices.push([p.x(), p.y()]);
-            }
+            Render2dPathCommand::MoveTo(p) => point(p),
             Render2dPathCommand::LineTo(p) => {
-                segment_count += 1;
+                segments += 1;
                 point(p);
-                vertices.push([p.x(), p.y()]);
             }
             Render2dPathCommand::QuadraticTo { control, to } => {
-                straight = false;
-                segment_count += 1;
+                segments += 1;
                 point(control);
                 point(to);
             }
@@ -192,8 +308,7 @@ fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCert
                 control2,
                 to,
             } => {
-                straight = false;
-                segment_count += 1;
+                segments += 1;
                 point(control1);
                 point(control2);
                 point(to);
@@ -201,88 +316,16 @@ fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCert
             Render2dPathCommand::Close => {}
         }
     }
-    if segment_count == 0 {
+    if segments == 0 {
         return CellCertificate::Outside;
     }
     let Some([x0, y0, x1, y1]) = hull else {
         return CellCertificate::Unknown;
     };
-    // Strict separation from the control-point hull is sufficient even for
-    // curves, self-overlaps, alternate fill rules and multiple contours.
     if cell.x.hi < x0 || cell.x.lo > x1 || cell.y.hi < y0 || cell.y.lo > y1 {
-        return CellCertificate::Outside;
-    }
-    if !straight || contours != 1 {
-        return CellCertificate::Unknown;
-    }
-    if vertices.len() >= 2 && vertices.first() == vertices.last() {
-        vertices.pop();
-    }
-    if vertices.len() < 3 {
-        return CellCertificate::Unknown;
-    }
-
-    let orientation = |a: [f64; 2], b: [f64; 2], c: [Interval; 2]| {
-        let dx = Interval::scalar(b[0])?.sub(Interval::scalar(a[0])?)?;
-        let dy = Interval::scalar(b[1])?.sub(Interval::scalar(a[1])?)?;
-        let px = c[0].sub(Interval::scalar(a[0])?)?;
-        let py = c[1].sub(Interval::scalar(a[1])?)?;
-        dx.mul(py)?.sub(dy.mul(px)?)
-    };
-    let mut winding = 0_i8;
-    for i in 0..vertices.len() {
-        let a = vertices[i];
-        let b = vertices[(i + 1) % vertices.len()];
-        for (j, &c) in vertices.iter().enumerate() {
-            if j == i || j == (i + 1) % vertices.len() {
-                continue;
-            }
-            let Some(turn) = orientation(
-                a,
-                b,
-                [
-                    Interval::scalar(c[0]).unwrap(),
-                    Interval::scalar(c[1]).unwrap(),
-                ],
-            ) else {
-                return CellCertificate::Unknown;
-            };
-            let sign = if turn.lo > 0.0 {
-                1
-            } else if turn.hi < 0.0 {
-                -1
-            } else {
-                return CellCertificate::Unknown;
-            };
-            if winding != 0 && winding != sign {
-                // A supporting halfplane of a genuine convex polygon
-                // contains ALL other vertices. Stars and concave polygons
-                // fail here even when their local turns have the same sign.
-                return CellCertificate::Unknown;
-            }
-            winding = sign;
-        }
-    }
-    let mut uncertain = false;
-    for i in 0..vertices.len() {
-        let Some(side) = orientation(
-            vertices[i],
-            vertices[(i + 1) % vertices.len()],
-            [cell.x, cell.y],
-        ) else {
-            return CellCertificate::Unknown;
-        };
-        if (winding > 0 && side.hi < 0.0) || (winding < 0 && side.lo > 0.0) {
-            return CellCertificate::Outside;
-        }
-        if (winding > 0 && side.lo <= 0.0) || (winding < 0 && side.hi >= 0.0) {
-            uncertain = true;
-        }
-    }
-    if uncertain {
-        CellCertificate::Unknown
+        CellCertificate::Outside
     } else {
-        CellCertificate::Inside
+        CellCertificate::Unknown
     }
 }
 
@@ -1284,7 +1327,7 @@ fn original_f1_convex_line_path_certifies_both_windings_and_edge_uncertainty() {
 }
 
 #[test]
-fn self_intersecting_star_cannot_be_certified_from_consistent_local_turns() {
+fn self_intersecting_star_certifies_evenodd_winding_not_local_convexity() {
     use crate::composition_2d::{Render2dFillRule, Render2dPath, Render2dPoint};
     let p = |x, y| Render2dPoint::new(x, y).unwrap();
     let star = Render2dShape::path(
@@ -1308,7 +1351,7 @@ fn self_intersecting_star_cannot_be_certified_from_consistent_local_turns() {
             Cell::new([-0.1, -0.1, 0.1, 0.1]).unwrap(),
             &mut visits,
         ),
-        CellCertificate::Unknown
+        CellCertificate::Outside
     );
     assert_eq!(
         certify_shape(
@@ -1318,6 +1361,101 @@ fn self_intersecting_star_cannot_be_certified_from_consistent_local_turns() {
         ),
         CellCertificate::Outside
     );
+}
+
+#[test]
+fn authored_concave_and_holed_straight_paths_certify_actual_fill_rules_without_meshes() {
+    use crate::composition_2d::{Render2dFillRule, Render2dPath, Render2dPoint};
+    let p = |x, y| Render2dPoint::new(x, y).unwrap();
+    let contour = |points: &[(f64, f64)], commands: &mut Vec<Render2dPathCommand>| {
+        commands.push(Render2dPathCommand::MoveTo(p(points[0].0, points[0].1)));
+        for &(x, y) in &points[1..] {
+            commands.push(Render2dPathCommand::LineTo(p(x, y)));
+        }
+        commands.push(Render2dPathCommand::Close);
+    };
+    let query = |path: &Render2dPath, bounds| {
+        let mut visits = 16_777_216;
+        certify_path(path, Cell::new(bounds).unwrap(), &mut visits)
+    };
+    let mut l = Vec::new();
+    contour(
+        &[
+            (0.0, 0.0),
+            (8.0, 0.0),
+            (8.0, 2.0),
+            (2.0, 2.0),
+            (2.0, 8.0),
+            (0.0, 8.0),
+        ],
+        &mut l,
+    );
+    let concave = Render2dPath::new(Render2dFillRule::NonZero, l).unwrap();
+    assert_eq!(query(&concave, [0.5, 0.5, 1.0, 1.0]), CellCertificate::Inside);
+    assert_eq!(query(&concave, [5.0, 5.0, 6.0, 6.0]), CellCertificate::Outside);
+    assert_eq!(query(&concave, [1.9, 1.9, 2.1, 2.1]), CellCertificate::Unknown);
+
+    let outer = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+    let inner = [(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0)];
+    let mut same = Vec::new();
+    contour(&outer, &mut same);
+    contour(&inner, &mut same);
+    let evenodd = Render2dPath::new(Render2dFillRule::EvenOdd, same.clone()).unwrap();
+    let nonzero = Render2dPath::new(Render2dFillRule::NonZero, same).unwrap();
+    for path in [&evenodd, &nonzero] {
+        assert_eq!(query(path, [1.0, 1.0, 2.0, 2.0]), CellCertificate::Inside);
+        assert_eq!(query(path, [12.0, 5.0, 13.0, 6.0]), CellCertificate::Outside);
+        assert_eq!(query(path, [2.9, 4.0, 3.1, 5.0]), CellCertificate::Unknown);
+    }
+    assert_eq!(query(&evenodd, [4.0, 4.0, 6.0, 6.0]), CellCertificate::Outside);
+    assert_eq!(query(&nonzero, [4.0, 4.0, 6.0, 6.0]), CellCertificate::Inside);
+
+    let mut opposite = Vec::new();
+    contour(&outer, &mut opposite);
+    contour(&inner.into_iter().rev().collect::<Vec<_>>(), &mut opposite);
+    let opposite = Render2dPath::new(Render2dFillRule::NonZero, opposite).unwrap();
+    assert_eq!(query(&opposite, [4.0, 4.0, 6.0, 6.0]), CellCertificate::Outside);
+
+    // An open fill contour MUST close implicitly; neither clipping nor
+    // physical tessellation is consulted.
+    let open = Render2dPath::new(
+        Render2dFillRule::EvenOdd,
+        vec![
+            Render2dPathCommand::MoveTo(p(0.0, 0.0)),
+            Render2dPathCommand::LineTo(p(10.0, 0.0)),
+            Render2dPathCommand::LineTo(p(0.0, 10.0)),
+        ],
+    )
+    .unwrap();
+    assert_eq!(query(&open, [1.0, 1.0, 2.0, 2.0]), CellCertificate::Inside);
+    assert_eq!(query(&open, [8.0, 8.0, 9.0, 9.0]), CellCertificate::Outside);
+}
+
+#[test]
+fn linear_winding_certificate_fails_closed_at_exact_global_fuel_boundary() {
+    use crate::composition_2d::{Render2dFillRule, Render2dPath, Render2dPoint};
+    let p = |x, y| Render2dPoint::new(x, y).unwrap();
+    let path = Render2dPath::new(
+        Render2dFillRule::NonZero,
+        vec![
+            Render2dPathCommand::MoveTo(p(0.0, 0.0)),
+            Render2dPathCommand::LineTo(p(8.0, 0.0)),
+            Render2dPathCommand::LineTo(p(0.0, 8.0)),
+            Render2dPathCommand::Close,
+        ],
+    )
+    .unwrap();
+    let cell = Cell::new([1.0, 1.0, 2.0, 2.0]).unwrap();
+    let cost = path.commands().len() * 32;
+    let mut insufficient = cost - 1;
+    assert_eq!(
+        certify_path(&path, cell, &mut insufficient),
+        CellCertificate::Unknown
+    );
+    assert_eq!(insufficient, 0);
+    let mut exact = cost;
+    assert_eq!(certify_path(&path, cell, &mut exact), CellCertificate::Inside);
+    assert_eq!(exact, 0);
 }
 
 #[test]
