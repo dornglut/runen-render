@@ -357,6 +357,56 @@ impl NeutralRegion<'_> {
                 .iter()
                 .all(|shadow| certified_complete_disk_erosion(self.envelope, shadow.spread()))
     }
+
+    /// A root's complete authored shadow set can be discarded only when
+    /// original-F1 reach, including nested curved effects, proves that EVERY
+    /// shadow is strictly outside the requested canvas. An enclosing box is
+    /// used exclusively to certify absence, never as positive coverage.
+    /// Canvas division and all effect halos are rounded outward.
+    pub(super) fn all_root_shadows_provably_offscreen(
+        &self,
+        shadows: &[Render2dDropShadow],
+        canvas: [f64; 2],
+        raster_scale: f64,
+    ) -> Result<bool, Render2dExecutionError> {
+        if shadows.is_empty() || !self.certified_source_reach {
+            return Ok(false);
+        }
+        let Some(scale) = interval::Interval::scalar(raster_scale) else {
+            return Ok(false);
+        };
+        if scale.lo <= 0.0 {
+            return Ok(false);
+        }
+        let Some(width) = interval::Interval::scalar(canvas[0])
+            .and_then(|extent| extent.div(scale))
+        else {
+            return Ok(false);
+        };
+        let Some(height) = interval::Interval::scalar(canvas[1])
+            .and_then(|extent| extent.div(scale))
+        else {
+            return Ok(false);
+        };
+        if width.lo <= 0.0 || height.lo <= 0.0 {
+            return Ok(false);
+        }
+        let Some(bounds) = self.envelope else {
+            // Certified original-F1 support is genuinely empty.
+            return Ok(true);
+        };
+        for &shadow in shadows {
+            let outer = nested_effect_envelope(bounds, shadow, &self.path)?;
+            if !(outer[2] < 0.0
+                || outer[3] < 0.0
+                || outer[0] > width.hi
+                || outer[1] > height.hi)
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 /// One invocation-owned bounded graph and memoized polygonal realization.
@@ -1645,6 +1695,54 @@ mod tests {
         ));
         assert_eq!(graph.erosion_work, 0);
         assert!(graph.materialized.get(leaf.id).is_none_or(Option::is_none));
+    }
+
+    #[test]
+    fn original_region_root_offscreen_proof_requires_every_effect_and_exact_canvas_extent() {
+        let mut graph = builder();
+        let source = graph.source(triangle(), &[6, 0]).unwrap();
+        let descendant = Render2dDropShadow::new(
+            0.0,
+            0.0,
+            0.1,
+            1.0,
+            Render2dColorRgba8::TRANSPARENT,
+        )
+        .unwrap();
+        let curved = graph.effect(Arc::clone(&source), descendant, &[6, 1]).unwrap();
+        let root = graph.union(vec![source, curved], &[6]).unwrap();
+        let outside = Render2dDropShadow::new(
+            100.0,
+            0.0,
+            0.25,
+            -0.5,
+            Render2dColorRgba8::TRANSPARENT,
+        )
+        .unwrap();
+        let reaches = Render2dDropShadow::new(
+            0.0,
+            0.0,
+            0.25,
+            -0.5,
+            Render2dColorRgba8::TRANSPARENT,
+        )
+        .unwrap();
+        assert!(root
+            .all_root_shadows_provably_offscreen(&[outside, outside], [64.0, 64.0], 1.0)
+            .unwrap());
+        assert!(!root
+            .all_root_shadows_provably_offscreen(&[outside, reaches], [64.0, 64.0], 1.0)
+            .unwrap());
+        assert!(!root
+            .all_root_shadows_provably_offscreen(&[reaches, outside], [64.0, 64.0], 1.0)
+            .unwrap());
+        assert!(!root
+            .all_root_shadows_provably_offscreen(&[], [64.0, 64.0], 1.0)
+            .unwrap());
+        assert!(!root
+            .all_root_shadows_provably_offscreen(&[outside], [64.0, 64.0], 0.0)
+            .unwrap());
+        assert!(graph.materialize(&root).is_err());
     }
 
     #[test]

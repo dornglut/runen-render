@@ -2399,3 +2399,100 @@ fn finite_gaussian_shadows_preserve_order_at_fractional_boundary_on_vulkan() {
         assert_eq!(pixel(&result, 7, 7), [0, 0, 0, 0]);
     }
 }
+
+/// General original-F1 reach culling: a symbolic curved descendant cannot
+/// reach the canvas through either root shadow. This is not a curved coverage
+/// approximation or a special-case shape classifier. Original paint remains.
+#[test]
+fn wholly_offscreen_curved_root_effects_preserve_actual_vulkan_child_paint() {
+    let Some(context) = context() else {
+        return;
+    };
+    let scene = |shadows: Vec<Render2dDropShadow>| {
+        let curved = Render2dEntry::group(Render2dGroup::new(
+            vec![caster(
+                Render2dColorRgba8::TRANSPARENT,
+                10.0,
+                10.0,
+                8.0,
+                8.0,
+            )],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            vec![effect(0.0, 0.0, 0.1, 1.0, Render2dColorRgba8::TRANSPARENT)],
+        ));
+        let paint = Render2dEntry::item(Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(12.0, 12.0, 2.0, 2.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::new(0, 255, 0, 255)),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+        ));
+        group(vec![curved, paint], shadows, 1.0)
+    };
+    let offscreen = effect(
+        100.0,
+        0.0,
+        0.25,
+        -0.5,
+        Render2dColorRgba8::new(255, 0, 0, 255),
+    );
+    let reference = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene(Vec::new()),
+        &Render2dResourceBindings::default(),
+        "F3F original F1 children without offscreen effects",
+    );
+    let mut executor = Render2dExecutor::new();
+    let actual = execute(
+        &context,
+        &mut executor,
+        &scene(vec![offscreen, offscreen]),
+        &Render2dResourceBindings::default(),
+        "F3F provably offscreen curved original F1 shadows",
+    );
+    assert_eq!(actual.as_bytes(), reference.as_bytes());
+    pixel_near(pixel(&actual, 12, 12), [0, 255, 0, 255]);
+    assert_eq!(pixel(&actual, 9, 9), [0, 0, 0, 0]);
+
+    // One surviving root shadow must still require exact curved coverage.
+    // A single offscreen sibling may never make the whole source disappear.
+    let visible = effect(
+        0.0,
+        0.0,
+        0.25,
+        -0.5,
+        Render2dColorRgba8::new(255, 0, 0, 255),
+    );
+    let (_, target) = target("F3F mixed offscreen and surviving root shadow");
+    let error = executor
+        .prepare(
+            &context,
+            &scene(vec![offscreen, visible]),
+            &Render2dResourceBindings::default(),
+            &target,
+        )
+        .err()
+        .expect("uncertified surviving curved root must reject before target work");
+    assert!(matches!(
+        error,
+        Render2dExecutionError::UnsupportedEntry {
+            path,
+            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
+                root_index: 0
+            },
+        } if path == [0, 0]
+    ));
+    let recovered = execute(
+        &context,
+        &mut executor,
+        &scene(Vec::new()),
+        &Render2dResourceBindings::default(),
+        "F3F executor remains usable after mixed curved rejection",
+    );
+    assert_eq!(recovered.as_bytes(), reference.as_bytes());
+}

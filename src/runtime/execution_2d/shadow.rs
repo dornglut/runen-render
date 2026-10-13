@@ -313,6 +313,7 @@ pub(super) fn group_child_sources<'a>(
     field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
+    root_canvas: Option<([f64; 2], f64)>,
 ) -> Result<BTreeMap<usize, NeutralCaster>, Render2dExecutionError> {
     group_child_sources_with_probe(
         plan,
@@ -320,6 +321,7 @@ pub(super) fn group_child_sources<'a>(
         field_sets,
         scales,
         max_buffer_bytes,
+        root_canvas,
         |_, _| {},
     )
 }
@@ -334,6 +336,7 @@ fn group_child_sources_with_probe<'a>(
     field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
+    root_canvas: Option<([f64; 2], f64)>,
     mut inspect: impl FnMut(&Arc<region::NeutralRegion<'a>>, &[usize]),
 ) -> Result<BTreeMap<usize, NeutralCaster>, Render2dExecutionError> {
     let mut active = Vec::<SourceFrame<'a>>::new();
@@ -384,14 +387,26 @@ fn group_child_sources_with_probe<'a>(
                     // Resolve the proven curved DAG before asking for a
                     // polygonal mesh: a disk cannot be made into triangles
                     // and an expected rejection is not control flow.
+                    let offscreen = if !nested {
+                        if let Some((canvas, raster_scale)) = root_canvas {
+                            in_parent.all_root_shadows_provably_offscreen(
+                                frame.group.shadows(),
+                                canvas,
+                                raster_scale,
+                            )?
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
                     let source = if !nested
-                        && in_parent.all_root_shadows_provably_empty(frame.group.shadows())
+                        && (in_parent.all_root_shadows_provably_empty(frame.group.shadows())
+                            || offscreen)
                     {
-                        // A certified-empty root shadow need not realize a
-                        // child's symbolic curved F1 support as polygons.
-                        // The ordinary F3E painter still executes original
-                        // child content; this empty mesh is only the shadow
-                        // source for these independently erased effects.
+                        // Certified-empty or fully offscreen root effects
+                        // cannot reach the requested target. Preserve all
+                        // original F3E child painting and nested support.
                         NeutralCaster::Mesh(Arc::new(empty_mesh()))
                     } else if !nested {
                         match graph.qualified_rounded_rectangle(&in_parent)? {
@@ -935,6 +950,7 @@ mod tests {
                 geometry_sample_scale: 4.0,
             },
             1_048_576,
+            None,
         )
         .unwrap();
         assert_eq!(sources.len(), 1);
@@ -1012,6 +1028,7 @@ mod tests {
                 geometry_sample_scale: 4.0,
             },
             1_048_576,
+            None,
         )
         .unwrap();
         let NeutralCaster::Mesh(mesh) = sources.get(&0).unwrap() else {
@@ -1079,6 +1096,7 @@ mod tests {
                     geometry_sample_scale: 4.0,
                 },
                 1_048_576,
+                None,
             ),
             Err(Render2dExecutionError::UnsupportedEntry {
                 path,

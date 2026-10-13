@@ -148,6 +148,7 @@ pub(super) fn prepare(
             geometry_sample_scale: sample_scale,
         },
         target.max_buffer_bytes(),
+        Some((target.canvas(), target.raster_scale())),
     )?;
     let mut groups = BTreeMap::new();
     let mut retained_coverage_bytes = 0_u64;
