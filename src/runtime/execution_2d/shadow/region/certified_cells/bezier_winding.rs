@@ -353,6 +353,24 @@ mod tests {
     }
 
     #[test]
+    fn authored_cubic_64x64_finite_gaussian_tiles_reuse_interval_proofs() {
+        // Original F1 cubic contour; the shared test fixture deliberately
+        // supplies a bogus full-canvas physical tessellation. All 65,536
+        // correlated sample centers are either certified or remain Unknown.
+        // The same unchanged whole-scene query and work caps apply.
+        super::super::shared_authored_path_scene_certificate(vec![
+            Render2dPathCommand::MoveTo(p(8.0, 8.0)),
+            Render2dPathCommand::LineTo(p(50.0, 8.0)),
+            Render2dPathCommand::CubicTo {
+                control1: p(50.0, 45.0),
+                control2: p(8.0, 45.0),
+                to: p(8.0, 8.0),
+            },
+            Render2dPathCommand::Close,
+        ]);
+    }
+
+    #[test]
     fn subcurve_near_boundary_and_budget_exhaustion_are_unknown() {
         let path = Render2dPath::new(
             Render2dFillRule::EvenOdd,
