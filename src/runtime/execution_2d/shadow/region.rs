@@ -1028,6 +1028,12 @@ impl NeutralRegionBuilder {
                 if certified_complete_disk_erosion(source.envelope, effect.spread()) {
                     Arc::new(shadow::empty_mesh())
                 } else {
+                    // Physical convexity cannot certify F1 curved geometry.
+                    // Proven complete erosion above is independently exact,
+                    // but nonempty erosion must prove F1/mesh correspondence.
+                    if effect.spread() < 0.0 && !self.proven_original_rectangle_union(source)? {
+                        return Err(unsupported(path));
+                    }
                     let mesh = self.materialize(source)?;
                     // A positive disk is retained as a precise expression but
                     // cannot be *polygonalized* as finite triangles. A consuming
@@ -1961,10 +1967,79 @@ mod tests {
             !certified_complete_disk_erosion(borderline.envelope, -0.5,),
             "a prior erosion reach cannot be interpreted as a new exact membership claim"
         );
-        let nonempty = graph.materialize(&borderline).unwrap();
         assert!(
-            !nonempty.triangles.is_empty(),
-            "uncertain enclosure must take the existing actual geometric erosion path"
+            matches!(
+                graph.materialize(&borderline),
+                Err(Render2dExecutionError::UnsupportedEntry {
+                    path,
+                    kind: Render2dUnsupportedContent::Shadows { root_index: 8 },
+                }) if path == [8, 1]
+            ),
+            "a synthetic triangle is not an authored F1 erosion certificate"
+        );
+    }
+
+    #[test]
+    fn nonempty_erosion_requires_original_f1_geometry_not_convex_facets() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dRect,
+            Render2dShape,
+        };
+        let rect = Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap();
+        let original = |shape| {
+            Render2dItem::new(
+                Render2dPrimitive::Fill {
+                    shape,
+                    brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+                },
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::TRANSPARENT,
+            )
+        };
+        // Both F1 objects receive the SAME convex physical rectangle.
+        // The original ellipse is not a license to erode these fake facets.
+        let physical = || support::NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
+            ],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let rectangle = original(Render2dShape::rect(rect));
+        let ellipse = original(Render2dShape::ellipse(rect));
+        let erode =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, -0.25, Render2dColorRgba8::TRANSPARENT)
+                .unwrap();
+        let mut graph = builder();
+        let curved_source = graph
+            .source_from_item(physical(), &ellipse, &[7, 0])
+            .unwrap();
+        let curved_effect = graph.effect(curved_source, erode, &[7, 1]).unwrap();
+        let before = graph.retained_vertices;
+        assert!(matches!(
+            graph.materialize(&curved_effect),
+            Err(Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: Render2dUnsupportedContent::Shadows { root_index: 7 },
+            }) if path == [7, 1]
+        ));
+        assert_eq!(graph.retained_vertices, before);
+        let valid_source = graph
+            .source_from_item(physical(), &rectangle, &[8, 0])
+            .unwrap();
+        let valid_effect = graph.effect(valid_source, erode, &[8, 1]).unwrap();
+        assert!(
+            !graph
+                .materialize(&valid_effect)
+                .unwrap()
+                .triangles
+                .is_empty()
         );
     }
 

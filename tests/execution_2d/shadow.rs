@@ -1084,6 +1084,82 @@ fn qualified_child_positive_disk_exhausted_radius_erodes_original_rectangle() {
     assert_eq!(pixel(&image, 9, 9), [0, 0, 0, 0]);
 }
 
+#[test]
+fn nested_nonempty_ellipse_erosion_rejects_before_gpu_and_preserves_executor() {
+    let Some(context) = context() else { return };
+    let ellipse = Render2dEntry::item(Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::ellipse(Render2dRect::new(10.0, 10.0, 8.0, 8.0).unwrap()),
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    ));
+    let nested = Render2dEntry::group(Render2dGroup::new(
+        vec![ellipse],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let scene = group(
+        vec![nested],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+        1.0,
+    );
+    let (texture, target) = target("F3F original F1 ellipse must not erode Lyon facets");
+    let mut executor = Render2dExecutor::new();
+    let rejected = executor.prepare(
+        &context,
+        &scene,
+        &Render2dResourceBindings::default(),
+        &target,
+    );
+    assert!(matches!(
+        rejected,
+        Err(Render2dExecutionError::UnsupportedEntry {
+            path,
+            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
+                root_index: 0,
+            },
+        }) if path == [0, 0]
+    ));
+    drop(texture);
+    // An exact original rectangle remains supported on the SAME executor.
+    let valid = group(
+        vec![caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 8.0, 8.0)],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+        1.0,
+    );
+    let image = execute(
+        &context,
+        &mut executor,
+        &valid,
+        &Render2dResourceBindings::default(),
+        "F3F exact rectangle still works after rejected curved geometry",
+    );
+    pixel_near(pixel(&image, 13, 13), [255, 0, 0, 255]);
+}
+
 /// The borrowed F1 ellipse is curved; disposable tessellation is not an
 /// exact signed Euclidean erosion witness. A radius-6 disk cannot fit in
 /// the source's certified 8x8 original reach, so its negative spread is
