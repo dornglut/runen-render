@@ -392,8 +392,10 @@ impl NeutralRegion<'_> {
             return Ok(false);
         }
         let Some(bounds) = self.envelope else {
-            // Certified original-F1 support is genuinely empty.
-            return Ok(true);
+            // No source envelope is NOT proof of an empty original-F1 region:
+            // a disposable empty mesh may still miss authored geometry.
+            // Only a certified finite outer reach can authorize this cull.
+            return Ok(false);
         };
         for &shadow in shadows {
             let outer = nested_effect_envelope(bounds, shadow, &self.path)?;
@@ -1734,6 +1736,30 @@ mod tests {
                 .unwrap()
         );
         assert!(graph.materialize(&root).is_err());
+
+        // A missing PHYSICAL source cannot certify semantic absence.
+        // This adversarial item retains a positive-area original F1 rectangle
+        // even though the supplied disposable realization is empty.
+        use crate::composition_2d::{
+            Render2dAffineTransform, Render2dBrush, Render2dItem, Render2dOpacity,
+            Render2dPrimitive, Render2dRect, Render2dShape,
+        };
+        let original = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(1.0, 1.0, 4.0, 4.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let unrealized = graph
+            .source_from_item(shadow::empty_mesh(), &original, &[6, 2])
+            .unwrap();
+        assert!(unrealized.envelope.is_none());
+        assert!(!unrealized
+            .all_root_shadows_provably_offscreen(&[outside], [64.0, 64.0], 1.0)
+            .unwrap());
     }
 
     #[test]
