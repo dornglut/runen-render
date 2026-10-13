@@ -1499,12 +1499,24 @@ fn shared_authored_path_scene_certificate(commands: Vec<Render2dPathCommand>) {
         report.inside_samples + report.outside_samples + report.unresolved_samples,
         64 * 64 * 16
     );
-    assert!(report.inside_samples > 0, "no original-path interiors proven");
-    assert!(report.outside_samples > 0, "no original-path exteriors proven");
-    assert!(report.unresolved_samples > 0, "boundary uncertainty was erased");
+    assert!(
+        report.inside_samples > 0,
+        "no original-path interiors proven"
+    );
+    assert!(
+        report.outside_samples > 0,
+        "no original-path exteriors proven"
+    );
+    assert!(
+        report.unresolved_samples > 0,
+        "boundary uncertainty was erased"
+    );
     assert!(report.queries < 2_000, "not enough tile-level sharing");
     let charged = MAX_REGION_GRAPH_WORK - remaining;
-    assert!(charged < 4_000_000, "scene-shared feasibility must avoid per-site query cost");
+    assert!(
+        charged < 4_000_000,
+        "scene-shared feasibility must avoid per-site query cost"
+    );
 }
 
 #[test]
