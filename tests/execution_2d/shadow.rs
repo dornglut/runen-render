@@ -1424,6 +1424,65 @@ fn nested_convex_erosion_gaussian_integrates_in_its_parent_frame() {
 }
 
 #[test]
+fn nested_nonconvex_finite_erosion_dominated_by_original_source_renders_on_vulkan() {
+    let Some(context) = context() else { return };
+    // Original F1 alpha-zero concave L, made of two exact rectangles.
+    // Its inner visible red shadow uses Euclidean radius-1 erosion
+    // followed by normalized finite sigma=.1 Gaussian. The 3sigma
+    // square lies inside radius-1 disk (conservative bound 6sigma<1):
+    // the entire blurred eroded shadow support is contained in C.
+    // Thus outer blue shadows consume exactly C, not the inner alpha,
+    // a sampled mask, the eroded contour or a bounding rectangle.
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 5.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 15.0, 5.0, 5.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.1,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::translation(4.0, 3.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+    ));
+    let composition = Render2dComposition::new(vec![outer]).unwrap();
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F source-exact nested nonconvex eroded finite Gaussian under translation",
+    );
+    // Inner source corner [14,15]^2 has continuous normalized alpha
+    // 0.22752904084766. The blue outer shadow is opaque because C
+    // covers this whole sample cell. Its premul contribution is
+    // (1-alpha), giving independent sRGB [131,0,228,255].
+    pixel_near(pixel(&image, 18, 17), [131, 0, 228, 255]);
+    // Deep original interior: the inner red shadow hides the blue.
+    pixel_near(pixel(&image, 16, 15), [255, 0, 0, 255]);
+    // Real concavity remains empty; neither an AABB nor mask alpha
+    // may turn the upper-right missing quadrant into source support.
+    assert_eq!(pixel(&image, 22, 21), [0, 0, 0, 0]);
+}
+
+#[test]
 fn nested_nonconvex_disk_erosion_rejects_with_authored_path_before_gpu_work() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(

@@ -179,11 +179,15 @@ pub(super) fn prepare(
         let source = sources
             .get(&index)
             .expect("the neutral F1 traversal records each shadow-bearing group");
-        let (mesh, qualified_disk) = match source {
-            geometry_support::NeutralCaster::Mesh(mesh) => (mesh.as_ref(), None),
+        let (mesh, qualified_disk, original_rectangles) = match source {
+            geometry_support::NeutralCaster::Mesh(mesh) => (mesh.as_ref(), None, false),
+            geometry_support::NeutralCaster::OriginalRectangleUnion(mesh) => {
+                (mesh.as_ref(), None, true)
+            }
             geometry_support::NeutralCaster::RoundedRectangle(qualified) => (
                 qualified.rectangle.as_ref(),
                 Some((qualified.radius, qualified.curved_owner.as_slice())),
+                false,
             ),
         };
         let mut prepared = Vec::new();
@@ -287,22 +291,39 @@ pub(super) fn prepare(
             // parent-frame continuous Gaussian / identity evaluator.
             // Nonconvex unions fail closed during neutral-source admission.
             let erosion = if parent_affine.is_some() && effect.spread() < 0.0 {
-                Some(
-                    support::certified_convex_erosion_mesh(
-                        &shifted,
-                        -effect.spread(),
-                        path,
-                        &mut aggregate_coverage_work,
-                    )?
-                    .ok_or_else(|| {
-                        crate::runtime::execution_2d::unsupported_at(
+                match support::certified_convex_erosion_mesh(
+                    &shifted,
+                    -effect.spread(),
+                    path,
+                    &mut aggregate_coverage_work,
+                )? {
+                    Some(convex) => Some(convex),
+                    None
+                        if original_rectangles
+                            && parent_affine.is_some_and(|ancestor| {
+                                let [a, b, c, d, _, _] = ancestor.components();
+                                a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0
+                            }) =>
+                    {
+                        // Translation commutes with signed Euclidean disks
+                        // and the finite square Gaussian. Preserve the
+                        // original F1 rectangle union and let the already
+                        // qualified root continuous orthogonal/nonconvex
+                        // evaluator integrate in the translated root frame.
+                        // Shear, rotation and source-unproven facets retain
+                        // their typed UnsupportedEntry rather than guessing
+                        // that sampled masks are region membership.
+                        None
+                    }
+                    None => {
+                        return Err(crate::runtime::execution_2d::unsupported_at(
                             path,
                             crate::execution_2d::Render2dUnsupportedContent::Shadows {
                                 root_index: path[0],
                             },
-                        )
-                    })?,
-                )
+                        ));
+                    }
+                }
             } else {
                 None
             };

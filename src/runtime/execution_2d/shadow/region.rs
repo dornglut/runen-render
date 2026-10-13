@@ -820,6 +820,54 @@ impl NeutralRegionBuilder {
         Ok(result)
     }
 
+    /// Certify an entire immutable F1 neutral source graph as a union of
+    /// authored rectangles with exactly matching physical triangle support.
+    /// Affine wrappers retain the original straight support; clipped,
+    /// Bézier, stroke, glyph and symbolic-effect inputs fail closed. This
+    /// authorizes a restricted physical Euclidean erosion query, NEVER
+    /// converts a disposable polygon into semantic region authority.
+    pub(super) fn proven_original_rectangle_union<'a>(
+        &mut self,
+        root: &Arc<NeutralRegion<'a>>,
+    ) -> Result<bool, Render2dExecutionError> {
+        let entries = root
+            .id
+            .checked_add(1)
+            .ok_or_else(|| resource(&root.path, "original F1 provenance index overflow"))?;
+        let bytes = entries
+            .checked_mul(std::mem::size_of::<Option<bool>>())
+            .ok_or_else(|| resource(&root.path, "original F1 provenance bytes overflow"))?;
+        if entries > MAX_REGION_NODES + 1
+            || u64::try_from(bytes)
+                .ok()
+                .is_none_or(|n| n > self.max_buffer_bytes)
+        {
+            return Err(resource(
+                &root.path,
+                "original F1 provenance exceeds bounded memory",
+            ));
+        }
+        let mut memo = Vec::<Option<bool>>::new();
+        memo.try_reserve_exact(entries)
+            .map_err(|_| resource(&root.path, "original F1 provenance allocation failed"))?;
+        memo.resize(entries, None);
+        let mut remaining = MAX_REGION_NODES;
+        let proof = Self::polygonal_source_proven(root, &mut remaining, &mut memo)?;
+        let visits = MAX_REGION_NODES - remaining;
+        let next_work = self
+            .graph_work
+            .checked_add(visits)
+            .ok_or_else(|| resource(&root.path, "original F1 provenance work overflow"))?;
+        if next_work > MAX_REGION_GRAPH_WORK {
+            return Err(resource(
+                &root.path,
+                "original F1 provenance exceeds whole-scene work",
+            ));
+        }
+        self.graph_work = next_work;
+        Ok(proof)
+    }
+
     /// Recognize only the exact existing F1 DAG: C union (C ⊕ disk(r)).
     /// The child source must be a whole, certified axis-aligned rectangle,
     /// with identity frames, no clip, zero blur and no effect translation.

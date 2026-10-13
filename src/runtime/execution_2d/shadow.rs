@@ -304,6 +304,10 @@ fn gaussian_square_support(
 /// The qualified disk remains an exact curve, never triangle/AABB/alpha support.
 pub(super) enum NeutralCaster {
     Mesh(Arc<NeutralMesh>),
+    /// Every original F1 leaf is a source-exact rectangle. A later physical
+    /// integration can consume this mesh only under a certified isometry;
+    /// this does not re-author a neutral support representation.
+    OriginalRectangleUnion(Arc<NeutralMesh>),
     RoundedRectangle(region::CertifiedRoundedRectangle),
 }
 
@@ -414,7 +418,18 @@ fn group_child_sources_with_probe<'a>(
                             None => NeutralCaster::Mesh(graph.materialize(&in_parent)?),
                         }
                     } else {
-                        NeutralCaster::Mesh(graph.materialize(&in_parent)?)
+                        let exact_original_rectangles = frame
+                            .group
+                            .shadows()
+                            .iter()
+                            .any(|effect| effect.spread() < 0.0)
+                            && graph.proven_original_rectangle_union(&in_parent)?;
+                        let mesh = graph.materialize(&in_parent)?;
+                        if exact_original_rectangles {
+                            NeutralCaster::OriginalRectangleUnion(mesh)
+                        } else {
+                            NeutralCaster::Mesh(mesh)
+                        }
                     };
                     sources.insert(frame.begin_event, source);
                     if !nested {
@@ -440,6 +455,26 @@ fn group_child_sources_with_probe<'a>(
                             resource(&frame.path, "neutral effect graph allocation failed")
                         })?;
                     for &effect in frame.group.shadows() {
+                        // Erosion is a subset of C. If the entire finite
+                        // normalized square Gaussian halo fits in its
+                        // erosion disk, its completed shadow SUPPORT is
+                        // also a subset of C. C union shadow == C, even
+                        // for concave, holed or curved ORIGINAL F1 sources.
+                        //
+                        // Conservative L1 bound: any (dx,dy) in the halo
+                        // has Euclidean norm <= |dx|+|dy| <= 6*sigma.
+                        // A zero-offset negative shadow with radius at
+                        // least 6*sigma is therefore already absorbed by
+                        // C for ancestor SUPPORT, regardless of paint
+                        // color/opacity. Its own shadow paint is still
+                        // evaluated and independently budgeted below.
+                        if effect.spread() < 0.0
+                            && effect.offset_x() == 0.0
+                            && effect.offset_y() == 0.0
+                            && -effect.spread() >= 6.0 * effect.sigma()
+                        {
+                            continue;
+                        }
                         let effect_region =
                             graph.effect(Arc::clone(&in_parent), effect, &frame.path)?;
                         if effect.spread() <= 0.0 {
