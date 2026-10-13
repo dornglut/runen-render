@@ -175,8 +175,8 @@ fn certify_compact_scene(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::axis_gaussian::{AXIS_WORK, BIN_WORK, STRIP_BIN_WORK};
+    use super::*;
     use crate::composition_2d::{Render2dFillRule, Render2dPoint};
 
     fn source(x_control: f64) -> Render2dPath {
