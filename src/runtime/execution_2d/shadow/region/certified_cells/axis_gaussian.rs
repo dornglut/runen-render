@@ -12,6 +12,7 @@ const BIN_WIDTH: f64 = 6.0 / BINS as f64;
 pub(super) const BIN_WORK: usize = 512;
 pub(super) const AXIS_WORK: usize = 128;
 const SITE_WORK: usize = 48;
+pub(super) const STRIP_BIN_WORK: usize = 8;
 pub(super) const MAX_SCENE_WORK: usize = 16_777_216;
 pub(super) const MAX_PROOF_BYTES: usize = 1_048_576;
 
@@ -153,7 +154,7 @@ impl NormalizedGaussianCdf {
             return None;
         }
         let per_strip = BINS / strips;
-        let charge = per_strip.checked_mul(8)?;
+        let charge = per_strip.checked_mul(STRIP_BIN_WORK)?;
         if *work < charge {
             *work = 0;
             return None;

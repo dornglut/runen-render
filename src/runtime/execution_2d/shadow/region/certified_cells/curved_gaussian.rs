@@ -207,7 +207,8 @@ fn certify_monotone_graph_batch(
 mod tests {
     use super::*;
 
-    use super::super::axis_gaussian::{AXIS_WORK, BIN_WORK, BINS};
+    use super::super::axis_gaussian::{AXIS_WORK, BIN_WORK, BINS, STRIP_BIN_WORK};
+    use super::super::bezier_winding::WORK_PER_CURVE_NODE;
     use crate::composition_2d::{Render2dFillRule, Render2dPoint};
 
     fn authored_graph(points: &[[f64; 2]]) -> Render2dPath {
@@ -354,6 +355,67 @@ mod tests {
         );
         assert!(
             certify_monotone_graph_batch(&source, &centers, 0.25, MAX_SCENE_WORK, 1_024,).is_none()
+        );
+    }
+
+    #[test]
+    fn disjoint_f3e_x_columns_still_fail_closed_under_actual_batched_work_charges() {
+        // The exact original F1 quadratic has an independently derived
+        // y(x)=25-(3/80)(x-30)^2, with chord y=10. For every 4x4 phased
+        // x-center between 20 and 40, the nearest 4x4 phased y-center
+        // lies within .125 of the arch and >.75 above the bottom chord.
+        // With sigma=.25, each finite 3-sigma kernel therefore meets
+        // source and exterior; NONE is a valid all-inside/outside shortcut.
+        let source = authored_graph(&[[10.0, 10.0], [30.0, 40.0], [50.0, 10.0]]);
+        let mut centers = Vec::new();
+        for x_index in (20 * 4)..(40 * 4) {
+            let x = (x_index as f64 + 0.5) / 4.0;
+            let y = 25.0 - (3.0 / 80.0) * (x - 30.0) * (x - 30.0);
+            let y_index = (y * 4.0 - 0.5).round();
+            let phased_y = (y_index + 0.5) / 4.0;
+            assert!((phased_y - y).abs() <= 0.125);
+            assert!(phased_y - 0.75 > 10.0);
+            centers.push([x, phased_y]);
+        }
+        assert_eq!(centers.len(), 80);
+        assert!(centers.windows(2).all(|pair| pair[0][0] != pair[1][0]));
+
+        // This explicitly audits the NEW single-y-CDF, column-batched
+        // algorithm, not the old two-CDF integration schedule. Even
+        // granting FREE all child subdivision beyond one mandatory root
+        // curve node per slab, one entire shared CDF and x-strip weights,
+        // and ZERO other work, every DISTINCT column still needs 512
+        // root curve visits, vertical CDF calls and sample-accumulations.
+        let shared_cdf = BINS.checked_mul(BIN_WORK).unwrap();
+        let shared_x_weights = STRIPS
+            .checked_mul((BINS / STRIPS) * STRIP_BIN_WORK)
+            .unwrap();
+        let minimum_per_distinct_column = STRIPS
+            .checked_mul(SLAB_CHARGE + AXIS_WORK + WORK_PER_CURVE_NODE)
+            .unwrap();
+        let optimistic_minimum = shared_cdf
+            .checked_add(shared_x_weights)
+            .unwrap()
+            .checked_add(centers.len() * minimum_per_distinct_column)
+            .unwrap();
+        assert_eq!(shared_cdf, 8_388_608);
+        assert_eq!(shared_x_weights, 131_072);
+        assert_eq!(minimum_per_distinct_column, 163_840);
+        assert_eq!(optimistic_minimum, 21_626_880);
+        assert!(optimistic_minimum > MAX_SCENE_WORK);
+
+        // The actual batched evaluator MUST reject this incomplete
+        // whole-scene sample subset under unchanged aggregate admission,
+        // never exposing early partial coverage as a valid color plane.
+        assert!(
+            certify_monotone_graph_batch(
+                &source,
+                &centers,
+                0.25,
+                MAX_SCENE_WORK,
+                MAX_PROOF_BYTES,
+            )
+            .is_none()
         );
     }
 

@@ -13,7 +13,7 @@ use super::{Cell, CellCertificate, Interval, certified_line_crossing};
 use crate::composition_2d::{Render2dFillRule, Render2dPath, Render2dPathCommand, Render2dPoint};
 
 const MAX_SUBDIVISION_DEPTH: usize = 12;
-const WORK_PER_CURVE_NODE: usize = 128;
+pub(super) const WORK_PER_CURVE_NODE: usize = 128;
 
 #[derive(Clone, Copy)]
 struct Bezier {
