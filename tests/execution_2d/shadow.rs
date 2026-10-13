@@ -2006,6 +2006,57 @@ fn nested_nonabsorbed_disjoint_eroded_shadow_casts_ancestor_on_vulkan() {
 }
 
 #[test]
+fn nonabsorbed_disconnected_shadow_support_shears_before_ancestor_paint_on_vulkan() {
+    let Some(context) = context() else { return };
+    let child = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 4.0, 4.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 22.0, 10.0, 4.0, 4.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![effect(6.0, 0.0, 0.1, -0.5, Render2dColorRgba8::TRANSPARENT)],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![child],
+        // The completed child support is transformed once, before this
+        // root-level blue shadow. Neither the original alpha nor its AABB
+        // may be substituted for the finite Gaussian square support.
+        Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 1.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F nonabsorbed disconnected region in sheared ancestor frame",
+    );
+    // In the first component, the completed child's original F1 support
+    // has left edge x_parent=16.2. After ancestor x'=x+.5*y+1, y'=y,
+    // the exact edge is x_root=17.2+.5*y_root.
+    // On y=[11,12], it moves from 22.7 to 23.2.
+    // Within x=[22,23], the area is a triangle .5*.6*.3=.09;
+    // within x=[23,24], it is .6+.4*(1+.8)/2=.96.
+    // Every correlated 4x4 sample cell integrates its geometric area.
+    // Independent premultiplied sRGB8 values for .09 and .96 are:
+    pixel_near(pixel(&image, 22, 11), [0, 0, 85, 23]);
+    pixel_near(pixel(&image, 23, 11), [0, 0, 250, 245]);
+    assert_eq!(pixel(&image, 24, 11), [0, 0, 255, 255]);
+    assert_eq!(pixel(&image, 21, 11), [0, 0, 0, 0]);
+}
+
+#[test]
 fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(

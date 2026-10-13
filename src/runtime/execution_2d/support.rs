@@ -2290,7 +2290,7 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
         .try_reserve_exact(count)
         .map_err(|_| resource("separated rectangle proof allocation failed"))?;
     let mut largest = 0.0_f64;
-    for triangles in source.triangles.chunks_exact(6) {
+    for triangles in source.triangles.as_chunks::<6>().0 {
         let Some(bounds) = certified_axis_aligned_rectangle(triangles) else {
             *aggregate_work = trial_work;
             return Ok(None);
