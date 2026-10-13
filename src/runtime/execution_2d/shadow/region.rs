@@ -1757,9 +1757,11 @@ mod tests {
             .source_from_item(shadow::empty_mesh(), &original, &[6, 2])
             .unwrap();
         assert!(unrealized.envelope.is_none());
-        assert!(!unrealized
-            .all_root_shadows_provably_offscreen(&[outside], [64.0, 64.0], 1.0)
-            .unwrap());
+        assert!(
+            !unrealized
+                .all_root_shadows_provably_offscreen(&[outside], [64.0, 64.0], 1.0)
+                .unwrap()
+        );
     }
 
     #[test]
