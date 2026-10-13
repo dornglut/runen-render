@@ -1115,15 +1115,22 @@ fn root_nonempty_curved_erosion_never_uses_disposable_convex_mesh() {
         &Render2dResourceBindings::default(),
         &target,
     );
-    assert!(matches!(
-        result,
-        Err(Render2dExecutionError::UnsupportedEntry {
-            path,
-            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
-                root_index: 0,
-            },
-        }) if path == [0]
-    ));
+    let error = match result {
+        Ok(_) => panic!("visible root ellipse erosion unexpectedly admitted physical facets"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+            &error,
+            Render2dExecutionError::UnsupportedEntry {
+                path,
+                kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
+                    root_index: 0,
+                },
+            } if path == &[0]
+        ),
+        "root original-F1 curved erosion must reject with authored path: {error:?}"
+    );
     drop(texture);
 }
 
