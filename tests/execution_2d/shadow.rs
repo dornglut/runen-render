@@ -1598,6 +1598,116 @@ fn nested_nonconvex_finite_erosion_under_quarter_turn_preserves_original_support
 }
 
 #[test]
+fn nested_holed_eroded_finite_gaussian_under_reflection_retains_hole_and_color() {
+    let Some(context) = context() else { return };
+    // Signed x reflection (x,y)->(48-x,y+3) preserves the original
+    // Euclidean disk AND the finite square Gaussian. The inner
+    // transparent authored ring has an actual [16,24]^2 hole.
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 20.0, 6.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 16.0, 6.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 24.0, 16.0, 6.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 24.0, 20.0, 6.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.1,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::new(-1.0, 0.0, 0.0, 1.0, 48.0, 3.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F nested holed signed erosion finite Gaussian under exact reflection",
+    );
+    // Independently derived original unreflected ring's [15,16]^2
+    // corner becomes [32,33]x[18,19]. Continuous finite 3sigma
+    // reference alpha≈0.22752904 red-over-opaque-blue is 131/0/228/255.
+    pixel_near(pixel(&output, 32, 18), [131, 0, 228, 255]);
+    pixel_near(pixel(&output, 34, 23), [255, 0, 0, 255]);
+    // A mask/AABB surrogate would incorrectly paint the true hole.
+    assert_eq!(pixel(&output, 27, 23), [0, 0, 0, 0]);
+}
+
+#[test]
+fn nested_nonconvex_eroded_gaussian_does_not_silently_admit_ancestor_shear() {
+    let Some(context) = context() else { return };
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 5.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 15.0, 5.0, 5.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.1,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let (texture, target) = target("F3F nested concave finite blur under shear rejects");
+    let mut executor = Render2dExecutor::new();
+    let error = match executor.prepare(
+        &context,
+        &scene,
+        &Render2dResourceBindings::default(),
+        &target,
+    ) {
+        Ok(_) => panic!("nonconvex erosion under shear cannot reuse orthogonal Gaussian"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        Render2dExecutionError::UnsupportedEntry {
+            path,
+            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
+                root_index: 0,
+            },
+        } if path == [0, 0]
+    ));
+    drop(texture);
+}
+
+#[test]
 fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
