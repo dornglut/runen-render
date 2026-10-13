@@ -189,18 +189,10 @@ fn certified_line_crossing(cell: Cell, a: [f64; 2], b: [f64; 2]) -> Option<i64> 
 /// ANY straight-line F1 fill path. Handles concavity, multiple contours,
 /// opposite or same contour winding, explicit and implicit closure, and the
 /// actual EvenOdd/NonZero law. A boundary/precision ambiguity is Unknown.
-fn certify_straight_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCertificate {
+fn certify_straight_path(path: &Render2dPath, cell: Cell) -> CellCertificate {
+    // The full scan + closure + interval-query work was admitted by certify_path
+    // BEFORE even discovering which F1 command classes this path contains.
     let commands = path.commands();
-    // Worst-case work is linear in the entire authored command stream.
-    // The fixed upper charge covers the interval edge and crossing queries.
-    let Some(cost) = commands.len().checked_mul(32) else {
-        return CellCertificate::Unknown;
-    };
-    if *visits < cost {
-        *visits = 0;
-        return CellCertificate::Unknown;
-    }
-    *visits -= cost;
     let mut first = None;
     let mut previous = None;
     let mut has_segment = false;
@@ -276,15 +268,10 @@ fn certify_straight_path(path: &Render2dPath, cell: Cell, visits: &mut usize) ->
 /// exact source query; no polygonization of authored Bézier control hulls.
 fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCertificate {
     let commands = path.commands();
-    if !commands.iter().any(|command| {
-        matches!(
-            command,
-            Render2dPathCommand::QuadraticTo { .. } | Render2dPathCommand::CubicTo { .. }
-        )
-    }) {
-        return certify_straight_path(path, cell, visits);
-    }
-    let Some(cost) = commands.len().checked_mul(8) else {
+    // Admit BOTH source-command scans, implicit closure, and worst-case
+    // interval geometry in one bounded O(commands) model BEFORE any path
+    // traversal. No uncharged per-query prefilter or conditional budget reset.
+    let Some(cost) = commands.len().checked_mul(40) else {
         return CellCertificate::Unknown;
     };
     if *visits < cost {
@@ -292,6 +279,14 @@ fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCert
         return CellCertificate::Unknown;
     }
     *visits -= cost;
+    if !commands.iter().any(|command| {
+        matches!(
+            command,
+            Render2dPathCommand::QuadraticTo { .. } | Render2dPathCommand::CubicTo { .. }
+        )
+    }) {
+        return certify_straight_path(path, cell);
+    }
     let mut hull: Option<[f64; 4]> = None;
     let mut segments = 0_usize;
     let mut point = |p: crate::composition_2d::Render2dPoint| {
@@ -1567,7 +1562,7 @@ fn linear_winding_certificate_fails_closed_at_exact_global_fuel_boundary() {
     )
     .unwrap();
     let cell = Cell::new([1.0, 1.0, 2.0, 2.0]).unwrap();
-    let cost = path.commands().len() * 32;
+    let cost = path.commands().len() * 40;
     let mut insufficient = cost - 1;
     assert_eq!(
         certify_path(&path, cell, &mut insufficient),
