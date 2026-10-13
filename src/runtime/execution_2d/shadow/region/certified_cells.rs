@@ -1,7 +1,7 @@
 //! Test-only feasibility of conservative cell classification over the actual
 //! F1 neutral-region DAG. This does NOT admit a new production shadow class.
 //!
-//! Only entire, certified physical rectangles are treated as known sources.
+//! Only synthetic physical rectangles may certify source geometry without an F1 item.
 //! Tessellated curves are deliberately Unknown: a physical triangle inventory
 //! is not a certificate of exact F1 source geometry. A production evaluator
 //! must separately establish source enclosures and Gaussian *coverage* bounds.
@@ -362,7 +362,7 @@ fn certify_shape(shape: &Render2dShape, cell: Cell, visits: &mut usize) -> CellC
     } else if let Some(path) = shape.as_path() {
         certify_path(path, cell, visits)
     } else {
-        // Paths, centered strokes and rounded corners still need their own
+        // Centered strokes and rounded corners still need their own
         // independently certified source geometry. Never infer from meshes.
         CellCertificate::Unknown
     }
@@ -1583,7 +1583,7 @@ fn linear_winding_certificate_fails_closed_at_exact_global_fuel_boundary() {
 }
 
 #[test]
-fn original_f1_curves_and_multiple_contours_can_only_prove_control_hull_exterior() {
+fn curved_f1_path_hull_and_multicontour_boundaries_remain_fail_closed() {
     use crate::composition_2d::{Render2dFillRule, Render2dPath, Render2dPoint};
     let p = |x, y| Render2dPoint::new(x, y).unwrap();
     let cubic = Render2dShape::path(
@@ -1601,8 +1601,8 @@ fn original_f1_curves_and_multiple_contours_can_only_prove_control_hull_exterior
         )
         .unwrap(),
     );
-    // Independent positive checks have an admitted budget large enough for
-    // convexity feasibility. Explicit exhaustion is tested separately below.
+    // The curved control-hull query has sufficient fuel. Explicit exhaustion
+    // and a multicontour boundary still fail closed below.
     let mut visits = 4096;
     let cell = Cell::new([6.0, 1.0, 7.0, 2.0]).unwrap();
     assert_eq!(
