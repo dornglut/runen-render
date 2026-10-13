@@ -2359,15 +2359,15 @@ fn nonabsorbed_offset_holed_erosion_remains_typed_unsupported() {
     ));
     let scene = Render2dComposition::new(vec![outer]).unwrap();
     let (_, target) = target("F3F nonabsorbed holed signed cannot invent source mask");
-    let error = Render2dExecutor::new()
-        .prepare(
-            &context,
-            &scene,
-            &Render2dResourceBindings::default(),
-            &target,
-        )
-        .err()
-        .expect("nonabsorbed holed negative must remain rejected");
+    let error = match Render2dExecutor::new().prepare(
+        &context,
+        &scene,
+        &Render2dResourceBindings::default(),
+        &target,
+    ) {
+        Ok(_) => panic!("nonabsorbed holed negative must remain rejected"),
+        Err(error) => error,
+    };
     assert!(matches!(
         error,
         Render2dExecutionError::UnsupportedEntry {
