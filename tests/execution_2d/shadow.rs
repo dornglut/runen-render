@@ -1542,6 +1542,62 @@ fn nested_holed_finite_erosion_dominated_by_original_source_renders_on_vulkan() 
 }
 
 #[test]
+fn nested_nonconvex_finite_erosion_under_quarter_turn_preserves_original_support() {
+    let Some(context) = context() else { return };
+    // A true quarter turn (x,y) -> (50-y, x+2) preserves signed
+    // Euclidean disks and the truncated square Gaussian exactly.
+    // The inner source is an ALPHA-ZERO original F1 concave L; its
+    // red eroded finite-Gaussian is contained within that original C.
+    // The opaque blue ancestor effect must consume C (not red alpha).
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 10.0, 5.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 15.0, 5.0, 5.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.1,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let parent = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::new(0.0, 1.0, -1.0, 0.0, 50.0, 2.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+    ));
+    let composition = Render2dComposition::new(vec![parent]).unwrap();
+    let output = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F nested original nonconvex eroded finite Gaussian under exact quarter turn",
+    );
+    // Original F1 [14,15]x[14,15] fractional corner becomes
+    // root [35,36]x[16,17] under the signed permutation.
+    // The original continuous truncated normalized alpha is
+    // 0.22752904084766, so red-over-opaque-blue is [131,0,228,255].
+    pixel_near(pixel(&output, 35, 16), [131, 0, 228, 255]);
+    // Fully eroded interior red dominates the blue original caster.
+    pixel_near(pixel(&output, 37, 14), [255, 0, 0, 255]);
+    // The true missing quadrant remains transparent after rotation.
+    assert_eq!(pixel(&output, 31, 20), [0, 0, 0, 0]);
+}
+
+#[test]
 fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(

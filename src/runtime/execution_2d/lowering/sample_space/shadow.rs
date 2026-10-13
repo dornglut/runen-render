@@ -301,16 +301,25 @@ pub(super) fn prepare(
                     None if original_rectangles
                         && parent_affine.is_some_and(|ancestor| {
                             let [a, b, c, d, _, _] = ancestor.components();
-                            a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0
+                            // Only signed axis permutations exactly preserve
+                            // the original Euclidean disk AND the finite
+                            // axis-aligned square Gaussian kernel in root
+                            // coordinates. No shear, scaling or arbitrary
+                            // rotation may silently commute this operation.
+                            let sign = |value: f64| value == 1.0 || value == -1.0;
+                            (sign(a) && b == 0.0 && c == 0.0 && sign(d))
+                                || (a == 0.0 && sign(b) && sign(c) && d == 0.0)
                         }) =>
                     {
-                        // Translation commutes with signed Euclidean disks
-                        // and the finite square Gaussian. Preserve the
+                        // Signed axis permutation plus translation commutes
+                        // with signed Euclidean disks AND the finite square
+                        // Gaussian, preserving the
                         // original F1 rectangle union and let the already
                         // qualified root continuous orthogonal/nonconvex
                         // evaluator integrate in the translated root frame.
-                        // Shear, rotation and source-unproven facets retain
-                        // their typed UnsupportedEntry rather than guessing
+                        // Shear, non-right-angle rotation, scaling and
+                        // source-unproven facets retain typed UnsupportedEntry
+                        // rather than guessing
                         // that sampled masks are region membership.
                         None
                     }
