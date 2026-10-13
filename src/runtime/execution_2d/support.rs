@@ -2260,27 +2260,31 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
         || !source.units_per_parent_logical_unit.is_finite()
         || source.units_per_parent_logical_unit <= 0.0
     {
-        return Err(precision("separated F1 rectangle erosion parameters invalid"));
+        return Err(precision(
+            "separated F1 rectangle erosion parameters invalid",
+        ));
     }
     if source.triangles.len() < 12 || !source.triangles.len().is_multiple_of(6) {
         return Ok(None);
     }
     let count = source.triangles.len() / 6;
-    // An unchanged 16M invocation budget bounds BOTH full input
-    // inspection and quadratic pairwise component-separation admission.
-    let charge = count
+    // Reject unbounded candidate inventories WITHOUT penalizing a legacy
+    // convex mesh with a speculative quadratic work charge. The existing
+    // convex proof retains authority for ineligible physical layouts.
+    // An admitted candidate has at most 4,096 rectangles, <256 KiB of
+    // rectangles and <=384 KiB of generated six-vertex output storage.
+    if count
         .checked_mul(count)
-        .and_then(|n| n.checked_add(source.triangles.len()))
-        .ok_or_else(|| resource("separated rectangle erosion work overflow"))?;
-    let next = aggregate_work
-        .checked_add(charge)
-        .ok_or_else(|| resource("separated rectangle scene work overflow"))?;
-    if next > MAX_CERTIFIED_RECTANGLE_AXIS_WORK {
-        return Err(resource(
-            "separated rectangle erosion exceeds 16M scene work",
-        ));
+        .is_none_or(|cost| cost > MAX_CERTIFIED_RECTANGLE_AXIS_WORK)
+    {
+        return Ok(None);
     }
-    charge_shadow_preparation_work(aggregate_work, charge, path)?;
+    // Stage all work admission locally: a late failed qualification or
+    // fallible output allocation must not poison the caller's budget.
+    // An ineligible geometric classification pays its actual linear work
+    // exactly once before the pre-existing convex fallback.
+    let mut trial_work = *aggregate_work;
+    charge_shadow_preparation_work(&mut trial_work, source.triangles.len(), path)?;
     let mut rectangles = Vec::<[f64; 4]>::new();
     rectangles
         .try_reserve_exact(count)
@@ -2288,15 +2292,33 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
     let mut largest = 0.0_f64;
     for triangles in source.triangles.chunks_exact(6) {
         let Some(bounds) = certified_axis_aligned_rectangle(triangles) else {
+            *aggregate_work = trial_work;
             return Ok(None);
         };
         let rect = bounds.map(|x| x / source.units_per_parent_logical_unit);
         if !rect.iter().all(|value| value.is_finite()) {
-            return Err(precision("separated rectangle normalization lost precision"));
+            return Err(precision(
+                "separated rectangle normalization lost precision",
+            ));
         }
         largest = rect.iter().fold(largest, |max, x| max.max(x.abs()));
         rectangles.push(rect);
     }
+    // ONLY proven rectangle chunks may enter quadratic separation.
+    // Previously accepted generic convex meshes must not encounter this
+    // private 16M candidate budget before their usual convex fallback.
+    let separation_work = count
+        .checked_mul(count)
+        .ok_or_else(|| resource("separated rectangle pairwise work overflow"))?;
+    let next = trial_work
+        .checked_add(separation_work)
+        .ok_or_else(|| resource("separated rectangle scene work overflow"))?;
+    if next > MAX_CERTIFIED_RECTANGLE_AXIS_WORK {
+        return Err(resource(
+            "separated rectangle erosion exceeds 16M scene work",
+        ));
+    }
+    charge_shadow_preparation_work(&mut trial_work, separation_work, path)?;
     if radius <= largest * (16.0 * f64::EPSILON) {
         return Err(precision(
             "separated rectangle erosion radius below coordinate precision",
@@ -2315,6 +2337,7 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
                 || a[3] + separation_margin < b[1]
                 || b[3] + separation_margin < a[1])
             {
+                *aggregate_work = trial_work;
                 return Ok(None);
             }
         }
@@ -2363,6 +2386,7 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
             result.triangles.push(point);
         }
     }
+    *aggregate_work = trial_work;
     Ok(Some(result))
 }
 
@@ -3662,6 +3686,39 @@ mod tests {
             }) if path == [5, 4]
         ));
         assert_eq!(exhausted, MAX_CERTIFIED_RECTANGLE_AXIS_WORK);
+    }
+
+    #[test]
+    fn unqualified_large_convex_mesh_skips_disconnected_quadratic_charge() {
+        // A large generic triangle inventory with six-vertex alignment
+        // MUST remain eligible for the pre-existing convex fallback, even
+        // when treating the chunks as rectangles would cost >16M work.
+        // Repeating one convex triangle does not create F1 rectangles.
+        let count = 4_097_usize;
+        let mut triangles = Vec::new();
+        triangles.try_reserve_exact(count * 6).unwrap();
+        for _ in 0..count {
+            triangles.extend([
+                [0.0, 0.0],
+                [4.0, 0.0],
+                [0.0, 4.0],
+                [0.0, 0.0],
+                [4.0, 0.0],
+                [0.0, 4.0],
+            ]);
+        }
+        let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles,
+            bounds: [0.0, 0.0, 4.0, 4.0],
+        };
+        let mut work = 0;
+        assert!(
+            certified_separated_rectangles_erosion_mesh(&mesh, 0.5, &[7, 2], &mut work)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(work, 0, "a noncandidate must not pay pairwise admission");
     }
 
     #[test]

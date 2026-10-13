@@ -1971,13 +1971,7 @@ fn nested_nonabsorbed_disjoint_eroded_shadow_casts_ancestor_on_vulkan() {
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::TRANSPARENT,
-        vec![effect(
-            6.0,
-            0.0,
-            0.1,
-            -0.5,
-            Render2dColorRgba8::TRANSPARENT,
-        )],
+        vec![effect(6.0, 0.0, 0.1, -0.5, Render2dColorRgba8::TRANSPARENT)],
     ));
     let composition = group(
         vec![child],
