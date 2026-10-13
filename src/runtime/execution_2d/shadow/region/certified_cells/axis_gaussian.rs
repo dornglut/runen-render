@@ -8,7 +8,7 @@ use super::{Interval, gaussian_density_enclosure};
 use crate::composition_2d::Render2dRect;
 
 pub(super) const BINS: usize = 16_384;
-const BIN_WIDTH: f64 = 6.0 / BINS as f64;
+pub(super) const COMPACT_BINS: usize = BINS / 2;
 pub(super) const BIN_WORK: usize = 512;
 pub(super) const AXIS_WORK: usize = 128;
 const SITE_WORK: usize = 48;
@@ -16,35 +16,41 @@ pub(super) const STRIP_BIN_WORK: usize = 8;
 pub(super) const MAX_SCENE_WORK: usize = 16_777_216;
 pub(super) const MAX_PROOF_BYTES: usize = 1_048_576;
 
-pub(super) struct NormalizedGaussianCdf {
+pub(super) type NormalizedGaussianCdf = GaussianCdf<BINS>;
+pub(super) type CompactGaussianCdf = GaussianCdf<COMPACT_BINS>;
+
+pub(super) struct GaussianCdf<const N: usize> {
     prefix: Vec<Interval>,
     bin_masses: Vec<Interval>,
     normalization: Interval,
 }
 
-impl NormalizedGaussianCdf {
+impl<const N: usize> GaussianCdf<N> {
     // Grid knots are exactly representable dyadic rational numbers, so binary
     // searches compare exact f64 grid coordinates, with no rounding-derived
     // false floor/ceiling indices.
     fn knot(index: usize) -> f64 {
-        -3.0 + index as f64 * BIN_WIDTH
+        -3.0 + index as f64 * (6.0 / N as f64)
     }
 
     pub(super) fn new(work: &mut usize) -> Option<Self> {
-        let charge = BINS.checked_mul(BIN_WORK)?;
+        if N != BINS && N != COMPACT_BINS {
+            return None;
+        }
+        let charge = N.checked_mul(BIN_WORK)?;
         if *work < charge {
             return None;
         }
         *work -= charge;
         let mut prefix = Vec::new();
-        prefix.try_reserve_exact(BINS + 1).ok()?;
+        prefix.try_reserve_exact(N + 1).ok()?;
         let mut bin_masses = Vec::new();
-        bin_masses.try_reserve_exact(BINS).ok()?;
+        bin_masses.try_reserve_exact(N).ok()?;
         let mut cumulative = Interval::scalar(0.0)?;
         prefix.push(cumulative);
         let zero = Interval::scalar(0.0)?;
-        let width = Interval::scalar(BIN_WIDTH)?;
-        for i in 0..BINS {
+        let width = Interval::scalar(6.0 / N as f64)?;
+        for i in 0..N {
             // This integrates a CONTINUOUS nonnegative 1D Gaussian, not
             // samples of a rasterized region. Every bin uses a density
             // enclosure over its entire exact coordinate range.
@@ -67,7 +73,7 @@ impl NormalizedGaussianCdf {
 
     fn floor_index(position: f64) -> usize {
         let mut lo = 0;
-        let mut hi = BINS;
+        let mut hi = N;
         while lo < hi {
             let mid = lo + (hi - lo).div_ceil(2);
             if Self::knot(mid) <= position {
@@ -81,7 +87,7 @@ impl NormalizedGaussianCdf {
 
     fn ceil_index(position: f64) -> usize {
         let mut lo = 0;
-        let mut hi = BINS;
+        let mut hi = N;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             if Self::knot(mid) < position {
@@ -147,13 +153,13 @@ impl NormalizedGaussianCdf {
     ) -> Option<Interval> {
         if strips == 0
             || !strips.is_power_of_two()
-            || strips > BINS
-            || !BINS.is_multiple_of(strips)
+            || strips > N
+            || !N.is_multiple_of(strips)
             || strip >= strips
         {
             return None;
         }
-        let per_strip = BINS / strips;
+        let per_strip = N / strips;
         let charge = per_strip.checked_mul(STRIP_BIN_WORK)?;
         if *work < charge {
             *work = 0;

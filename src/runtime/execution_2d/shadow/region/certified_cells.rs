@@ -10,6 +10,7 @@
 mod axis_gaussian;
 mod bezier_winding;
 mod curved_gaussian;
+mod linear_x_gaussian;
 
 use super::interval::Interval;
 use super::*;
