@@ -1330,6 +1330,7 @@ mod tests {
                 geometry_sample_scale: 4.0,
             },
             1_048_576,
+            None,
             |region, path| {
                 if path == [0] {
                     inspected_root = true;
