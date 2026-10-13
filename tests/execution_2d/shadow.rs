@@ -1483,6 +1483,65 @@ fn nested_nonconvex_finite_erosion_dominated_by_original_source_renders_on_vulka
 }
 
 #[test]
+fn nested_holed_finite_erosion_dominated_by_original_source_renders_on_vulkan() {
+    let Some(context) = context() else { return };
+    // Original transparent F1 ring: the interior hole is genuine exterior.
+    // Signed Euclidean disk erosion r=1 followed by finite sigma=.1
+    // creates curved physical coverage, but the conservative 6sigma<=r
+    // support containment proof means its entire completed shadow is
+    // still inside C. The ancestor's separate blue shadow MUST consume C,
+    // including the hole, never a source alpha mask or AABB.
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 20.0, 6.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 16.0, 6.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 24.0, 16.0, 6.0, 8.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 24.0, 20.0, 6.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.1,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        Render2dAffineTransform::translation(4.0, 3.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+    ));
+    let composition = Render2dComposition::new(vec![outer]).unwrap();
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &composition,
+        &Render2dResourceBindings::default(),
+        "F3F original F1 holed ring finite erosion consumed by translated ancestor",
+    );
+    // [15,15] is the original hole's southwest corner; exactly the
+    // 1-pi/4 and finite normalized Gaussian fraction already referenced
+    // independently in the mandatory root ring conformance. The outer
+    // blue caster C covers this fractional cell completely, so red
+    // coverage alpha=.22752904084766 source-over blue is [131,0,228,255].
+    pixel_near(pixel(&image, 19, 18), [131, 0, 228, 255]);
+    pixel_near(pixel(&image, 17, 23), [255, 0, 0, 255]);
+    // The true [16,24]^2 hole is empty, including after translation.
+    assert_eq!(pixel(&image, 24, 23), [0, 0, 0, 0]);
+}
+
+#[test]
 fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
