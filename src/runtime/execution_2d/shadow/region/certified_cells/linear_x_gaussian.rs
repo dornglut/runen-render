@@ -176,6 +176,7 @@ fn certify_compact_scene(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::axis_gaussian::{AXIS_WORK, BIN_WORK, STRIP_BIN_WORK};
     use crate::composition_2d::{Render2dFillRule, Render2dPoint};
 
     fn source(x_control: f64) -> Render2dPath {
@@ -208,9 +209,23 @@ mod tests {
             certify_compact_scene(&source(30.0), &sites, 0.25, MAX_SCENE_WORK, MAX_PROOF_BYTES)
                 .expect("all 80 original F1 mixed sites must admit exact compact proof");
         assert_eq!(cert.intervals.len(), 80);
-        assert!(cert.spent <= MAX_SCENE_WORK);
+        let expected_work = source(30.0).commands().len() * 40
+            + COMPACT_BINS * BIN_WORK
+            + COMPACT_BINS * STRIP_BIN_WORK
+            + sites.len() * STRIPS * (GEOMETRY_WORK + SLAB_WORK + AXIS_WORK);
+        assert_eq!(expected_work, 16_056_440);
+        assert_eq!(cert.spent, expected_work);
+        assert!(cert.spent < MAX_SCENE_WORK);
         assert!(cert.bytes < MAX_PROOF_BYTES);
         assert!(cert.max_width < ERROR);
+        // Independent exact continuous quadratic Gaussian reference,
+        // precomputed outside the renderer from the authored polynomial
+        // y(x)=25-3*(x-30)^2/80 and finite normalized [-3,3]^2 law.
+        // This site is one of the 80 distinct F3E 4x4-phase columns.
+        assert_eq!(sites[40], [30.125, 24.875]);
+        let exact_mass = 0.687_900_311_266_600_f64;
+        assert!(cert.intervals[40][0] <= exact_mass);
+        assert!(exact_mass <= cert.intervals[40][1]);
         assert!(cert.intervals[0][0] <= cert.intervals[79][1]);
         assert!(cert.intervals[79][0] <= cert.intervals[0][1]);
     }
