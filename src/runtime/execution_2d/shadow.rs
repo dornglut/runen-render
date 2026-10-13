@@ -1179,17 +1179,37 @@ mod tests {
             )
             .unwrap()
         };
-        assert!(negative_shadow_absorbed_by_source(effect(1.0, 0.0, 0.05, -2.5)));
-        assert!(negative_shadow_absorbed_by_source(effect(-1.0, 0.0, 0.05, -2.5)));
-        assert!(negative_shadow_absorbed_by_source(effect(0.0, 0.0, 0.25, -2.0)));
-        assert!(negative_shadow_absorbed_by_source(effect(0.0, 0.0, 0.0, -0.25)));
-        assert!(!negative_shadow_absorbed_by_source(effect(1.0, 0.0, 0.1, -2.5)));
-        assert!(!negative_shadow_absorbed_by_source(effect(2.0, 0.0, 0.05, -2.5)));
-        assert!(!negative_shadow_absorbed_by_source(effect(0.0, 0.0, 0.25, -1.0)));
-        assert!(!negative_shadow_absorbed_by_source(effect(0.0, 0.0, 0.0, 0.0)));
-        assert!(!negative_shadow_absorbed_by_source(effect(1.0, 0.0, 0.0, 0.5)));
+        assert!(negative_shadow_absorbed_by_source(effect(
+            1.0, 0.0, 0.05, -2.5
+        )));
+        assert!(negative_shadow_absorbed_by_source(effect(
+            -1.0, 0.0, 0.05, -2.5
+        )));
+        assert!(negative_shadow_absorbed_by_source(effect(
+            0.0, 0.0, 0.25, -2.0
+        )));
+        assert!(negative_shadow_absorbed_by_source(effect(
+            0.0, 0.0, 0.0, -0.25
+        )));
+        assert!(!negative_shadow_absorbed_by_source(effect(
+            1.0, 0.0, 0.1, -2.5
+        )));
+        assert!(!negative_shadow_absorbed_by_source(effect(
+            2.0, 0.0, 0.05, -2.5
+        )));
+        assert!(!negative_shadow_absorbed_by_source(effect(
+            0.0, 0.0, 0.25, -1.0
+        )));
+        assert!(!negative_shadow_absorbed_by_source(effect(
+            0.0, 0.0, 0.0, 0.0
+        )));
+        assert!(!negative_shadow_absorbed_by_source(effect(
+            1.0, 0.0, 0.0, 0.5
+        )));
         // Bounds that overflow f64 never certify containment.
-        assert!(!negative_shadow_absorbed_by_source(effect(1.0e308, 1.0e308, 0.0, -1.0)));
+        assert!(!negative_shadow_absorbed_by_source(effect(
+            1.0e308, 1.0e308, 0.0, -1.0
+        )));
     }
 
     #[test]
