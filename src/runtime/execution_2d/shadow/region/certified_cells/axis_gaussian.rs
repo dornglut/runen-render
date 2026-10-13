@@ -7,10 +7,10 @@
 use super::{Interval, gaussian_density_enclosure};
 use crate::composition_2d::Render2dRect;
 
-const BINS: usize = 16_384;
+pub(super) const BINS: usize = 16_384;
 const BIN_WIDTH: f64 = 6.0 / BINS as f64;
-const BIN_WORK: usize = 512;
-const AXIS_WORK: usize = 128;
+pub(super) const BIN_WORK: usize = 512;
+pub(super) const AXIS_WORK: usize = 128;
 const SITE_WORK: usize = 48;
 pub(super) const MAX_SCENE_WORK: usize = 16_777_216;
 pub(super) const MAX_PROOF_BYTES: usize = 1_048_576;

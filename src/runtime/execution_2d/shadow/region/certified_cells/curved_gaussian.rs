@@ -163,6 +163,7 @@ fn certify_monotone_graph_mass(
 mod tests {
     use super::*;
 
+    use super::super::axis_gaussian::{AXIS_WORK, BINS, BIN_WORK};
     use crate::composition_2d::{Render2dFillRule, Render2dPoint};
 
     fn authored_graph(points: &[[f64; 2]]) -> Render2dPath {
@@ -233,6 +234,55 @@ mod tests {
         assert!(result.interval[0] <= 0.496_350_400_653_573);
         assert!(result.interval[1] >= 0.496_350_400_653_573);
         assert!(result.interval[1] - result.interval[0] < MAX_WIDTH);
+    }
+
+    #[test]
+    fn independent_f3e_boundary_site_count_proves_per_site_slabs_cannot_admit_64x64() {
+        // Exact authored F1 quadratic: x=10+40t, y=10+60t(1-t).
+        // Every one of 80 *different* 4x4 globally phased x-columns
+        // between x=20 and x=40 has a y-site within 1/8 of the
+        // polynomial boundary. The finite sigma=.25 kernel extends
+        // 3*sigma=.75 on each axis, hence truly intersects BOTH sides
+        // of the boundary at those sites (and never the lower chord).
+        // These sites are mixed, not full-kernel 0/1 certificates.
+        let path = authored_graph(&[[10.0, 10.0], [30.0, 40.0], [50.0, 10.0]]);
+        assert_eq!(path.commands().len(), 3);
+        let mut mixed_sites = 0_usize;
+        for x_index in (20 * 4)..(40 * 4) {
+            let x = (x_index as f64 + 0.5) / 4.0;
+            let curve_y = 25.0 - (3.0 / 80.0) * (x - 30.0) * (x - 30.0);
+            let y_index = (curve_y * 4.0 - 0.5).round();
+            assert!((0.0..256.0).contains(&y_index));
+            let center_y = (y_index + 0.5) / 4.0;
+            assert!((center_y - curve_y).abs() <= 0.125);
+            assert!(center_y - 0.75 > 10.0);
+            mixed_sites += 1;
+        }
+        assert_eq!(mixed_sites, 80);
+        // PROOF OF NO-GO for the current PER-SAMPLE 512-slab plan:
+        // Give it the strongest possible reuse of its expensive 1D CDF
+        // by charging its 16,384-bin construction only ONCE per scene.
+        // Also make every x-strip's Gaussian weight FREE, make all
+        // geometry subdivision FREE, and ignore command/work/node costs.
+        // Even then, each mixed site inevitably pays 512 slab charges
+        // and two vertical CDF lookups per strip in THIS ALGORITHM.
+        // Thus an optimistic lower bound already breaches the existing
+        // 16,777,216 owner-scene model budget. This does NOT exclude a
+        // different batched/row-shared algorithm.
+        let shared_cdf = BINS.checked_mul(BIN_WORK).unwrap();
+        let per_site = STRIPS
+            .checked_mul(SLAB_CHARGE + 2 * AXIS_WORK)
+            .unwrap();
+        let optimistic_minimum = shared_cdf
+            .checked_add(mixed_sites.checked_mul(per_site).unwrap())
+            .unwrap();
+        assert_eq!(shared_cdf, 8_388_608);
+        assert_eq!(per_site, 163_840);
+        assert_eq!(optimistic_minimum, 21_495_808);
+        assert!(
+            optimistic_minimum > MAX_SCENE_WORK,
+            "per-site slab integration cannot meet the mandatory 64x64 admission even with CDF and x-weights freely shared"
+        );
     }
 
     #[test]
