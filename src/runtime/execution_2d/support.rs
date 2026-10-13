@@ -1363,7 +1363,7 @@ impl AffinePositiveDiskArea<'_> {
 /// Private physical kernel for one owning parent-frame effect. A single
 /// parameter keeps spread and blur together without minting semantic state.
 pub(super) struct ParentEffectKernel {
-    pub(super) positive_spread: f64,
+    pub(super) signed_spread: f64,
     pub(super) sigma: f64,
 }
 
@@ -1385,7 +1385,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let ParentEffectKernel {
-        positive_spread,
+        signed_spread,
         sigma,
     } = kernel;
     let ParentEffectFrame {
@@ -1401,7 +1401,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
     let [a, b, c, d, tx, ty] = parent_to_root.components();
     let determinant = a.mul_add(d, -(b * c));
     let physical_sigma = sigma * scale;
-    let physical_spread = positive_spread * scale;
+    let physical_spread = signed_spread * scale;
     if !scale.is_finite()
         || scale <= 0.0
         || !source.units_per_parent_logical_unit.is_finite()
@@ -1411,8 +1411,8 @@ pub(super) fn affine_parent_effect_coverage_admitted(
         || !physical_sigma.is_finite()
         || physical_sigma < 0.0
         || (physical_sigma == 0.0 && physical_spread == 0.0)
-        || !positive_spread.is_finite()
-        || positive_spread < 0.0
+        || (signed_spread < 0.0 && sigma == 0.0)
+        || !signed_spread.is_finite()
         || !physical_spread.is_finite()
         || !determinant.is_finite()
         || determinant == 0.0
@@ -1427,7 +1427,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             "nested parent-frame Gaussian window exceeds bounded halo",
         ));
     }
-    if physical_spread > f64::from(MAX_SPREAD_RADIUS_SAMPLES) {
+    if physical_spread.abs() > f64::from(MAX_SPREAD_RADIUS_SAMPLES) {
         return Err(resource(
             "nested parent-frame Euclidean disk exceeds bounded radius",
         ));
@@ -1499,8 +1499,45 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             a / determinant,
         ],
         root_translation: [tx * scale, ty * scale],
-        radius: physical_spread,
+        radius: physical_spread.max(0.0),
     };
+    // Negative spread under a non-isometric ancestor must be evaluated
+    // in the original parent frame. Only source-proven original rectangle
+    // unions are admitted by the caller: their triangles carry exact F1
+    // polygonal support, including true concavities and holes.
+    let erosion_boundary = (signed_spread < 0.0)
+        .then(|| union_exterior_boundary(&triangles, path, Some(aggregate_work)))
+        .transpose()?;
+    if let Some(edges) = &erosion_boundary {
+        // Admit the simultaneously live copied triangles, exposed union
+        // edges, coverage grid and worst-case adaptive cell heap BEFORE
+        // allocating the retained coverage. The original semantic graph
+        // remains separately retained and admitted by its own owner.
+        let temporary_bytes = triangles
+            .capacity()
+            .checked_mul(std::mem::size_of::<[f64; 2]>())
+            .and_then(|n| {
+                edges
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<UnionBoundaryEdge>())
+                    .and_then(|v| n.checked_add(v))
+            })
+            .and_then(|n| {
+                area.checked_mul(std::mem::size_of::<f64>())
+                    .and_then(|v| n.checked_add(v))
+            })
+            .and_then(|n| {
+                32_768_usize
+                    .checked_mul(std::mem::size_of::<SpreadGaussianCell>())
+                    .and_then(|v| n.checked_add(v))
+            })
+            .ok_or_else(|| resource("nested signed Gaussian temporary memory overflow"))?;
+        if temporary_bytes > 64 * 1024 * 1024 {
+            return Err(resource(
+                "nested signed Gaussian peak temporary memory exceeds 64 MiB",
+            ));
+        }
+    }
     let mut values = filled(area, 0.0_f64, path)?;
     for row in 0..height {
         for column in 0..width {
@@ -1515,9 +1552,19 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             if !point.iter().all(|x| x.is_finite()) {
                 return Err(precision("nested Gaussian inverse mapping lost precision"));
             }
-            values[row * width + column] = if positive_spread > 0.0 && sigma == 0.0 {
+            values[row * width + column] = if signed_spread < 0.0 {
+                continuous_signed_spread_sample(
+                    &triangles,
+                    erosion_boundary.as_deref(),
+                    point,
+                    physical_spread,
+                    physical_sigma,
+                    aggregate_work,
+                    path,
+                )?
+            } else if signed_spread > 0.0 && sigma == 0.0 {
                 disk_area.sample([root_x - 0.5, root_y - 0.5], aggregate_work, path)?
-            } else if positive_spread > 0.0 {
+            } else if signed_spread > 0.0 {
                 // Membership is evaluated against the exact triangle UNION
                 // Euclidean distance. A conservative mass/error certificate
                 // bounds continuous disk/Gaussian integration; an uncertified

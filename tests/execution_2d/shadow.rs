@@ -1652,7 +1652,59 @@ fn nested_holed_eroded_finite_gaussian_under_reflection_retains_hole_and_color()
 }
 
 #[test]
-fn nested_nonconvex_eroded_gaussian_does_not_silently_admit_ancestor_shear() {
+fn nested_nonconvex_negative_gaussian_under_shear_matches_independent_vulkan_oracle() {
+    let Some(context) = context() else { return };
+    // Original alpha-zero F1 L: [10,18]x[10,14] U [10,14]x[14,18].
+    // In the parent-frame strip y=[12,14], its true radius-1 erosion
+    // has the vertical boundary x=11, not the tessellated diagonal.
+    // The finite normalized sigma=.1 kernel uses [-.3,.3]^2 support;
+    // radius 1 absorbs the completed red support inside original C.
+    let inner = Render2dEntry::group(Render2dGroup::new(
+        vec![
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 8.0, 4.0),
+            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 14.0, 4.0, 4.0),
+        ],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0, 0.0, 0.1, -1.0, Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![inner],
+        // x_root=x_parent+.25*y_parent+1, y_root=y_parent.
+        // A Euclidean disk and square Gaussian DO NOT commute with shear.
+        Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 1.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F source-proven nonconvex negative finite Gaussian under ancestor shear",
+    );
+    // Independent parent-frame half-plane CDF oracle. Across all 16
+    // correlated root phases (i,j), the signed distance to x_parent=11
+    // at root pixel (15,12) is (i+.5)/4-(j+.5)/16.
+    // Integrating the normalized, truncated Gaussian gives red=.870497447,
+    // linear blue=.129502553; sRGB8 red-over-blue=[240,0,101,255].
+    // The next y row has red=.625 exactly by phase symmetry.
+    pixel_near(pixel(&image, 15, 12), [240, 0, 101, 255]);
+    pixel_near(pixel(&image, 15, 13), [207, 0, 165, 255]);
+    pixel_near(pixel(&image, 16, 12), [255, 0, 0, 255]);
+    // The original upper-right L concavity survives sheared ancestry.
+    assert_eq!(pixel(&image, 21, 16), [0, 0, 0, 0]);
+}
+
+#[test]
+fn nested_nonconvex_sigma_zero_erosion_does_not_silently_admit_ancestor_shear() {
     let Some(context) = context() else { return };
     let inner = Render2dEntry::group(Render2dGroup::new(
         vec![
@@ -1665,7 +1717,7 @@ fn nested_nonconvex_eroded_gaussian_does_not_silently_admit_ancestor_shear() {
         vec![effect(
             0.0,
             0.0,
-            0.1,
+            0.0,
             -1.0,
             Render2dColorRgba8::new(255, 0, 0, 255),
         )],

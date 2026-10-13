@@ -289,7 +289,24 @@ pub(super) fn prepare(
             // A certified negative Euclidean disk erosion has EXACT convex
             // polygonal geometry, so carry that into the already-owned
             // parent-frame continuous Gaussian / identity evaluator.
-            // Nonconvex unions fail closed during neutral-source admission.
+            // Nonconvex unions require original-F1 proof and an independently
+            // admitted continuous parent-frame evaluator.
+            let axis_isometry = parent_affine.is_some_and(|ancestor| {
+                let [a, b, c, d, _, _] = ancestor.components();
+                let sign = |value: f64| value == 1.0 || value == -1.0;
+                (sign(a) && b == 0.0 && c == 0.0 && sign(d))
+                    || (a == 0.0 && sign(b) && sign(c) && d == 0.0)
+            });
+            // Finite Gaussian negative erosion can be integrated in its
+            // owning parent frame for a source-proven original F1 rectangle
+            // union, even when an ancestor shears or scales that frame.
+            // Sigma-zero negative erosion still needs an independently
+            // certified inverse-affine pixel-area evaluator.
+            let affine_negative = parent_affine.is_some()
+                && original_rectangles
+                && effect.spread() < 0.0
+                && effect.sigma() > 0.0
+                && !axis_isometry;
             let erosion = if parent_affine.is_some() && effect.spread() < 0.0 {
                 match support::certified_convex_erosion_mesh(
                     &shifted,
@@ -298,18 +315,7 @@ pub(super) fn prepare(
                     &mut aggregate_coverage_work,
                 )? {
                     Some(convex) => Some(convex),
-                    None if original_rectangles
-                        && parent_affine.is_some_and(|ancestor| {
-                            let [a, b, c, d, _, _] = ancestor.components();
-                            // Only signed axis permutations exactly preserve
-                            // the original Euclidean disk AND the finite
-                            // axis-aligned square Gaussian kernel in root
-                            // coordinates. No shear, scaling or arbitrary
-                            // rotation may silently commute this operation.
-                            let sign = |value: f64| value == 1.0 || value == -1.0;
-                            (sign(a) && b == 0.0 && c == 0.0 && sign(d))
-                                || (a == 0.0 && sign(b) && sign(c) && d == 0.0)
-                        }) =>
+                    None if original_rectangles && axis_isometry =>
                     {
                         // Signed axis permutation plus translation commutes
                         // with signed Euclidean disks AND the finite square
@@ -317,12 +323,12 @@ pub(super) fn prepare(
                         // original F1 rectangle union and let the already
                         // qualified root continuous orthogonal/nonconvex
                         // evaluator integrate in the translated root frame.
-                        // Shear, non-right-angle rotation, scaling and
-                        // source-unproven facets retain typed UnsupportedEntry
-                        // rather than guessing
-                        // that sampled masks are region membership.
+                        // This fast path is restricted to exact isometries;
+                        // non-isometric parent-frame kernels are handled by
+                        // the separate certified finite-Gaussian path only.
                         None
                     }
+                    None if affine_negative => None,
                     None => {
                         return Err(crate::runtime::execution_2d::unsupported_at(
                             path,
@@ -361,7 +367,10 @@ pub(super) fn prepare(
                     shadow_resource(path, "remaining retained coverage budget overflow")
                 })?;
             let coverage = if let Some(ancestor) = parent_affine {
-                if remaining_spread >= 0.0 && (effect.sigma() > 0.0 || remaining_spread > 0.0) {
+                if affine_negative
+                    || (remaining_spread >= 0.0
+                        && (effect.sigma() > 0.0 || remaining_spread > 0.0))
+                {
                     let [a, b, c, d, _, _] = ancestor.components();
                     let determinant = a.mul_add(d, -(b * c));
                     if determinant == 0.0 {
@@ -373,7 +382,7 @@ pub(super) fn prepare(
                     support::affine_parent_effect_coverage_admitted(
                         caster,
                         support::ParentEffectKernel {
-                            positive_spread: remaining_spread,
+                            signed_spread: remaining_spread,
                             sigma: effect.sigma(),
                         },
                         support::ParentEffectFrame {
