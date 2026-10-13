@@ -12,10 +12,10 @@ const BIN_WIDTH: f64 = 6.0 / BINS as f64;
 const BIN_WORK: usize = 512;
 const AXIS_WORK: usize = 128;
 const SITE_WORK: usize = 48;
-const MAX_SCENE_WORK: usize = 16_777_216;
-const MAX_PROOF_BYTES: usize = 1_048_576;
+pub(super) const MAX_SCENE_WORK: usize = 16_777_216;
+pub(super) const MAX_PROOF_BYTES: usize = 1_048_576;
 
-struct NormalizedGaussianCdf {
+pub(super) struct NormalizedGaussianCdf {
     prefix: Vec<Interval>,
     normalization: Interval,
 }
@@ -28,7 +28,7 @@ impl NormalizedGaussianCdf {
         -3.0 + index as f64 * BIN_WIDTH
     }
 
-    fn new(work: &mut usize) -> Option<Self> {
+    pub(super) fn new(work: &mut usize) -> Option<Self> {
         let charge = BINS.checked_mul(BIN_WORK)?;
         if *work < charge {
             return None;
@@ -93,6 +93,45 @@ impl NormalizedGaussianCdf {
             self.prefix[Self::floor_index(lo)].lo,
             self.prefix[Self::ceil_index(hi)].hi,
         )
+    }
+
+    /// Bounded nonnegative normalized Gaussian mass between two possibly
+    /// interval-enclosed cut positions, with the original finite 3-sigma law.
+    /// This is shared by x-slabs and certified vertical source enclosures.
+    pub(super) fn interval_mass(
+        &self,
+        start: Interval,
+        end: Interval,
+        center: f64,
+        sigma: Interval,
+        work: &mut usize,
+    ) -> Option<Interval> {
+        if *work < AXIS_WORK || sigma.lo <= 0.0 || start.lo > end.hi {
+            return None;
+        }
+        *work -= AXIS_WORK;
+        let origin = Interval::scalar(center)?;
+        let near = start.sub(origin)?.div(sigma)?;
+        let far = end.sub(origin)?.div(sigma)?;
+        if near.lo >= 3.0 || far.hi <= -3.0 {
+            return Interval::scalar(0.0);
+        }
+        if near.hi <= -3.0 && far.lo >= 3.0 {
+            return Interval::scalar(1.0);
+        }
+        let numerator = self.cumulative(far)?.sub(self.cumulative(near)?)?;
+        let numerator = Interval::new(
+            numerator.lo.max(0.0),
+            numerator.hi.min(self.normalization.hi),
+        )?;
+        let mass = numerator.div(self.normalization)?;
+        Interval::new(mass.lo.max(0.0), mass.hi.min(1.0))
+    }
+
+    pub(super) fn peak_buffer_bytes(&self) -> Option<usize> {
+        self.prefix
+            .capacity()
+            .checked_mul(std::mem::size_of::<Interval>())
     }
 
     fn axis_coverage(

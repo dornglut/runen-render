@@ -88,6 +88,40 @@ impl Bezier {
         ))
     }
 
+    fn strict_monotone_x(self) -> bool {
+        self.controls[..=self.degree]
+            .windows(2)
+            .all(|pair| pair[0][0].hi < pair[1][0].lo)
+    }
+
+    fn graph_y_slab(
+        self,
+        x: Interval,
+        work: &mut usize,
+        depth: usize,
+    ) -> Option<Option<Interval>> {
+        if *work < WORK_PER_CURVE_NODE {
+            *work = 0;
+            return None;
+        }
+        *work -= WORK_PER_CURVE_NODE;
+        let hull = self.enclosure()?;
+        if hull.x.hi < x.lo || hull.x.lo > x.hi {
+            return Some(None);
+        }
+        if depth == 18 {
+            return Some(Some(hull.y));
+        }
+        let (left, right) = self.split()?;
+        let a = left.graph_y_slab(x, work, depth + 1)?;
+        let b = right.graph_y_slab(x, work, depth + 1)?;
+        match (a, b) {
+            (Some(a), Some(b)) => Some(Some(Interval::new(a.lo.min(b.lo), a.hi.max(b.hi))?)),
+            (Some(a), None) | (None, Some(a)) => Some(Some(a)),
+            (None, None) => Some(None),
+        }
+    }
+
     fn monotone_y(self) -> (bool, bool) {
         let mut ascending = true;
         let mut descending = true;
@@ -146,6 +180,26 @@ fn curve_crossings(
     let a = curve_crossings(left, cell, remaining_work, depth + 1)?;
     let b = curve_crossings(right, cell, remaining_work, depth + 1)?;
     a.checked_add(b)
+}
+
+/// Test-only vertical enclosure of an ORIGINAL authored monotone-x Bézier
+/// graph over an entire x slab. Strictly increasing control x coordinates
+/// prove one-valued source geometry; general folds/hairpins are not admitted.
+/// The existing directed interval de Casteljau implementation is the owner.
+pub(super) fn certified_graph_y_slab(
+    points: &[[f64; 2]],
+    x: Interval,
+    work: &mut usize,
+) -> Option<Interval> {
+    let curve = Bezier::from_points(points)?;
+    if !curve.strict_monotone_x() {
+        return None;
+    }
+    let domain = curve.enclosure()?;
+    if x.lo < domain.x.lo || x.hi > domain.x.hi {
+        return None;
+    }
+    curve.graph_y_slab(x, work, 0)?
 }
 
 fn scalar_point(p: Render2dPoint) -> [f64; 2] {
