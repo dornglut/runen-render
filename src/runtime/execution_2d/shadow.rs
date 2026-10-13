@@ -384,7 +384,16 @@ fn group_child_sources_with_probe<'a>(
                     // Resolve the proven curved DAG before asking for a
                     // polygonal mesh: a disk cannot be made into triangles
                     // and an expected rejection is not control flow.
-                    let source = if !nested {
+                    let source = if !nested
+                        && in_parent.all_root_shadows_provably_empty(frame.group.shadows())
+                    {
+                        // A certified-empty root shadow need not realize a
+                        // child's symbolic curved F1 support as polygons.
+                        // The ordinary F3E painter still executes original
+                        // child content; this empty mesh is only the shadow
+                        // source for these independently erased effects.
+                        NeutralCaster::Mesh(Arc::new(empty_mesh()))
+                    } else if !nested {
                         match graph.qualified_rounded_rectangle(&in_parent)? {
                             Some(qualified) => NeutralCaster::RoundedRectangle(qualified),
                             None => NeutralCaster::Mesh(graph.materialize(&in_parent)?),

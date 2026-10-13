@@ -341,6 +341,27 @@ fn certified_complete_disk_erosion(bounds: Option<[f64; 4]>, spread: f64) -> boo
     false
 }
 
+impl NeutralRegion<'_> {
+    /// A root group's authored shadows all vanish when their own negative
+    /// disks are strictly too large to fit anywhere in the complete original
+    /// neutral support, including child effects. The offset and finite
+    /// Gaussian cannot restore a source that erosion proved EMPTY.
+    ///
+    /// The certificate must apply to EVERY shadow independently. A single
+    /// surviving shadow still needs the general original-region evaluator.
+    /// No source triangles, alpha or enclosing box are treated as membership.
+    pub(super) fn all_root_shadows_provably_empty(
+        &self,
+        shadows: &[Render2dDropShadow],
+    ) -> bool {
+        !shadows.is_empty()
+            && self.certified_source_reach
+            && shadows
+                .iter()
+                .all(|shadow| certified_complete_disk_erosion(self.envelope, shadow.spread()))
+    }
+}
+
 /// One invocation-owned bounded graph and memoized polygonal realization.
 /// Memo keys are monotonic graph IDs, NEVER F1 semantic or cache IDs.
 pub(super) struct NeutralRegionBuilder {
@@ -1627,6 +1648,36 @@ mod tests {
         ));
         assert_eq!(graph.erosion_work, 0);
         assert!(graph.materialized.get(leaf.id).is_none_or(Option::is_none));
+    }
+
+    #[test]
+    fn whole_root_shadow_set_requires_independent_complete_erosion_proofs() {
+        let mut graph = builder();
+        let pristine = graph.source(triangle(), &[6, 0]).unwrap();
+        let positive = Render2dDropShadow::new(
+            0.0, 0.0, 0.2, 1.0, Render2dColorRgba8::TRANSPARENT,
+        )
+        .unwrap();
+        let symbolic = graph
+            .effect(Arc::clone(&pristine), positive, &[6, 1])
+            .unwrap();
+        let complete = graph.union(vec![pristine, symbolic], &[6]).unwrap();
+        let erased = Render2dDropShadow::new(
+            2.0, -3.0, 0.3, -8.0, Render2dColorRgba8::TRANSPARENT,
+        )
+        .unwrap();
+        let survivor = Render2dDropShadow::new(
+            0.0, 0.0, 0.0, -0.5, Render2dColorRgba8::TRANSPARENT,
+        )
+        .unwrap();
+        assert!(complete.all_root_shadows_provably_empty(&[erased, erased]));
+        assert!(!complete.all_root_shadows_provably_empty(&[erased, survivor]));
+        assert!(!complete.all_root_shadows_provably_empty(&[survivor, erased]));
+        assert!(!complete.all_root_shadows_provably_empty(&[]));
+        assert!(
+            graph.materialize(&complete).is_err(),
+            "the child positive disk remains symbolic, not silently polygonalized"
+        );
     }
 
     #[test]
