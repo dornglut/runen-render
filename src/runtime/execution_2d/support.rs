@@ -4678,6 +4678,64 @@ mod tests {
         assert_eq!(fractional.weights[1], 0.0);
     }
 
+    /// F3F-NS02-R2 physical candidate falsification: even with exact
+    /// original Euclidean-eroded L membership, a binary 4x sample mask
+    /// blurred with the current separable discrete kernel misses the
+    /// independently accepted 64x64 Vulkan fractional-corner oracle.
+    /// This rules out ONLY a naive binary 4x mask, not fractional coverage,
+    /// higher-resolution physical masks or bounded analytic fast paths.
+    #[test]
+    fn naive_binary_four_x_gaussian_fails_accepted_concave_l_corner_quality() {
+        let kernel = gaussian_kernel(0.1, 4.0, &[0]).unwrap();
+        assert_eq!(kernel.radius, 2);
+        assert_eq!(kernel.weights[2], 0.0);
+
+        // The accepted neutral L is [10,20]x[10,15] U [10,15]x[15,20],
+        // Euclidean eroded by radius 1. Every queried point around pixel
+        // [14,15]^2 lies >1 from the far exterior boundaries. Distance
+        // to the exact missing upper-right quadrant is a quarter-disk
+        // below-left of (15,15), with adjacent straight exposed edges.
+        let eroded_l_membership = |x: f64, y: f64| {
+            let distance = if x < 15.0 && y < 15.0 {
+                (15.0 - x).hypot(15.0 - y)
+            } else if x >= 15.0 && y < 15.0 {
+                15.0 - y
+            } else if x < 15.0 && y >= 15.0 {
+                15.0 - x
+            } else {
+                0.0
+            };
+            if distance >= 1.0 { 1.0 } else { 0.0 }
+        };
+        let mut sum = 0.0;
+        for sy in 0..4 {
+            for sx in 0..4 {
+                let x = 14.0 + (f64::from(sx) + 0.5) / 4.0;
+                let y = 14.0 + (f64::from(sy) + 0.5) / 4.0;
+                for dy in -1_i32..=1 {
+                    for dx in -1_i32..=1 {
+                        let wx = kernel.weights[dx.unsigned_abs() as usize];
+                        let wy = kernel.weights[dy.unsigned_abs() as usize];
+                        let sample = eroded_l_membership(
+                            x + f64::from(dx) * 0.25,
+                            y + f64::from(dy) * 0.25,
+                        );
+                        sum += wx * wy * sample;
+                    }
+                }
+            }
+        }
+        let binary_mask_alpha = sum / 16.0;
+        // Independent continuous finite-3sigma Euclidean-disk integral;
+        // see tests/execution_2d/shadow.rs L/ring real-Vulkan oracles.
+        let continuous_alpha = 0.227_529_040_847_66_f64;
+        assert!((binary_mask_alpha - 0.197_596_973_313_322_35_f64).abs() < 1.0e-12);
+        assert!(
+            (binary_mask_alpha - continuous_alpha).abs() * 255.0 > 4.0,
+            "a binary 4x mask must not be promoted without quality evidence"
+        );
+    }
+
     #[test]
     fn identity_and_bounded_failure_have_exact_nested_path() {
         let identity = gaussian_kernel(0.0, 4.0, &[0]).unwrap();
