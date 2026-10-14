@@ -1,4 +1,4 @@
-//! Test-only complete candidate boundary cover for orthogonal disk erosion
+//! Complete candidate boundary cover for orthogonal disk erosion
 //! followed by a finite square halo. Candidates never supply membership.
 //! Original exposed source edges supply capsule branches. All their possible
 //! vertices and axis extrema supply the square's missing extrusion segments.
@@ -42,64 +42,64 @@ pub(super) struct Inventory {
     pub(super) vertices: Vec<[Interval; 2]>,
 }
 
-fn charge(fuel: &mut usize, work: usize) -> Option<()> {
+fn charge(fuel: &mut usize, work: usize) -> Result<(), AreaQueryError> {
     if *fuel < work {
         *fuel = 0;
-        None
+        Err(AreaQueryError::Resource)
     } else {
         *fuel -= work;
-        Some(())
+        Ok(())
     }
 }
 
 // Exact scalar identities reduce duplicate event geometry. These wrappers
 // delegate to the canonical numerical authority; other cases stay intervals.
-fn add(a: Interval, b: Interval) -> Option<Interval> {
+fn add(a: Interval, b: Interval) -> Result<Interval, AreaQueryError> {
     if a.lo == a.hi
         && b.lo == b.hi
         && let Some(value) = exact_add(a.lo, b.lo)
     {
-        return Interval::scalar(value);
+        return scalar(value);
     }
-    a.add(b)
+    a.add(b).ok_or(AreaQueryError::Precision)
 }
-fn neg(a: Interval) -> Option<Interval> {
-    Interval::new(-a.hi, -a.lo)
+fn neg(a: Interval) -> Result<Interval, AreaQueryError> {
+    Interval::new(-a.hi, -a.lo).ok_or(AreaQueryError::Precision)
 }
-fn sub(a: Interval, b: Interval) -> Option<Interval> {
+fn sub(a: Interval, b: Interval) -> Result<Interval, AreaQueryError> {
     add(a, neg(b)?)
 }
-fn mul(a: Interval, b: Interval) -> Option<Interval> {
+fn mul(a: Interval, b: Interval) -> Result<Interval, AreaQueryError> {
     if a.lo == a.hi
         && b.lo == b.hi
         && let Some(value) = exact_mul(a.lo, b.lo)
     {
-        return Interval::scalar(value);
+        return scalar(value);
     }
-    a.mul(b)
+    a.mul(b).ok_or(AreaQueryError::Precision)
 }
-fn scalar(a: f64) -> Option<Interval> {
-    Interval::scalar(a)
+fn scalar(a: f64) -> Result<Interval, AreaQueryError> {
+    Interval::scalar(a).ok_or(AreaQueryError::Precision)
 }
-fn square(a: Interval) -> Option<Interval> {
+fn square(a: Interval) -> Result<Interval, AreaQueryError> {
     if a.lo == a.hi {
         mul(a, a)
     } else {
-        squared_interval(a)
+        squared_interval(a).ok_or(AreaQueryError::Precision)
     }
 }
-fn radical(a: Interval) -> Option<Interval> {
+fn radical(a: Interval) -> Result<Interval, AreaQueryError> {
     if a.hi < 0.0 {
-        return None;
+        return Err(AreaQueryError::Precision);
     }
-    let positive = Interval::new(a.lo.max(0.0), a.hi)?;
+    let positive = Interval::new(a.lo.max(0.0), a.hi).ok_or(AreaQueryError::Precision)?;
     if positive.lo == positive.hi {
         let value = positive.lo.sqrt();
         if exact_mul(value, value) == Some(positive.lo) {
             return scalar(value);
         }
     }
-    sqrt_enclosure(positive)
+    sqrt_enclosure(positive).ok_or(AreaQueryError::Precision)
 }
 
 impl Inventory {
@@ -108,15 +108,15 @@ impl Inventory {
         cell: Cell,
         radius: f64,
         fuel: &mut usize,
-    ) -> Option<bool> {
+    ) -> Result<bool, AreaQueryError> {
         let original = boundary.classify_original(cell, fuel);
         let result = boundary.eroded_cell(original, cell, radius, fuel);
         if *fuel == 0 {
-            return None;
+            return Err(AreaQueryError::Resource);
         }
         // Both strict interior and strict exterior contain no E boundary.
         // eroded_cell uses strict distance separation; equality is Unknown.
-        Some(result != CellCertificate::Unknown)
+        Ok(result != CellCertificate::Unknown)
     }
 
     /// Drop a full circle only after a complete interval cover proves every
@@ -128,7 +128,7 @@ impl Inventory {
         circle: Circle,
         radius: f64,
         fuel: &mut usize,
-    ) -> Option<bool> {
+    ) -> Result<bool, AreaQueryError> {
         const PARTS: usize = 16;
         let mut low = -circle.radius;
         for index in 0..PARTS {
@@ -139,11 +139,13 @@ impl Inventory {
                 -circle.radius + (2.0 * circle.radius / PARTS as f64) * (index + 1) as f64
             };
             if !high.is_finite() || low >= high || high > circle.radius {
-                return Some(false);
+                return Ok(false);
             }
-            let y = Interval::new(low, high)?;
-            let Some(x) = sub(square(scalar(circle.radius)?)?, square(y)?).and_then(radical) else {
-                return Some(false);
+            let y = Interval::new(low, high).ok_or(AreaQueryError::Precision)?;
+            let x = match sub(square(scalar(circle.radius)?)?, square(y)?).and_then(radical) {
+                Ok(x) => x,
+                Err(AreaQueryError::Precision) => return Ok(false),
+                Err(error) => return Err(error),
             };
             for sign in [-1.0, 1.0] {
                 charge(fuel, 256)?;
@@ -152,12 +154,12 @@ impl Inventory {
                     y: add(circle.center[1], y)?,
                 };
                 if !Self::away_from_eroded_boundary(boundary, cell, radius, fuel)? {
-                    return Some(false);
+                    return Ok(false);
                 }
             }
             low = high;
         }
-        Some(true)
+        Ok(true)
     }
 
     fn retain_possible_boundary(
@@ -165,7 +167,7 @@ impl Inventory {
         boundary: &Boundary,
         radius: f64,
         fuel: &mut usize,
-    ) -> Option<()> {
+    ) -> Result<(), AreaQueryError> {
         let mut retained = 0;
         for index in 0..self.vertices.len() {
             charge(fuel, 64)?;
@@ -192,11 +194,13 @@ impl Inventory {
                 x: Interval::new(
                     line.ends[0][0].lo.min(line.ends[1][0].lo),
                     line.ends[0][0].hi.max(line.ends[1][0].hi),
-                )?,
+                )
+                .ok_or(AreaQueryError::Precision)?,
                 y: Interval::new(
                     line.ends[0][1].lo.min(line.ends[1][1].lo),
                     line.ends[0][1].hi.max(line.ends[1][1].hi),
-                )?,
+                )
+                .ok_or(AreaQueryError::Precision)?,
             };
             if !Self::away_from_eroded_boundary(boundary, cell, radius, fuel)? {
                 self.lines[retained] = line;
@@ -214,7 +218,7 @@ impl Inventory {
             }
         }
         self.circles.truncate(retained);
-        Some(())
+        Ok(())
     }
 
     /// Both source and expanded candidate inventories coexist during build.
@@ -227,20 +231,32 @@ impl Inventory {
             .checked_add(std::mem::size_of::<Self>())?
             .checked_mul(2)
     }
-    fn empty() -> Option<Self> {
-        Some(Self {
-            lines: bounded_vector(MAX_LINES)?,
-            circles: bounded_vector(MAX_CIRCLES)?,
-            vertices: bounded_vector(MAX_VERTICES)?,
+    fn empty() -> Result<Self, AreaQueryError> {
+        Ok(Self {
+            lines: bounded_vector(MAX_LINES).ok_or(AreaQueryError::Resource)?,
+            circles: bounded_vector(MAX_CIRCLES).ok_or(AreaQueryError::Resource)?,
+            vertices: bounded_vector(MAX_VERTICES).ok_or(AreaQueryError::Resource)?,
         })
     }
-    fn line(&mut self, axis: usize, ends: [[Interval; 2]; 2], fuel: &mut usize) -> Option<()> {
-        charge(fuel, 128 + self.lines.len().checked_mul(32)?)?;
+    fn line(
+        &mut self,
+        axis: usize,
+        ends: [[Interval; 2]; 2],
+        fuel: &mut usize,
+    ) -> Result<(), AreaQueryError> {
+        charge(
+            fuel,
+            self.lines
+                .len()
+                .checked_mul(32)
+                .and_then(|n| n.checked_add(128))
+                .ok_or(AreaQueryError::Resource)?,
+        )?;
         // An exact coordinate establishes actual line identity. Combining
         // domains may introduce false branches across gaps, which is safe:
         // membership remains original-source-derived and resolves every strip.
         if axis > 1 {
-            return None;
+            return Err(AreaQueryError::Unsupported);
         }
         if ends[0][axis].lo == ends[0][axis].hi {
             for old in &mut self.lines {
@@ -254,20 +270,22 @@ impl Inventory {
                     old.ends[0][other] = Interval::new(
                         old.ends[0][other].lo.min(ends[0][other].lo),
                         old.ends[0][other].hi.min(ends[0][other].hi),
-                    )?;
+                    )
+                    .ok_or(AreaQueryError::Precision)?;
                     old.ends[1][other] = Interval::new(
                         old.ends[1][other].lo.max(ends[1][other].lo),
                         old.ends[1][other].hi.max(ends[1][other].hi),
-                    )?;
-                    return Some(());
+                    )
+                    .ok_or(AreaQueryError::Precision)?;
+                    return Ok(());
                 }
             }
         }
-        if self.lines.len() == MAX_LINES {
-            return None;
+        if self.lines.len() >= MAX_LINES || self.lines.len() == self.lines.capacity() {
+            return Err(AreaQueryError::Resource);
         }
         self.lines.push(Line { axis, ends });
-        Some(())
+        Ok(())
     }
     fn circle(
         &mut self,
@@ -275,8 +293,15 @@ impl Inventory {
         radius: f64,
         quadrant: Option<[f64; 2]>,
         fuel: &mut usize,
-    ) -> Option<()> {
-        charge(fuel, 128 + self.circles.len().checked_mul(32)?)?;
+    ) -> Result<(), AreaQueryError> {
+        charge(
+            fuel,
+            self.circles
+                .len()
+                .checked_mul(32)
+                .and_then(|n| n.checked_add(128))
+                .ok_or(AreaQueryError::Resource)?,
+        )?;
         if center.iter().all(|v| v.lo == v.hi)
             && self.circles.iter().any(|old| {
                 old.radius == radius
@@ -286,35 +311,47 @@ impl Inventory {
                     })
             })
         {
-            return Some(());
+            return Ok(());
         }
-        if self.circles.len() == MAX_CIRCLES {
-            return None;
+        if self.circles.len() >= MAX_CIRCLES || self.circles.len() == self.circles.capacity() {
+            return Err(AreaQueryError::Resource);
         }
         self.circles.push(Circle {
             center,
             radius,
             quadrant,
         });
-        Some(())
+        Ok(())
     }
-    fn vertex(&mut self, point: [Interval; 2], fuel: &mut usize) -> Option<()> {
-        charge(fuel, 64 + self.vertices.len().checked_mul(16)?)?;
+    fn vertex(&mut self, point: [Interval; 2], fuel: &mut usize) -> Result<(), AreaQueryError> {
+        charge(
+            fuel,
+            self.vertices
+                .len()
+                .checked_mul(16)
+                .and_then(|n| n.checked_add(64))
+                .ok_or(AreaQueryError::Resource)?,
+        )?;
         if point.iter().all(|v| v.lo == v.hi)
             && self
                 .vertices
                 .iter()
                 .any(|old| (0..2).all(|a| old[a].lo == point[a].lo && old[a].hi == point[a].lo))
         {
-            return Some(());
+            return Ok(());
         }
-        if self.vertices.len() == MAX_VERTICES {
-            return None;
+        if self.vertices.len() >= MAX_VERTICES || self.vertices.len() == self.vertices.capacity() {
+            return Err(AreaQueryError::Resource);
         }
         self.vertices.push(point);
-        Some(())
+        Ok(())
     }
-    fn line_circle_vertices(&mut self, line: Line, circle: Circle, fuel: &mut usize) -> Option<()> {
+    fn line_circle_vertices(
+        &mut self,
+        line: Line,
+        circle: Circle,
+        fuel: &mut usize,
+    ) -> Result<(), AreaQueryError> {
         charge(fuel, 512)?;
         let axis = line.axis;
         let other = 1 - axis;
@@ -322,7 +359,7 @@ impl Inventory {
         let d = sub(coordinate, circle.center[axis])?;
         let discriminant = sub(square(scalar(circle.radius)?)?, square(d)?)?;
         if discriminant.hi < 0.0 {
-            return Some(());
+            return Ok(());
         }
         let height = radical(discriminant)?;
         for sign in [-1.0, 1.0] {
@@ -335,26 +372,33 @@ impl Inventory {
             p[other] = along;
             self.vertex(p, fuel)?;
         }
-        Some(())
+        Ok(())
     }
-    fn circle_vertices(&mut self, left: Circle, right: Circle, fuel: &mut usize) -> Option<()> {
+    fn circle_vertices(
+        &mut self,
+        left: Circle,
+        right: Circle,
+        fuel: &mut usize,
+    ) -> Result<(), AreaQueryError> {
         charge(fuel, 1_536)?;
         // The initial inventory has one common scalar disk radius. Distinct
         // original centers are scalar and cannot create concentric ambiguity.
         if left.radius != right.radius {
-            return None;
+            return Err(AreaQueryError::Unsupported);
         }
         let dx = sub(right.center[0], left.center[0])?;
         let dy = sub(right.center[1], left.center[1])?;
         let d2 = add(square(dx)?, square(dy)?)?;
         if d2.lo <= 0.0 {
-            return None;
+            return Err(AreaQueryError::Precision);
         }
         let height2 = sub(square(scalar(left.radius)?)?, mul(scalar(0.25)?, d2)?)?;
         if height2.hi < 0.0 {
-            return Some(());
+            return Ok(());
         }
-        let factor = radical(height2)?.div(radical(d2)?)?;
+        let factor = radical(height2)?
+            .div(radical(d2)?)
+            .ok_or(AreaQueryError::Precision)?;
         let middle = [
             mul(add(left.center[0], right.center[0])?, scalar(0.5)?)?,
             mul(add(left.center[1], right.center[1])?, scalar(0.5)?)?,
@@ -369,9 +413,9 @@ impl Inventory {
                 fuel,
             )?;
         }
-        Some(())
+        Ok(())
     }
-    fn complete_vertices(&mut self, fuel: &mut usize) -> Option<()> {
+    fn complete_vertices(&mut self, fuel: &mut usize) -> Result<(), AreaQueryError> {
         for index in 0..self.lines.len() {
             let line = self.lines[index];
             self.vertex(line.ends[0], fuel)?;
@@ -417,17 +461,20 @@ impl Inventory {
                 self.circle_vertices(circle, self.circles[j], fuel)?;
             }
         }
-        Some(())
+        Ok(())
     }
     pub(super) fn prepare(
         boundary: &Boundary,
         radius: f64,
         halo: Interval,
         fuel: &mut usize,
-    ) -> Option<Self> {
+    ) -> Result<Self, AreaQueryError> {
         charge(fuel, 512)?;
-        if !radius.is_finite() || radius <= 0.0 || halo.lo < 0.0 {
-            return None;
+        if !radius.is_finite() || halo.lo < 0.0 {
+            return Err(AreaQueryError::Precision);
+        }
+        if radius <= 0.0 {
+            return Err(AreaQueryError::Unsupported);
         }
         let mut source = Self::empty()?;
         for &[p, q] in boundary.edges() {
@@ -469,8 +516,7 @@ impl Inventory {
                 let shift = [mul(scalar(xsign)?, halo)?, mul(scalar(ysign)?, halo)?];
                 for line in &source.lines {
                     charge(fuel, 128)?;
-                    let point =
-                        |p: [Interval; 2]| Some([add(p[0], shift[0])?, add(p[1], shift[1])?]);
+                    let point = |p: [Interval; 2]| Ok([add(p[0], shift[0])?, add(p[1], shift[1])?]);
                     result.line(
                         line.axis,
                         [point(line.ends[0])?, point(line.ends[1])?],
@@ -496,7 +542,7 @@ impl Inventory {
             }
         }
         result.vertices = source.vertices;
-        Some(result)
+        Ok(result)
     }
 }
 
@@ -659,8 +705,135 @@ mod tests {
                 .iter()
                 .all(|c| c.center.iter().any(|v| v.lo < v.hi))
         );
+        assert!(matches!(
+            Inventory::prepare(&boundary, 0.0, scalar(0.09375).unwrap(), &mut fuel),
+            Err(AreaQueryError::Unsupported)
+        ));
+        assert!(matches!(
+            Inventory::prepare(
+                &boundary,
+                f64::INFINITY,
+                scalar(0.09375).unwrap(),
+                &mut fuel
+            ),
+            Err(AreaQueryError::Precision)
+        ));
+        assert!(fuel > 0);
         let mut fuel = 511;
-        assert!(Inventory::prepare(&boundary, 1.0, scalar(0.09375).unwrap(), &mut fuel).is_none());
+        assert!(matches!(
+            Inventory::prepare(&boundary, 1.0, scalar(0.09375).unwrap(), &mut fuel),
+            Err(AreaQueryError::Resource)
+        ));
         assert_eq!(fuel, 0);
+    }
+
+    #[test]
+    fn inventory_caps_are_resource_errors_with_work_remaining() {
+        let zero = scalar(0.0).unwrap();
+        let one = scalar(1.0).unwrap();
+        let mut inventory = Inventory::empty().unwrap();
+        let mut fuel = 16_777_216;
+        inventory.lines.resize(
+            MAX_LINES,
+            Line {
+                axis: 0,
+                ends: [[zero, zero], [zero, one]],
+            },
+        );
+        assert!(matches!(
+            inventory.line(0, [[one, zero], [one, one]], &mut fuel),
+            Err(AreaQueryError::Resource)
+        ));
+        inventory.circles.resize(
+            MAX_CIRCLES,
+            Circle {
+                center: [zero, zero],
+                radius: 1.0,
+                quadrant: None,
+            },
+        );
+        assert!(matches!(
+            inventory.circle([one, one], 1.0, None, &mut fuel),
+            Err(AreaQueryError::Resource)
+        ));
+        inventory.vertices.resize(MAX_VERTICES, [zero, zero]);
+        assert!(matches!(
+            inventory.vertex([one, one], &mut fuel),
+            Err(AreaQueryError::Resource)
+        ));
+        assert!(fuel > 0);
+        assert_eq!(
+            (
+                inventory.lines.capacity(),
+                inventory.circles.capacity(),
+                inventory.vertices.capacity()
+            ),
+            (MAX_LINES, MAX_CIRCLES, MAX_VERTICES)
+        );
+    }
+
+    #[test]
+    fn inventory_rejects_growth_beyond_actual_reserved_capacity() {
+        let zero = scalar(0.0).unwrap();
+        let one = scalar(1.0).unwrap();
+        let mut inventory = Inventory {
+            lines: Vec::new(),
+            circles: Vec::new(),
+            vertices: Vec::new(),
+        };
+        let mut fuel = 16_777_216;
+        assert!(matches!(
+            inventory.line(0, [[zero, zero], [zero, one]], &mut fuel),
+            Err(AreaQueryError::Resource)
+        ));
+        assert!(matches!(
+            inventory.circle([zero, zero], 1.0, None, &mut fuel),
+            Err(AreaQueryError::Resource)
+        ));
+        assert!(matches!(
+            inventory.vertex([zero, zero], &mut fuel),
+            Err(AreaQueryError::Resource)
+        ));
+        assert_eq!(
+            (
+                inventory.lines.capacity(),
+                inventory.circles.capacity(),
+                inventory.vertices.capacity()
+            ),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn inventory_profile_and_numeric_failures_keep_distinct_categories() {
+        let zero = scalar(0.0).unwrap();
+        let one = scalar(1.0).unwrap();
+        let mut inventory = Inventory::empty().unwrap();
+        let mut fuel = 16_777_216;
+        assert!(matches!(
+            inventory.line(2, [[zero, zero], [zero, one]], &mut fuel),
+            Err(AreaQueryError::Unsupported)
+        ));
+        assert!(matches!(
+            add(scalar(f64::MAX).unwrap(), scalar(f64::MAX).unwrap()),
+            Err(AreaQueryError::Precision)
+        ));
+        assert!(matches!(
+            inventory.circle_vertices(
+                Circle {
+                    center: [zero, zero],
+                    radius: 1.0,
+                    quadrant: None
+                },
+                Circle {
+                    center: [one, one],
+                    radius: 2.0,
+                    quadrant: None
+                },
+                &mut fuel
+            ),
+            Err(AreaQueryError::Unsupported)
+        ));
+        assert!(fuel > 0);
     }
 }

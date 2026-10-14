@@ -233,11 +233,10 @@ impl Boundary {
             .checked_add(2 * std::mem::size_of::<Vec<usize>>())
     }
 
-    /// Test-only geometric prerequisite for finite Gaussian support. The
+    /// Geometric prerequisite for finite Gaussian support. The
     /// prepared boundary, rather than a sampled mask, retains original F1.
     /// A common displacement proves every point of Q belongs to E + square;
     /// only a complete Outside covering of Q + square proves absence.
-    #[cfg(test)]
     pub(super) fn square_dilated_eroded_cell(
         &self,
         cell: Cell,
@@ -612,7 +611,9 @@ impl Boundary {
         if source == CellCertificate::Outside {
             return source;
         }
-        if charge(fuel, 16).is_none() {
+        // Radius validation, interval construction/squaring, outward bounds,
+        // and loop state precede the separately admitted per-edge work.
+        if charge(fuel, 64).is_none() {
             return CellCertificate::Unknown;
         }
         let Some(r2) = Interval::scalar(radius).and_then(squared_interval) else {
@@ -1209,6 +1210,44 @@ mod tests {
             Vec::new(),
             Render2dOpacity::TRANSPARENT,
         )
+    }
+
+    #[test]
+    fn finite_square_integrates_noncardinal_two_hole_vertex_connector() {
+        let item = finite_square_item(Render2dFillRule::EvenOdd, true);
+        let mut graph = builder();
+        let source = graph.source_from_item(fake_mesh(), &item, &[0]).unwrap();
+        let effect = graph
+            .effect(
+                source,
+                Render2dDropShadow::new(0.0, 0.0, 0.03125, -1.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+                &[0],
+            )
+            .unwrap();
+        let mut fuel = 16_777_216;
+        let areas = certified_grid_area_query(
+            &effect,
+            [319, 332, 321, 333],
+            16.0,
+            Some(Render2dAffineTransform::translation(20.0, 20.0).unwrap()),
+            8,
+            2,
+            &mut fuel,
+        )
+        .unwrap();
+        // The ORIGINAL erosion has a nonsmooth vertex (0,sqrt(3)/2).
+        // Its box halo h=3/32 creates a horizontal connector for |x|<=h.
+        // Both requested cells lie entirely below its cardinal neighbours,
+        // across that connector: area fraction=16*(29/32-sqrt(3)/2).
+        let reference = 14.5 - 8.0 * 3.0_f64.sqrt();
+        assert_eq!(areas.len(), 2);
+        for actual in areas {
+            assert!(
+                actual[0] <= reference && reference <= actual[1],
+                "vertex connector {actual:?} vs {reference}"
+            );
+        }
     }
 
     #[test]

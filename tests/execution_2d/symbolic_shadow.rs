@@ -51,7 +51,19 @@ fn rectangle(x: f64, y: f64, width: f64, height: f64) -> Render2dEntry {
     ))
 }
 
-fn completed_ring(effects: Vec<Render2dDropShadow>) -> Render2dComposition {
+fn completed_ring(effects: Vec<Render2dDropShadow>, child_sigma: f64) -> Render2dComposition {
+    completed_ring_in_frame(
+        effects,
+        child_sigma,
+        Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
+    )
+}
+
+fn completed_ring_in_frame(
+    effects: Vec<Render2dDropShadow>,
+    child_sigma: f64,
+    frame: Render2dAffineTransform,
+) -> Render2dComposition {
     let child = Render2dEntry::group(Render2dGroup::new(
         vec![
             rectangle(10.0, 10.0, 20.0, 8.0),
@@ -63,12 +75,13 @@ fn completed_ring(effects: Vec<Render2dDropShadow>) -> Render2dComposition {
         Vec::new(),
         Render2dOpacity::TRANSPARENT,
         vec![
-            Render2dDropShadow::new(8.0, 0.0, 0.0, -1.0, Render2dColorRgba8::TRANSPARENT).unwrap(),
+            Render2dDropShadow::new(8.0, 0.0, child_sigma, -1.0, Render2dColorRgba8::TRANSPARENT)
+                .unwrap(),
         ],
     ));
     Render2dComposition::new(vec![Render2dEntry::group(Render2dGroup::new(
         vec![child],
-        Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
+        frame,
         Vec::new(),
         Render2dOpacity::OPAQUE,
         effects,
@@ -82,10 +95,19 @@ fn completed_holed_caster_integrates_true_curved_erosion_before_ancestor_shear()
     let bytes = execute(
         &context,
         &mut Render2dExecutor::new(),
-        &completed_ring(vec![
-            Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 255))
+        &completed_ring(
+            vec![
+                Render2dDropShadow::new(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    Render2dColorRgba8::new(0, 0, 255, 255),
+                )
                 .unwrap(),
-        ]),
+            ],
+            0.0,
+        ),
         &Render2dResourceBindings::default(),
         "original continuous completed ring",
     );
@@ -116,7 +138,7 @@ fn four_translucent_ancestor_shadows_keep_continuous_cell_correlation() {
     let bytes = execute(
         &context,
         &mut Render2dExecutor::new(),
-        &completed_ring(vec![effect; 4]),
+        &completed_ring(vec![effect; 4], 0.0),
         &Render2dResourceBindings::default(),
         "four correlated continuous caster shadows",
     );
@@ -128,5 +150,85 @@ fn four_translucent_ancestor_shadows_keep_continuous_cell_correlation() {
             actual.abs_diff(expected) <= 4,
             "correlated channel {actual} vs {expected}"
         );
+    }
+}
+
+#[test]
+fn finite_child_kernel_integrates_completed_caster_before_ancestor_shear() {
+    let Some(context) = context() else { return };
+    let effect =
+        Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 255))
+            .unwrap();
+    let bytes = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &completed_ring(vec![effect], 0.03125),
+        &Render2dResourceBindings::default(),
+        "finite-kernel completed caster",
+    );
+    // Independent circle-segment integration after the child box halo h=3/32
+    // and ancestor shear gives original continuous area .73453430260630349.
+    for (actual, expected) in pixel(&bytes, 36, 22).into_iter().zip([0_u8, 0, 223, 187]) {
+        assert!(
+            actual.abs_diff(expected) <= 4,
+            "finite curved channel {actual} vs {expected}"
+        );
+    }
+    assert_eq!(pixel(&bytes, 20, 12), [0, 0, 255, 255]);
+    assert_eq!(pixel(&bytes, 33, 20), [0, 0, 255, 255]);
+    assert_eq!(pixel(&bytes, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(pixel(&bytes, 48, 20), [0, 0, 0, 0]);
+}
+
+#[test]
+fn four_finite_child_caster_shadows_preserve_cell_correlation() {
+    let Some(context) = context() else { return };
+    let effect =
+        Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 64))
+            .unwrap();
+    let bytes = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &completed_ring(vec![effect; 4], 0.03125),
+        &Render2dResourceBindings::default(),
+        "four finite-kernel correlated caster shadows",
+    );
+    // Independent 16-cell areas, source-over at each cell, then resolve:
+    // mean(1-(1-(64/255)*alpha_i)^4)=.5168041040779434.
+    for (actual, expected) in pixel(&bytes, 36, 22).into_iter().zip([0_u8, 0, 190, 132]) {
+        assert!(
+            actual.abs_diff(expected) <= 4,
+            "finite correlated channel {actual} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn reflected_finite_child_caster_keeps_original_quadrant_domains() {
+    let Some(context) = context() else { return };
+    let effect =
+        Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 255))
+            .unwrap();
+    for (a, c, d, tx, ty, x, y) in [
+        (-1.0, -0.25, 1.0, 64.0, 0.0, 27, 22),
+        (1.0, 0.25, -1.0, 0.0, 64.0, 36, 41),
+        (-1.0, -0.25, -1.0, 64.0, 64.0, 27, 41),
+    ] {
+        let frame = Render2dAffineTransform::new(a, 0.0, c, d, tx, ty).unwrap();
+        let bytes = execute(
+            &context,
+            &mut Render2dExecutor::new(),
+            &completed_ring_in_frame(vec![effect], 0.03125, frame),
+            &Render2dResourceBindings::default(),
+            "reflected finite-kernel completed caster",
+        );
+        // Exact reflections preserve area and permute the 16 physical cells.
+        // Pixel intervals transform by [u,u+1] -> [63-u,64-u].
+        for (actual, expected) in pixel(&bytes, x, y).into_iter().zip([0_u8, 0, 223, 187]) {
+            assert!(
+                actual.abs_diff(expected) <= 4,
+                "reflected {a},{d} channel {actual} vs {expected}"
+            );
+        }
     }
 }

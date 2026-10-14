@@ -1,9 +1,9 @@
-//! Test-only integration of the complete source-derived finite-square cover.
+//! Integration of the complete source-derived finite-square cover.
 //! The original region remains membership authority; these are candidate events.
 use super::*;
 
 impl ScanPlan {
-    /// Test-only compositional finite-support qualification. Candidate curves
+    /// Compositional finite-support qualification. Candidate curves
     /// cover geometry; the original prepared source remains membership owner.
     pub(super) fn finite_square_effect(
         &mut self,
@@ -26,8 +26,7 @@ impl ScanPlan {
             .or_else(|| Interval::scalar(3.0)?.mul(Interval::scalar(shadow.sigma())?))
             .ok_or(AreaQueryError::Precision)?;
         let inventory =
-            finite_square_geometry::Inventory::prepare(boundary, -shadow.spread(), halo, fuel)
-                .ok_or_else(|| exhausted_or_precision(fuel))?;
+            finite_square_geometry::Inventory::prepare(boundary, -shadow.spread(), halo, fuel)?;
         let shift = Render2dAffineTransform::translation(shadow.offset_x(), shadow.offset_y())
             .map_err(|_| AreaQueryError::Precision)?;
         let frame = self.frame().ok_or(AreaQueryError::Resource)?;

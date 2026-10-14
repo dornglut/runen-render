@@ -13,7 +13,6 @@ mod bezier_winding;
 mod conic_integral;
 #[cfg(test)]
 mod curved_gaussian;
-#[cfg(test)]
 mod finite_square_geometry;
 #[cfg(test)]
 mod linear_x_gaussian;
@@ -159,8 +158,16 @@ fn preimage_work(affine: Render2dAffineTransform) -> usize {
         16
     } else if raw[..4] == [1.0, 0.0, 0.0, 1.0] {
         64
-    } else {
+    } else if raw[0].abs() == 1.0 && raw[3].abs() == 1.0 && (raw[1] == 0.0 || raw[2] == 0.0) {
+        // Unit-axis triangular transforms have an exact +/-1 determinant.
+        // Zero/unit interval shortcuts leave only one nontrivial product;
+        // this bound includes scalar validation and every inverse branch.
         320
+    } else {
+        // Dense coefficients can take six general interval products, five
+        // differences and two divisions. Include finite checks, endpoint
+        // reductions, outward rounding and all scalar/setup construction.
+        768
     }
 }
 
@@ -1312,7 +1319,6 @@ impl PreparedBoundaries {
             // Scalar query state, vector headers and fixed numeric arrays.
             // This margin is distinct from heap payload capacities above.
             .checked_add(65_536)?;
-        #[cfg(test)]
         let bytes =
             bytes.checked_add(finite_square_geometry::Inventory::preparation_scratch_bound()?)?;
         Some(bytes)
@@ -1336,7 +1342,6 @@ impl PreparedBoundaries {
                     }
                     *fuel -= result.entries.len();
                     if shadow.spread() < 0.0
-                        && (shadow.sigma() == 0.0 || cfg!(test))
                         && !result.entries.iter().any(|(id, _, _)| *id == region.id)
                     {
                         if result.entries.len() == 256 {
@@ -1521,8 +1526,10 @@ impl NeutralRegion<'_> {
                 };
                 let spread = shadow.spread();
                 if let Some(boundary) = prepared.and_then(|p| p.get(self.id, visits)) {
-                    #[cfg(test)]
                     if shadow.sigma() > 0.0 {
+                        if !admit_query_work(visits, 128) {
+                            return CellCertificate::Unknown;
+                        }
                         let halo = super::interval::exact_mul(3.0, shadow.sigma())
                             .and_then(Interval::scalar)
                             .or_else(|| {

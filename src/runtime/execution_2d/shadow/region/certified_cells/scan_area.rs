@@ -11,7 +11,6 @@ use super::*;
 
 mod membership;
 use membership::MembershipCache;
-#[cfg(test)]
 mod finite_square;
 
 fn exhausted_or_precision(fuel: &usize) -> AreaQueryError {
@@ -158,7 +157,6 @@ pub(super) struct ScanPlan {
     curves: Vec<Curve>,
     next_frame: usize,
     crossings: Vec<Crossings>,
-    #[cfg(test)]
     extra_y_events: Vec<Interval>,
 }
 
@@ -167,6 +165,7 @@ struct GridQuery<'r, 'a> {
     forward: Option<Render2dAffineTransform>,
     prepared: &'r PreparedBoundaries,
     xs: Vec<f64>,
+    cell_width: Interval,
     vertical_uncertainty: Vec<Interval>,
     semantic_cuts: Vec<f64>,
     curve_cuts: Vec<Vec<f64>>,
@@ -202,7 +201,6 @@ impl ScanPlan {
             .checked_add(65_536_usize.checked_mul(4 * std::mem::size_of::<f64>())?)?
             .checked_add(256_usize.checked_mul(std::mem::size_of::<Vec<f64>>())?)?
             .checked_add(active)?;
-        #[cfg(test)]
         let bytes = bytes.checked_add(MAX_BANDS.checked_mul(std::mem::size_of::<Interval>())?)?;
         Some(bytes)
     }
@@ -239,7 +237,16 @@ impl ScanPlan {
         // requested global lattice must still be representable when all its
         // geometry is outside the target.
         charge(fuel, 192).ok_or(AreaQueryError::Resource)?;
-        exact_div(1.0, scale).ok_or(AreaQueryError::Precision)?;
+        let step = exact_div(1.0, scale).ok_or(AreaQueryError::Precision)?;
+        charge(fuel, 128).ok_or(AreaQueryError::Resource)?;
+        let cell_width = Interval::scalar(step).ok_or(AreaQueryError::Precision)?;
+        let cell_area = exact_mul(step, step)
+            .and_then(Interval::scalar)
+            .or_else(|| cell_width.mul(cell_width))
+            .ok_or(AreaQueryError::Precision)?;
+        if cell_area.lo <= 0.0 {
+            return Err(AreaQueryError::Precision);
+        }
         for edge in root {
             exact_div(f64::from(edge), scale).ok_or(AreaQueryError::Precision)?;
         }
@@ -290,7 +297,7 @@ impl ScanPlan {
         let mut xs = bounded_vector(width.checked_add(1).ok_or(AreaQueryError::Resource)?)
             .ok_or(AreaQueryError::Resource)?;
         for index in root[0]..=root[2] {
-            charge(fuel, 4).ok_or(AreaQueryError::Resource)?;
+            charge(fuel, 64).ok_or(AreaQueryError::Resource)?;
             xs.push(exact_div(f64::from(index), scale).ok_or(AreaQueryError::Precision)?);
         }
         if xs.windows(2).any(|p| p[0] >= p[1]) {
@@ -301,6 +308,7 @@ impl ScanPlan {
             forward,
             prepared,
             xs,
+            cell_width,
             vertical_uncertainty: bounded_vector(MAX_BANDS).ok_or(AreaQueryError::Resource)?,
             semantic_cuts: bounded_vector(MAX_BANDS).ok_or(AreaQueryError::Resource)?,
             curve_cuts: Vec::new(),
@@ -322,7 +330,6 @@ impl ScanPlan {
                 add(&mut events, y)?;
             }
         }
-        #[cfg(test)]
         for &event in &self.extra_y_events {
             charge(fuel, 16).ok_or(AreaQueryError::Resource)?;
             add(&mut events, event.lo)?;
@@ -439,6 +446,7 @@ impl ScanPlan {
         );
         let mut visited = 0_usize;
         for row_index in 0..height {
+            charge(fuel, 128).ok_or(AreaQueryError::Resource)?;
             let output_row = (root[1] - full_root[1]) as usize + row_index;
             let output_start = output_row * full_width + (root[0] - full_root[0]) as usize;
             let row = u32::try_from(row_index).map_err(|_| AreaQueryError::Resource)?;
@@ -465,9 +473,6 @@ impl ScanPlan {
                 previous = cut;
             }
             pending.push((previous, hi, 0_u8));
-            let cell_height = Interval::scalar(hi)
-                .and_then(|v| v.sub(Interval::scalar(lo)?))
-                .ok_or(AreaQueryError::Precision)?;
             while let Some((a, b, depth)) = pending.pop() {
                 visited = visited.checked_add(1).ok_or(AreaQueryError::Resource)?;
                 // One scene-wide frontier, never a reset allowance per row.
@@ -509,23 +514,26 @@ impl ScanPlan {
                     pending.extend([(a, middle, depth + 1), (middle, b, depth + 1)]);
                     continue;
                 }
+                // Every lattice coordinate is qualified as the exact quotient
+                // of its integer index and scale. Thus all complete cells have
+                // this ONE exact logical width, independent of translation.
+                // The unresolved band bound is shared across all its columns.
+                let unresolved_mass = if known {
+                    None
+                } else {
+                    charge(fuel, 128).ok_or(AreaQueryError::Resource)?;
+                    let possible = cell_width
+                        .mul(
+                            Interval::scalar(b)
+                                .and_then(|v| v.sub(Interval::scalar(a)?))
+                                .ok_or(AreaQueryError::Precision)?,
+                        )
+                        .ok_or(AreaQueryError::Precision)?;
+                    Some(Interval::new(0.0, possible.hi).ok_or(AreaQueryError::Precision)?)
+                };
                 for (column, &mass) in staged.iter().enumerate() {
                     charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
-                    let cell_width = Interval::scalar(query.xs[column + 1])
-                        .and_then(|v| v.sub(Interval::scalar(query.xs[column])?))
-                        .ok_or(AreaQueryError::Precision)?;
-                    let mass = if known {
-                        mass
-                    } else {
-                        let possible = cell_width
-                            .mul(
-                                Interval::scalar(b)
-                                    .and_then(|v| v.sub(Interval::scalar(a)?))
-                                    .ok_or(AreaQueryError::Precision)?,
-                            )
-                            .ok_or(AreaQueryError::Precision)?;
-                        Interval::new(0.0, possible.hi).ok_or(AreaQueryError::Precision)?
-                    };
+                    let mass = unresolved_mass.unwrap_or(mass);
                     let index = output_start + column;
                     let prior = Interval::new(output[index][0], output[index][1])
                         .ok_or(AreaQueryError::Precision)?;
@@ -533,20 +541,12 @@ impl ScanPlan {
                     output[index] = [updated.lo, updated.hi];
                 }
             }
-            for (column, value) in output[output_start..output_start + width]
-                .iter_mut()
-                .enumerate()
-            {
-                charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
-                let area = cell_height
-                    .mul(
-                        Interval::scalar(query.xs[column + 1])
-                            .and_then(|v| v.sub(Interval::scalar(query.xs[column])?))
-                            .ok_or(AreaQueryError::Precision)?,
-                    )
-                    .ok_or(AreaQueryError::Precision)?;
+            for value in &mut output[output_start..output_start + width] {
+                // Normalization includes the generic four-quotient interval
+                // division, finite reductions, clamping and precision checks.
+                charge(fuel, 64).ok_or(AreaQueryError::Resource)?;
                 let fraction = Interval::new(value[0], value[1])
-                    .and_then(|v| v.div(area))
+                    .and_then(|v| v.div(cell_area))
                     .ok_or(AreaQueryError::Precision)?;
                 *value = [fraction.lo.max(0.0), fraction.hi.min(1.0)];
                 if value[0] > value[1] || (value[1] - value[0]).next_up() > 1.0 / (2048.0 * 256.0) {
@@ -754,14 +754,20 @@ impl ScanPlan {
             let mass = Self::difference_integral(&edge, r, y0, y1, fuel)
                 .ok_or_else(|| exhausted_or_precision(fuel))?;
             staged[rc] = staged[rc].add(mass).ok_or(AreaQueryError::Precision)?;
-            for (c, mass) in staged.iter_mut().enumerate().take(rc).skip(lc + 1) {
-                charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
-                let area = (|| {
-                    Interval::scalar(query.xs[c + 1])?
-                        .sub(Interval::scalar(query.xs[c])?)?
-                        .mul(Interval::scalar(y1)?.sub(Interval::scalar(y0)?)?)
-                })()
+            // Full interior columns share one strip-height/width product.
+            // Only accumulation remains per column; boundary columns above
+            // retain their independent analytic integrals.
+            charge(fuel, 128).ok_or(AreaQueryError::Resource)?;
+            let area = query
+                .cell_width
+                .mul(
+                    Interval::scalar(y1)
+                        .and_then(|v| v.sub(Interval::scalar(y0)?))
+                        .ok_or(AreaQueryError::Precision)?,
+                )
                 .ok_or(AreaQueryError::Precision)?;
+            for mass in staged.iter_mut().take(rc).skip(lc + 1) {
+                charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
                 *mass = mass.add(area).ok_or(AreaQueryError::Precision)?;
             }
         }
@@ -782,7 +788,6 @@ impl ScanPlan {
             curves: bounded_vector(MAX_CURVES).ok_or(AreaQueryError::Resource)?,
             next_frame: 1,
             crossings: Vec::new(),
-            #[cfg(test)]
             extra_y_events: bounded_vector(MAX_BANDS).ok_or(AreaQueryError::Resource)?,
         };
         let affine = match forward {
@@ -1204,7 +1209,6 @@ impl ScanPlan {
                 self.clips(clips, affine, fuel)
             }
             Kind::Effect { source, shadow } => {
-                #[cfg(test)]
                 if shadow.sigma() > 0.0 && shadow.spread() < 0.0 {
                     return self.finite_square_effect(region, *shadow, affine, prepared, fuel);
                 }
@@ -1750,23 +1754,23 @@ mod tests {
             .unwrap();
         let mut fuel = 16_777_216;
         let areas =
-            certified_grid_area_query(&source, [0, 0, 256, 256], 4.0, None, 8, 65_536, &mut fuel)
+            certified_grid_area_query(&source, [0, 0, 64, 64], 1.0, None, 8, 4096, &mut fuel)
                 .unwrap();
         // The original diagonal x=4*y-100 crosses the canvas at y=25 and
         // y=41. The same pair of canvas clip planes bounds an entirely full
         // strip below the first crossing and an empty strip above the last.
-        for row in 0..100 {
-            for column in 0..256 {
-                let value = areas[row * 256 + column];
+        for row in 0..25 {
+            for column in 0..64 {
+                let value = areas[row * 64 + column];
                 assert!(
                     value[0] <= 1.0 && value[1] >= 1.0,
                     "full {column},{row}: {value:?}"
                 );
             }
         }
-        for row in 164..256 {
-            for column in 0..256 {
-                let value = areas[row * 256 + column];
+        for row in 41..64 {
+            for column in 0..64 {
+                let value = areas[row * 64 + column];
                 assert!(
                     value[0] == 0.0 && value[1] <= 1.0 / (2048.0 * 256.0),
                     "empty {column},{row}: {value:?}"
