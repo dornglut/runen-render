@@ -355,6 +355,21 @@ impl NeutralRegion<'_> {
     /// The certificate must apply to EVERY shadow independently. A single
     /// surviving shadow still needs the general original-region evaluator.
     /// No source triangles, alpha or enclosing box are treated as membership.
+    /// Original-F1 source geometry is authoritative. This private bounded
+    /// predicate returns a continuous area ENCLOSURE, not disposable alpha.
+    /// The consuming F3E path still must establish final-color tolerance,
+    /// whole-invocation admission and GPU resource feasibility.
+    #[allow(dead_code, reason = "production query consumer is the next F3F cut")]
+    pub(super) fn continuous_area_enclosure(
+        &self,
+        bounds: [f64; 4],
+        root_to_parent: Option<Render2dAffineTransform>,
+        max_depth: u8,
+        fuel: &mut usize,
+    ) -> Option<[f64; 2]> {
+        certified_cells::certified_area_enclosure(self, bounds, root_to_parent, max_depth, fuel)
+    }
+
     pub(super) fn all_root_shadows_provably_empty(&self, shadows: &[Render2dDropShadow]) -> bool {
         !shadows.is_empty()
             && self.certified_source_reach
@@ -1386,7 +1401,6 @@ impl NeutralRegion<'_> {
     }
 }
 
-#[cfg(test)]
 mod certified_cells;
 
 #[cfg(test)]

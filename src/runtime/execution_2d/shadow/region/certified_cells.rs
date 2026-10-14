@@ -1,15 +1,18 @@
-//! Test-only feasibility of conservative cell classification over the actual
-//! F1 neutral-region DAG. This does NOT admit a new production shadow class.
+//! Conservative source-authoritative region certificates over the original F1 DAG.
 //!
-//! Only synthetic physical rectangles may certify source geometry without an F1 item.
-//! Authored quadratic/cubic curves use test-only outward-rounded subdivision.
-//! A physical triangle inventory never certifies exact F1 source geometry.
-//! A production evaluator still needs source, morphology and coverage proofs.
-//! A certificate concerns SUPPORT membership, not alpha or Gaussian weights.
+//! Only the geometric classifier and its bounded area *enclosure* are production
+//! capabilities. Coverage does not become an accepted paint value merely because
+//! an interval encloses it: the F3E caller must separately prove its required
+//! final-color precision, total work, memory and GPU-resource admission.
+//! Synthetic mesh source fixtures and all Gaussian-integration feasibility
+//! experiments remain cfg(test). Unknown is never zero alpha.
 
+#[cfg(test)]
 mod axis_gaussian;
 mod bezier_winding;
+#[cfg(test)]
 mod curved_gaussian;
+#[cfg(test)]
 mod linear_x_gaussian;
 
 use super::interval::Interval;
@@ -418,6 +421,7 @@ fn certified_effect_outer_halo(spread: f64, sigma: f64) -> Option<f64> {
 /// Thus 1/(P8+tail) <= exp(-t) <= 1/P8. Four interval squarings
 /// recover exp(-16t), always rounding outward. No reliance on libm,
 /// measured samples, transcendental rounding, or unbudgeted convergence.
+#[cfg(test)]
 fn gaussian_density_enclosure(x: Interval, y: Interval) -> Option<Interval> {
     if x.lo == 0.0 && x.hi == 0.0 && y.lo == 0.0 && y.hi == 0.0 {
         return Interval::scalar(1.0);
@@ -456,6 +460,7 @@ fn gaussian_density_enclosure(x: Interval, y: Interval) -> Option<Interval> {
 // One bounded density/area/query-coordinate evaluation entails fewer than
 // 256 scalar arithmetic operations, including directed-rounding endpoints.
 // The separate region classifier decrements this same fuel for its own work.
+#[cfg(test)]
 const GAUSSIAN_WEIGHT_WORK: usize = 256;
 
 /// Test-only normalized finite Gaussian coverage certificate. The coordinates
@@ -463,6 +468,7 @@ const GAUSSIAN_WEIGHT_WORK: usize = 256;
 /// Unknown region cells contribute zero to the lower mass and their full
 /// possible mass to the upper bound. There is no guessed alpha or SDF.
 /// The caller admits all grid work and every region query through visits.
+#[cfg(test)]
 fn certified_finite_gaussian_coverage(
     region: &NeutralRegion<'_>,
     center: [f64; 2],
@@ -543,12 +549,14 @@ fn certified_finite_gaussian_coverage(
 /// A single bounded owner's-frame Gaussian cell. The rectangle spans a
 /// subset of the NORMALIZED [-3,3]^2 domain, not a root-frame image cache.
 #[derive(Clone, Copy)]
+#[cfg(test)]
 struct GaussianQuadCell {
     x: Interval,
     y: Interval,
     depth: usize,
 }
 
+#[cfg(test)]
 struct AdaptiveGaussianMass {
     total: Interval,
     definite: Interval,
@@ -558,6 +566,7 @@ struct AdaptiveGaussianMass {
     leaves: usize,
 }
 
+#[cfg(test)]
 impl AdaptiveGaussianMass {
     fn empty() -> Option<Self> {
         Some(Self {
@@ -614,6 +623,7 @@ impl AdaptiveGaussianMass {
 /// Borrowed immutable Gaussian semantics stay together throughout recursive
 /// refinement. This is one private evaluation context, not a second renderer
 /// or an alternate scene representation.
+#[cfg(test)]
 struct GaussianRefinement<'r, 'a> {
     region: &'r NeutralRegion<'a>,
     center: [Interval; 2],
@@ -627,6 +637,7 @@ struct GaussianRefinement<'r, 'a> {
 /// only geometric boundaries while leaving normalization uncertainty unbound.
 /// Every visited node costs its conservative numerical work plus the actual
 /// region evaluator's visit charges; depth and total nodes are capped.
+#[cfg(test)]
 fn refine_gaussian_cell(
     context: &GaussianRefinement<'_, '_>,
     cell: GaussianQuadCell,
@@ -685,6 +696,7 @@ fn refine_gaussian_cell(
 /// encloses all sample kernels in a tile: if the original F1 region is
 /// definitely Inside/Outside, every center has exact normalized coverage
 /// 1/0 without any per-sample Gaussian density work.
+#[cfg(test)]
 fn certified_uniform_kernel_coverage(
     region: &NeutralRegion<'_>,
     centers: Cell,
@@ -711,6 +723,7 @@ fn certified_uniform_kernel_coverage(
 /// Counts only exact all-kernel coverage results, not opaque masks,
 /// per-sample colors, GPU costs or an approximation of unresolved pixels.
 #[derive(Default, Debug, PartialEq, Eq)]
+#[cfg(test)]
 struct SharedTileCoverage {
     inside_samples: usize,
     outside_samples: usize,
@@ -721,6 +734,7 @@ struct SharedTileCoverage {
 /// Spatially share FULL-kernel certificates over correlated sample centers.
 /// Subdivision is over pixel tiles, not Gaussian integration cells. Unknown
 /// tiles at single-pixel granularity retain all 16 unresolved samples.
+#[cfg(test)]
 fn visit_shared_tile(
     region: &NeutralRegion<'_>,
     origin: [usize; 2],
@@ -782,6 +796,7 @@ fn visit_shared_tile(
 
 /// Atomic test-only feasibility report: no partially counted scene results
 /// escape if global node or numerical/geometry admission is exhausted.
+#[cfg(test)]
 fn certified_shared_tile_quadtree(
     region: &NeutralRegion<'_>,
     canvas_side: usize,
@@ -834,6 +849,7 @@ fn certified_shared_tile_quadtree(
 /// normalized finite parent-frame Gaussian. A target error that cannot be
 /// proven within admitted query/numeric work returns None, never a guessed
 /// midpoint, a false 0 or a false 1.
+#[cfg(test)]
 fn certified_adaptive_finite_gaussian_coverage(
     region: &NeutralRegion<'_>,
     center: [f64; 2],
@@ -1136,7 +1152,7 @@ fn certified_negative_exterior_witness(
 }
 
 impl NeutralRegion<'_> {
-    fn certify_cell(&self, cell: Cell, visits: &mut usize) -> CellCertificate {
+    pub(super) fn certify_cell(&self, cell: Cell, visits: &mut usize) -> CellCertificate {
         if *visits == 0 {
             return CellCertificate::Unknown;
         }
@@ -1231,6 +1247,88 @@ impl NeutralRegion<'_> {
     }
 }
 
+/// Conservative continuous geometric area enclosure for a caller-defined
+/// rectangle, optionally inverse-mapped from the ROOT into the region owner's
+/// parent frame. This computes NO paint alpha and does not select a Gaussian
+/// kernel. Full/empty classification is exact; uncertain leaves contribute
+/// [0, area], never a midpoint guessed to be source geometry.
+///
+/// Each binary subdivision is dyadic in the normalized unit cell. Summed
+/// lower/upper fractions are therefore exact binary rationals for depths
+/// <= 12, independently of the numeric coordinates used for classification.
+/// The shared fuel pays for EVERY node, F1 path scan, curve, disk witness and
+/// affine preimage. On exhaustion return None; no partial bound escapes.
+#[allow(dead_code, reason = "private continuous-area admission boundary for the F3F symbolic consumer")]
+pub(super) fn certified_area_enclosure(
+    region: &NeutralRegion<'_>,
+    bounds: [f64; 4],
+    root_to_owner: Option<Render2dAffineTransform>,
+    max_depth: u8,
+    fuel: &mut usize,
+) -> Option<[f64; 2]> {
+    if max_depth > 12
+        || !bounds.iter().all(|v| v.is_finite())
+        || bounds[0] >= bounds[2]
+        || bounds[1] >= bounds[3]
+    {
+        return None;
+    }
+    fn recurse(
+        region: &NeutralRegion<'_>,
+        rect: [f64; 4],
+        root_to_owner: Option<Render2dAffineTransform>,
+        depth: u8,
+        max_depth: u8,
+        fuel: &mut usize,
+    ) -> Option<[f64; 2]> {
+        if *fuel == 0 {
+            return None;
+        }
+        *fuel -= 1;
+        // Every actual root-space point is enclosed despite intermediate
+        // f64 coordinate rounding. An affine maps the ENTIRE cell, never
+        // just its center; enclosing its preimage as a rectangle is safe.
+        let mut cell = Cell::new([
+            rect[0].next_down(),
+            rect[1].next_down(),
+            rect[2].next_up(),
+            rect[3].next_up(),
+        ])?;
+        if let Some(transform) = root_to_owner {
+            cell = cell.preimage(transform)?;
+        }
+        match region.certify_cell(cell, fuel) {
+            CellCertificate::Inside => return Some([1.0, 1.0]),
+            CellCertificate::Outside => return Some([0.0, 0.0]),
+            CellCertificate::Unknown if *fuel == 0 => return None,
+            CellCertificate::Unknown if depth == max_depth => return Some([0.0, 1.0]),
+            CellCertificate::Unknown => {}
+        }
+        let mid_x = rect[0] + 0.5 * (rect[2] - rect[0]);
+        let mid_y = rect[1] + 0.5 * (rect[3] - rect[1]);
+        if !(rect[0] < mid_x && mid_x < rect[2])
+            || !(rect[1] < mid_y && mid_y < rect[3])
+        {
+            return None;
+        }
+        let children = [
+            [rect[0], rect[1], mid_x, mid_y],
+            [mid_x, rect[1], rect[2], mid_y],
+            [rect[0], mid_y, mid_x, rect[3]],
+            [mid_x, mid_y, rect[2], rect[3]],
+        ];
+        let mut lower = 0.0;
+        let mut upper = 0.0;
+        for child in children {
+            let [lo, hi] = recurse(region, child, root_to_owner, depth + 1, max_depth, fuel)?;
+            lower += lo * 0.25;
+            upper += hi * 0.25;
+        }
+        Some([lower, upper])
+    }
+    recurse(region, bounds, root_to_owner, 0, max_depth, fuel)
+}
+
 /// Certify original F1 fill geometry first; apply item clips independently
 /// in their declared immediate-parent space. Painter color/opacity are ignored.
 fn certify_authored_item(item: &Render2dItem, cell: Cell, visits: &mut usize) -> CellCertificate {
@@ -1244,6 +1342,7 @@ fn certify_authored_item(item: &Render2dItem, cell: Cell, visits: &mut usize) ->
     certify_clipped(source, cell, item.clips(), visits)
 }
 
+#[cfg(test)]
 fn certify(region: &NeutralRegion<'_>, bounds: [f64; 4]) -> CellCertificate {
     let Some(cell) = Cell::new(bounds) else {
         return CellCertificate::Unknown;
@@ -1252,6 +1351,7 @@ fn certify(region: &NeutralRegion<'_>, bounds: [f64; 4]) -> CellCertificate {
     region.certify_cell(cell, &mut visits)
 }
 
+#[cfg(test)]
 fn rectangle(
     builder: &mut NeutralRegionBuilder,
     rect: [f64; 4],
@@ -1270,6 +1370,7 @@ fn rectangle(
         .unwrap()
 }
 
+#[cfg(test)]
 fn builder() -> NeutralRegionBuilder {
     NeutralRegionBuilder::new(
         shadow::NeutralPreparationScale {
@@ -1278,6 +1379,47 @@ fn builder() -> NeutralRegionBuilder {
         },
         1_048_576,
     )
+}
+
+
+#[test]
+fn production_area_enclosure_preserves_bounds_and_fuel_across_affine() {
+    let mut graph = builder();
+    let region = rectangle(&mut graph, [0.0, 0.0, 2.0, 2.0], &[0, 0]);
+    let mut budget = 16_777_216;
+    assert_eq!(
+        certified_area_enclosure(&region, [0.25, 0.25, 0.75, 0.75], None, 8, &mut budget),
+        Some([1.0, 1.0])
+    );
+    assert_eq!(
+        certified_area_enclosure(&region, [10.0, 10.0, 11.0, 11.0], None, 8, &mut budget),
+        Some([0.0, 0.0])
+    );
+    // Inverse root-to-parent shear: parent x=root_x-0.25*root_y.
+    // For y=[0.5,1.5] and x=[-1,1], inverse shear clips the
+    // original rectangle to a slanted half-plane. Its exact coverage
+    // is 0.375, not a binary center-hit fraction.
+    let transform = Render2dAffineTransform::new(1.0, 0.0, -0.25, 1.0, 0.0, 0.0).unwrap();
+    let [lo, hi] = certified_area_enclosure(
+        &region,
+        [-1.0, 0.5, 1.0, 1.5],
+        Some(transform),
+        9,
+        &mut budget,
+    )
+    .unwrap();
+    // The exact intersecting area is integral x from 0.25*y to 1,
+    // y in [0.5,1.5], divided by total root area 2.
+    let exact = 0.375;
+    assert!(lo <= exact && exact <= hi);
+    assert!(hi - lo < 0.01);
+    assert!(budget < 16_777_216);
+    let mut exhausted = 1;
+    assert!(
+        certified_area_enclosure(&region, [-1.0, 0.5, 1.0, 1.5], Some(transform), 9, &mut exhausted)
+            .is_none()
+    );
+    assert_eq!(exhausted, 0);
 }
 
 #[test]

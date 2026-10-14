@@ -335,6 +335,19 @@ impl SymbolicCaster<'_> {
     pub(super) fn owner_path(&self) -> &[usize] {
         &self.first_unqualified_owner
     }
+
+    /// A caller may request conservative continuous geometry only; neither
+    /// this interval nor the source DAG is a preapproved sampled mask.
+    #[allow(dead_code, reason = "symbolic F3E consumer acceptance is the next bounded cut")]
+    pub(super) fn continuous_area_enclosure(
+        &self,
+        root_bounds: [f64; 4],
+        root_to_parent: Option<Render2dAffineTransform>,
+        max_depth: u8,
+        fuel: &mut usize,
+    ) -> Option<[f64; 2]> {
+        self._expression.continuous_area_enclosure(root_bounds, root_to_parent, max_depth, fuel)
+    }
 }
 
 /// Retaining graph operations here is a structural cutover, NOT admission of

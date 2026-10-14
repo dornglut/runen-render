@@ -1,4 +1,4 @@
-//! Test-only source-authoritative quadratic/cubic F1 winding certificates.
+//! Source-authoritative quadratic/cubic F1 winding certificates.
 //!
 //! The original Bézier control polygon is subdivided with outward-rounded
 //! de Casteljau arithmetic. Convex-hull containment makes each child enclosure
