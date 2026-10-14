@@ -10,7 +10,7 @@ use geometry_support::region::interval::{Interval, exact_add, exact_mul};
 const MAX_QUERY_WORK: usize = 16_777_216;
 const MAX_QUERY_CELLS: usize = 1_048_576;
 const MAX_CELL_UNCERTAINTY: f64 = 1.0 / (2048.0 * 256.0);
-const QUERY_FIXED_SCRATCH_BYTES: u64 = 16 * 1024 * 1024;
+use geometry_support::region::MAX_AREA_QUERY_FIXED_BYTES as QUERY_FIXED_SCRATCH_BYTES;
 
 pub(super) struct Context<'a> {
     pub(super) parent_to_root: Render2dAffineTransform,
@@ -273,6 +273,12 @@ fn occurrence_path(
     let mut path = Vec::new();
     path.try_reserve_exact(owner.len())
         .map_err(|_| shadow_resource(owner, "symbolic owner-path allocation failed"))?;
+    if path.capacity() > owner.len() {
+        return Err(shadow_resource(
+            owner,
+            "symbolic owner-path capacity exceeds admission",
+        ));
+    }
     path.extend_from_slice(owner);
     Ok(path)
 }
@@ -300,29 +306,14 @@ pub(super) fn prepare(
         u64::from(context.target.physical_width) * u64::from(SAMPLES),
         u64::from(context.target.physical_height) * u64::from(SAMPLES),
     ];
+    // Persistent headers/control blocks/paths for all groups were reserved
+    // by the contribution preflight; only this invocation's transient keys
+    // remain additional working metadata.
     let metadata = effects
         .len()
-        .checked_mul(
-            std::mem::size_of::<PreparedShadow>()
-                + std::mem::size_of::<[u64; 6]>()
-                + std::mem::size_of::<NeutralCoverage>()
-                + 2 * std::mem::size_of::<usize>(),
-        )
-        .and_then(|headers| {
-            context
-                .path
-                .len()
-                .checked_mul(std::mem::size_of::<usize>())
-                .and_then(|one_path| one_path.checked_mul(effects.len()))
-                .and_then(|paths| headers.checked_add(paths))
-        })
+        .checked_mul(std::mem::size_of::<[u64; 6]>())
         .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or_else(|| {
-            shadow_resource(
-                context.path,
-                "symbolic prepared occurrence metadata overflows",
-            )
-        })?;
+        .ok_or_else(|| shadow_resource(context.path, "symbolic query-key metadata overflows"))?;
     let mut result = Vec::<PreparedShadow>::new();
     // Invocation-local disposable query reuse. Source and target are fixed
     // here; exact forward coefficients identify the same area request. Paint

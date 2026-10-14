@@ -37,7 +37,29 @@ impl Affine {
         let raw = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
         Self(raw.map(|v| Interval::scalar(v).unwrap()), 0, Some(raw))
     }
-    fn after(self, transform: Render2dAffineTransform, frame: usize) -> Option<Self> {
+    fn after(
+        self,
+        transform: Render2dAffineTransform,
+        frame: usize,
+        fuel: &mut usize,
+    ) -> Result<Self, AreaQueryError> {
+        let raw = transform.components();
+        let identity = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        if raw == identity {
+            charge(fuel, 64).ok_or(AreaQueryError::Resource)?;
+            return Ok(Self(self.0, frame, self.2));
+        }
+        if self.2 == Some(identity) {
+            charge(fuel, 128).ok_or(AreaQueryError::Resource)?;
+            return Ok(Self(
+                raw.map(|v| Interval::scalar(v).unwrap()),
+                frame,
+                Some(raw),
+            ));
+        }
+        // Twelve checked products, eight TwoSum additions and scalar record
+        // construction precede any interval-composition fallback.
+        charge(fuel, 512).ok_or(AreaQueryError::Resource)?;
         let [a, b, c, d, tx, ty] = self.0;
         let [e, f, g, h, ux, uy] = transform.components().map(|v| Interval::scalar(v).unwrap());
         let exact = || {
@@ -52,18 +74,30 @@ impl Affine {
                 exact_add(exact_add(exact_mul(b, ux)?, exact_mul(d, uy)?)?, ty)?,
             ])
         };
-        Some(Self(
-            [
-                a.mul(e)?.add(c.mul(f)?)?,
-                b.mul(e)?.add(d.mul(f)?)?,
-                a.mul(g)?.add(c.mul(h)?)?,
-                b.mul(g)?.add(d.mul(h)?)?,
-                a.mul(ux)?.add(c.mul(uy)?)?.add(tx)?,
-                b.mul(ux)?.add(d.mul(uy)?)?.add(ty)?,
-            ],
-            frame,
-            exact(),
-        ))
+        if let Some(raw) = exact() {
+            return Ok(Self(
+                raw.map(|v| Interval::scalar(v).unwrap()),
+                frame,
+                Some(raw),
+            ));
+        }
+        // Only a failed exact proof needs the outward interval composition.
+        charge(fuel, 1280).ok_or(AreaQueryError::Resource)?;
+        let compose = || {
+            Some(Self(
+                [
+                    a.mul(e)?.add(c.mul(f)?)?,
+                    b.mul(e)?.add(d.mul(f)?)?,
+                    a.mul(g)?.add(c.mul(h)?)?,
+                    b.mul(g)?.add(d.mul(h)?)?,
+                    a.mul(ux)?.add(c.mul(uy)?)?.add(tx)?,
+                    b.mul(ux)?.add(d.mul(uy)?)?.add(ty)?,
+                ],
+                frame,
+                None,
+            ))
+        };
+        compose().ok_or(AreaQueryError::Precision)
     }
     fn point(self, [x, y]: [f64; 2]) -> Option<[Interval; 2]> {
         if let Some([a, b, c, d, tx, ty]) = self.2 {
@@ -100,7 +134,6 @@ struct Curve {
     start: Interval,
     end: Interval,
     key: CurveKey,
-    domain: [[f64; 2]; 2],
     reach: Interval,
 }
 
@@ -130,7 +163,32 @@ struct GridQuery<'r, 'a> {
     vertical_uncertainty: Vec<Interval>,
 }
 
+struct OccupiedStrip<'c> {
+    left: &'c Curve,
+    right: &'c Curve,
+    left_value: Interval,
+    right_value: Interval,
+}
+
 impl ScanPlan {
+    /// Maximum fixed event-query inventory. The consumer separately admits
+    /// width-dependent row storage, output intervals and prepared boundaries.
+    pub(super) fn fixed_scratch_bytes() -> Option<usize> {
+        let curves = MAX_CURVES.checked_mul(std::mem::size_of::<Curve>())?;
+        let crossings = 65_536_usize.checked_mul(std::mem::size_of::<Crossings>())?;
+        let band_unit = std::mem::size_of::<Interval>()
+            .checked_add(std::mem::size_of::<f64>())?
+            .checked_add(std::mem::size_of::<(f64, f64, u8)>())?;
+        let bands = MAX_BANDS.checked_mul(band_unit)?;
+        let active = MAX_CURVES
+            .checked_add(2)?
+            .checked_mul(std::mem::size_of::<(usize, &Curve, Interval, f64)>())?;
+        curves
+            .checked_add(crossings)?
+            .checked_add(bands)?
+            .checked_add(active)
+    }
+
     pub(super) fn grid(
         &self,
         region: &NeutralRegion<'_>,
@@ -139,60 +197,118 @@ impl ScanPlan {
         forward: Option<Render2dAffineTransform>,
         prepared: &PreparedBoundaries,
         fuel: &mut usize,
-    ) -> Option<Vec<[f64; 2]>> {
-        let width = usize::try_from(root[2].checked_sub(root[0])?).ok()?;
-        let height = usize::try_from(root[3].checked_sub(root[1])?).ok()?;
-        let count = width.checked_mul(height)?;
-        if count == 0 || count > 1_048_576 || !scale.is_finite() || scale <= 0.0 {
-            return None;
+    ) -> Result<Vec<[f64; 2]>, AreaQueryError> {
+        let width = usize::try_from(
+            root[2]
+                .checked_sub(root[0])
+                .ok_or(AreaQueryError::Precision)?,
+        )
+        .map_err(|_| AreaQueryError::Resource)?;
+        let height = usize::try_from(
+            root[3]
+                .checked_sub(root[1])
+                .ok_or(AreaQueryError::Precision)?,
+        )
+        .map_err(|_| AreaQueryError::Resource)?;
+        let count = width.checked_mul(height).ok_or(AreaQueryError::Resource)?;
+        if count == 0 || count > 1_048_576 {
+            return Err(AreaQueryError::Resource);
         }
-        let y0 = exact_div(f64::from(root[1]), scale)?;
-        let y1 = exact_div(f64::from(root[3]), scale)?;
-        let mut xs = Vec::new();
-        xs.try_reserve_exact(width + 1).ok()?;
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(AreaQueryError::Precision);
+        }
+        // Precision qualification precedes optional reach exclusion. The
+        // requested global lattice must still be representable when all its
+        // geometry is outside the target.
+        charge(fuel, 192).ok_or(AreaQueryError::Resource)?;
+        exact_div(1.0, scale).ok_or(AreaQueryError::Precision)?;
+        for edge in root {
+            exact_div(f64::from(edge), scale).ok_or(AreaQueryError::Precision)?;
+        }
+        let full_root = root;
+        let full_width = width;
+        let mut root = root;
+        // Original certified reach can exclude cells, never supply interior
+        // membership. Restrict expensive analytic events to intersecting cells
+        // while retaining the complete requested lattice as exact zero outside.
+        if let Some(bounds) = region.certified_logical_envelope() {
+            charge(fuel, 1024).ok_or(AreaQueryError::Resource)?;
+            let calculate = || -> Option<[u32; 4]> {
+                let mut cell = Cell::new(bounds)?;
+                if let Some(transform) = forward {
+                    let [a, b, c, d, tx, ty] = transform.components().map(Interval::scalar);
+                    cell = Cell {
+                        x: a?.mul(cell.x)?.add(c?.mul(cell.y)?)?.add(tx?)?,
+                        y: b?.mul(cell.x)?.add(d?.mul(cell.y)?)?.add(ty?)?,
+                    };
+                }
+                let scale = Interval::scalar(scale)?;
+                let x = cell.x.mul(scale)?;
+                let y = cell.y.mul(scale)?;
+                let clip = |value: f64, low: u32, high: u32| {
+                    value.clamp(f64::from(low), f64::from(high)) as u32
+                };
+                Some([
+                    clip(x.lo.floor(), root[0], root[2]),
+                    clip(y.lo.floor(), root[1], root[3]),
+                    clip(x.hi.ceil(), root[0], root[2]),
+                    clip(y.hi.ceil(), root[1], root[3]),
+                ])
+            };
+            if let Some(crop) = calculate() {
+                root = crop;
+            }
+        }
+        let width = (root[2] - root[0]) as usize;
+        let height = (root[3] - root[1]) as usize;
+        let mut output = bounded_vector(count).ok_or(AreaQueryError::Resource)?;
+        charge(fuel, 2 * count).ok_or(AreaQueryError::Resource)?;
+        output.resize(count, [0.0, 0.0]);
+        if width == 0 || height == 0 {
+            return Ok(output);
+        }
+        let y0 = exact_div(f64::from(root[1]), scale).ok_or(AreaQueryError::Precision)?;
+        let y1 = exact_div(f64::from(root[3]), scale).ok_or(AreaQueryError::Precision)?;
+        let mut xs = bounded_vector(width.checked_add(1).ok_or(AreaQueryError::Resource)?)
+            .ok_or(AreaQueryError::Resource)?;
         for index in root[0]..=root[2] {
-            charge(fuel, 4)?;
-            xs.push(exact_div(f64::from(index), scale)?);
+            charge(fuel, 4).ok_or(AreaQueryError::Resource)?;
+            xs.push(exact_div(f64::from(index), scale).ok_or(AreaQueryError::Precision)?);
         }
         if xs.windows(2).any(|p| p[0] >= p[1]) {
-            return None;
+            return Err(AreaQueryError::Precision);
         }
         let mut query = GridQuery {
             region,
             forward,
             prepared,
             xs,
-            vertical_uncertainty: Vec::new(),
+            vertical_uncertainty: bounded_vector(MAX_BANDS).ok_or(AreaQueryError::Resource)?,
         };
-        query
-            .vertical_uncertainty
-            .try_reserve_exact(MAX_BANDS)
-            .ok()?;
-        let mut events = Vec::new();
-        events.try_reserve_exact(MAX_BANDS).ok()?;
-        let mut add = |y: f64| -> Option<()> {
+        let mut events = bounded_vector(MAX_BANDS).ok_or(AreaQueryError::Resource)?;
+        let mut add = |y: f64| -> Result<(), AreaQueryError> {
             if y0 < y && y < y1 {
                 if events.len() == MAX_BANDS {
-                    return None;
+                    return Err(AreaQueryError::Resource);
                 }
                 events.push(y);
             }
-            Some(())
+            Ok(())
         };
         for curve in &self.curves {
-            charge(fuel, 8)?;
+            charge(fuel, 8).ok_or(AreaQueryError::Resource)?;
             for y in [curve.start.lo, curve.start.hi, curve.end.lo, curve.end.hi] {
                 add(y)?;
             }
         }
         for crossing in &self.crossings {
-            charge(fuel, 1)?;
+            charge(fuel, 1).ok_or(AreaQueryError::Resource)?;
             for root in crossing.roots.into_iter().flatten() {
                 add(root.lo)?;
                 add(root.hi)?;
                 if root.hi > y0 && root.lo < y1 {
                     if query.vertical_uncertainty.len() == MAX_BANDS {
-                        return None;
+                        return Err(AreaQueryError::Resource);
                     }
                     query.vertical_uncertainty.push(root);
                 }
@@ -202,33 +318,35 @@ impl ScanPlan {
         // rows. Each ensuing band fixes both strip topology and cell routing.
         for curve in &self.curves {
             for &x in &query.xs {
-                charge(fuel, 4)?;
+                charge(fuel, 4).ok_or(AreaQueryError::Resource)?;
                 if x < curve.reach.lo || x > curve.reach.hi {
                     continue;
                 }
-                let edge = Self::constant_curve(x, y0, y1)?;
-                charge(fuel, 384)?;
-                let crossing = Self::crossings(curve, &edge)?;
+                let edge = Self::constant_curve(x, y0, y1).ok_or(AreaQueryError::Precision)?;
+                charge(fuel, 128 + Self::crossing_work(curve, &edge))
+                    .ok_or(AreaQueryError::Resource)?;
+                let crossing = Self::crossings(curve, &edge).ok_or(AreaQueryError::Precision)?;
                 for root in crossing.roots.into_iter().flatten() {
                     add(root.lo)?;
                     add(root.hi)?;
                     if root.hi > y0 && root.lo < y1 {
                         if query.vertical_uncertainty.len() == MAX_BANDS {
-                            return None;
+                            return Err(AreaQueryError::Resource);
                         }
                         query.vertical_uncertainty.push(root);
                     }
                 }
             }
         }
-        sort_admitted(&mut events, f64::total_cmp, 4, fuel)?;
+        sort_admitted(&mut events, f64::total_cmp, 4, fuel).ok_or(AreaQueryError::Resource)?;
         events.dedup();
         sort_admitted(
             &mut query.vertical_uncertainty,
             |a, b| a.lo.total_cmp(&b.lo).then(a.hi.total_cmp(&b.hi)),
             8,
             fuel,
-        )?;
+        )
+        .ok_or(AreaQueryError::Resource)?;
         let mut retained = 0_usize;
         for index in 0..query.vertical_uncertainty.len() {
             let root = query.vertical_uncertainty[index];
@@ -241,45 +359,58 @@ impl ScanPlan {
             }
         }
         query.vertical_uncertainty.truncate(retained);
-        let mut output = Vec::new();
-        output.try_reserve_exact(count).ok()?;
-        charge(fuel, count)?;
-        output.resize(count, [0.0, 0.0]);
-        let mut pending = Vec::new();
-        pending.try_reserve_exact(MAX_BANDS).ok()?;
-        let mut staged = Vec::new();
-        staged.try_reserve_exact(width).ok()?;
-        staged.resize(width, Interval::scalar(0.0)?);
+        let mut pending = bounded_vector(MAX_BANDS).ok_or(AreaQueryError::Resource)?;
+        let mut staged = bounded_vector(width).ok_or(AreaQueryError::Resource)?;
+        staged.resize(
+            width,
+            Interval::scalar(0.0).ok_or(AreaQueryError::Precision)?,
+        );
         let mut visited = 0_usize;
         for row_index in 0..height {
-            let lo = exact_div(f64::from(root[1] + u32::try_from(row_index).ok()?), scale)?;
-            let hi = exact_div(
-                f64::from(root[1] + u32::try_from(row_index + 1).ok()?),
-                scale,
-            )?;
+            let output_row = (root[1] - full_root[1]) as usize + row_index;
+            let output_start = output_row * full_width + (root[0] - full_root[0]) as usize;
+            let row = u32::try_from(row_index).map_err(|_| AreaQueryError::Resource)?;
+            let lo = exact_div(f64::from(root[1] + row), scale).ok_or(AreaQueryError::Precision)?;
+            let hi =
+                exact_div(f64::from(root[1] + row + 1), scale).ok_or(AreaQueryError::Precision)?;
             if lo >= hi {
-                return None;
+                return Err(AreaQueryError::Precision);
             }
             let start = events.partition_point(|v| *v <= lo);
             let end = events.partition_point(|v| *v < hi);
+            let bands = end
+                .checked_sub(start)
+                .and_then(|n| n.checked_add(1))
+                .ok_or(AreaQueryError::Resource)?;
+            if bands > MAX_BANDS {
+                return Err(AreaQueryError::Resource);
+            }
+            charge(fuel, bands.checked_mul(8).ok_or(AreaQueryError::Resource)?)
+                .ok_or(AreaQueryError::Resource)?;
             let mut previous = lo;
             for &cut in &events[start..end] {
                 pending.push((previous, cut, 0_u8));
                 previous = cut;
             }
             pending.push((previous, hi, 0_u8));
-            let cell_height = Interval::scalar(hi)?.sub(Interval::scalar(lo)?)?;
+            let cell_height = Interval::scalar(hi)
+                .and_then(|v| v.sub(Interval::scalar(lo)?))
+                .ok_or(AreaQueryError::Precision)?;
             while let Some((a, b, depth)) = pending.pop() {
-                visited = visited.checked_add(1)?;
+                visited = visited.checked_add(1).ok_or(AreaQueryError::Resource)?;
                 // One scene-wide frontier, never a reset allowance per row.
                 if visited > MAX_BANDS * 16 {
-                    return None;
+                    return Err(AreaQueryError::Resource);
                 }
-                charge(fuel, width + 128)?;
-                staged.fill(Interval::scalar(0.0)?);
-                let known = self.row_band(&query, a, b, &mut staged, fuel).is_some();
+                charge(fuel, width + 128).ok_or(AreaQueryError::Resource)?;
+                staged.fill(Interval::scalar(0.0).ok_or(AreaQueryError::Precision)?);
+                let known = match self.row_band(&query, a, b, &mut staged, fuel) {
+                    Ok(()) => true,
+                    Err(AreaQueryError::Precision) => false,
+                    Err(error) => return Err(error),
+                };
                 if *fuel == 0 {
-                    return None;
+                    return Err(AreaQueryError::Resource);
                 }
                 let uncertainty = query
                     .vertical_uncertainty
@@ -297,49 +428,61 @@ impl ScanPlan {
                     && b - a > (hi - lo) / (2048.0 * 256.0 * MAX_BANDS as f64)
                 {
                     let middle = a * 0.5 + b * 0.5;
-                    if !(a < middle && middle < b) || pending.len() + 2 > MAX_BANDS {
-                        return None;
+                    if !(a < middle && middle < b) {
+                        return Err(AreaQueryError::Precision);
+                    }
+                    if pending.len() + 2 > MAX_BANDS {
+                        return Err(AreaQueryError::Resource);
                     }
                     pending.extend([(a, middle, depth + 1), (middle, b, depth + 1)]);
                     continue;
                 }
                 for (column, &mass) in staged.iter().enumerate() {
-                    charge(fuel, 32)?;
-                    let cell_width = Interval::scalar(query.xs[column + 1])?
-                        .sub(Interval::scalar(query.xs[column])?)?;
+                    charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
+                    let cell_width = Interval::scalar(query.xs[column + 1])
+                        .and_then(|v| v.sub(Interval::scalar(query.xs[column])?))
+                        .ok_or(AreaQueryError::Precision)?;
                     let mass = if known {
                         mass
                     } else {
-                        Interval::new(
-                            0.0,
-                            cell_width
-                                .mul(Interval::scalar(b)?.sub(Interval::scalar(a)?)?)?
-                                .hi,
-                        )?
+                        let possible = cell_width
+                            .mul(
+                                Interval::scalar(b)
+                                    .and_then(|v| v.sub(Interval::scalar(a)?))
+                                    .ok_or(AreaQueryError::Precision)?,
+                            )
+                            .ok_or(AreaQueryError::Precision)?;
+                        Interval::new(0.0, possible.hi).ok_or(AreaQueryError::Precision)?
                     };
-                    let index = row_index * width + column;
-                    let prior = Interval::new(output[index][0], output[index][1])?;
-                    let updated = prior.add(mass)?;
+                    let index = output_start + column;
+                    let prior = Interval::new(output[index][0], output[index][1])
+                        .ok_or(AreaQueryError::Precision)?;
+                    let updated = prior.add(mass).ok_or(AreaQueryError::Precision)?;
                     output[index] = [updated.lo, updated.hi];
                 }
             }
-            for (column, value) in output[row_index * width..(row_index + 1) * width]
+            for (column, value) in output[output_start..output_start + width]
                 .iter_mut()
                 .enumerate()
             {
-                charge(fuel, 32)?;
-                let area = cell_height.mul(
-                    Interval::scalar(query.xs[column + 1])?
-                        .sub(Interval::scalar(query.xs[column])?)?,
-                )?;
-                let fraction = Interval::new(value[0], value[1])?.div(area)?;
+                charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
+                let area = cell_height
+                    .mul(
+                        Interval::scalar(query.xs[column + 1])
+                            .and_then(|v| v.sub(Interval::scalar(query.xs[column])?))
+                            .ok_or(AreaQueryError::Precision)?,
+                    )
+                    .ok_or(AreaQueryError::Precision)?;
+                let fraction = Interval::new(value[0], value[1])
+                    .and_then(|v| v.div(area))
+                    .ok_or(AreaQueryError::Precision)?;
                 *value = [fraction.lo.max(0.0), fraction.hi.min(1.0)];
                 if value[0] > value[1] || (value[1] - value[0]).next_up() > 1.0 / (2048.0 * 256.0) {
-                    return None;
+                    return Err(AreaQueryError::Precision);
                 }
             }
         }
-        Some(output)
+        Ok(output)
     }
 
     fn constant_curve(x: f64, y0: f64, y1: f64) -> Option<Curve> {
@@ -355,7 +498,6 @@ impl ScanPlan {
             start: Interval::scalar(y0)?,
             end: Interval::scalar(y1)?,
             key: CurveKey::ExactLine(x, 0.0),
-            domain: [[x, y0], [x, y1]],
             reach: Interval::scalar(x)?,
         })
     }
@@ -367,8 +509,8 @@ impl ScanPlan {
         y1: f64,
         staged: &mut [Interval],
         fuel: &mut usize,
-    ) -> Option<()> {
-        charge(fuel, 32)?;
+    ) -> Result<(), AreaQueryError> {
+        charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
         let uncertain = query
             .vertical_uncertainty
             .partition_point(|root| root.hi <= y0);
@@ -377,23 +519,28 @@ impl ScanPlan {
             .get(uncertain)
             .is_some_and(|root| root.lo < y1)
         {
-            return None;
+            return Err(AreaQueryError::Precision);
         }
-        let x0 = *query.xs.first()?;
-        let x1 = *query.xs.last()?;
-        let left = Self::constant_curve(x0, y0, y1)?;
-        let right = Self::constant_curve(x1, y0, y1)?;
+        let x0 = *query.xs.first().ok_or(AreaQueryError::Precision)?;
+        let x1 = *query.xs.last().ok_or(AreaQueryError::Precision)?;
+        let left = Self::constant_curve(x0, y0, y1).ok_or(AreaQueryError::Precision)?;
+        let right = Self::constant_curve(x1, y0, y1).ok_or(AreaQueryError::Precision)?;
         let ym = y0 * 0.5 + y1 * 0.5;
-        let ys = Interval::new(y0, y1)?;
-        let mut active = Vec::new();
-        active.try_reserve_exact(self.curves.len() + 2).ok()?;
+        let ys = Interval::new(y0, y1).ok_or(AreaQueryError::Precision)?;
+        let mut active = bounded_vector(
+            self.curves
+                .len()
+                .checked_add(2)
+                .ok_or(AreaQueryError::Resource)?,
+        )
+        .ok_or(AreaQueryError::Resource)?;
         for (id, curve) in self
             .curves
             .iter()
             .enumerate()
             .chain([(self.curves.len(), &left), (self.curves.len() + 1, &right)])
         {
-            charge(fuel, 16)?;
+            charge(fuel, 16).ok_or(AreaQueryError::Resource)?;
             if curve.reach.hi < x0
                 || curve.reach.lo > x1
                 || y1 <= curve.start.lo
@@ -402,30 +549,35 @@ impl ScanPlan {
                 continue;
             }
             if y0 < curve.start.hi || y1 > curve.end.lo {
-                return None;
+                return Err(AreaQueryError::Precision);
             }
-            charge(fuel, VALUE_WORK + active.len())?;
-            let value = curve.function.value(Interval::scalar(ym)?)?;
+            charge(fuel, VALUE_WORK + 16 * active.len()).ok_or(AreaQueryError::Resource)?;
+            let value = curve
+                .function
+                .value(Interval::scalar(ym).ok_or(AreaQueryError::Precision)?)
+                .ok_or(AreaQueryError::Precision)?;
             if !active
                 .iter()
                 .any(|&(_, old, _, _): &(usize, &Curve, Interval, f64)| old.same_function(curve))
             {
-                charge(fuel, 4)?;
+                charge(fuel, 4).ok_or(AreaQueryError::Resource)?;
                 active.push((id, curve, value, value.lo * 0.5 + value.hi * 0.5));
             }
         }
-        sort_admitted(&mut active, |a, b| a.3.total_cmp(&b.3), 4, fuel)?;
+        sort_admitted(&mut active, |a, b| a.3.total_cmp(&b.3), 4, fuel)
+            .ok_or(AreaQueryError::Resource)?;
+        let mut occupied: Option<OccupiedStrip<'_>> = None;
         for pair in active.windows(2) {
-            charge(fuel, 128)?;
+            charge(fuel, 128).ok_or(AreaQueryError::Resource)?;
             let [(lid, l, lx, _), (rid, r, rx, _)] = [pair[0], pair[1]];
             if lx.hi >= rx.lo {
-                return None;
+                return Err(AreaQueryError::Precision);
             }
             let crossing = if lid < self.curves.len() && rid < self.curves.len() {
                 self.crossings[lid * self.curves.len() + rid]
             } else {
-                charge(fuel, Self::crossing_work(l, r))?;
-                Self::crossings(l, r)?
+                charge(fuel, Self::crossing_work(l, r)).ok_or(AreaQueryError::Resource)?;
+                Self::crossings(l, r).ok_or(AreaQueryError::Precision)?
             };
             if !(crossing.complete
                 && crossing
@@ -434,58 +586,114 @@ impl ScanPlan {
                     .flatten()
                     .all(|v| v.hi <= y0 || v.lo >= y1))
             {
-                charge(fuel, 2 * VALUE_WORK)?;
-                if l.function.value(ys)?.hi >= r.function.value(ys)?.lo {
-                    return None;
+                charge(fuel, 2 * VALUE_WORK).ok_or(AreaQueryError::Resource)?;
+                if l.function.value(ys).ok_or(AreaQueryError::Precision)?.hi
+                    >= r.function.value(ys).ok_or(AreaQueryError::Precision)?.lo
+                {
+                    return Err(AreaQueryError::Precision);
                 }
             }
             let x = lx.hi * 0.5 + rx.lo * 0.5;
             if x < x0 || x > x1 {
                 continue;
             }
-            charge(fuel, 128)?;
-            let mut point = Cell::new([x, ym, x, ym])?;
+            charge(fuel, 128).ok_or(AreaQueryError::Resource)?;
+            let mut point = Cell::new([x, ym, x, ym]).ok_or(AreaQueryError::Precision)?;
             if let Some(t) = query.forward {
-                point = point.preimage(t)?;
+                charge(fuel, preimage_work(t)).ok_or(AreaQueryError::Resource)?;
+                point = point.preimage(t).ok_or(AreaQueryError::Precision)?;
             }
             match query
                 .region
                 .certify_prepared(point, fuel, Some(query.prepared))
             {
-                CellCertificate::Outside => continue,
-                CellCertificate::Unknown => return None,
+                CellCertificate::Outside => {
+                    if let Some(strip) = occupied.take() {
+                        Self::route_occupied_strip(query, strip, [y0, y1], staged, fuel)?;
+                    }
+                    continue;
+                }
+                CellCertificate::Unknown => return Err(exhausted_or_precision(fuel)),
                 CellCertificate::Inside => {}
             }
-            let column = |value: Interval| -> Option<usize> {
-                if value.lo == value.hi && value.lo == x1 {
-                    return Some(query.xs.len() - 2);
-                }
-                let a = query.xs.partition_point(|edge| *edge <= value.lo);
-                let b = query.xs.partition_point(|edge| *edge <= value.hi);
-                (a == b && a > 0 && a < query.xs.len()).then(|| a - 1)
-            };
-            let lc = column(lx)?;
-            let rc = column(rx)?;
-            if lc > rc {
-                return None;
-            }
-            if lc == rc {
-                staged[lc] = staged[lc].add(Self::difference_integral(l, r, y0, y1, fuel)?)?;
+            // Every candidate interval keeps its complete ordering and
+            // original-source membership proof. Consecutive Inside strips
+            // form one exact occupied run; internal false candidate branches
+            // need no repeated conic integration or sample-cell routing.
+            charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
+            if let Some(strip) = occupied.as_mut() {
+                strip.right = r;
+                strip.right_value = rx;
             } else {
-                let edge = Self::constant_curve(query.xs[lc + 1], y0, y1)?;
-                staged[lc] = staged[lc].add(Self::difference_integral(l, &edge, y0, y1, fuel)?)?;
-                let edge = Self::constant_curve(query.xs[rc], y0, y1)?;
-                staged[rc] = staged[rc].add(Self::difference_integral(&edge, r, y0, y1, fuel)?)?;
-                for (c, mass) in staged.iter_mut().enumerate().take(rc).skip(lc + 1) {
-                    charge(fuel, 32)?;
-                    let area = Interval::scalar(query.xs[c + 1])?
-                        .sub(Interval::scalar(query.xs[c])?)?
-                        .mul(Interval::scalar(y1)?.sub(Interval::scalar(y0)?)?)?;
-                    *mass = mass.add(area)?;
-                }
+                occupied = Some(OccupiedStrip {
+                    left: l,
+                    right: r,
+                    left_value: lx,
+                    right_value: rx,
+                });
             }
         }
-        Some(())
+        if let Some(strip) = occupied {
+            Self::route_occupied_strip(query, strip, [y0, y1], staged, fuel)?;
+        }
+        Ok(())
+    }
+
+    fn route_occupied_strip(
+        query: &GridQuery<'_, '_>,
+        strip: OccupiedStrip<'_>,
+        [y0, y1]: [f64; 2],
+        staged: &mut [Interval],
+        fuel: &mut usize,
+    ) -> Result<(), AreaQueryError> {
+        charge(fuel, 256).ok_or(AreaQueryError::Resource)?;
+        let OccupiedStrip {
+            left: l,
+            right: r,
+            left_value: lx,
+            right_value: rx,
+        } = strip;
+        let x1 = *query.xs.last().ok_or(AreaQueryError::Precision)?;
+        let column = |value: Interval| -> Option<usize> {
+            if value.lo == value.hi && value.lo == x1 {
+                return Some(query.xs.len() - 2);
+            }
+            let a = query.xs.partition_point(|edge| *edge <= value.lo);
+            let b = query.xs.partition_point(|edge| *edge <= value.hi);
+            (a == b && a > 0 && a < query.xs.len()).then(|| a - 1)
+        };
+        let lc = column(lx).ok_or(AreaQueryError::Precision)?;
+        let rc = column(rx).ok_or(AreaQueryError::Precision)?;
+        if lc > rc {
+            return Err(AreaQueryError::Precision);
+        }
+        if lc == rc {
+            let mass = Self::difference_integral(l, r, y0, y1, fuel)
+                .ok_or_else(|| exhausted_or_precision(fuel))?;
+            staged[lc] = staged[lc].add(mass).ok_or(AreaQueryError::Precision)?;
+        } else {
+            let edge =
+                Self::constant_curve(query.xs[lc + 1], y0, y1).ok_or(AreaQueryError::Precision)?;
+            let mass = Self::difference_integral(l, &edge, y0, y1, fuel)
+                .ok_or_else(|| exhausted_or_precision(fuel))?;
+            staged[lc] = staged[lc].add(mass).ok_or(AreaQueryError::Precision)?;
+            let edge =
+                Self::constant_curve(query.xs[rc], y0, y1).ok_or(AreaQueryError::Precision)?;
+            let mass = Self::difference_integral(&edge, r, y0, y1, fuel)
+                .ok_or_else(|| exhausted_or_precision(fuel))?;
+            staged[rc] = staged[rc].add(mass).ok_or(AreaQueryError::Precision)?;
+            for (c, mass) in staged.iter_mut().enumerate().take(rc).skip(lc + 1) {
+                charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
+                let area = (|| {
+                    Interval::scalar(query.xs[c + 1])?
+                        .sub(Interval::scalar(query.xs[c])?)?
+                        .mul(Interval::scalar(y1)?.sub(Interval::scalar(y0)?)?)
+                })()
+                .ok_or(AreaQueryError::Precision)?;
+                *mass = mass.add(area).ok_or(AreaQueryError::Precision)?;
+            }
+        }
+        Ok(())
     }
     fn frame(&mut self) -> Option<usize> {
         let id = self.next_frame;
@@ -499,18 +707,16 @@ impl ScanPlan {
         fuel: &mut usize,
     ) -> Result<Self, AreaQueryError> {
         let mut result = Self {
-            curves: Vec::new(),
+            curves: bounded_vector(MAX_CURVES).ok_or(AreaQueryError::Resource)?,
             next_frame: 1,
             crossings: Vec::new(),
         };
-        result
-            .curves
-            .try_reserve_exact(MAX_CURVES)
-            .map_err(|_| AreaQueryError::Resource)?;
         let affine = match forward {
-            Some(t) => Affine::identity()
-                .after(t, result.frame().ok_or(AreaQueryError::Resource)?)
-                .ok_or(AreaQueryError::Precision)?,
+            Some(t) => Affine::identity().after(
+                t,
+                result.frame().ok_or(AreaQueryError::Resource)?,
+                fuel,
+            )?,
             None => Affine::identity(),
         };
         result.region(region, affine, prepared, fuel)?;
@@ -522,10 +728,7 @@ impl ScanPlan {
         if count > 65_536 {
             return Err(AreaQueryError::Resource);
         }
-        result
-            .crossings
-            .try_reserve_exact(count)
-            .map_err(|_| AreaQueryError::Resource)?;
+        result.crossings = bounded_vector(count).ok_or(AreaQueryError::Resource)?;
         charge(fuel, count).ok_or(AreaQueryError::Resource)?;
         result.crossings.resize(
             count,
@@ -550,104 +753,119 @@ impl ScanPlan {
         Ok(result)
     }
 
-    fn push(&mut self, mut curve: Curve, fuel: &mut usize) -> Option<()> {
-        charge(fuel, self.curves.len() + 128)?;
-        let f = &curve.function;
-        let ys = Interval::new(curve.start.lo, curve.end.hi)?;
-        let base = f.h.add(f.a.mul(ys.sub(f.k)?)?)?;
-        let radius = f.b.lo.abs().max(f.b.hi.abs());
-        let margin = Interval::scalar(radius)?.mul(f.r)?.hi;
-        curve.reach = base.add(Interval::new(-margin, margin)?)?;
+    fn push(&mut self, mut curve: Curve, fuel: &mut usize) -> Result<(), AreaQueryError> {
+        charge(fuel, 16 * self.curves.len() + 512).ok_or(AreaQueryError::Resource)?;
+        let reach = (|| {
+            let f = &curve.function;
+            let ys = Interval::new(curve.start.lo, curve.end.hi)?;
+            let base = f.h.add(f.a.mul(ys.sub(f.k)?)?)?;
+            let radius = f.b.lo.abs().max(f.b.hi.abs());
+            let margin = Interval::scalar(radius)?.mul(f.r)?.hi;
+            base.add(Interval::new(-margin, margin)?)
+        })()
+        .ok_or(AreaQueryError::Precision)?;
+        curve.reach = reach;
         // Exact equality is a geometric identity, never approximate dedup.
-        if self
-            .curves
-            .iter()
-            .any(|old| old.same_function(&curve) && old.domain == curve.domain)
-        {
-            return Some(());
+        if self.curves.iter().any(|old| {
+            old.same_function(&curve)
+                && old.start.lo == old.start.hi
+                && old.end.lo == old.end.hi
+                && curve.start.lo == curve.start.hi
+                && curve.end.lo == curve.end.hi
+                && old.start.lo == curve.start.lo
+                && old.end.lo == curve.end.lo
+        }) {
+            return Ok(());
         }
         if self.curves.len() == MAX_CURVES {
-            return None;
+            return Err(AreaQueryError::Resource);
         }
         self.curves.push(curve);
-        Some(())
+        Ok(())
     }
 
-    fn line(&mut self, p: [f64; 2], q: [f64; 2], affine: Affine, fuel: &mut usize) -> Option<()> {
-        charge(fuel, 128)?;
-        let [px, py] = affine.point(p)?;
-        let [qx, qy] = affine.point(q)?;
-        let [a, b, c, d, tx, ty] = affine.0;
-        let zero = |v: Interval| v.lo == 0.0 && v.hi == 0.0;
-        if (p[0] == q[0] && zero(d)) || (p[1] == q[1] && zero(b)) {
-            return Some(());
-        }
-        let (start, end) = if py.hi < qy.lo {
-            (py, qy)
-        } else if qy.hi < py.lo {
-            (qy, py)
-        } else {
-            return None;
-        };
-        let (slope, intercept) = if p[0] == q[0] {
-            let slope = c.div(d)?;
-            let x = Interval::scalar(p[0])?;
-            (
-                slope,
-                a.sub(slope.mul(b)?)?.mul(x)?.add(tx)?.sub(slope.mul(ty)?)?,
-            )
-        } else if p[1] == q[1] {
-            let slope = a.div(b)?;
-            let y = Interval::scalar(p[1])?;
-            (
-                slope,
-                c.sub(slope.mul(d)?)?.mul(y)?.add(tx)?.sub(slope.mul(ty)?)?,
-            )
-        } else {
-            let slope = qx.sub(px)?.div(qy.sub(py)?)?;
-            (slope, px.sub(slope.mul(py)?)?)
-        };
-        let key = if p[0] == q[0] {
-            CurveKey::Vertical(affine.1, p[0])
-        } else if p[1] == q[1] {
-            CurveKey::Horizontal(affine.1, p[1])
-        } else {
-            CurveKey::General(affine.1, p, q)
-        };
-        let exact = || {
-            let [a, b, c, d, tx, ty] = affine.2?;
-            let (slope, intercept) = if p[0] == q[0] {
-                let slope = exact_div(c, d)?;
-                (
-                    slope,
-                    exact_add(
-                        exact_add(exact_mul(exact_add(a, -exact_mul(slope, b)?)?, p[0])?, tx)?,
-                        -exact_mul(slope, ty)?,
-                    )?,
-                )
-            } else if p[1] == q[1] {
-                let slope = exact_div(a, b)?;
-                (
-                    slope,
-                    exact_add(
-                        exact_add(exact_mul(exact_add(c, -exact_mul(slope, d)?)?, p[1])?, tx)?,
-                        -exact_mul(slope, ty)?,
-                    )?,
-                )
+    fn line(
+        &mut self,
+        p: [f64; 2],
+        q: [f64; 2],
+        affine: Affine,
+        fuel: &mut usize,
+    ) -> Result<(), AreaQueryError> {
+        // Includes both point proof/fallbacks, slope/intercept, exact key and
+        // Curve record. Insertion comparisons are admitted separately.
+        charge(fuel, 3072).ok_or(AreaQueryError::Resource)?;
+        let curve = (|| -> Option<Option<Curve>> {
+            let [px, py] = affine.point(p)?;
+            let [qx, qy] = affine.point(q)?;
+            let [a, b, c, d, tx, ty] = affine.0;
+            let zero = |v: Interval| v.lo == 0.0 && v.hi == 0.0;
+            if (p[0] == q[0] && zero(d)) || (p[1] == q[1] && zero(b)) {
+                return Some(None);
+            }
+            let (start, end) = if py.hi < qy.lo {
+                (py, qy)
+            } else if qy.hi < py.lo {
+                (qy, py)
             } else {
                 return None;
             };
-            Some((
-                CurveKey::ExactLine(intercept, slope),
-                Interval::scalar(slope)?,
-                Interval::scalar(intercept)?,
-            ))
-        };
-        let (key, slope, intercept) = exact().unwrap_or((key, slope, intercept));
-        self.push(
-            Curve {
+            let (slope, intercept) = if p[0] == q[0] {
+                let slope = c.div(d)?;
+                let x = Interval::scalar(p[0])?;
+                (
+                    slope,
+                    a.sub(slope.mul(b)?)?.mul(x)?.add(tx)?.sub(slope.mul(ty)?)?,
+                )
+            } else if p[1] == q[1] {
+                let slope = a.div(b)?;
+                let y = Interval::scalar(p[1])?;
+                (
+                    slope,
+                    c.sub(slope.mul(d)?)?.mul(y)?.add(tx)?.sub(slope.mul(ty)?)?,
+                )
+            } else {
+                let slope = qx.sub(px)?.div(qy.sub(py)?)?;
+                (slope, px.sub(slope.mul(py)?)?)
+            };
+            let key = if p[0] == q[0] {
+                CurveKey::Vertical(affine.1, p[0])
+            } else if p[1] == q[1] {
+                CurveKey::Horizontal(affine.1, p[1])
+            } else {
+                CurveKey::General(affine.1, p, q)
+            };
+            let exact = || {
+                let [a, b, c, d, tx, ty] = affine.2?;
+                let (slope, intercept) = if p[0] == q[0] {
+                    let slope = exact_div(c, d)?;
+                    (
+                        slope,
+                        exact_add(
+                            exact_add(exact_mul(exact_add(a, -exact_mul(slope, b)?)?, p[0])?, tx)?,
+                            -exact_mul(slope, ty)?,
+                        )?,
+                    )
+                } else if p[1] == q[1] {
+                    let slope = exact_div(a, b)?;
+                    (
+                        slope,
+                        exact_add(
+                            exact_add(exact_mul(exact_add(c, -exact_mul(slope, d)?)?, p[1])?, tx)?,
+                            -exact_mul(slope, ty)?,
+                        )?,
+                    )
+                } else {
+                    return None;
+                };
+                Some((
+                    CurveKey::ExactLine(intercept, slope),
+                    Interval::scalar(slope)?,
+                    Interval::scalar(intercept)?,
+                ))
+            };
+            let (key, slope, intercept) = exact().unwrap_or((key, slope, intercept));
+            Some(Some(Curve {
                 key,
-                domain: [p, q],
                 reach: Interval::scalar(0.0)?,
                 function: Conic {
                     h: intercept,
@@ -659,9 +877,13 @@ impl ScanPlan {
                 },
                 start,
                 end,
-            },
-            fuel,
-        )
+            }))
+        })()
+        .ok_or(AreaQueryError::Precision)?;
+        if let Some(curve) = curve {
+            self.push(curve, fuel)?;
+        }
+        Ok(())
     }
 
     fn circle(
@@ -670,60 +892,56 @@ impl ScanPlan {
         radius: f64,
         affine: Affine,
         fuel: &mut usize,
-    ) -> Option<()> {
-        charge(fuel, 256)?;
-        let [h, k] = affine.point(center)?;
-        if let Some([a, 0.0, c, d, _, _]) = affine.2
-            && a.abs() == 1.0
-            && d.abs() == 1.0
-            && h.lo == h.hi
-            && k.lo == k.hi
-        {
-            let slope = c / d;
-            let start = Interval::scalar(exact_add(k.lo, -radius)?)?;
-            let end = Interval::scalar(exact_add(k.lo, radius)?)?;
-            for sign in [-1.0, 1.0] {
-                let raw = [h.lo, slope, sign, k.lo, radius, 1.0];
-                let [h, a, b, k, r, c] = raw.map(|v| Interval::scalar(v).unwrap());
-                self.push(
-                    Curve {
+    ) -> Result<(), AreaQueryError> {
+        // Includes the generic inverse-quadratic map and both branch records.
+        charge(fuel, 4096).ok_or(AreaQueryError::Resource)?;
+        let curves = (|| -> Option<[Curve; 2]> {
+            let [h, k] = affine.point(center)?;
+            if let Some([a, 0.0, c, d, _, _]) = affine.2
+                && a.abs() == 1.0
+                && d.abs() == 1.0
+                && h.lo == h.hi
+                && k.lo == k.hi
+            {
+                let slope = c / d;
+                let start = Interval::scalar(exact_add(k.lo, -radius)?)?;
+                let end = Interval::scalar(exact_add(k.lo, radius)?)?;
+                let branch = |sign| -> Option<Curve> {
+                    let raw = [h.lo, slope, sign, k.lo, radius, 1.0];
+                    let [h, a, b, k, r, c] = raw.map(|v| Interval::scalar(v).unwrap());
+                    Some(Curve {
                         function: Conic { h, a, b, k, r, c },
                         start,
                         end,
                         key: CurveKey::ExactConic(raw),
-                        domain: [center, center],
                         reach: Interval::scalar(0.0)?,
-                    },
-                    fuel,
-                )?;
+                    })
+                };
+                return Some([branch(-1.0)?, branch(1.0)?]);
             }
-            return Some(());
-        }
-        let [a, b, c, d, _, _] = affine.0;
-        let determinant = a.mul(d)?.sub(b.mul(c)?)?;
-        let determinant2 = squared_interval(determinant)?;
-        let qxx = squared_interval(d)?
-            .add(squared_interval(b)?)?
-            .div(determinant2)?;
-        let qxy = d
-            .mul(c)?
-            .add(b.mul(a)?)?
-            .mul(Interval::scalar(-1.0)?)?
-            .div(determinant2)?;
-        let detq = Interval::scalar(1.0)?.div(determinant2)?;
-        let slope = qxy.mul(Interval::scalar(-1.0)?)?.div(qxx)?;
-        let radial = Interval::scalar(radius)?.mul(sqrt_enclosure(qxx)?)?;
-        let height = Interval::scalar(radius)?.mul(sqrt_enclosure(
-            squared_interval(b)?.add(squared_interval(d)?)?,
-        )?)?;
-        let start = k.sub(height)?;
-        let end = k.add(height)?;
-        let coefficient = Interval::scalar(1.0)?.div(qxx)?;
-        for sign in [-1.0, 1.0] {
-            self.push(
-                Curve {
+            let [a, b, c, d, _, _] = affine.0;
+            let determinant = a.mul(d)?.sub(b.mul(c)?)?;
+            let determinant2 = squared_interval(determinant)?;
+            let qxx = squared_interval(d)?
+                .add(squared_interval(b)?)?
+                .div(determinant2)?;
+            let qxy = d
+                .mul(c)?
+                .add(b.mul(a)?)?
+                .mul(Interval::scalar(-1.0)?)?
+                .div(determinant2)?;
+            let detq = Interval::scalar(1.0)?.div(determinant2)?;
+            let slope = qxy.mul(Interval::scalar(-1.0)?)?.div(qxx)?;
+            let radial = Interval::scalar(radius)?.mul(sqrt_enclosure(qxx)?)?;
+            let height = Interval::scalar(radius)?.mul(sqrt_enclosure(
+                squared_interval(b)?.add(squared_interval(d)?)?,
+            )?)?;
+            let start = k.sub(height)?;
+            let end = k.add(height)?;
+            let coefficient = Interval::scalar(1.0)?.div(qxx)?;
+            let branch = |sign| -> Option<Curve> {
+                Some(Curve {
                     key: CurveKey::Circle(affine.1, center, radius, sign),
-                    domain: [center, center],
                     reach: Interval::scalar(0.0)?,
                     function: Conic {
                         h,
@@ -735,11 +953,15 @@ impl ScanPlan {
                     },
                     start,
                     end,
-                },
-                fuel,
-            )?;
+                })
+            };
+            Some([branch(-1.0)?, branch(1.0)?])
+        })()
+        .ok_or(AreaQueryError::Precision)?;
+        for curve in curves {
+            self.push(curve, fuel)?;
         }
-        Some(())
+        Ok(())
     }
 
     fn capsule(
@@ -748,7 +970,7 @@ impl ScanPlan {
         radius: f64,
         affine: Affine,
         fuel: &mut usize,
-    ) -> Option<()> {
+    ) -> Result<(), AreaQueryError> {
         self.circle(p, radius, affine, fuel)?;
         self.circle(q, radius, affine, fuel)?;
         for sign in [-1.0, 1.0] {
@@ -763,11 +985,11 @@ impl ScanPlan {
             let sum = coordinate + sign * radius;
             let vb = sum - coordinate;
             if !sum.is_finite() || (coordinate - (sum - vb)) + (sign * radius - vb) != 0.0 {
-                return None;
+                return Err(AreaQueryError::Precision);
             }
             self.line(u, v, affine, fuel)?;
         }
-        Some(())
+        Ok(())
     }
 
     fn shape(
@@ -786,8 +1008,7 @@ impl ScanPlan {
                 ([x1, y1], [rect.x(), y1]),
                 ([rect.x(), y1], [rect.x(), rect.y()]),
             ] {
-                self.line(p, q, affine, fuel)
-                    .ok_or_else(|| exhausted_or_precision(fuel))?;
+                self.line(p, q, affine, fuel)?;
             }
             return Ok(());
         }
@@ -805,8 +1026,7 @@ impl ScanPlan {
                             first.ok_or(AreaQueryError::Precision)?,
                             affine,
                             fuel,
-                        )
-                        .ok_or_else(|| exhausted_or_precision(fuel))?;
+                        )?;
                     }
                     first = Some([p.x(), p.y()]);
                     previous = first;
@@ -814,8 +1034,7 @@ impl ScanPlan {
                 }
                 Render2dPathCommand::LineTo(p) => {
                     let q = [p.x(), p.y()];
-                    self.line(previous.ok_or(AreaQueryError::Precision)?, q, affine, fuel)
-                        .ok_or_else(|| exhausted_or_precision(fuel))?;
+                    self.line(previous.ok_or(AreaQueryError::Precision)?, q, affine, fuel)?;
                     previous = Some(q);
                     has_segment = true;
                 }
@@ -826,8 +1045,7 @@ impl ScanPlan {
                             first.ok_or(AreaQueryError::Precision)?,
                             affine,
                             fuel,
-                        )
-                        .ok_or_else(|| exhausted_or_precision(fuel))?;
+                        )?;
                     }
                     previous = first;
                     has_segment = false;
@@ -841,8 +1059,7 @@ impl ScanPlan {
                 first.ok_or(AreaQueryError::Precision)?,
                 affine,
                 fuel,
-            )
-            .ok_or_else(|| exhausted_or_precision(fuel))?;
+            )?;
         }
         Ok(())
     }
@@ -855,9 +1072,7 @@ impl ScanPlan {
     ) -> Result<(), AreaQueryError> {
         for clip in clips {
             let frame = self.frame().ok_or(AreaQueryError::Resource)?;
-            let local = affine
-                .after(clip.clip_to_parent(), frame)
-                .ok_or(AreaQueryError::Precision)?;
+            let local = affine.after(clip.clip_to_parent(), frame, fuel)?;
             self.shape(clip.shape(), local, fuel)?;
         }
         Ok(())
@@ -878,9 +1093,7 @@ impl ScanPlan {
                     return Err(AreaQueryError::Unsupported);
                 };
                 let frame = self.frame().ok_or(AreaQueryError::Resource)?;
-                let local = affine
-                    .after(item.local_to_parent(), frame)
-                    .ok_or(AreaQueryError::Precision)?;
+                let local = affine.after(item.local_to_parent(), frame, fuel)?;
                 self.shape(shape, local, fuel)?;
                 self.clips(item.clips(), affine, fuel)
             }
@@ -892,9 +1105,7 @@ impl ScanPlan {
             }
             Kind::Affine { source, to_parent } => {
                 let frame = self.frame().ok_or(AreaQueryError::Resource)?;
-                let local = affine
-                    .after(*to_parent, frame)
-                    .ok_or(AreaQueryError::Precision)?;
+                let local = affine.after(*to_parent, frame, fuel)?;
                 self.region(source, local, prepared, fuel)
             }
             Kind::Clip { source, clips } => {
@@ -909,9 +1120,7 @@ impl ScanPlan {
                     Render2dAffineTransform::translation(shadow.offset_x(), shadow.offset_y())
                         .map_err(|_| AreaQueryError::Precision)?;
                 let frame = self.frame().ok_or(AreaQueryError::Resource)?;
-                let shifted = affine
-                    .after(shift, frame)
-                    .ok_or(AreaQueryError::Precision)?;
+                let shifted = affine.after(shift, frame, fuel)?;
                 if shadow.spread() == 0.0 {
                     return self.region(source, shifted, prepared, fuel);
                 }
@@ -923,10 +1132,8 @@ impl ScanPlan {
                     }
                 })?;
                 for &edge in boundary.edges() {
-                    self.line(edge[0], edge[1], shifted, fuel)
-                        .ok_or_else(|| exhausted_or_precision(fuel))?;
-                    self.capsule(edge, -shadow.spread(), shifted, fuel)
-                        .ok_or_else(|| exhausted_or_precision(fuel))?;
+                    self.line(edge[0], edge[1], shifted, fuel)?;
+                    self.capsule(edge, -shadow.spread(), shifted, fuel)?;
                 }
                 Ok(())
             }
@@ -935,7 +1142,11 @@ impl ScanPlan {
 
     fn crossing_work(left: &Curve, right: &Curve) -> usize {
         let line = |c: &Curve| c.function.b.lo == 0.0 && c.function.b.hi == 0.0;
-        if line(left) || line(right) { 384 } else { 768 }
+        match (line(left), line(right)) {
+            (true, true) => 384,
+            (true, false) | (false, true) => 3072,
+            (false, false) => 4096,
+        }
     }
 
     /// Every true crossing is enclosed. Squared equations may introduce
@@ -1066,6 +1277,9 @@ impl ScanPlan {
         y1: f64,
         fuel: &mut usize,
     ) -> Option<Interval> {
+        // Local-width coefficient preparation precedes each integral's own
+        // admitted numerical work, including the two-conic fallback.
+        charge(fuel, 1024)?;
         let f = &left.function;
         let g = &right.function;
         let zero = |v: Interval| v.lo == 0.0 && v.hi == 0.0;
@@ -1150,14 +1364,12 @@ impl ScanPlan {
                 start: Interval::scalar(y0)?,
                 end: Interval::scalar(y1)?,
                 key: CurveKey::ExactLine(x, 0.0),
-                domain: [[x, y0], [x, y1]],
                 reach: Interval::scalar(x)?,
             })
         };
         let left = constant(x0)?;
         let right = constant(x1)?;
-        let mut candidates = Vec::new();
-        candidates.try_reserve_exact(self.curves.len() + 2).ok()?;
+        let mut candidates = bounded_vector(self.curves.len().checked_add(2)?)?;
         for (id, c) in self.curves.iter().enumerate() {
             charge(fuel, 16)?;
             if c.reach.hi >= x0 && c.reach.lo <= x1 && c.start.lo < y1 && c.end.hi > y0 {
@@ -1167,8 +1379,7 @@ impl ScanPlan {
         let relevant_count = candidates.len();
         candidates.push((self.curves.len(), &left));
         candidates.push((self.curves.len() + 1, &right));
-        let mut cuts = Vec::new();
-        cuts.try_reserve_exact(MAX_BANDS).ok()?;
+        let mut cuts = bounded_vector(MAX_BANDS)?;
         cuts.extend([y0, y1]);
         let mut add_cut = |y: f64| -> Option<()> {
             if y0 < y && y < y1 {
@@ -1196,7 +1407,7 @@ impl ScanPlan {
         // Physical cell edges are additional exact straight boundaries.
         for (_, curve) in &candidates[..relevant_count] {
             for edge in [&left, &right] {
-                charge(fuel, 384)?;
+                charge(fuel, 128 + Self::crossing_work(curve, edge))?;
                 let crossing = Self::crossings(curve, edge)?;
                 for root in crossing.roots.into_iter().flatten() {
                     add_cut(root.lo)?;
@@ -1206,8 +1417,7 @@ impl ScanPlan {
         }
         sort_admitted(&mut cuts, f64::total_cmp, 4, fuel)?;
         cuts.dedup();
-        let mut pending = Vec::new();
-        pending.try_reserve_exact(MAX_BANDS).ok()?;
+        let mut pending = bounded_vector(MAX_BANDS)?;
         pending.extend(cuts.windows(2).map(|ys| (ys[0], ys[1], 0_u8)));
         let mut total = Interval::scalar(0.0)?;
         let mut visited = 0_usize;
@@ -1272,8 +1482,7 @@ impl ScanPlan {
         let [x0, y0, x1, y1] = bounds;
         let ys = Interval::new(y0, y1)?;
         let ym = y0 * 0.5 + y1 * 0.5;
-        let mut active = Vec::new();
-        active.try_reserve_exact(candidates.len()).ok()?;
+        let mut active = bounded_vector(candidates.len())?;
         for &(id, curve) in candidates {
             charge(fuel, 64)?;
             if y1 <= curve.start.lo || y0 >= curve.end.hi {
@@ -1287,7 +1496,7 @@ impl ScanPlan {
             if value.hi < x0 || value.lo > x1 {
                 continue;
             }
-            charge(fuel, VALUE_WORK + active.len())?;
+            charge(fuel, VALUE_WORK + 16 * active.len())?;
             let at_mid = curve.function.value(Interval::scalar(ym)?)?;
             if !active
                 .iter()
@@ -1329,11 +1538,12 @@ impl ScanPlan {
             if x < x0 || x > x1 {
                 continue;
             }
+            charge(fuel, 128)?;
             let mut point = Cell::new([x, ym, x, ym])?;
             if let Some(t) = forward {
+                charge(fuel, preimage_work(t))?;
                 point = point.preimage(t)?;
             }
-            charge(fuel, 128)?;
             match region.certify_prepared(point, fuel, Some(prepared)) {
                 CellCertificate::Inside => {
                     mass = mass.add(Self::difference_integral(left, right, y0, y1, fuel)?)?
@@ -1343,5 +1553,68 @@ impl ScanPlan {
             }
         }
         Some(mass)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_plan() -> ScanPlan {
+        ScanPlan {
+            curves: Vec::new(),
+            next_frame: 1,
+            crossings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn grid_resource_exhaustion_is_distinct_from_unrepresentable_phase() {
+        let mut graph = builder();
+        let region = graph.union(Vec::new(), &[0]).unwrap();
+        let mut preparation_fuel = 1024;
+        let prepared = PreparedBoundaries::prepare(&region, &mut preparation_fuel).unwrap();
+        let mut fuel = 0;
+        assert!(matches!(
+            empty_plan().grid(&region, [0, 0, 1, 1], 4.0, None, &prepared, &mut fuel),
+            Err(AreaQueryError::Resource)
+        ));
+        let mut fuel = 1024;
+        assert!(matches!(
+            empty_plan().grid(&region, [0, 0, 1, 1], 3.0, None, &prepared, &mut fuel),
+            Err(AreaQueryError::Precision)
+        ));
+        assert!(fuel > 0);
+        assert!(matches!(
+            empty_plan().grid(&region, [0, 0, 1025, 1025], 4.0, None, &prepared, &mut fuel),
+            Err(AreaQueryError::Resource)
+        ));
+    }
+
+    #[test]
+    fn distinct_curve_inventory_limit_keeps_resource_category() {
+        let mut plan = empty_plan();
+        plan.curves = bounded_vector(MAX_CURVES).unwrap();
+        for x in 0..MAX_CURVES {
+            plan.curves
+                .push(ScanPlan::constant_curve(x as f64, 0.0, 1.0).unwrap());
+        }
+        let mut fuel = 16_777_216;
+        assert!(matches!(
+            plan.push(
+                ScanPlan::constant_curve(MAX_CURVES as f64, 0.0, 1.0).unwrap(),
+                &mut fuel
+            ),
+            Err(AreaQueryError::Resource)
+        ));
+        assert!(fuel > 0);
+        assert_eq!(plan.curves.len(), MAX_CURVES);
+    }
+
+    #[test]
+    fn fixed_scratch_inventory_fits_consumer_reservation() {
+        let bytes = ScanPlan::fixed_scratch_bytes().unwrap();
+        assert!(bytes >= 65_536 * std::mem::size_of::<Crossings>());
+        assert!(bytes < 16 * 1024 * 1024);
     }
 }

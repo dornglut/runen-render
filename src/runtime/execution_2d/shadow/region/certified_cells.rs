@@ -14,6 +14,8 @@ mod conic_integral;
 #[cfg(test)]
 mod curved_gaussian;
 #[cfg(test)]
+mod finite_square_geometry;
+#[cfg(test)]
 mod linear_x_gaussian;
 mod orthogonal_boundary;
 mod scan_area;
@@ -68,6 +70,13 @@ impl Cell {
     }
 
     fn preimage(self, affine: Render2dAffineTransform) -> Option<Self> {
+        let raw = affine.components();
+        if raw == [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] {
+            return Some(self);
+        }
+        if raw[..4] == [1.0, 0.0, 0.0, 1.0] {
+            return self.shift(raw[4], raw[5]);
+        }
         let [a, b, c, d, tx, ty] = affine.components().map(Interval::scalar);
         let (a, b, c, d, tx, ty) = (a?, b?, c?, d?, tx?, ty?);
         let determinant = a.mul(d)?.sub(b.mul(c)?)?;
@@ -121,6 +130,37 @@ impl Cell {
         } else {
             CellCertificate::Unknown
         }
+    }
+}
+
+fn admit_query_work(fuel: &mut usize, amount: usize) -> bool {
+    if *fuel < amount {
+        *fuel = 0;
+        false
+    } else {
+        *fuel -= amount;
+        true
+    }
+}
+
+/// Fallible bounded inventories expose actual capacity before insertion.
+fn bounded_vector<T>(capacity: usize) -> Option<Vec<T>> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(capacity).ok()?;
+    (values.capacity() <= capacity).then_some(values)
+}
+
+/// Identity and translation have exact affine laws and avoid the generic
+/// determinant/inversion. The generic allowance covers all four-endpoint
+/// interval arithmetic, validity checks and query-coordinate construction.
+fn preimage_work(affine: Render2dAffineTransform) -> usize {
+    let raw = affine.components();
+    if raw == [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] {
+        16
+    } else if raw[..4] == [1.0, 0.0, 0.0, 1.0] {
+        64
+    } else {
+        320
     }
 }
 
@@ -280,7 +320,7 @@ fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCert
     // Admit BOTH source-command scans, implicit closure, and worst-case
     // interval geometry in one bounded O(commands) model BEFORE any path
     // traversal. No uncharged per-query prefilter or conditional budget reset.
-    let Some(cost) = commands.len().checked_mul(40) else {
+    let Some(cost) = commands.len().checked_mul(128) else {
         return CellCertificate::Unknown;
     };
     if *visits < cost {
@@ -344,6 +384,14 @@ fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCert
 }
 
 fn certify_shape(shape: &Render2dShape, cell: Cell, visits: &mut usize) -> CellCertificate {
+    let cost = if shape.as_ellipse().is_some() {
+        192
+    } else {
+        64
+    };
+    if !admit_query_work(visits, cost) {
+        return CellCertificate::Unknown;
+    }
     if let Some(rect) = shape.as_rect() {
         if rect.is_empty() {
             return CellCertificate::Outside;
@@ -385,10 +433,9 @@ fn certify_clipped(
     }
     let mut uncertain = source == CellCertificate::Unknown;
     for clip in clips {
-        if *visits == 0 {
+        if !admit_query_work(visits, 16 + preimage_work(clip.clip_to_parent())) {
             return CellCertificate::Unknown;
         }
-        *visits -= 1;
         let certificate = parent_cell
             .preimage(clip.clip_to_parent())
             .map(|local| certify_shape(clip.shape(), local, visits))
@@ -1226,43 +1273,86 @@ fn sort_admitted<T>(
 }
 
 struct PreparedBoundaries {
-    entries: Vec<(usize, orthogonal_boundary::Boundary)>,
+    entries: Vec<(usize, usize, Arc<orthogonal_boundary::Boundary>)>,
+    sources: Vec<(usize, usize)>,
     edges: usize,
 }
 
+#[test]
+fn composed_fixed_query_inventory_fits_reserved_consumer_storage() {
+    let bytes = PreparedBoundaries::fixed_scratch_bytes().unwrap();
+    assert!(bytes >= 256 * orthogonal_boundary::Boundary::retained_allocation_bound().unwrap());
+    assert!(u64::try_from(bytes).unwrap() <= MAX_AREA_QUERY_FIXED_BYTES);
+    assert!(
+        orthogonal_boundary::Boundary::preparation_scratch_bound(MAX_REGION_DEPTH + 1).is_none()
+    );
+}
+
 impl PreparedBoundaries {
-    fn prepare(region: &NeutralRegion<'_>, fuel: &mut usize) -> Option<Self> {
+    fn fixed_scratch_bytes() -> Option<usize> {
+        // A new boundary is prepared only while fewer than 256 allocations
+        // are retained. Its edge capacity is already part of this maximum;
+        // only its other preparation buffers coexist in addition.
+        let boundaries =
+            256_usize.checked_mul(orthogonal_boundary::Boundary::retained_allocation_bound()?)?;
+        let entries = 256_usize.checked_mul(std::mem::size_of::<(
+            usize,
+            usize,
+            Arc<orthogonal_boundary::Boundary>,
+        )>())?;
+        let sources = 256_usize.checked_mul(std::mem::size_of::<(usize, usize)>())?;
+        boundaries
+            .checked_add(orthogonal_boundary::Boundary::preparation_scratch_bound(
+                MAX_REGION_DEPTH,
+            )?)?
+            .checked_add(entries)?
+            .checked_add(sources)?
+            .checked_add(std::mem::size_of::<Self>())?
+            .checked_add(scan_area::ScanPlan::fixed_scratch_bytes()?)?
+            // Scalar query state, vector headers and fixed numeric arrays.
+            // This margin is distinct from heap payload capacities above.
+            .checked_add(65_536)
+    }
+
+    fn prepare(region: &NeutralRegion<'_>, fuel: &mut usize) -> Result<Self, AreaQueryError> {
         fn visit(
             region: &NeutralRegion<'_>,
             result: &mut PreparedBoundaries,
             fuel: &mut usize,
-        ) -> Option<()> {
+        ) -> Result<(), AreaQueryError> {
             if *fuel == 0 {
-                return None;
+                return Err(AreaQueryError::Resource);
             }
             *fuel -= 1;
             match &region.kind {
                 Kind::Effect { source, shadow } => {
                     if *fuel < result.entries.len() {
                         *fuel = 0;
-                        return None;
+                        return Err(AreaQueryError::Resource);
                     }
                     *fuel -= result.entries.len();
                     if shadow.spread() < 0.0
                         && shadow.sigma() == 0.0
-                        && !result.entries.iter().any(|(id, _)| *id == region.id)
+                        && !result.entries.iter().any(|(id, _, _)| *id == region.id)
                     {
                         if result.entries.len() == 256 {
-                            return None;
+                            return Err(AreaQueryError::Resource);
                         }
-                        if let Some(boundary) = orthogonal_boundary::Boundary::prepare(source, fuel)
-                        {
-                            result.edges = result.edges.checked_add(boundary.edge_count())?;
-                            if result.edges > 16_384 {
-                                return None;
+                        match orthogonal_boundary::Boundary::prepare(source, fuel) {
+                            Ok(boundary) => {
+                                result.edges = result
+                                    .edges
+                                    .checked_add(boundary.edge_count())
+                                    .ok_or(AreaQueryError::Resource)?;
+                                if result.edges > 16_384 {
+                                    return Err(AreaQueryError::Resource);
+                                }
+                                result
+                                    .entries
+                                    .push((region.id, source.id, Arc::new(boundary)));
                             }
-                            result.entries.try_reserve_exact(1).ok()?;
-                            result.entries.push((region.id, boundary));
+                            Err(AreaQueryError::Unsupported) => {}
+                            Err(error) => return Err(error),
                         }
                     }
                     visit(source, result, fuel)
@@ -1271,22 +1361,33 @@ impl PreparedBoundaries {
                     for child in children {
                         visit(child, result, fuel)?;
                     }
-                    Some(())
+                    Ok(())
                 }
                 Kind::Affine { source, .. } | Kind::Clip { source, .. } => {
                     visit(source, result, fuel)
                 }
-                Kind::Source(_) => Some(()),
+                Kind::Source(_) => Ok(()),
             }
         }
         let mut result = Self {
-            entries: Vec::new(),
+            entries: bounded_vector(256).ok_or(AreaQueryError::Resource)?,
+            sources: Vec::new(),
             edges: 0,
         };
-        result.entries.try_reserve_exact(256).ok()?;
         visit(region, &mut result, fuel)?;
-        sort_admitted(&mut result.entries, |a, b| a.0.cmp(&b.0), 1, fuel)?;
-        Some(result)
+        sort_admitted(&mut result.entries, |a, b| a.0.cmp(&b.0), 1, fuel)
+            .ok_or(AreaQueryError::Resource)?;
+        result.sources = bounded_vector(result.entries.len()).ok_or(AreaQueryError::Resource)?;
+        for (index, entry) in result.entries.iter().enumerate() {
+            if !admit_query_work(fuel, 8) {
+                return Err(AreaQueryError::Resource);
+            }
+            result.sources.push((entry.1, index));
+        }
+        sort_admitted(&mut result.sources, |a, b| a.0.cmp(&b.0), 1, fuel)
+            .ok_or(AreaQueryError::Resource)?;
+        result.sources.dedup_by_key(|entry| entry.0);
+        Ok(result)
     }
 
     fn get(&self, id: usize, fuel: &mut usize) -> Option<&orthogonal_boundary::Boundary> {
@@ -1297,9 +1398,19 @@ impl PreparedBoundaries {
         }
         *fuel -= cost;
         self.entries
-            .binary_search_by_key(&id, |(key, _)| *key)
+            .binary_search_by_key(&id, |(key, _, _)| *key)
             .ok()
-            .map(|index| &self.entries[index].1)
+            .map(|index| self.entries[index].2.as_ref())
+    }
+    fn original(&self, id: usize, fuel: &mut usize) -> Option<&orthogonal_boundary::Boundary> {
+        let cost = (usize::BITS - self.sources.len().leading_zeros()) as usize;
+        if !admit_query_work(fuel, cost) {
+            return None;
+        }
+        self.sources
+            .binary_search_by_key(&id, |entry| entry.0)
+            .ok()
+            .map(|index| self.entries[self.sources[index].1].2.as_ref())
     }
 }
 
@@ -1314,10 +1425,9 @@ impl NeutralRegion<'_> {
         visits: &mut usize,
         prepared: Option<&PreparedBoundaries>,
     ) -> CellCertificate {
-        if *visits == 0 {
+        if !admit_query_work(visits, 16) {
             return CellCertificate::Unknown;
         }
-        *visits -= 1;
         // Qualified reach may prove exclusion, but can never invent interior.
         // A singular/overflowing affine preimage must retain Unknown, even
         // when its coarse envelope would otherwise prove a distant absence.
@@ -1338,6 +1448,12 @@ impl NeutralRegion<'_> {
             } else {
                 return CellCertificate::Outside;
             }
+        }
+        if let Some(boundary) = prepared.and_then(|p| p.original(self.id, visits)) {
+            return boundary.classify_original(cell, visits);
+        }
+        if *visits == 0 {
+            return CellCertificate::Unknown;
         }
         match &self.kind {
             Kind::Source(mesh) => {
@@ -1380,22 +1496,33 @@ impl NeutralRegion<'_> {
                     CellCertificate::Outside
                 }
             }
-            Kind::Affine { source, to_parent } => cell
-                .preimage(*to_parent)
-                .map(|preimage| source.certify_prepared(preimage, visits, prepared))
-                .unwrap_or(CellCertificate::Unknown),
+            Kind::Affine { source, to_parent } => {
+                if !admit_query_work(visits, preimage_work(*to_parent)) {
+                    return CellCertificate::Unknown;
+                }
+                cell.preimage(*to_parent)
+                    .map(|preimage| source.certify_prepared(preimage, visits, prepared))
+                    .unwrap_or(CellCertificate::Unknown)
+            }
             Kind::Clip { source, clips } => {
                 let child = source.certify_prepared(cell, visits, prepared);
                 certify_clipped(child, cell, clips, visits)
             }
             Kind::Effect { source, shadow } => {
+                if !admit_query_work(visits, 64) {
+                    return CellCertificate::Unknown;
+                }
                 let Some(translated) = cell.shift(shadow.offset_x(), shadow.offset_y()) else {
                     return CellCertificate::Unknown;
                 };
                 let spread = shadow.spread();
                 if let Some(boundary) = prepared.and_then(|p| p.get(self.id, visits)) {
-                    let membership = source.certify_prepared(translated, visits, prepared);
-                    return boundary.eroded_cell(membership, translated, -spread, visits);
+                    return boundary.eroded_cell(
+                        CellCertificate::Unknown,
+                        translated,
+                        -spread,
+                        visits,
+                    );
                 }
                 if *visits == 0 {
                     return CellCertificate::Unknown;
@@ -1474,7 +1601,7 @@ pub(super) fn certified_area_enclosure(
     max_depth: u8,
     fuel: &mut usize,
 ) -> Option<[f64; 2]> {
-    let prepared = PreparedBoundaries::prepare(region, fuel)?;
+    let prepared = PreparedBoundaries::prepare(region, fuel).ok()?;
     if let Ok(scan) = scan_area::ScanPlan::prepare(region, owner_to_root, &prepared, fuel) {
         return scan.area(region, bounds, owner_to_root, &prepared, fuel);
     }
@@ -1594,16 +1721,15 @@ pub(super) fn certified_grid_area_query(
     if count == 0 || count > max_cells || max_cells > 1_048_576 {
         return Err(AreaQueryError::Resource);
     }
-    let prepared = PreparedBoundaries::prepare(region, fuel).ok_or(AreaQueryError::Resource)?;
+    let fixed_bytes = PreparedBoundaries::fixed_scratch_bytes()
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(AreaQueryError::Resource)?;
+    if fixed_bytes > MAX_AREA_QUERY_FIXED_BYTES {
+        return Err(AreaQueryError::Resource);
+    }
+    let prepared = PreparedBoundaries::prepare(region, fuel)?;
     let scan = scan_area::ScanPlan::prepare(region, owner_to_root, &prepared, fuel)?;
     scan.grid(region, root_grid, scale, owner_to_root, &prepared, fuel)
-        .ok_or({
-            if *fuel == 0 {
-                AreaQueryError::Resource
-            } else {
-                AreaQueryError::Precision
-            }
-        })
 }
 
 /// Evaluate one root-space lattice with shared full/empty region certificates.
@@ -1637,17 +1763,19 @@ pub(super) fn certified_grid_area_enclosures(
     {
         return None;
     }
-    let prepared = PreparedBoundaries::prepare(region, fuel)?;
+    let prepared = PreparedBoundaries::prepare(region, fuel).ok()?;
     let scan = scan_area::ScanPlan::prepare(region, owner_to_root, &prepared, fuel);
     if let Ok(scan) = scan.as_ref() {
-        return scan.grid(
-            region,
-            root_grid,
-            root_samples_per_logical_unit,
-            owner_to_root,
-            &prepared,
-            fuel,
-        );
+        return scan
+            .grid(
+                region,
+                root_grid,
+                root_samples_per_logical_unit,
+                owner_to_root,
+                &prepared,
+                fuel,
+            )
+            .ok();
     }
     let mut result = Vec::new();
     result.try_reserve_exact(area).ok()?;
@@ -1774,6 +1902,9 @@ fn certify_authored_item(item: &Render2dItem, cell: Cell, visits: &mut usize) ->
     let Render2dPrimitive::Fill { shape, .. } = item.primitive() else {
         return CellCertificate::Unknown;
     };
+    if !admit_query_work(visits, preimage_work(item.local_to_parent())) {
+        return CellCertificate::Unknown;
+    }
     let source = cell
         .preimage(item.local_to_parent())
         .map(|local| certify_shape(shape, local, visits))
@@ -2148,7 +2279,7 @@ fn original_f1_holed_nested_negative_exterior_witness_survives_ancestor_shear() 
             &[0, 4],
         )
         .unwrap();
-    let mut bounded = 128;
+    let mut bounded = 256;
     assert_eq!(
         zero_blur.certify_cell(Cell::new([27.25, 20.25, 27.5, 20.5]).unwrap(), &mut bounded),
         CellCertificate::Outside
@@ -3081,7 +3212,7 @@ fn linear_winding_certificate_fails_closed_at_exact_global_fuel_boundary() {
     )
     .unwrap();
     let cell = Cell::new([1.0, 1.0, 2.0, 2.0]).unwrap();
-    let cost = path.commands().len() * 40;
+    let cost = path.commands().len() * 128;
     let mut insufficient = cost - 1;
     assert_eq!(
         certify_path(&path, cell, &mut insufficient),
@@ -3401,8 +3532,13 @@ fn shared_gaussian_tiles_certify_4x4_samples_from_original_f1_geometry() {
     );
     // 52*8*8*16 = 53,248 certified centers require just 64
     // source-region queries, not one Gaussian integral per center.
-    // Every tile charges 256 numerical units plus one source-node visit.
-    assert_eq!(20_000 - work, 64 * (GAUSSIAN_WEIGHT_WORK + 1));
+    // Every tile charges kernel and source-node work. The 48 excluded tiles
+    // stop at certified reach; the remaining 16 also charge the identity
+    // preimage and original rectangle classifier.
+    assert_eq!(
+        20_000 - work,
+        64 * (GAUSSIAN_WEIGHT_WORK + 16) + 16 * (16 + 64)
+    );
 }
 
 #[test]
@@ -3437,7 +3573,7 @@ fn adaptively_subdivided_shared_tiles_account_for_all_4x4_centers() {
     assert_eq!(counts.outside_samples, 3_196 * 16);
     assert_eq!(counts.unresolved_samples, 224 * 16);
     assert_eq!(counts.queries, 672);
-    assert_eq!(200_000 - work, counts.queries * (GAUSSIAN_WEIGHT_WORK + 1));
+    assert_eq!(200_000 - work, counts.queries * (GAUSSIAN_WEIGHT_WORK + 16));
     assert_eq!(
         counts.inside_samples + counts.outside_samples + counts.unresolved_samples,
         64 * 64 * 16

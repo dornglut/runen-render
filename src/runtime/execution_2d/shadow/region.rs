@@ -22,6 +22,10 @@ const MAX_REGION_DEPTH: usize = 512;
 const MAX_REGION_PATH_UNITS: usize = 1_048_576;
 const MAX_REGION_GRAPH_WORK: usize = 16_777_216;
 
+/// Fixed query inventory reserved by the physical consumer, excluding its
+/// separately admitted width-dependent rows and output/conversion buffers.
+pub(in crate::runtime::execution_2d) const MAX_AREA_QUERY_FIXED_BYTES: u64 = 16 * 1024 * 1024;
+
 #[derive(Clone, Copy, Debug)]
 pub(in crate::runtime::execution_2d) enum AreaQueryError {
     Unsupported,
@@ -228,7 +232,13 @@ fn region_envelope(
 ) -> Result<Option<[f64; 4]>, Render2dExecutionError> {
     let result = match kind {
         Kind::Source(mesh) => {
-            if mesh.triangles.is_empty() {
+            // This DAG's reach belongs to original F1 geometry. Disposable
+            // realization vertices may neither enlarge nor erase it.
+            if let Some(item) = semantic_item
+                && let Some(authored) = source_envelope::bounds(item, None, path)?
+            {
+                Some(authored)
+            } else if mesh.triangles.is_empty() {
                 None
             } else {
                 let scale = mesh.units_per_parent_logical_unit;
@@ -238,19 +248,9 @@ fn region_envelope(
                         "neutral-region source scale is unrepresentable",
                     ));
                 }
-                let physical = mesh.bounds.map(|coordinate| coordinate / scale);
-                if let Some(item) = semantic_item
-                    && let Some(authored) = source_envelope::bounds(item, None, path)?
-                {
-                    Some([
-                        physical[0].min(authored[0]),
-                        physical[1].min(authored[1]),
-                        physical[2].max(authored[2]),
-                        physical[3].max(authored[3]),
-                    ])
-                } else {
-                    Some(physical)
-                }
+                // Missing authored reach remains a physical fallback; glyph
+                // provenance does not certify this as original support.
+                Some(mesh.bounds.map(|coordinate| coordinate / scale))
             }
         }
         Kind::Union(children) => {
@@ -272,21 +272,12 @@ fn region_envelope(
         }
         Kind::Affine { source, to_parent } => {
             if let Kind::Source(mesh) = &source.kind {
-                let physical = affine_leaf_envelope(mesh, *to_parent, path)?;
                 if let Some(item) = source.semantic_item
                     && let Some(authored) = source_envelope::bounds(item, Some(*to_parent), path)?
                 {
-                    Some(match physical {
-                        Some(bounds) => [
-                            bounds[0].min(authored[0]),
-                            bounds[1].min(authored[1]),
-                            bounds[2].max(authored[2]),
-                            bounds[3].max(authored[3]),
-                        ],
-                        None => authored,
-                    })
+                    Some(authored)
                 } else {
-                    physical
+                    affine_leaf_envelope(mesh, *to_parent, path)?
                 }
             } else {
                 source
@@ -2233,9 +2224,9 @@ mod tests {
         );
         assert!(graph.materialize(&root).is_err());
 
-        // A missing PHYSICAL source cannot certify semantic absence.
-        // This adversarial item retains a positive-area original F1 rectangle
-        // even though the supplied disposable realization is empty.
+        // A missing PHYSICAL source cannot erase original F1 reach.
+        // This adversarial item retains its positive-area rectangle; authored
+        // reach can prove the offset effect offscreen independently of mesh.
         use crate::composition_2d::{
             Render2dAffineTransform, Render2dBrush, Render2dItem, Render2dOpacity,
             Render2dPrimitive, Render2dRect, Render2dShape,
@@ -2252,9 +2243,17 @@ mod tests {
         let unrealized = graph
             .source_from_item(shadow::empty_mesh(), &original, &[6, 2])
             .unwrap();
-        assert!(unrealized.envelope.is_none());
+        let original_reach = unrealized
+            .envelope
+            .expect("original F1 retains positive reach even without a physical realization");
         assert!(
-            !unrealized
+            original_reach[0] <= 1.0
+                && original_reach[1] <= 1.0
+                && original_reach[2] >= 5.0
+                && original_reach[3] >= 5.0
+        );
+        assert!(
+            unrealized
                 .all_root_shadows_provably_offscreen(&[outside], [64.0, 64.0], 1.0)
                 .unwrap()
         );

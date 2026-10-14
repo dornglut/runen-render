@@ -35,7 +35,62 @@ pub(super) struct PreparedShadow {
     sample_area_coverage: bool,
 }
 
-pub(super) type ShadowGroups = BTreeMap<usize, Vec<PreparedShadow>>;
+/// Ordered physical preparations have a fallibly reserved inventory. Event
+/// indices are emitted monotonically; lookup never allocates a tree node.
+#[derive(Default)]
+pub(super) struct ShadowGroups {
+    entries: Vec<(usize, Vec<PreparedShadow>)>,
+}
+
+impl ShadowGroups {
+    pub(super) fn get(&self, index: &usize) -> Option<&Vec<PreparedShadow>> {
+        self.entries
+            .binary_search_by_key(index, |entry| entry.0)
+            .ok()
+            .map(|position| &self.entries[position].1)
+    }
+
+    pub(super) fn values(&self) -> impl Iterator<Item = &Vec<PreparedShadow>> {
+        self.entries.iter().map(|entry| &entry.1)
+    }
+
+    fn insert(&mut self, index: usize, values: Vec<PreparedShadow>) {
+        assert!(self.entries.last().is_none_or(|entry| entry.0 < index));
+        assert!(self.entries.len() < self.entries.capacity());
+        self.entries.push((index, values));
+    }
+}
+
+/// Reserve all persistent occurrence headers and owner paths across the
+/// complete contribution, including invisible occurrences. Payload capacity
+/// is charged separately as each unique coverage buffer is prepared.
+fn occurrence_metadata(
+    plan: &scene::Plan<'_>,
+    effects: usize,
+) -> Result<u64, Render2dExecutionError> {
+    let per_effect = std::mem::size_of::<PreparedShadow>()
+        + std::mem::size_of::<NeutralCoverage>()
+        + 2 * std::mem::size_of::<usize>();
+    let mut bytes = effects
+        .checked_mul(per_effect + std::mem::size_of::<(usize, Vec<PreparedShadow>)>())
+        .ok_or_else(|| shadow_resource(&[], "shadow occurrence metadata extent overflow"))?;
+    for event in &plan.events {
+        if let scene::Event::BeginGroup { group, path, .. } = event {
+            let paths = group
+                .shadows()
+                .len()
+                .checked_mul(path.len())
+                .and_then(|units| units.checked_mul(std::mem::size_of::<usize>()))
+                .ok_or_else(|| {
+                    shadow_resource(path, "shadow owner-path metadata extent overflow")
+                })?;
+            bytes = bytes
+                .checked_add(paths)
+                .ok_or_else(|| shadow_resource(path, "shadow metadata total overflow"))?;
+        }
+    }
+    u64::try_from(bytes).map_err(|_| shadow_resource(&[], "shadow metadata exceeds byte counter"))
+}
 
 fn shadow_precision(path: &[usize], detail: &'static str) -> Render2dExecutionError {
     Render2dExecutionError::SampleSpace {
@@ -135,13 +190,20 @@ pub(super) fn prepare(
     admitted_effects: usize,
 ) -> Result<ShadowGroups, Render2dExecutionError> {
     if admitted_effects == 0 {
-        return Ok(BTreeMap::new());
+        return Ok(ShadowGroups::default());
     }
     let sample_scale = target.raster_scale() * f64::from(SAMPLES);
     if !sample_scale.is_finite() || sample_scale <= 0.0 {
         return Err(shadow_precision(
             &[],
             "shadow group-parent sampling scale is invalid",
+        ));
+    }
+    let metadata = occurrence_metadata(plan, admitted_effects)?;
+    if metadata > MAX_SHADOW_COVERAGE_BYTES {
+        return Err(shadow_resource(
+            &[],
+            "shadow occurrence metadata exceeds bounded host storage",
         ));
     }
     let sources = geometry_support::group_child_sources(
@@ -155,8 +217,18 @@ pub(super) fn prepare(
         target.max_buffer_bytes(),
         Some((target.canvas(), target.raster_scale())),
     )?;
-    let mut groups = BTreeMap::new();
-    let mut retained_coverage_bytes = 0_u64;
+    let mut groups = ShadowGroups::default();
+    groups
+        .entries
+        .try_reserve_exact(admitted_effects)
+        .map_err(|_| shadow_resource(&[], "shadow group inventory allocation failed"))?;
+    if groups.entries.capacity() > admitted_effects {
+        return Err(shadow_resource(
+            &[],
+            "shadow group inventory capacity exceeds admission",
+        ));
+    }
+    let mut retained_coverage_bytes = metadata;
     let mut aggregate_coverage_work = 0_usize;
     // This is ONLY paint reachability. Alpha-neutral structural support for
     // ancestors is independently prepared from every borrowed F1 group,
@@ -225,6 +297,12 @@ pub(super) fn prepare(
         prepared
             .try_reserve_exact(group.shadows().len())
             .map_err(|_| shadow_resource(path, "shadow preparation list allocation failed"))?;
+        if prepared.capacity() > group.shadows().len() {
+            return Err(shadow_resource(
+                path,
+                "shadow occurrence capacity exceeds admission",
+            ));
+        }
         for effect in group.shadows() {
             let color = linear_color(effect.color());
             // Build the effect in its immediate-parent frame first.
