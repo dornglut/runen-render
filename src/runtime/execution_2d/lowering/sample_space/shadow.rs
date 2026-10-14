@@ -223,7 +223,7 @@ fn prepare_symbolic_unblurred(
     let effect_count =
         f64::from(u16::try_from(authored_effects.max(1)).expect("bounded 256 effects"));
     let tolerance = 1.0 / (1024.0 * effect_count);
-    let mut prepared = Vec::new();
+    let mut prepared = Vec::<PreparedShadow>::new();
     prepared
         .try_reserve_exact(group.shadows().len())
         .map_err(|_| shadow_resource(path, "symbolic effect list allocation failed"))?;
