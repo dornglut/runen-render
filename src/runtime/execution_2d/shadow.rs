@@ -352,6 +352,28 @@ impl SymbolicCaster<'_> {
         self._expression
             .continuous_area_enclosure(root_bounds, owner_to_root, max_depth, fuel)
     }
+
+    /// Retains original borrowed F1 region authority across coherent sample
+    /// blocks. The result is uncertain interval evidence, not paint alpha.
+    #[allow(dead_code, reason = "pending qualified symbolic F3E tile integration")]
+    pub(super) fn continuous_grid_enclosures(
+        &self,
+        root_grid: [u32; 4],
+        samples_per_logical_unit: f64,
+        owner_to_root: Option<Render2dAffineTransform>,
+        max_cell_depth: u8,
+        max_cells: usize,
+        fuel: &mut usize,
+    ) -> Option<Vec<[f64; 2]>> {
+        self._expression.continuous_grid_enclosures(
+            root_grid,
+            samples_per_logical_unit,
+            owner_to_root,
+            max_cell_depth,
+            max_cells,
+            fuel,
+        )
+    }
 }
 
 /// Retaining graph operations here is a structural cutover, NOT admission of

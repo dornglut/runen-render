@@ -1357,6 +1357,158 @@ pub(super) fn certified_area_enclosure(
     recurse(region, bounds, owner_to_root, 0, max_depth, fuel)
 }
 
+/// Evaluate one root-space lattice with shared full/empty region certificates.
+/// A homogeneous N-cell block is classified ONCE and filled as a certified
+/// span. Only blocks intersecting the actual source boundary are subdivided;
+/// only their final individual cells pay adaptive continuous-area integration.
+/// This is a private proof substrate, NOT an alpha texture or paint license.
+/// Every node, region visit and emitted cell shares the caller's work fuel.
+#[allow(
+    dead_code,
+    reason = "private shared-grid F3F coverage gate awaiting compositor qualification"
+)]
+pub(super) fn certified_grid_area_enclosures(
+    region: &NeutralRegion<'_>,
+    root_grid: [u32; 4],
+    root_samples_per_logical_unit: f64,
+    owner_to_root: Option<Render2dAffineTransform>,
+    max_cell_depth: u8,
+    max_cells: usize,
+    fuel: &mut usize,
+) -> Option<Vec<[f64; 2]>> {
+    let [x0, y0, x1, y1] = root_grid;
+    let width = usize::try_from(x1.checked_sub(x0)?).ok()?;
+    let height = usize::try_from(y1.checked_sub(y0)?).ok()?;
+    let area = width.checked_mul(height)?;
+    if max_cell_depth > 12
+        || !root_samples_per_logical_unit.is_finite()
+        || root_samples_per_logical_unit <= 0.0
+        || area == 0
+        || area > max_cells
+        || max_cells > 1_048_576
+        || x1 > i32::MAX as u32 / 2
+        || y1 > i32::MAX as u32 / 2
+    {
+        return None;
+    }
+    let mut result = Vec::new();
+    result.try_reserve_exact(area).ok()?;
+    result.resize(area, [0.0, 1.0]);
+
+    struct Shared<'a, 'r> {
+        region: &'a NeutralRegion<'r>,
+        origin: [u32; 2],
+        width: usize,
+        scale: f64,
+        affine: Option<Render2dAffineTransform>,
+        depth: u8,
+    }
+    impl Shared<'_, '_> {
+        fn root_bounds(&self, [x0, y0, x1, y1]: [u32; 4]) -> [f64; 4] {
+            [
+                f64::from(x0) / self.scale,
+                f64::from(y0) / self.scale,
+                f64::from(x1) / self.scale,
+                f64::from(y1) / self.scale,
+            ]
+        }
+
+        fn fill(
+            &self,
+            bounds: [u32; 4],
+            coverage: [f64; 2],
+            output: &mut [[f64; 2]],
+            fuel: &mut usize,
+        ) -> Option<()> {
+            let cells = usize::try_from(bounds[2] - bounds[0])
+                .ok()?
+                .checked_mul(usize::try_from(bounds[3] - bounds[1]).ok()?)?;
+            if *fuel < cells {
+                *fuel = 0;
+                return None;
+            }
+            *fuel -= cells;
+            for y in bounds[1]..bounds[3] {
+                let row = usize::try_from(y - self.origin[1])
+                    .ok()?
+                    .checked_mul(self.width)?;
+                for x in bounds[0]..bounds[2] {
+                    let index = row.checked_add(usize::try_from(x - self.origin[0]).ok()?)?;
+                    *output.get_mut(index)? = coverage;
+                }
+            }
+            Some(())
+        }
+
+        fn visit(
+            &self,
+            block: [u32; 4],
+            output: &mut [[f64; 2]],
+            fuel: &mut usize,
+        ) -> Option<()> {
+            // Account for interval construction and inverse-affine arithmetic
+            // before any potentially expensive DAG/source predicate.
+            const GRID_NODE_WORK: usize = 128;
+            if *fuel < GRID_NODE_WORK {
+                *fuel = 0;
+                return None;
+            }
+            *fuel -= GRID_NODE_WORK;
+            let rect = self.root_bounds(block);
+            let mut cell = Cell::new([
+                rect[0].next_down(),
+                rect[1].next_down(),
+                rect[2].next_up(),
+                rect[3].next_up(),
+            ])?;
+            if let Some(transform) = self.affine {
+                cell = cell.preimage(transform)?;
+            }
+            match self.region.certify_cell(cell, fuel) {
+                CellCertificate::Inside => return self.fill(block, [1.0, 1.0], output, fuel),
+                CellCertificate::Outside => return self.fill(block, [0.0, 0.0], output, fuel),
+                CellCertificate::Unknown if *fuel == 0 => return None,
+                CellCertificate::Unknown => {}
+            }
+            let [x0, y0, x1, y1] = block;
+            if x1 - x0 == 1 && y1 - y0 == 1 {
+                // The exact same original-F1 classifier and bounded numerical
+                // precision gate used by the preexisting single-cell query.
+                let interval = certified_area_enclosure(
+                    self.region,
+                    rect,
+                    self.affine,
+                    self.depth,
+                    fuel,
+                )?;
+                return self.fill(block, interval, output, fuel);
+            }
+            // Deterministic longest-axis partition. Unlike per-cell loops,
+            // homogeneous interior/exterior quadrants are visited only once.
+            if x1 - x0 >= y1 - y0 && x1 - x0 > 1 {
+                let middle = x0 + (x1 - x0) / 2;
+                self.visit([x0, y0, middle, y1], output, fuel)?;
+                self.visit([middle, y0, x1, y1], output, fuel)?;
+            } else {
+                let middle = y0 + (y1 - y0) / 2;
+                self.visit([x0, y0, x1, middle], output, fuel)?;
+                self.visit([x0, middle, x1, y1], output, fuel)?;
+            }
+            Some(())
+        }
+    }
+    Shared {
+        region,
+        origin: [x0, y0],
+        width,
+        scale: root_samples_per_logical_unit,
+        affine: owner_to_root,
+        depth: max_cell_depth,
+    }
+    .visit(root_grid, &mut result, fuel)?;
+    Some(result)
+}
+
 /// Certify original F1 fill geometry first; apply item clips independently
 /// in their declared immediate-parent space. Painter color/opacity are ignored.
 fn certify_authored_item(item: &Render2dItem, cell: Cell, visits: &mut usize) -> CellCertificate {
@@ -1472,6 +1624,138 @@ fn production_area_enclosure_preserves_bounds_and_fuel_across_affine() {
         .is_none()
     );
     assert_eq!(exhausted, 0);
+}
+
+#[test]
+fn shared_grid_certifies_whole_interior_once_and_retains_2d_boundary_area() {
+    let mut graph = builder();
+    let region = rectangle(&mut graph, [-10.0, -10.0, 100.0, 100.0], &[0, 0]);
+    let start = 16_777_216;
+    let mut shared_fuel = start;
+    let shared = certified_grid_area_enclosures(
+        &region,
+        [0, 0, 64, 64],
+        1.0,
+        None,
+        8,
+        4096,
+        &mut shared_fuel,
+    )
+    .unwrap();
+    assert_eq!(shared.len(), 4096);
+    assert!(shared.iter().all(|value| *value == [1.0, 1.0]));
+    let shared_work = start - shared_fuel;
+
+    let mut separate_fuel = start;
+    for y in 0..64 {
+        for x in 0..64 {
+            assert_eq!(
+                certified_area_enclosure(
+                    &region,
+                    [f64::from(x), f64::from(y), f64::from(x + 1), f64::from(y + 1)],
+                    None,
+                    8,
+                    &mut separate_fuel,
+                ),
+                Some([1.0, 1.0])
+            );
+        }
+    }
+    assert!(start - separate_fuel > shared_work * 50);
+
+    // Four genuinely fractional cells from original rectangle geometry.
+    let region = rectangle(&mut graph, [0.25, 0.25, 1.25, 1.25], &[0, 1]);
+    let mut fuel = start;
+    let coverage = certified_grid_area_enclosures(
+        &region,
+        [0, 0, 2, 2],
+        1.0,
+        None,
+        10,
+        4,
+        &mut fuel,
+    )
+    .unwrap();
+    for (actual, exact) in coverage.iter().zip([0.5625, 0.1875, 0.1875, 0.0625]) {
+        assert!(
+            actual[0] <= exact && exact <= actual[1],
+            "shared tile interval {actual:?} excludes exact cell area {exact}"
+        );
+        assert!(actual[1] - actual[0] < 0.015);
+    }
+    // Resource-limit exhaustion returns no partially usable grid.
+    let mut exhausted = 1;
+    assert!(
+        certified_grid_area_enclosures(
+            &region,
+            [0, 0, 2, 2],
+            1.0,
+            None,
+            10,
+            4,
+            &mut exhausted,
+        )
+        .is_none()
+    );
+    assert_eq!(exhausted, 0);
+    // The admitted array size is non-negotiable even for a full interior.
+    let mut unused = start;
+    assert!(
+        certified_grid_area_enclosures(
+            &region,
+            [0, 0, 64, 64],
+            1.0,
+            None,
+            8,
+            4095,
+            &mut unused,
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn shared_grid_encloses_original_holed_negative_erosion_after_shear() {
+    let mut graph = builder();
+    let rectangles = [
+        [10.0, 10.0, 30.0, 18.0],
+        [10.0, 22.0, 30.0, 30.0],
+        [10.0, 18.0, 18.0, 22.0],
+        [22.0, 18.0, 30.0, 22.0],
+    ];
+    let mut leaves = Vec::new();
+    for (index, rect) in rectangles.into_iter().enumerate() {
+        leaves.push(rectangle(&mut graph, rect, &[0, index]));
+    }
+    let ring = graph.union(leaves, &[0]).unwrap();
+    let shadow = Render2dDropShadow::new(
+        8.0,
+        0.0,
+        0.0,
+        -1.0,
+        crate::composition_2d::Render2dColorRgba8::new(0, 0, 255, 255),
+    )
+    .unwrap();
+    let completed_child = graph.effect(ring, shadow, &[0, 0]).unwrap();
+    let shear = Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap();
+    let mut fuel = 134_217_728;
+    let areas = certified_grid_area_enclosures(
+        &completed_child,
+        [144, 88, 148, 92],
+        4.0,
+        Some(shear),
+        7,
+        16,
+        &mut fuel,
+    )
+    .unwrap();
+    assert_eq!(areas.len(), 16);
+    let low = areas.iter().map(|cell| cell[0]).sum::<f64>() / 16.0;
+    let high = areas.iter().map(|cell| cell[1]).sum::<f64>() / 16.0;
+    let independent = 0.586_837_842_949_633_9;
+    assert!(low <= independent && independent <= high,
+        "certified original F1 curved-hole grid [{low},{high}] missed {independent}");
+    assert!(fuel < 134_217_728);
 }
 
 #[test]

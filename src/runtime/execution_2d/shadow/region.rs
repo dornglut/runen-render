@@ -370,6 +370,30 @@ impl NeutralRegion<'_> {
         certified_cells::certified_area_enclosure(self, bounds, owner_to_root, max_depth, fuel)
     }
 
+    /// Classify shared sample spans before the expensive uncertain boundary
+    /// cells. This exposes a bounded geometric *interval grid*, never a
+    /// physical alpha mask; F3E must separately certify final-color error.
+    #[allow(dead_code, reason = "pending qualified F3F F3E tile consumer")]
+    pub(super) fn continuous_grid_enclosures(
+        &self,
+        root_grid: [u32; 4],
+        samples_per_logical_unit: f64,
+        owner_to_root: Option<Render2dAffineTransform>,
+        max_cell_depth: u8,
+        max_cells: usize,
+        fuel: &mut usize,
+    ) -> Option<Vec<[f64; 2]>> {
+        certified_cells::certified_grid_area_enclosures(
+            self,
+            root_grid,
+            samples_per_logical_unit,
+            owner_to_root,
+            max_cell_depth,
+            max_cells,
+            fuel,
+        )
+    }
+
     pub(super) fn all_root_shadows_provably_empty(&self, shadows: &[Render2dDropShadow]) -> bool {
         !shadows.is_empty()
             && self.certified_source_reach
