@@ -357,8 +357,8 @@ fn materialized_or_symbolic<'a>(
         Ok(mesh) => Ok(NeutralCaster::Mesh(mesh)),
         Err(Render2dExecutionError::UnsupportedEntry {
             path,
-            kind: Render2dUnsupportedContent::Shadows { .. },
-        }) => Ok(NeutralCaster::Symbolic {
+            kind: Render2dUnsupportedContent::Shadows { root_index },
+        }) if !source.contains_positive_disk => Ok(NeutralCaster::Symbolic {
             _expression: Arc::clone(source),
             first_unqualified_owner: path,
         }),

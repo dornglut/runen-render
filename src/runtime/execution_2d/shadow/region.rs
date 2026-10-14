@@ -39,6 +39,11 @@ pub(super) struct NeutralRegion<'a> {
     /// Shaped-text curves require separate outline/control-hull admission;
     /// a physical glyph mesh bound cannot authorize complete signed erosion.
     certified_source_reach: bool,
+    /// One immutable DAG-local eligibility bit. Positive Euclidean disks
+    /// cannot be reinterpreted as the newly transported SIGNED caster;
+    /// retain their earlier typed rejection until their own exact
+    /// continuous ancestor evaluator is independently qualified.
+    pub(super) contains_positive_disk: bool,
 }
 
 enum Kind<'a> {
@@ -522,6 +527,16 @@ impl NeutralRegionBuilder {
             | Kind::Clip { source, .. }
             | Kind::Effect { source, .. } => source.certified_source_reach,
         };
+        let contains_positive_disk = match &kind {
+            Kind::Source(_) => false,
+            Kind::Union(children) => children.iter().any(|child| child.contains_positive_disk),
+            Kind::Affine { source, .. } | Kind::Clip { source, .. } => {
+                source.contains_positive_disk
+            }
+            Kind::Effect { source, shadow } => {
+                shadow.spread() > 0.0 || source.contains_positive_disk
+            }
+        };
         self.nodes = next;
         self.retained_path_units = paths;
         self.graph_work = affine_work;
@@ -533,6 +548,7 @@ impl NeutralRegionBuilder {
             depth,
             envelope,
             certified_source_reach,
+            contains_positive_disk,
         }))
     }
 
