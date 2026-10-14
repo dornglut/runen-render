@@ -923,48 +923,63 @@ fn certified_negative_exterior_witness(
     }
     let center_x = query.x.lo * 0.5 + query.x.hi * 0.5;
     let center_y = query.y.lo * 0.5 + query.y.hi * 0.5;
-    let displacement = radius * 0.9;
-    if !center_x.is_finite() || !center_y.is_finite() || !displacement.is_finite() {
+    if !center_x.is_finite() || !center_y.is_finite() {
         return false;
     }
-    const PROBE_COST: usize = 32;
+    // Orthogonal exterior segments may cover a complete Gaussian halo
+    // even when no SINGLE exterior point is near all halo corners.
+    // Witnesses at one-fifth and nine-tenths of the source radius
+    // are finite deterministic candidates, never a sampled SDF.
+    const PROBE_COST: usize = 48;
     for [ux, uy] in [
         [0.0, 0.0],
-        [-1.0, 0.0],
-        [1.0, 0.0],
-        [0.0, -1.0],
-        [0.0, 1.0],
-        [-1.0, -1.0],
-        [-1.0, 1.0],
-        [1.0, -1.0],
-        [1.0, 1.0],
+        [-0.2, 0.0],
+        [0.2, 0.0],
+        [0.0, -0.2],
+        [0.0, 0.2],
+        [-0.9, 0.0],
+        [0.9, 0.0],
+        [0.0, -0.9],
+        [0.0, 0.9],
+        [-0.9, -0.9],
+        [-0.9, 0.9],
+        [0.9, -0.9],
+        [0.9, 0.9],
     ] {
         if *visits <= PROBE_COST {
             return false;
         }
         *visits -= PROBE_COST;
-        let (qx, qy) = (
-            ux.mul_add(displacement, center_x),
-            uy.mul_add(displacement, center_y),
-        );
-        let Some(point) = Cell::new([qx, qy, qx, qy]) else {
+        let (qx, qy) = (ux.mul_add(radius, center_x), uy.mul_add(radius, center_y));
+        let (Some(x), Some(y)) = (Interval::scalar(qx), Interval::scalar(qy)) else {
             continue;
         };
-        let (Some(dx), Some(dy)) = (
-            Interval::scalar(qx).and_then(|point| point.sub(query.x)),
-            Interval::scalar(qy).and_then(|point| point.sub(query.y)),
-        ) else {
+        let (Some(dx), Some(dy)) = (x.sub(query.x), y.sub(query.y)) else {
             continue;
         };
-        let bound_x = dx.lo.abs().max(dx.hi.abs());
-        let bound_y = dy.lo.abs().max(dy.hi.abs());
-        // Use outward rounding on the full Manhattan displacement.
-        let Some(bound) = Interval::scalar(bound_x)
-            .and_then(|x| x.add(Interval::scalar(bound_y)?))
+        let bound_x = dx.lo.abs().max(dx.hi.abs()).next_up();
+        let bound_y = dy.lo.abs().max(dy.hi.abs()).next_up();
+        // Every (px,py) in the query has a perpendicular exterior
+        // witness at (qx,py) if this entire vertical segment is outside C.
+        if bound_x < radius
+            && source.certify_cell(Cell { x, y: query.y }, visits) == CellCertificate::Outside
+        {
+            return true;
+        }
+        // Same proof with one outside horizontal segment (px,qy).
+        if bound_y < radius
+            && source.certify_cell(Cell { x: query.x, y }, visits) == CellCertificate::Outside
+        {
+            return true;
+        }
+        // Point witnesses also handle genuinely oblique/local exterior.
+        let Some(bound) = Interval::scalar(bound_x).and_then(|x| x.add(Interval::scalar(bound_y)?))
         else {
             continue;
         };
-        if bound.hi < radius && source.certify_cell(point, visits) == CellCertificate::Outside {
+        if bound.hi < radius
+            && source.certify_cell(Cell { x, y }, visits) == CellCertificate::Outside
+        {
             return true;
         }
     }
@@ -1051,9 +1066,7 @@ impl NeutralRegion<'_> {
                 };
                 if source.certify_cell(outer, visits) == CellCertificate::Outside
                     || (spread < 0.0
-                        && certified_negative_exterior_witness(
-                            source, outer, -spread, visits,
-                        ))
+                        && certified_negative_exterior_witness(source, outer, -spread, visits))
                 {
                     CellCertificate::Outside
                 } else {
