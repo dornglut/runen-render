@@ -147,10 +147,7 @@ fn prepare_symbolic_unblurred(
     // Reject even transparent unqualified effects: neutral geometry may be
     // visible to an ancestor regardless of foreground opacity.
     if group.shadows().iter().any(|s| {
-        s.spread() != 0.0
-            || s.sigma() != 0.0
-            || s.offset_x() != 0.0
-            || s.offset_y() != 0.0
+        s.spread() != 0.0 || s.sigma() != 0.0 || s.offset_x() != 0.0 || s.offset_y() != 0.0
     }) {
         return Err(unsupported());
     }
@@ -162,11 +159,15 @@ fn prepare_symbolic_unblurred(
         return Err(unsupported());
     }
     let [a, b, c, d, tx, ty] = parent_to_root.coefficients();
-    let to_root = Render2dAffineTransform::new(a, b, c, d, tx, ty)
-        .map_err(|_| shadow_precision(path, "symbolic owner-to-root transform is unrepresentable"))?;
+    let to_root = Render2dAffineTransform::new(a, b, c, d, tx, ty).map_err(|_| {
+        shadow_precision(path, "symbolic owner-to-root transform is unrepresentable")
+    })?;
     let det = a.mul_add(d, -(b * c));
     if !det.is_finite() || det == 0.0 {
-        return Err(shadow_precision(path, "symbolic ancestor transform is singular"));
+        return Err(shadow_precision(
+            path,
+            "symbolic ancestor transform is singular",
+        ));
     }
     let Some(owner_envelope) = symbolic.certified_reach_envelope() else {
         *aggregate_coverage_work = limit - fuel;
@@ -177,7 +178,10 @@ fn prepare_symbolic_unblurred(
     if !scaled.iter().all(|v| v.is_finite())
         || scaled.iter().any(|v| v.abs() > f64::from(i32::MAX) / 2.0)
     {
-        return Err(shadow_precision(path, "symbolic root coverage reach exceeds precise indices"));
+        return Err(shadow_precision(
+            path,
+            "symbolic root coverage reach exceeds precise indices",
+        ));
     }
     let canvas = [
         i64::from(target.physical_width) * i64::from(SAMPLES),
@@ -208,12 +212,16 @@ fn prepare_symbolic_unblurred(
         .and_then(|bytes| usize::try_from(bytes / 8).ok())
         .ok_or_else(|| shadow_resource(path, "symbolic retained coverage budget exhausted"))?;
     if count > support::MAX_NEUTRAL_MASK_SAMPLES || count > remaining {
-        return Err(shadow_resource(path, "symbolic coverage exceeds aggregate sample admission"));
+        return Err(shadow_resource(
+            path,
+            "symbolic coverage exceeds aggregate sample admission",
+        ));
     }
     // One opaque source-over layer carries <= 255*epsilon linear alpha
     // error; reserve a further 4x margin and divide by the full authored
     // effect count so a worst-case 256-effect overdraw cannot hide error.
-    let effect_count = f64::from(u16::try_from(authored_effects.max(1)).expect("bounded 256 effects"));
+    let effect_count =
+        f64::from(u16::try_from(authored_effects.max(1)).expect("bounded 256 effects"));
     let tolerance = 1.0 / (1024.0 * effect_count);
     let mut prepared = Vec::new();
     prepared
@@ -242,9 +250,9 @@ fn prepare_symbolic_unblurred(
                         (x0 + 1.0) / sample_scale,
                         (y0 + 1.0) / sample_scale,
                     ];
-                    let Some([lo, hi]) = symbolic.continuous_area_enclosure(
-                        bounds, Some(to_root), 10, &mut fuel,
-                    ) else {
+                    let Some([lo, hi]) =
+                        symbolic.continuous_area_enclosure(bounds, Some(to_root), 10, &mut fuel)
+                    else {
                         return Err(shadow_resource(
                             path,
                             "symbolic original-F1 area proof exhausted shared work or precision",
@@ -281,7 +289,10 @@ fn prepare_symbolic_unblurred(
             .checked_add(bytes)
             .ok_or_else(|| shadow_resource(path, "symbolic aggregate retained bytes overflow"))?;
         if next_retained > MAX_SHADOW_COVERAGE_BYTES {
-            return Err(shadow_resource(path, "symbolic retained coverage memory exhausted"));
+            return Err(shadow_resource(
+                path,
+                "symbolic retained coverage memory exhausted",
+            ));
         }
         // Move the first certified mask without doubling peak-live bytes.
         // Other ordered source-over layers consume the same pristine C, but

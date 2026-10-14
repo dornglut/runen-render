@@ -383,9 +383,7 @@ impl NeutralRegion<'_> {
             Kind::Affine { source, to_parent } => {
                 let [a, b, c, d, _, _] = to_parent.components();
                 let det = a.mul_add(d, -(b * c));
-                det.is_finite()
-                    && det != 0.0
-                    && source.qualified_unblurred_fills(fuel)
+                det.is_finite() && det != 0.0 && source.qualified_unblurred_fills(fuel)
             }
             Kind::Clip { source, .. } => source.qualified_unblurred_fills(fuel),
             Kind::Effect { source, shadow } => {

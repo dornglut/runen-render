@@ -2503,7 +2503,13 @@ fn nonabsorbed_zero_blur_holed_erosion_is_painted_by_real_ancestor_vulkan() {
         Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
         Vec::new(),
         Render2dOpacity::OPAQUE,
-        vec![effect(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 255))],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
     ));
     let scene = Render2dComposition::new(vec![ancestor]).unwrap();
     let image = execute(
