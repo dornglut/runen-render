@@ -1715,6 +1715,67 @@ mod tests {
     }
 
     #[test]
+    fn shared_membership_tracks_both_canvas_clip_crossings() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dColorRgba8, Render2dFillRule, Render2dOpacity, Render2dPoint,
+        };
+        let commands = vec![
+            Render2dPathCommand::MoveTo(Render2dPoint::new(-100.0, 0.0).unwrap()),
+            Render2dPathCommand::LineTo(Render2dPoint::new(156.0, 64.0).unwrap()),
+            Render2dPathCommand::LineTo(Render2dPoint::new(156.0, 0.0).unwrap()),
+            Render2dPathCommand::Close,
+        ];
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::path(
+                    Render2dPath::new(Render2dFillRule::EvenOdd, commands).unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let mut graph = builder();
+        let source = graph
+            .source_from_item(
+                support::NeutralMesh {
+                    units_per_parent_logical_unit: 1.0,
+                    triangles: vec![[-100.0, 0.0], [156.0, 64.0], [156.0, 0.0]],
+                    bounds: [-100.0, 0.0, 156.0, 64.0],
+                },
+                &item,
+                &[0],
+            )
+            .unwrap();
+        let mut fuel = 16_777_216;
+        let areas =
+            certified_grid_area_query(&source, [0, 0, 256, 256], 4.0, None, 8, 65_536, &mut fuel)
+                .unwrap();
+        // The original diagonal x=4*y-100 crosses the canvas at y=25 and
+        // y=41. The same pair of canvas clip planes bounds an entirely full
+        // strip below the first crossing and an empty strip above the last.
+        for row in 0..100 {
+            for column in 0..256 {
+                let value = areas[row * 256 + column];
+                assert!(
+                    value[0] <= 1.0 && value[1] >= 1.0,
+                    "full {column},{row}: {value:?}"
+                );
+            }
+        }
+        for row in 164..256 {
+            for column in 0..256 {
+                let value = areas[row * 256 + column];
+                assert!(
+                    value[0] == 0.0 && value[1] <= 1.0 / (2048.0 * 256.0),
+                    "empty {column},{row}: {value:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn shared_membership_preserves_original_bowtie_crossing_and_branch_endpoints() {
         use crate::composition_2d::{
             Render2dBrush, Render2dColorRgba8, Render2dFillRule, Render2dOpacity, Render2dPoint,
