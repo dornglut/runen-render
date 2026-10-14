@@ -345,12 +345,12 @@ impl SymbolicCaster<'_> {
     pub(super) fn continuous_area_enclosure(
         &self,
         root_bounds: [f64; 4],
-        root_to_parent: Option<Render2dAffineTransform>,
+        owner_to_root: Option<Render2dAffineTransform>,
         max_depth: u8,
         fuel: &mut usize,
     ) -> Option<[f64; 2]> {
         self._expression
-            .continuous_area_enclosure(root_bounds, root_to_parent, max_depth, fuel)
+            .continuous_area_enclosure(root_bounds, owner_to_root, max_depth, fuel)
     }
 }
 

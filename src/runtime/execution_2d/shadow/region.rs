@@ -363,11 +363,11 @@ impl NeutralRegion<'_> {
     pub(super) fn continuous_area_enclosure(
         &self,
         bounds: [f64; 4],
-        root_to_parent: Option<Render2dAffineTransform>,
+        owner_to_root: Option<Render2dAffineTransform>,
         max_depth: u8,
         fuel: &mut usize,
     ) -> Option<[f64; 2]> {
-        certified_cells::certified_area_enclosure(self, bounds, root_to_parent, max_depth, fuel)
+        certified_cells::certified_area_enclosure(self, bounds, owner_to_root, max_depth, fuel)
     }
 
     pub(super) fn all_root_shadows_provably_empty(&self, shadows: &[Render2dDropShadow]) -> bool {

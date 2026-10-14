@@ -1157,6 +1157,17 @@ impl NeutralRegion<'_> {
             return CellCertificate::Unknown;
         }
         *visits -= 1;
+        // Qualified reach may prove exclusion, but can never invent interior.
+        // The graph's original-F1 provenance independently bounds the shape.
+        if self.certified_source_reach {
+            if let Some([x0, y0, x1, y1]) = self.envelope {
+                if cell.x.hi < x0 || cell.x.lo > x1 || cell.y.hi < y0 || cell.y.lo > y1 {
+                    return CellCertificate::Outside;
+                }
+            } else {
+                return CellCertificate::Outside;
+            }
+        }
         match &self.kind {
             Kind::Source(mesh) => {
                 if let Some(item) = self.semantic_item {
@@ -1248,8 +1259,8 @@ impl NeutralRegion<'_> {
 }
 
 /// Conservative continuous geometric area enclosure for a caller-defined
-/// rectangle, optionally inverse-mapped from the ROOT into the region owner's
-/// parent frame. This computes NO paint alpha and does not select a Gaussian
+/// ROOT-space rectangle. Supply the FORWARD owner-to-root affine;
+/// the predicate computes the conservative root-to-owner preimage. This computes NO paint alpha and does not select a Gaussian
 /// kernel. Full/empty classification is exact; uncertain leaves contribute
 /// [0, area], never a midpoint guessed to be source geometry.
 ///
@@ -1265,7 +1276,7 @@ impl NeutralRegion<'_> {
 pub(super) fn certified_area_enclosure(
     region: &NeutralRegion<'_>,
     bounds: [f64; 4],
-    root_to_owner: Option<Render2dAffineTransform>,
+    owner_to_root: Option<Render2dAffineTransform>,
     max_depth: u8,
     fuel: &mut usize,
 ) -> Option<[f64; 2]> {
@@ -1276,18 +1287,23 @@ pub(super) fn certified_area_enclosure(
     {
         return None;
     }
+    // Each node charges interval construction, affine-preimage arithmetic,
+    // dyadic subdivision and area bookkeeping; original F1 predicates
+    // independently debit their real geometry/morphology proof work.
+    const AREA_NODE_WORK: usize = 128;
     fn recurse(
         region: &NeutralRegion<'_>,
         rect: [f64; 4],
-        root_to_owner: Option<Render2dAffineTransform>,
+        owner_to_root: Option<Render2dAffineTransform>,
         depth: u8,
         max_depth: u8,
         fuel: &mut usize,
     ) -> Option<[f64; 2]> {
-        if *fuel == 0 {
+        if *fuel < AREA_NODE_WORK {
+            *fuel = 0;
             return None;
         }
-        *fuel -= 1;
+        *fuel -= AREA_NODE_WORK;
         // Every actual root-space point is enclosed despite intermediate
         // f64 coordinate rounding. An affine maps the ENTIRE cell, never
         // just its center; enclosing its preimage as a rectangle is safe.
@@ -1297,7 +1313,7 @@ pub(super) fn certified_area_enclosure(
             rect[2].next_up(),
             rect[3].next_up(),
         ])?;
-        if let Some(transform) = root_to_owner {
+        if let Some(transform) = owner_to_root {
             cell = cell.preimage(transform)?;
         }
         match region.certify_cell(cell, fuel) {
@@ -1321,13 +1337,13 @@ pub(super) fn certified_area_enclosure(
         let mut lower = 0.0;
         let mut upper = 0.0;
         for child in children {
-            let [lo, hi] = recurse(region, child, root_to_owner, depth + 1, max_depth, fuel)?;
+            let [lo, hi] = recurse(region, child, owner_to_root, depth + 1, max_depth, fuel)?;
             lower += lo * 0.25;
             upper += hi * 0.25;
         }
         Some([lower, upper])
     }
-    recurse(region, bounds, root_to_owner, 0, max_depth, fuel)
+    recurse(region, bounds, owner_to_root, 0, max_depth, fuel)
 }
 
 /// Certify original F1 fill geometry first; apply item clips independently
@@ -1395,11 +1411,11 @@ fn production_area_enclosure_preserves_bounds_and_fuel_across_affine() {
         certified_area_enclosure(&region, [10.0, 10.0, 11.0, 11.0], None, 8, &mut budget),
         Some([0.0, 0.0])
     );
-    // Inverse root-to-parent shear: parent x=root_x-0.25*root_y.
+    // Forward parent-to-root shear x_root=x_parent+0.25*y_parent.
     // For y=[0.5,1.5] and x=[-1,1], inverse shear clips the
     // original rectangle to a slanted half-plane. Its exact coverage
     // is 0.375, not a binary center-hit fraction.
-    let transform = Render2dAffineTransform::new(1.0, 0.0, -0.25, 1.0, 0.0, 0.0).unwrap();
+    let transform = Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap();
     let [lo, hi] = certified_area_enclosure(
         &region,
         [-1.0, 0.5, 1.0, 1.5],
@@ -1411,8 +1427,24 @@ fn production_area_enclosure_preserves_bounds_and_fuel_across_affine() {
     // The exact intersecting area is integral x from 0.25*y to 1,
     // y in [0.5,1.5], divided by total root area 2.
     let exact = 0.375;
-    assert!(lo <= exact && exact <= hi);
+    assert!(lo <= exact && exact <= hi, "positive shear interval [{lo}, {hi}] missed {exact}");
     assert!(hi - lo < 0.01);
+    // Reverse the FORWARD shear. The threshold x_root>=-0.25*y_root
+    // gives normalized source intersection area 0.625, not 0.375.
+    let reflected = Render2dAffineTransform::new(1.0, 0.0, -0.25, 1.0, 0.0, 0.0).unwrap();
+    let [reverse_lo, reverse_hi] = certified_area_enclosure(
+        &region,
+        [-1.0, 0.5, 1.0, 1.5],
+        Some(reflected),
+        9,
+        &mut budget,
+    )
+    .unwrap();
+    assert!(
+        reverse_lo <= 0.625 && 0.625 <= reverse_hi,
+        "reversed shear interval [{reverse_lo}, {reverse_hi}] missed 0.625"
+    );
+    assert!(reverse_hi - reverse_lo < 0.01);
     assert!(budget < 16_777_216);
     let mut exhausted = 1;
     assert!(
