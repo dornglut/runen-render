@@ -2598,7 +2598,8 @@ fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work()
         Render2dOpacity::OPAQUE,
         // Shifted erosion is NOT a subset of the original C, so a
         // nonconvex nested region with a SHADOW-CONSUMING ancestor
-        // must remain UnsupportedEntry with the exact F1 owner path.
+        // must either qualify against the source-exact pixel budget or fail
+        // atomically with the exact original-F1 owner path.
         vec![effect(
             0.5,
             0.0,
@@ -2634,18 +2635,29 @@ fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work()
         &target,
     );
     let failure = match result {
-        Ok(_) => panic!("nonabsorbed shifted nonconvex erosion must not become a fake rectangle"),
+        Ok(_) => panic!("unqualified shifted concave source must not become a guessed mask"),
         Err(error) => error,
     };
-    assert!(matches!(
-        failure,
+    // The old nonpolygonal UnsupportedEntry may now reach a certified
+    // continuous-area evaluator. If its admitted precision or work is
+    // insufficient, the exact owner must reject before GPU work instead
+    // of silently inventing the L's eroded concave boundary.
+    assert!(match failure {
         Render2dExecutionError::UnsupportedEntry {
             path,
             kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
                 root_index: 0,
             },
-        } if path == [0, 0]
-    ));
+        } => path == [0, 0],
+        Render2dExecutionError::SampleSpace {
+            kind:
+                runen_render::execution_2d::Render2dSampleSpaceError::PrecisionLimit
+                | runen_render::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+            path: Some(path),
+            ..
+        } => path == [0, 0],
+        _ => false,
+    });
     drop(texture);
 }
 
