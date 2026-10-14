@@ -941,6 +941,10 @@ fn certified_negative_exterior_witness(
         [0.9, 0.0],
         [0.0, -0.9],
         [0.0, 0.9],
+        [-0.95, 0.0],
+        [0.95, 0.0],
+        [0.0, -0.95],
+        [0.0, 0.95],
         [-0.9, -0.9],
         [-0.9, 0.9],
         [0.9, -0.9],
@@ -1269,6 +1273,54 @@ fn original_f1_holed_nested_negative_exterior_witness_survives_ancestor_shear() 
         next_effect.certify_cell(Cell::new([60.0, 20.0, 60.1, 20.1]).unwrap(), &mut visits),
         CellCertificate::Outside
     );
+    // Independent boundary oracle for the NONABSORBED right-hand strip:
+    // C outer xmax=30; Euclidean radius 1 erodes it to x<=29.
+    // Offset +8.5 then ancestor x_root=x_parent+0.5*y_parent:
+    // right support edge is x_root=37.5+0.5*y_root.
+    // All original C ends at x_root<=30+0.5*y, far to the left.
+    // Both finite Gaussian halos are <=.003 in their own frames.
+    // Every correlated site of pixel (43,12) is >=.0625 from
+    // this edge, so its NORMALIZED Gaussian coverage is exactly
+    // 0 or 1; no quadrature tolerance or physical mesh is involved.
+    let boundary_shadow =
+        Render2dDropShadow::new(8.5, 0.0, 0.001, -1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
+    let boundary_effect = graph
+        .effect(Arc::clone(&ring), boundary_shadow, &[0, 5])
+        .unwrap();
+    let boundary_union = graph
+        .union(vec![Arc::clone(&ring), boundary_effect], &[0])
+        .unwrap();
+    let boundary_affine = graph
+        .affine(
+            boundary_union,
+            Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 0.0, 0.0).unwrap(),
+            &[0],
+        )
+        .unwrap();
+    let ancestor_blur =
+        Render2dDropShadow::new(0.0, 0.0, 0.001, 0.0, Render2dColorRgba8::TRANSPARENT).unwrap();
+    let boundary_ancestor = graph.effect(boundary_affine, ancestor_blur, &[0]).unwrap();
+    let mut fully_covered = 0;
+    let mut fully_empty = 0;
+    for sy in 0..4 {
+        for sx in 0..4 {
+            let x = 43.0 + (f64::from(sx) + 0.5) / 4.0;
+            let y = 12.0 + (f64::from(sy) + 0.5) / 4.0;
+            let expected = if x < 37.5 + 0.5 * y {
+                fully_covered += 1;
+                CellCertificate::Inside
+            } else {
+                fully_empty += 1;
+                CellCertificate::Outside
+            };
+            assert_eq!(
+                boundary_ancestor.certify_cell(Cell::new([x, y, x, y]).unwrap(), &mut visits),
+                expected,
+                "source-exact nested boundary site ({sx},{sy})"
+            );
+        }
+    }
+    assert_eq!((fully_covered, fully_empty), (12, 4));
     assert!(visits < 16_777_216 && visits > 16_000_000);
 }
 
