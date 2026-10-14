@@ -189,6 +189,21 @@ pub(super) fn prepare(
                 Some((qualified.radius, qualified.curved_owner.as_slice())),
                 false,
             ),
+            geometry_support::NeutralCaster::Symbolic {
+                first_unqualified_owner,
+                ..
+            } => {
+                // The exact original-F1 DAG is retained to this owner boundary,
+                // but no continuous whole-pixel evaluator has yet qualified
+                // its nonpolygonal nested signed support. Reject before
+                // creating a physical mask or mutating the caller target.
+                return Err(crate::runtime::execution_2d::unsupported_at(
+                    first_unqualified_owner,
+                    crate::execution_2d::Render2dUnsupportedContent::Shadows {
+                        root_index: first_unqualified_owner[0],
+                    },
+                ));
+            }
         };
         let mut prepared = Vec::new();
         prepared
@@ -199,8 +214,9 @@ pub(super) fn prepare(
             // Build the effect in its immediate-parent frame first.
             // Zero spread and zero blur commute with ancestor affine
             // projection, so a nested translated C remains exact triangles.
-            // Nonzero nested kernels reject in group_child_sources rather
-            // than being incorrectly applied in root space.
+            // Unqualified nonpolygonal owner-frame kernels retain their
+            // symbolic F1 DAG until this preflight boundary, then reject
+            // rather than being incorrectly applied in root space.
             // Exact Euclidean Minkowski associativity:
             // (C union (C plus disk(r))) plus disk(s) =
             // C plus disk(r+s), for nonnegative s. Both radii act in

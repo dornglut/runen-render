@@ -2423,6 +2423,63 @@ fn absorbed_translated_holed_erosion_paints_and_preserves_ancestor_sheared_suppo
 }
 
 #[test]
+fn nonabsorbed_holed_child_paints_without_an_ancestor_shadow_consumer() {
+    let Some(context) = context() else { return };
+    // Genuine original-F1 rectangular ring with open hole [18,22]^2.
+    // Its child negative support is a CURVED holed expression (not
+    // polygonizable), but no ancestor shadow needs to consume it.
+    // Rejecting its unused physical caster would incorrectly block its
+    // separately admitted red F3E signed-Gaussian painting.
+    let ring = vec![
+        caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 20.0, 8.0),
+        caster(Render2dColorRgba8::TRANSPARENT, 10.0, 22.0, 20.0, 8.0),
+        caster(Render2dColorRgba8::TRANSPARENT, 10.0, 18.0, 8.0, 4.0),
+        caster(Render2dColorRgba8::TRANSPARENT, 22.0, 18.0, 8.0, 4.0),
+    ];
+    let nested = Render2dEntry::group(Render2dGroup::new(
+        ring,
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![effect(
+            8.0,
+            0.0,
+            0.1,
+            -1.0,
+            Render2dColorRgba8::new(255, 0, 0, 255),
+        )],
+    ));
+    let outer = Render2dEntry::group(Render2dGroup::new(
+        vec![nested],
+        // Anisotropic parent/root x-shear is applied AFTER the
+        // child's immediate-parent Euclidean erosion and blur.
+        Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 0.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        Vec::new(),
+    ));
+    let scene = Render2dComposition::new(vec![outer]).unwrap();
+    let image = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &scene,
+        &Render2dResourceBindings::default(),
+        "F3F nonabsorbed curved holed child is physically painted when ancestor needs no caster",
+    );
+    // x_parent = x_root - .5*y_root. At [31,12], inverse
+    // x≈24.75,y≈12.5; undoing +8 yields material in the
+    // upper ring bar, >1 unit from all exposed F1 edges.
+    assert_eq!(pixel(&image, 31, 12), [255, 0, 0, 255]);
+    // At [38,20], inverse x≈27.75; undoing +8 gives
+    // x≈19.75, in the real original hole [18,22]^2.
+    // Eroding the material by disk(1) preserves/exaggerates
+    // that void. Neither original alpha nor its outer AABB
+    // is allowed to fill this pixel.
+    assert_eq!(pixel(&image, 38, 20), [0, 0, 0, 0]);
+    assert_eq!(pixel(&image, 48, 20), [0, 0, 0, 0]);
+}
+
+#[test]
 fn nonabsorbed_offset_holed_erosion_remains_typed_unsupported() {
     let Some(context) = context() else { return };
     let child = Render2dEntry::group(Render2dGroup::new(

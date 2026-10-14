@@ -16,7 +16,9 @@ use crate::composition_2d::{
     Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dResourceBindings,
     Render2dResourceValue,
 };
-use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
+use crate::execution_2d::{
+    Render2dExecutionError, Render2dSampleSpaceError, Render2dUnsupportedContent,
+};
 use std::{collections::BTreeMap, sync::Arc};
 
 mod region;
@@ -323,13 +325,45 @@ fn negative_shadow_absorbed_by_source(effect: Render2dDropShadow) -> bool {
 /// previously unsupported mixed signed morphology or repeated curved effects.
 /// One renderer-private physical realization of an immutable F1 caster.
 /// The qualified disk remains an exact curve, never triangle/AABB/alpha support.
-pub(super) enum NeutralCaster {
+pub(super) enum NeutralCaster<'a> {
     Mesh(Arc<NeutralMesh>),
     /// Every original F1 leaf is an exact straight rectangle or triangle fill.
     /// Signed disk integration may consume this geometry after original-F1 proof;
     /// this does not re-author a neutral support representation.
     OriginalStraightPolygonUnion(Arc<NeutralMesh>),
     RoundedRectangle(region::CertifiedRoundedRectangle),
+    /// The ONE immutable borrowed-F1 neutral expression has reached its
+    /// consuming F3E boundary without being falsified into a disposable
+    /// polygon. No raster path for this variant is admitted yet; it retains
+    /// exact provenance and the first unqualified owner for typed rejection.
+    Symbolic {
+        _expression: Arc<region::NeutralRegion<'a>>,
+        first_unqualified_owner: Vec<usize>,
+    },
+}
+
+/// Preserve one borrowed original-F1 expression when polygonalization
+/// cannot represent its exact geometry. This is a transport boundary, NOT
+/// permission to paint or sample unknown curved regions. Resource/precision
+/// errors never become Symbolic. The consumer rejects with the original
+/// authored path before any target mutation until a bounded renderer exists.
+fn materialized_or_symbolic<'a>(
+    graph: &mut region::NeutralRegionBuilder,
+    source: &Arc<region::NeutralRegion<'a>>,
+    original_straight: bool,
+) -> Result<NeutralCaster<'a>, Render2dExecutionError> {
+    match graph.materialize(source) {
+        Ok(mesh) if original_straight => Ok(NeutralCaster::OriginalStraightPolygonUnion(mesh)),
+        Ok(mesh) => Ok(NeutralCaster::Mesh(mesh)),
+        Err(Render2dExecutionError::UnsupportedEntry {
+            path,
+            kind: Render2dUnsupportedContent::Shadows { .. },
+        }) => Ok(NeutralCaster::Symbolic {
+            _expression: Arc::clone(source),
+            first_unqualified_owner: path,
+        }),
+        Err(error) => Err(error),
+    }
 }
 
 pub(super) fn group_child_sources<'a>(
@@ -339,7 +373,7 @@ pub(super) fn group_child_sources<'a>(
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
     root_canvas: Option<([f64; 2], f64)>,
-) -> Result<BTreeMap<usize, NeutralCaster>, Render2dExecutionError> {
+) -> Result<BTreeMap<usize, NeutralCaster<'a>>, Render2dExecutionError> {
     group_child_sources_with_probe(
         plan,
         bindings,
@@ -363,7 +397,7 @@ fn group_child_sources_with_probe<'a>(
     max_buffer_bytes: u64,
     root_canvas: Option<([f64; 2], f64)>,
     mut inspect: impl FnMut(&Arc<region::NeutralRegion<'a>>, &[usize]),
-) -> Result<BTreeMap<usize, NeutralCaster>, Render2dExecutionError> {
+) -> Result<BTreeMap<usize, NeutralCaster<'a>>, Render2dExecutionError> {
     let mut active = Vec::<SourceFrame<'a>>::new();
     let mut sources = BTreeMap::new();
     let mut graph = region::NeutralRegionBuilder::new(scales, max_buffer_bytes);
@@ -447,12 +481,7 @@ fn group_child_sources_with_probe<'a>(
                                     .iter()
                                     .any(|shadow| shadow.spread() < 0.0)
                                     && graph.proven_original_straight_polygon_union(&in_parent)?;
-                                let mesh = graph.materialize(&in_parent)?;
-                                if proven {
-                                    NeutralCaster::OriginalStraightPolygonUnion(mesh)
-                                } else {
-                                    NeutralCaster::Mesh(mesh)
-                                }
+                                materialized_or_symbolic(&mut graph, &in_parent, proven)?
                             }
                         }
                     } else {
@@ -462,12 +491,11 @@ fn group_child_sources_with_probe<'a>(
                             .iter()
                             .any(|effect| effect.spread() < 0.0)
                             && graph.proven_original_straight_polygon_union(&in_parent)?;
-                        let mesh = graph.materialize(&in_parent)?;
-                        if exact_original_polygons {
-                            NeutralCaster::OriginalStraightPolygonUnion(mesh)
-                        } else {
-                            NeutralCaster::Mesh(mesh)
-                        }
+                        materialized_or_symbolic(
+                            &mut graph,
+                            &in_parent,
+                            exact_original_polygons,
+                        )?
                     };
                     sources.insert(frame.begin_event, source);
                     if !nested {
@@ -505,12 +533,22 @@ fn group_child_sources_with_probe<'a>(
                         let effect_region =
                             graph.effect(Arc::clone(&in_parent), effect, &frame.path)?;
                         if effect.spread() <= 0.0 {
-                            // Preserve the existing admitted subset: convex
-                            // negative erosion, zero spread and Gaussian
-                            // support must actually qualify now. A negative
-                            // nonconvex caster still fails with its owner path,
-                            // even when no ancestor would paint from it.
-                            graph.materialize(&effect_region)?;
+                            // Existing fully polygonal cases still materialize
+                            // eagerly and account for real geometry/work.
+                            // An unmaterializable SIGNED disk stays symbolic
+                            // through the ancestor F1 DAG instead of being
+                            // silently approximated or rejected before F3E
+                            // can inspect the complete authored expression.
+                            // A missing proof is NOT a resource/precision
+                            // exception; those errors still fail immediately.
+                            match graph.materialize(&effect_region) {
+                                Ok(_) => {}
+                                Err(Render2dExecutionError::UnsupportedEntry {
+                                    kind: Render2dUnsupportedContent::Shadows { .. },
+                                    ..
+                                }) if effect.spread() < 0.0 => {}
+                                Err(error) => return Err(error),
+                            }
                         }
                         // Positive disks remain symbolic until a certified
                         // ancestor region query is independently qualified;
@@ -1164,6 +1202,93 @@ mod tests {
                 path,
                 kind: Render2dUnsupportedContent::Shadows { root_index: 0 },
             }) if path == [0, 0]
+        ));
+    }
+
+    #[test]
+    fn nonabsorbed_holed_signed_region_reaches_f3e_as_borrowed_symbolic_dag() {
+        use crate::composition_2d::{
+            Render2dComposition, Render2dEntry, Render2dGroup, Render2dOpacity, Render2dRect,
+            Render2dShape,
+        };
+        let make_rect = |x, y, width, height| {
+            Render2dEntry::item(Render2dItem::new(
+                Render2dPrimitive::Fill {
+                    shape: Render2dShape::rect(
+                        Render2dRect::new(x, y, width, height).unwrap(),
+                    ),
+                    brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+                },
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::TRANSPARENT,
+            ))
+        };
+        // True touching-seam F1 rectangular ring, not its bounding box.
+        // Disk erosion rounds the inner hole and cannot be represented as
+        // finite exact triangles. The offset causes nonabsorbed support.
+        let ring = [
+            make_rect(10.0, 10.0, 20.0, 8.0),
+            make_rect(10.0, 22.0, 20.0, 8.0),
+            make_rect(10.0, 18.0, 8.0, 4.0),
+            make_rect(22.0, 18.0, 8.0, 4.0),
+        ];
+        let inner = Render2dGroup::new(
+            ring.into(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            vec![
+                Render2dDropShadow::new(
+                    8.0, 0.0, 0.01, -1.0, Render2dColorRgba8::TRANSPARENT,
+                )
+                .unwrap(),
+            ],
+        );
+        let outer = Render2dGroup::new(
+            vec![Render2dEntry::group(inner)],
+            Render2dAffineTransform::new(1.0, 0.0, 0.5, 1.0, 0.0, 0.0).unwrap(),
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![
+                Render2dDropShadow::new(
+                    0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 255),
+                )
+                .unwrap(),
+            ],
+        );
+        let scene = Render2dComposition::new(vec![Render2dEntry::group(outer)]).unwrap();
+        let plan = scene::analyze(&scene).unwrap();
+        let sources = group_child_sources(
+            &plan,
+            &Render2dResourceBindings::default(),
+            &BTreeMap::new(),
+            NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            1_048_576,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            sources.get(&0),
+            Some(NeutralCaster::Symbolic {
+                first_unqualified_owner,
+                ..
+            }) if first_unqualified_owner.as_slice() == [0, 0]
+        ));
+        assert!(matches!(
+            sources.get(&1),
+            Some(NeutralCaster::OriginalStraightPolygonUnion(_))
+        ));
+        // The original F1 DAG still exists at the F3E consumer, not a
+        // surrogate mesh or a mask. Its expression is retained by Arc,
+        // while painting remains rejected until bounded curved integration.
+        assert!(matches!(
+            sources.get(&0),
+            Some(NeutralCaster::Symbolic { _expression, .. })
+                if Arc::strong_count(_expression) > 0
         ));
     }
 
