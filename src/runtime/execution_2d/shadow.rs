@@ -321,6 +321,22 @@ fn negative_shadow_absorbed_by_source(effect: Render2dDropShadow) -> bool {
 /// propagation. A positive disk is never silently replaced with child C,
 /// an axis-aligned bound, cached alpha or an approximate distance field.
 ///
+/// Deliberately opaque borrowed original-F1 source-neutral expression.
+/// The F3E consumer can only observe its owner-path rejection until a
+/// separately certified continuous coverage interface is implemented.
+/// Keeping the DAG private prevents callers from treating bounds or
+/// disposable alpha as geometric membership.
+pub(super) struct SymbolicCaster<'a> {
+    _expression: Arc<region::NeutralRegion<'a>>,
+    first_unqualified_owner: Vec<usize>,
+}
+
+impl SymbolicCaster<'_> {
+    pub(super) fn owner_path(&self) -> &[usize] {
+        &self.first_unqualified_owner
+    }
+}
+
 /// Retaining graph operations here is a structural cutover, NOT admission of
 /// previously unsupported mixed signed morphology or repeated curved effects.
 /// One renderer-private physical realization of an immutable F1 caster.
@@ -336,10 +352,7 @@ pub(super) enum NeutralCaster<'a> {
     /// consuming F3E boundary without being falsified into a disposable
     /// polygon. No raster path for this variant is admitted yet; it retains
     /// exact provenance and the first unqualified owner for typed rejection.
-    Symbolic {
-        _expression: Arc<region::NeutralRegion<'a>>,
-        first_unqualified_owner: Vec<usize>,
-    },
+    Symbolic(SymbolicCaster<'a>),
 }
 
 /// Preserve one borrowed original-F1 expression when polygonalization
@@ -357,11 +370,11 @@ fn materialized_or_symbolic<'a>(
         Ok(mesh) => Ok(NeutralCaster::Mesh(mesh)),
         Err(Render2dExecutionError::UnsupportedEntry {
             path,
-            kind: Render2dUnsupportedContent::Shadows { root_index },
-        }) if !source.contains_positive_disk => Ok(NeutralCaster::Symbolic {
+            kind: Render2dUnsupportedContent::Shadows { .. },
+        }) if !source.contains_positive_disk => Ok(NeutralCaster::Symbolic(SymbolicCaster {
             _expression: Arc::clone(source),
             first_unqualified_owner: path,
-        }),
+        })),
         Err(error) => Err(error),
     }
 }
@@ -1269,22 +1282,12 @@ mod tests {
         .unwrap();
         assert!(matches!(
             sources.get(&0),
-            Some(NeutralCaster::Symbolic {
-                first_unqualified_owner,
-                ..
-            }) if first_unqualified_owner.as_slice() == [0, 0]
+            Some(NeutralCaster::Symbolic(symbolic))
+                if symbolic.owner_path() == [0, 0]
         ));
         assert!(matches!(
             sources.get(&1),
             Some(NeutralCaster::OriginalStraightPolygonUnion(_))
-        ));
-        // The original F1 DAG still exists at the F3E consumer, not a
-        // surrogate mesh or a mask. Its expression is retained by Arc,
-        // while painting remains rejected until bounded curved integration.
-        assert!(matches!(
-            sources.get(&0),
-            Some(NeutralCaster::Symbolic { _expression, .. })
-                if Arc::strong_count(_expression) > 0
         ));
     }
 

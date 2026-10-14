@@ -189,18 +189,16 @@ pub(super) fn prepare(
                 Some((qualified.radius, qualified.curved_owner.as_slice())),
                 false,
             ),
-            geometry_support::NeutralCaster::Symbolic {
-                first_unqualified_owner,
-                ..
-            } => {
+            geometry_support::NeutralCaster::Symbolic(symbolic) => {
                 // The exact original-F1 DAG is retained to this owner boundary,
                 // but no continuous whole-pixel evaluator has yet qualified
                 // its nonpolygonal nested signed support. Reject before
                 // creating a physical mask or mutating the caller target.
+                let owner = symbolic.owner_path();
                 return Err(crate::runtime::execution_2d::unsupported_at(
-                    first_unqualified_owner,
+                    owner,
                     crate::execution_2d::Render2dUnsupportedContent::Shadows {
-                        root_index: first_unqualified_owner[0],
+                        root_index: owner[0],
                     },
                 ));
             }
