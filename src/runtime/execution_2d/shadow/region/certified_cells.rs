@@ -908,7 +908,7 @@ fn certified_adaptive_finite_gaussian_coverage(
 /// than square roots. `query` already includes the child Gaussian
 /// square halo in the effect owner's immediate-parent frame.
 ///
-/// Trial nine exact representable witness locations. This is a finite
+/// Try a fixed, bounded set of exact representable witness locations. This is a finite
 /// source-authoritative predicate, NOT an SDF, alpha mask, or sampled
 /// approximation. A missed witness means Unknown, never false Outside.
 /// Cost is charged to the existing shared source-query fuel.
@@ -932,7 +932,7 @@ fn certified_negative_exterior_witness(
     // are finite deterministic candidates, never a sampled SDF.
     const PROBE_COST: usize = 48;
     for [ux, uy] in [
-        [0.0, 0.0],
+        [0.0_f64, 0.0],
         [-0.2, 0.0],
         [0.2, 0.0],
         [0.0, -0.2],
