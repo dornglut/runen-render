@@ -1261,14 +1261,16 @@ impl NeutralRegion<'_> {
                 if definite_inside == Some(CellCertificate::Inside) {
                     return CellCertificate::Inside;
                 }
-                // True disk erosion is a SUBSET of the original F1 support.
-                // With ZERO Gaussian halo, proving the translated query
-                // Outside pristine C avoids 64 disk-cover strips and up to
-                // 256 exterior point witnesses. Positive sigma cannot take
-                // this shortcut because finite Gaussian support extends C.
+                // True disk erosion is a SUBSET of original F1 support.
+                // With zero Gaussian halo, either the already-certified
+                // expanded source cell or the narrower translated query
+                // being Outside proves the eroded query Outside. The first
+                // certificate is reused without another F1 traversal.
+                // Finite Gaussian support can extend beyond pristine C.
                 if spread < 0.0
                     && shadow.sigma() == 0.0
-                    && source.certify_cell(translated, visits) == CellCertificate::Outside
+                    && (definite_inside == Some(CellCertificate::Outside)
+                        || source.certify_cell(translated, visits) == CellCertificate::Outside)
                 {
                     return CellCertificate::Outside;
                 }
