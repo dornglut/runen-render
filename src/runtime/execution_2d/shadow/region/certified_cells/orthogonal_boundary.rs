@@ -996,6 +996,88 @@ mod tests {
     }
 
     #[test]
+    fn finite_square_whole_target_continuous_area_feasibility() {
+        let item = holed_item(Render2dFillRule::EvenOdd);
+        let mut graph = builder();
+        let source = graph.source_from_item(fake_mesh(), &item, &[0, 0]).unwrap();
+        let child = graph
+            .effect(
+                Arc::clone(&source),
+                Render2dDropShadow::new(8.0, 0.0, 0.03125, -1.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+                &[0],
+            )
+            .unwrap();
+        let completed = graph.union(vec![source, child], &[0]).unwrap();
+        let projected = graph
+            .affine(
+                completed,
+                Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
+                &[0],
+            )
+            .unwrap();
+        let parent = graph
+            .effect(
+                projected,
+                Render2dDropShadow::new(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    Render2dColorRgba8::new(0, 0, 255, 255),
+                )
+                .unwrap(),
+                &[0],
+            )
+            .unwrap();
+        let mut fuel = 16_777_216;
+        let areas =
+            certified_grid_area_query(&parent, [0, 0, 256, 256], 4.0, None, 8, 65_536, &mut fuel);
+        assert!(
+            areas.is_ok(),
+            "complete finite-square query failed: {:?}, fuel={fuel}",
+            areas.as_ref().err()
+        );
+        let areas = areas.unwrap();
+        assert_eq!(areas.len(), 65_536);
+        assert!(areas.iter().all(|a| a[1] - a[0] <= 1.0 / (2048.0 * 256.0)));
+        // Independent 120-digit Decimal integration. With h=3/32,
+        // w=y-22+h and base=35.5-1.25h, the hole boundary is
+        // x=base+w/4+sqrt(1-w*w) for h<=w<=1; above w=1 it is full.
+        // Circle-segment primitives use an independently reduced 190-term
+        // atan series with remainder below 2^-381/381, never Conic calls.
+        let reference = [
+            0.0,
+            0.022_382_673_718_899_372,
+            0.0625,
+            0.0625,
+            0.0,
+            0.030_118_830_474_179_53,
+            0.0625,
+            0.0625,
+            0.006_334_288_852_653_319,
+            0.056_225_039_450_836_93,
+            0.0625,
+            0.0625,
+            0.056_973_470_109_734_34,
+            0.0625,
+            0.0625,
+            0.0625,
+        ];
+        for (index, area) in reference.into_iter().enumerate() {
+            let actual = areas[(88 + index / 4) * 256 + 144 + index % 4];
+            let expected = area * 16.0;
+            assert!(
+                actual[0] <= expected && expected <= actual[1],
+                "cell{index}: {actual:?} vs {expected}"
+            );
+        }
+        assert_eq!(areas[0], [0.0, 0.0]);
+        assert_eq!(areas[80 * 256 + 192], [0.0, 0.0]);
+        eprintln!("finite whole-target work {}", 16_777_216 - fuel);
+    }
+
+    #[test]
     fn original_union_seam_is_not_an_exposed_erosion_boundary() {
         let item = |x| {
             Render2dItem::new(

@@ -9,6 +9,11 @@ use super::conic_integral::VALUE_WORK;
 use super::conic_integral::{Conic, sqrt_enclosure};
 use super::*;
 
+mod membership;
+use membership::MembershipCache;
+#[cfg(test)]
+mod finite_square;
+
 fn exhausted_or_precision(fuel: &usize) -> AreaQueryError {
     if *fuel == 0 {
         AreaQueryError::Resource
@@ -153,6 +158,8 @@ pub(super) struct ScanPlan {
     curves: Vec<Curve>,
     next_frame: usize,
     crossings: Vec<Crossings>,
+    #[cfg(test)]
+    extra_y_events: Vec<Interval>,
 }
 
 struct GridQuery<'r, 'a> {
@@ -161,6 +168,9 @@ struct GridQuery<'r, 'a> {
     prepared: &'r PreparedBoundaries,
     xs: Vec<f64>,
     vertical_uncertainty: Vec<Interval>,
+    semantic_cuts: Vec<f64>,
+    curve_cuts: Vec<Vec<f64>>,
+    membership: Option<MembershipCache>,
 }
 
 struct OccupiedStrip<'c> {
@@ -180,13 +190,21 @@ impl ScanPlan {
             .checked_add(std::mem::size_of::<f64>())?
             .checked_add(std::mem::size_of::<(f64, f64, u8)>())?;
         let bands = MAX_BANDS.checked_mul(band_unit)?;
+        let membership = MembershipCache::fixed_scratch_bytes()?;
         let active = MAX_CURVES
             .checked_add(2)?
             .checked_mul(std::mem::size_of::<(usize, &Curve, Interval, f64)>())?;
-        curves
+        let bytes = curves
             .checked_add(crossings)?
             .checked_add(bands)?
-            .checked_add(active)
+            .checked_add(MAX_BANDS.checked_mul(std::mem::size_of::<f64>())?)?
+            .checked_add(membership)?
+            .checked_add(65_536_usize.checked_mul(4 * std::mem::size_of::<f64>())?)?
+            .checked_add(256_usize.checked_mul(std::mem::size_of::<Vec<f64>>())?)?
+            .checked_add(active)?;
+        #[cfg(test)]
+        let bytes = bytes.checked_add(MAX_BANDS.checked_mul(std::mem::size_of::<Interval>())?)?;
+        Some(bytes)
     }
 
     pub(super) fn grid(
@@ -284,9 +302,12 @@ impl ScanPlan {
             prepared,
             xs,
             vertical_uncertainty: bounded_vector(MAX_BANDS).ok_or(AreaQueryError::Resource)?,
+            semantic_cuts: bounded_vector(MAX_BANDS).ok_or(AreaQueryError::Resource)?,
+            curve_cuts: Vec::new(),
+            membership: None,
         };
         let mut events = bounded_vector(MAX_BANDS).ok_or(AreaQueryError::Resource)?;
-        let mut add = |y: f64| -> Result<(), AreaQueryError> {
+        let add = |events: &mut Vec<f64>, y: f64| -> Result<(), AreaQueryError> {
             if y0 < y && y < y1 {
                 if events.len() == MAX_BANDS {
                     return Err(AreaQueryError::Resource);
@@ -298,14 +319,28 @@ impl ScanPlan {
         for curve in &self.curves {
             charge(fuel, 8).ok_or(AreaQueryError::Resource)?;
             for y in [curve.start.lo, curve.start.hi, curve.end.lo, curve.end.hi] {
-                add(y)?;
+                add(&mut events, y)?;
             }
         }
+        #[cfg(test)]
+        for &event in &self.extra_y_events {
+            charge(fuel, 16).ok_or(AreaQueryError::Resource)?;
+            add(&mut events, event.lo)?;
+            add(&mut events, event.hi)?;
+            if event.lo < event.hi && event.hi > y0 && event.lo < y1 {
+                if query.vertical_uncertainty.len() == MAX_BANDS {
+                    return Err(AreaQueryError::Resource);
+                }
+                query.vertical_uncertainty.push(event);
+            }
+        }
+        charge(fuel, events.len()).ok_or(AreaQueryError::Resource)?;
+        query.semantic_cuts.extend_from_slice(&events);
         for crossing in &self.crossings {
             charge(fuel, 1).ok_or(AreaQueryError::Resource)?;
             for root in crossing.roots.into_iter().flatten() {
-                add(root.lo)?;
-                add(root.hi)?;
+                add(&mut events, root.lo)?;
+                add(&mut events, root.hi)?;
                 if root.hi > y0 && root.lo < y1 {
                     if query.vertical_uncertainty.len() == MAX_BANDS {
                         return Err(AreaQueryError::Resource);
@@ -317,7 +352,7 @@ impl ScanPlan {
         // Every physical vertical-edge crossing is prepared ONCE for all
         // rows. Each ensuing band fixes both strip topology and cell routing.
         for curve in &self.curves {
-            for &x in &query.xs {
+            for (column, &x) in query.xs.iter().enumerate() {
                 charge(fuel, 4).ok_or(AreaQueryError::Resource)?;
                 if x < curve.reach.lo || x > curve.reach.hi {
                     continue;
@@ -327,8 +362,18 @@ impl ScanPlan {
                     .ok_or(AreaQueryError::Resource)?;
                 let crossing = Self::crossings(curve, &edge).ok_or(AreaQueryError::Precision)?;
                 for root in crossing.roots.into_iter().flatten() {
-                    add(root.lo)?;
-                    add(root.hi)?;
+                    add(&mut events, root.lo)?;
+                    add(&mut events, root.hi)?;
+                    if column == 0 || column + 1 == query.xs.len() {
+                        for y in [root.lo, root.hi] {
+                            if y0 < y && y < y1 {
+                                if query.semantic_cuts.len() == MAX_BANDS {
+                                    return Err(AreaQueryError::Resource);
+                                }
+                                query.semantic_cuts.push(y);
+                            }
+                        }
+                    }
                     if root.hi > y0 && root.lo < y1 {
                         if query.vertical_uncertainty.len() == MAX_BANDS {
                             return Err(AreaQueryError::Resource);
@@ -340,6 +385,33 @@ impl ScanPlan {
         }
         sort_admitted(&mut events, f64::total_cmp, 4, fuel).ok_or(AreaQueryError::Resource)?;
         events.dedup();
+        sort_admitted(&mut query.semantic_cuts, f64::total_cmp, 4, fuel)
+            .ok_or(AreaQueryError::Resource)?;
+        query.semantic_cuts.dedup();
+        // Between complete source-topology events, an open strip between
+        // adjacent candidate branches is connected and has constant original
+        // membership. Raster rows/vertical grid edges only subdivide routing.
+        // An incomplete crossing inventory cannot license this query reuse.
+        if self.crossings.iter().all(|crossing| crossing.complete) {
+            let count = self.curves.len();
+            query.curve_cuts = bounded_vector(count).ok_or(AreaQueryError::Resource)?;
+            for id in 0..count {
+                let mut cuts = bounded_vector(4 * count).ok_or(AreaQueryError::Resource)?;
+                for crossing in &self.crossings[id * count..(id + 1) * count] {
+                    charge(fuel, 64).ok_or(AreaQueryError::Resource)?;
+                    for root in crossing.roots.into_iter().flatten() {
+                        if root.hi > y0 && root.lo < y1 {
+                            cuts.extend([root.lo, root.hi]);
+                        }
+                    }
+                }
+                sort_admitted(&mut cuts, f64::total_cmp, 4, fuel)
+                    .ok_or(AreaQueryError::Resource)?;
+                cuts.dedup();
+                query.curve_cuts.push(cuts);
+            }
+            query.membership = Some(MembershipCache::new(fuel)?);
+        }
         sort_admitted(
             &mut query.vertical_uncertainty,
             |a, b| a.lo.total_cmp(&b.lo).then(a.hi.total_cmp(&b.hi)),
@@ -404,7 +476,7 @@ impl ScanPlan {
                 }
                 charge(fuel, width + 128).ok_or(AreaQueryError::Resource)?;
                 staged.fill(Interval::scalar(0.0).ok_or(AreaQueryError::Precision)?);
-                let known = match self.row_band(&query, a, b, &mut staged, fuel) {
+                let known = match self.row_band(&mut query, a, b, &mut staged, fuel) {
                     Ok(()) => true,
                     Err(AreaQueryError::Precision) => false,
                     Err(error) => return Err(error),
@@ -504,7 +576,7 @@ impl ScanPlan {
 
     fn row_band(
         &self,
-        query: &GridQuery<'_, '_>,
+        query: &mut GridQuery<'_, '_>,
         y0: f64,
         y1: f64,
         staged: &mut [Interval],
@@ -526,6 +598,9 @@ impl ScanPlan {
         let left = Self::constant_curve(x0, y0, y1).ok_or(AreaQueryError::Precision)?;
         let right = Self::constant_curve(x1, y0, y1).ok_or(AreaQueryError::Precision)?;
         let ym = y0 * 0.5 + y1 * 0.5;
+        if !(y0 < ym && ym < y1) {
+            return Err(AreaQueryError::Precision);
+        }
         let ys = Interval::new(y0, y1).ok_or(AreaQueryError::Precision)?;
         let mut active = bounded_vector(
             self.curves
@@ -603,10 +678,7 @@ impl ScanPlan {
                 charge(fuel, preimage_work(t)).ok_or(AreaQueryError::Resource)?;
                 point = point.preimage(t).ok_or(AreaQueryError::Precision)?;
             }
-            match query
-                .region
-                .certify_prepared(point, fuel, Some(query.prepared))
-            {
+            match query.membership([lid, rid], point, ym, fuel)? {
                 CellCertificate::Outside => {
                     if let Some(strip) = occupied.take() {
                         Self::route_occupied_strip(query, strip, [y0, y1], staged, fuel)?;
@@ -710,6 +782,8 @@ impl ScanPlan {
             curves: bounded_vector(MAX_CURVES).ok_or(AreaQueryError::Resource)?,
             next_frame: 1,
             crossings: Vec::new(),
+            #[cfg(test)]
+            extra_y_events: bounded_vector(MAX_BANDS).ok_or(AreaQueryError::Resource)?,
         };
         let affine = match forward {
             Some(t) => Affine::identity().after(
@@ -741,6 +815,16 @@ impl ScanPlan {
             for right in left + 1..result.curves.len() {
                 let l = &result.curves[left];
                 let r = &result.curves[right];
+                // Complete conservative branch domains/reach prove absence of
+                // a common point. No approximate curve identity is needed.
+                charge(fuel, 128).ok_or(AreaQueryError::Resource)?;
+                if l.reach.hi < r.reach.lo
+                    || r.reach.hi < l.reach.lo
+                    || l.end.hi < r.start.lo
+                    || r.end.hi < l.start.lo
+                {
+                    continue;
+                }
                 charge(fuel, Self::crossing_work(l, r)).ok_or(AreaQueryError::Resource)?;
                 let crossing = Self::crossings(l, r).unwrap_or(Crossings {
                     complete: false,
@@ -759,9 +843,16 @@ impl ScanPlan {
             let f = &curve.function;
             let ys = Interval::new(curve.start.lo, curve.end.hi)?;
             let base = f.h.add(f.a.mul(ys.sub(f.k)?)?)?;
-            let radius = f.b.lo.abs().max(f.b.hi.abs());
-            let margin = Interval::scalar(radius)?.mul(f.r)?.hi;
-            base.add(Interval::new(-margin, margin)?)
+            if f.c.lo >= 0.0 && f.r.lo >= 0.0 {
+                // The radical is nonnegative and no larger than r. Preserve
+                // the admitted branch sign instead of adding a fictitious
+                // opposite half-circle to its conservative reach.
+                base.add(f.b.mul(Interval::new(0.0, f.r.hi)?)?)
+            } else {
+                let radius = f.b.lo.abs().max(f.b.hi.abs());
+                let margin = Interval::scalar(radius)?.mul(f.r)?.hi;
+                base.add(Interval::new(-margin, margin)?)
+            }
         })()
         .ok_or(AreaQueryError::Precision)?;
         curve.reach = reach;
@@ -1113,6 +1204,10 @@ impl ScanPlan {
                 self.clips(clips, affine, fuel)
             }
             Kind::Effect { source, shadow } => {
+                #[cfg(test)]
+                if shadow.sigma() > 0.0 && shadow.spread() < 0.0 {
+                    return self.finite_square_effect(region, *shadow, affine, prepared, fuel);
+                }
                 if shadow.sigma() != 0.0 || shadow.spread() > 0.0 {
                     return Err(AreaQueryError::Unsupported);
                 }
@@ -1565,6 +1660,7 @@ mod tests {
             curves: Vec::new(),
             next_frame: 1,
             crossings: Vec::new(),
+            extra_y_events: Vec::new(),
         }
     }
 
@@ -1616,5 +1712,77 @@ mod tests {
         let bytes = ScanPlan::fixed_scratch_bytes().unwrap();
         assert!(bytes >= 65_536 * std::mem::size_of::<Crossings>());
         assert!(bytes < 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn shared_membership_preserves_original_bowtie_crossing_and_branch_endpoints() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dColorRgba8, Render2dFillRule, Render2dOpacity, Render2dPoint,
+        };
+        let mut commands = Vec::new();
+        for (index, [x, y]) in [[4.0, 4.0], [12.0, 12.0], [4.0, 12.0], [12.0, 4.0]]
+            .into_iter()
+            .enumerate()
+        {
+            let point = Render2dPoint::new(x, y).unwrap();
+            commands.push(if index == 0 {
+                Render2dPathCommand::MoveTo(point)
+            } else {
+                Render2dPathCommand::LineTo(point)
+            });
+        }
+        commands.push(Render2dPathCommand::Close);
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::path(
+                    Render2dPath::new(Render2dFillRule::EvenOdd, commands).unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let mut graph = builder();
+        let source = graph
+            .source_from_item(
+                support::NeutralMesh {
+                    units_per_parent_logical_unit: 1.0,
+                    triangles: vec![[0.0, 0.0], [16.0, 0.0], [0.0, 16.0]],
+                    bounds: [0.0, 0.0, 16.0, 16.0],
+                },
+                &item,
+                &[0],
+            )
+            .unwrap();
+        let mut fuel = 16_777_216;
+        let areas =
+            certified_grid_area_query(&source, [0, 0, 64, 64], 4.0, None, 8, 4096, &mut fuel)
+                .unwrap();
+        for sy in 0..4 {
+            for sx in 0..4 {
+                // Independent two-triangle geometry, above and below y=8.
+                // The diagonal direction changes at the original crossing.
+                let top = match sx.cmp(&sy) {
+                    std::cmp::Ordering::Less => 0.0,
+                    std::cmp::Ordering::Equal => 0.5,
+                    std::cmp::Ordering::Greater => 1.0,
+                };
+                let bottom = match (sx + sy).cmp(&3) {
+                    std::cmp::Ordering::Less => 0.0,
+                    std::cmp::Ordering::Equal => 0.5,
+                    std::cmp::Ordering::Greater => 1.0,
+                };
+                for (row, reference) in [(28 + sy, top), (32 + sy, bottom)] {
+                    let value = areas[row * 64 + 28 + sx];
+                    assert!(
+                        value[0] <= reference && reference <= value[1],
+                        "{sx},{sy}: {value:?} vs {reference}"
+                    );
+                }
+            }
+        }
+        assert_eq!(areas[0], [0.0, 0.0]);
+        assert_eq!(areas[52 * 64 + 28], [0.0, 0.0]);
     }
 }

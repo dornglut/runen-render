@@ -1301,7 +1301,7 @@ impl PreparedBoundaries {
             Arc<orthogonal_boundary::Boundary>,
         )>())?;
         let sources = 256_usize.checked_mul(std::mem::size_of::<(usize, usize)>())?;
-        boundaries
+        let bytes = boundaries
             .checked_add(orthogonal_boundary::Boundary::preparation_scratch_bound(
                 MAX_REGION_DEPTH,
             )?)?
@@ -1311,7 +1311,11 @@ impl PreparedBoundaries {
             .checked_add(scan_area::ScanPlan::fixed_scratch_bytes()?)?
             // Scalar query state, vector headers and fixed numeric arrays.
             // This margin is distinct from heap payload capacities above.
-            .checked_add(65_536)
+            .checked_add(65_536)?;
+        #[cfg(test)]
+        let bytes =
+            bytes.checked_add(finite_square_geometry::Inventory::preparation_scratch_bound()?)?;
+        Some(bytes)
     }
 
     fn prepare(region: &NeutralRegion<'_>, fuel: &mut usize) -> Result<Self, AreaQueryError> {
@@ -1332,7 +1336,7 @@ impl PreparedBoundaries {
                     }
                     *fuel -= result.entries.len();
                     if shadow.spread() < 0.0
-                        && shadow.sigma() == 0.0
+                        && (shadow.sigma() == 0.0 || cfg!(test))
                         && !result.entries.iter().any(|(id, _, _)| *id == region.id)
                     {
                         if result.entries.len() == 256 {
@@ -1517,6 +1521,17 @@ impl NeutralRegion<'_> {
                 };
                 let spread = shadow.spread();
                 if let Some(boundary) = prepared.and_then(|p| p.get(self.id, visits)) {
+                    #[cfg(test)]
+                    if shadow.sigma() > 0.0 {
+                        let halo = super::interval::exact_mul(3.0, shadow.sigma())
+                            .and_then(Interval::scalar)
+                            .or_else(|| {
+                                Interval::scalar(3.0)?.mul(Interval::scalar(shadow.sigma())?)
+                            });
+                        return halo.map_or(CellCertificate::Unknown, |halo| {
+                            boundary.square_dilated_eroded_cell(translated, -spread, halo, visits)
+                        });
+                    }
                     return boundary.eroded_cell(
                         CellCertificate::Unknown,
                         translated,

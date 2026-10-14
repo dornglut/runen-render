@@ -29,9 +29,11 @@ pub(super) struct Line {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Circle {
-    /// Full local circle domain; the scanner must retain both x(y) branches.
     pub(super) center: [Interval; 2],
     pub(super) radius: f64,
+    /// None is a full source capsule circle. Translated candidates keep this
+    /// original radial quadrant, derived from the eroded set's outward normal.
+    pub(super) quadrant: Option<[f64; 2]>,
 }
 
 pub(super) struct Inventory {
@@ -101,6 +103,120 @@ fn radical(a: Interval) -> Option<Interval> {
 }
 
 impl Inventory {
+    fn away_from_eroded_boundary(
+        boundary: &Boundary,
+        cell: Cell,
+        radius: f64,
+        fuel: &mut usize,
+    ) -> Option<bool> {
+        let original = boundary.classify_original(cell, fuel);
+        let result = boundary.eroded_cell(original, cell, radius, fuel);
+        if *fuel == 0 {
+            return None;
+        }
+        // Both strict interior and strict exterior contain no E boundary.
+        // eroded_cell uses strict distance separation; equality is Unknown.
+        Some(result != CellCertificate::Unknown)
+    }
+
+    /// Drop a full circle only after a complete interval cover proves every
+    /// branch point is strictly inside or outside the ORIGINAL eroded set.
+    /// A missed or uncertain piece retains the circle. This removes no part
+    /// of its boundary and never infers absence from sampled membership.
+    fn circle_away_from_eroded_boundary(
+        boundary: &Boundary,
+        circle: Circle,
+        radius: f64,
+        fuel: &mut usize,
+    ) -> Option<bool> {
+        const PARTS: usize = 16;
+        let mut low = -circle.radius;
+        for index in 0..PARTS {
+            charge(fuel, 512)?;
+            let high = if index + 1 == PARTS {
+                circle.radius
+            } else {
+                -circle.radius + (2.0 * circle.radius / PARTS as f64) * (index + 1) as f64
+            };
+            if !high.is_finite() || low >= high || high > circle.radius {
+                return Some(false);
+            }
+            let y = Interval::new(low, high)?;
+            let Some(x) = sub(square(scalar(circle.radius)?)?, square(y)?).and_then(radical) else {
+                return Some(false);
+            };
+            for sign in [-1.0, 1.0] {
+                charge(fuel, 256)?;
+                let cell = Cell {
+                    x: add(circle.center[0], mul(scalar(sign)?, x)?)?,
+                    y: add(circle.center[1], y)?,
+                };
+                if !Self::away_from_eroded_boundary(boundary, cell, radius, fuel)? {
+                    return Some(false);
+                }
+            }
+            low = high;
+        }
+        Some(true)
+    }
+
+    fn retain_possible_boundary(
+        &mut self,
+        boundary: &Boundary,
+        radius: f64,
+        fuel: &mut usize,
+    ) -> Option<()> {
+        let mut retained = 0;
+        for index in 0..self.vertices.len() {
+            charge(fuel, 64)?;
+            let point = self.vertices[index];
+            if !Self::away_from_eroded_boundary(
+                boundary,
+                Cell {
+                    x: point[0],
+                    y: point[1],
+                },
+                radius,
+                fuel,
+            )? {
+                self.vertices[retained] = point;
+                retained += 1;
+            }
+        }
+        self.vertices.truncate(retained);
+        let mut retained = 0;
+        for index in 0..self.lines.len() {
+            charge(fuel, 128)?;
+            let line = self.lines[index];
+            let cell = Cell {
+                x: Interval::new(
+                    line.ends[0][0].lo.min(line.ends[1][0].lo),
+                    line.ends[0][0].hi.max(line.ends[1][0].hi),
+                )?,
+                y: Interval::new(
+                    line.ends[0][1].lo.min(line.ends[1][1].lo),
+                    line.ends[0][1].hi.max(line.ends[1][1].hi),
+                )?,
+            };
+            if !Self::away_from_eroded_boundary(boundary, cell, radius, fuel)? {
+                self.lines[retained] = line;
+                retained += 1;
+            }
+        }
+        self.lines.truncate(retained);
+        let mut retained = 0;
+        for index in 0..self.circles.len() {
+            charge(fuel, 64)?;
+            let circle = self.circles[index];
+            if !Self::circle_away_from_eroded_boundary(boundary, circle, radius, fuel)? {
+                self.circles[retained] = circle;
+                retained += 1;
+            }
+        }
+        self.circles.truncate(retained);
+        Some(())
+    }
+
     /// Both source and expanded candidate inventories coexist during build.
     /// No per-pair temporary vector or library sort allocation is present.
     pub(super) fn preparation_scratch_bound() -> Option<usize> {
@@ -153,11 +269,18 @@ impl Inventory {
         self.lines.push(Line { axis, ends });
         Some(())
     }
-    fn circle(&mut self, center: [Interval; 2], radius: f64, fuel: &mut usize) -> Option<()> {
+    fn circle(
+        &mut self,
+        center: [Interval; 2],
+        radius: f64,
+        quadrant: Option<[f64; 2]>,
+        fuel: &mut usize,
+    ) -> Option<()> {
         charge(fuel, 128 + self.circles.len().checked_mul(32)?)?;
         if center.iter().all(|v| v.lo == v.hi)
             && self.circles.iter().any(|old| {
                 old.radius == radius
+                    && old.quadrant == quadrant
                     && (0..2).all(|a| {
                         old.center[a].lo == center[a].lo && old.center[a].hi == center[a].lo
                     })
@@ -168,7 +291,11 @@ impl Inventory {
         if self.circles.len() == MAX_CIRCLES {
             return None;
         }
-        self.circles.push(Circle { center, radius });
+        self.circles.push(Circle {
+            center,
+            radius,
+            quadrant,
+        });
         Some(())
     }
     fn vertex(&mut self, point: [Interval; 2], fuel: &mut usize) -> Option<()> {
@@ -313,10 +440,11 @@ impl Inventory {
                 b[axis] = add(b[axis], scalar(sign * radius)?)?;
                 source.line(axis, [a, b], fuel)?;
             }
-            source.circle(p.map(|v| scalar(v).unwrap()), radius, fuel)?;
-            source.circle(q.map(|v| scalar(v).unwrap()), radius, fuel)?;
+            source.circle(p.map(|v| scalar(v).unwrap()), radius, None, fuel)?;
+            source.circle(q.map(|v| scalar(v).unwrap()), radius, None, fuel)?;
         }
         source.complete_vertices(fuel)?;
+        source.retain_possible_boundary(boundary, radius, fuel)?;
         let mut result = Self::empty()?;
         for vertex in &source.vertices {
             for sign in [-1.0, 1.0] {
@@ -357,6 +485,11 @@ impl Inventory {
                             add(circle.center[1], shift[1])?,
                         ],
                         radius,
+                        // E is outside each capsule endpoint disk. An exposed
+                        // arc's outward normal is inward radial, selecting the
+                        // opposite radial quadrant for this square corner.
+                        // Axis-normal and vertex cases retain all connectors.
+                        Some([-xsign, -ysign]),
                         fuel,
                     )?;
                 }
@@ -459,7 +592,7 @@ mod tests {
         );
     }
     #[test]
-    fn finite_square_ring_inventory_is_bounded_and_has_all_corner_circles() {
+    fn finite_square_ring_inventory_keeps_true_hole_circles_and_discards_inactive_outer_arcs() {
         let item = fixture(false);
         let mut graph = builder();
         let source = graph.source_from_item(mesh(), &item, &[0]).unwrap();
@@ -468,16 +601,7 @@ mod tests {
         let before = fuel;
         let inventory =
             Inventory::prepare(&boundary, 1.0, scalar(0.09375).unwrap(), &mut fuel).unwrap();
-        for [x, y] in [
-            [10.0, 10.0],
-            [30.0, 10.0],
-            [10.0, 30.0],
-            [30.0, 30.0],
-            [18.0, 18.0],
-            [22.0, 18.0],
-            [18.0, 22.0],
-            [22.0, 22.0],
-        ] {
+        for [x, y] in [[18.0, 18.0], [22.0, 18.0], [18.0, 22.0], [22.0, 22.0]] {
             for dx in [-0.09375, 0.09375] {
                 for dy in [-0.09375, 0.09375] {
                     assert!(inventory.circles.iter().any(|c| c.center[0].lo == x + dx
@@ -488,6 +612,15 @@ mod tests {
                 }
             }
         }
+        // A unit circle about an outer corner never reaches the eroded
+        // rectangle's required x/y margins of one simultaneously. Its entire
+        // interval cover is outside E; the sharp offset-line vertex remains.
+        assert!(
+            inventory
+                .circles
+                .iter()
+                .all(|c| c.center[0].lo > 17.0 && c.center[0].hi < 23.0)
+        );
         let branches = inventory.lines.len() + 2 * inventory.circles.len();
         assert!(
             branches * branches <= 65_536,
