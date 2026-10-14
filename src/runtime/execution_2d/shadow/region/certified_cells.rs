@@ -1158,8 +1158,18 @@ impl NeutralRegion<'_> {
         }
         *visits -= 1;
         // Qualified reach may prove exclusion, but can never invent interior.
-        // The graph's original-F1 provenance independently bounds the shape.
-        if self.certified_source_reach {
+        // A singular/overflowing affine preimage must retain Unknown, even
+        // when its coarse envelope would otherwise prove a distant absence.
+        // The F1 transform's precision law outranks this optional shortcut.
+        let unqualified_affine = match &self.kind {
+            Kind::Affine { to_parent, .. } => {
+                let [a, b, c, d, _, _] = to_parent.components();
+                let determinant = a.mul_add(d, -(b * c));
+                !determinant.is_finite() || determinant == 0.0
+            }
+            _ => false,
+        };
+        if self.certified_source_reach && !unqualified_affine {
             if let Some([x0, y0, x1, y1]) = self.envelope {
                 if cell.x.hi < x0 || cell.x.lo > x1 || cell.y.hi < y0 || cell.y.lo > y1 {
                     return CellCertificate::Outside;
