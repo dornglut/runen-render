@@ -1659,9 +1659,7 @@ fn independent_full_scene_per_site_gaussian_work_cannot_fit_region_fuel() {
     // independent work. Budget exhaustion cannot be called zero-alpha.
     let geometry_minimum = per_site_numeric.checked_add(samples).unwrap();
     assert!(geometry_minimum > MAX_REGION_GRAPH_WORK);
-    assert!(
-        geometry_minimum.checked_mul(256).unwrap() > MAX_REGION_GRAPH_WORK,
-    );
+    assert!(geometry_minimum.checked_mul(256).unwrap() > MAX_REGION_GRAPH_WORK);
 }
 
 #[test]
