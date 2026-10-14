@@ -2550,7 +2550,7 @@ fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work()
         Vec::new(),
         Render2dOpacity::OPAQUE,
         // Shifted erosion is NOT a subset of the original C, so a
-        // nonconvex nested region without a general symbolic consumer
+        // nonconvex nested region with a SHADOW-CONSUMING ancestor
         // must remain UnsupportedEntry with the exact F1 owner path.
         vec![effect(
             0.5,
@@ -2565,7 +2565,17 @@ fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work()
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::OPAQUE,
-        Vec::new(),
+        // This ancestor ACTUALLY CONSUMES the child's nonpolygonal
+        // completed neutral region. Unlike a shadow-free wrapper,
+        // it must reject before caller-target mutation until the
+        // source-exact continuous F3E caster is qualified.
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 0, 255, 255),
+        )],
     ));
     let scene = Render2dComposition::new(vec![outer]).unwrap();
     let (texture, target) = target("F3F nonconvex nested signed erosion rejects atomically");
