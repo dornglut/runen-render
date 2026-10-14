@@ -1823,7 +1823,10 @@ fn broad_cell_skips_impossible_single_point_disk_witnesses_without_false_outside
         1.0,
         &mut remaining
     ));
-    assert!(remaining > 0, "point-witness exclusion consumed unbounded fuel");
+    assert!(
+        remaining > 0,
+        "point-witness exclusion consumed unbounded fuel"
+    );
 
     // With a finite Gaussian the support may extend OUTSIDE pristine C.
     // The zero-blur subset shortcut must never erase such neutral support.
@@ -1843,10 +1846,7 @@ fn broad_cell_skips_impossible_single_point_disk_witnesses_without_false_outside
         .unwrap();
     let mut proof_fuel = 100_000;
     assert_ne!(
-        blurred.certify_cell(
-            Cell::new([1.2, 0.4, 1.25, 0.5]).unwrap(),
-            &mut proof_fuel
-        ),
+        blurred.certify_cell(Cell::new([1.2, 0.4, 1.25, 0.5]).unwrap(), &mut proof_fuel),
         CellCertificate::Outside,
         "finite Gaussian support was incorrectly pruned as zero blur"
     );
@@ -1901,26 +1901,19 @@ fn original_f1_holed_nested_negative_exterior_witness_survives_ancestor_shear() 
     let zero_blur = graph
         .effect(
             Arc::clone(&ring),
-            Render2dDropShadow::new(
-                8.0,
-                0.0,
-                0.0,
-                -1.0,
-                Render2dColorRgba8::TRANSPARENT,
-            )
-            .unwrap(),
+            Render2dDropShadow::new(8.0, 0.0, 0.0, -1.0, Render2dColorRgba8::TRANSPARENT).unwrap(),
             &[0, 4],
         )
         .unwrap();
     let mut bounded = 128;
     assert_eq!(
-        zero_blur.certify_cell(
-            Cell::new([27.25, 20.25, 27.5, 20.5]).unwrap(),
-            &mut bounded
-        ),
+        zero_blur.certify_cell(Cell::new([27.25, 20.25, 27.5, 20.5]).unwrap(), &mut bounded),
         CellCertificate::Outside
     );
-    assert!(bounded > 0, "pristine F1 hole should not consume disk search fuel");
+    assert!(
+        bounded > 0,
+        "pristine F1 hole should not consume disk search fuel"
+    );
 
     let child_shadow =
         Render2dDropShadow::new(8.0, 0.0, 0.001, -1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
