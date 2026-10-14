@@ -2480,7 +2480,7 @@ fn nonabsorbed_holed_child_paints_without_an_ancestor_shadow_consumer() {
 }
 
 #[test]
-fn nonabsorbed_offset_holed_erosion_remains_typed_unsupported() {
+fn unqualified_finite_holed_halo_reports_owner_precision_before_gpu() {
     let Some(context) = context() else { return };
     let child = Render2dEntry::group(Render2dGroup::new(
         vec![
@@ -2492,9 +2492,9 @@ fn nonabsorbed_offset_holed_erosion_remains_typed_unsupported() {
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::TRANSPARENT,
-        // Offset escapes the eroded source: no general holed curved
-        // materialization certificate exists. Transparency never
-        // licenses silent dropping of source-neutral geometry.
+        // This finite halo has interval-valued corner centers (3*.05 is
+        // not an exact f64 product). Their scanner qualification remains
+        // incomplete; transparency cannot silently erase that geometry.
         vec![effect(
             4.0,
             0.0,
@@ -2518,24 +2518,45 @@ fn nonabsorbed_offset_holed_erosion_remains_typed_unsupported() {
     ));
     let scene = Render2dComposition::new(vec![outer]).unwrap();
     let (_, target) = target("F3F nonabsorbed holed signed cannot invent source mask");
-    let error = match Render2dExecutor::new().prepare(
+    let mut executor = Render2dExecutor::new();
+    let error = match executor.prepare(
         &context,
         &scene,
         &Render2dResourceBindings::default(),
         &target,
     ) {
-        Ok(_) => panic!("nonabsorbed holed negative must remain rejected"),
+        Ok(_) => panic!("unqualified interval-valued finite halo must fail preflight"),
         Err(error) => error,
     };
     assert!(matches!(
         error,
-        Render2dExecutionError::UnsupportedEntry {
-            path,
-            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
-                root_index: 0,
-            },
+        Render2dExecutionError::SampleSpace {
+            path: Some(path),
+            kind: runen_render::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+            ..
         } if path == [0, 0]
     ));
+
+    // Rejection retains the executor for an independently valid request.
+    let valid = group(
+        vec![caster(Render2dColorRgba8::TRANSPARENT, 1.0, 1.0, 4.0, 4.0)],
+        vec![effect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            Render2dColorRgba8::new(0, 255, 0, 255),
+        )],
+        1.0,
+    );
+    let image = execute(
+        &context,
+        &mut executor,
+        &valid,
+        &Render2dResourceBindings::default(),
+        "finite-halo rejection executor reuse",
+    );
+    assert_eq!(pixel(&image, 2, 2), [0, 255, 0, 255]);
 }
 
 #[test]
