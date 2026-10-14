@@ -2539,67 +2539,74 @@ fn nonabsorbed_offset_holed_erosion_remains_typed_unsupported() {
 }
 
 #[test]
-fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work() {
+fn nested_nonconvex_shifted_erosion_casts_exact_completed_support_on_vulkan() {
     let Some(context) = context() else { return };
-    let inner = Render2dEntry::group(Render2dGroup::new(
-        vec![
-            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 4.0, 2.0),
-            caster(Render2dColorRgba8::TRANSPARENT, 10.0, 12.0, 2.0, 2.0),
-        ],
-        Render2dAffineTransform::IDENTITY,
-        Vec::new(),
-        Render2dOpacity::OPAQUE,
-        // Shifted erosion is NOT a subset of the original C, so a
-        // nonconvex nested region with a SHADOW-CONSUMING ancestor
-        // must remain UnsupportedEntry with the exact F1 owner path.
-        vec![effect(
-            0.5,
-            0.0,
-            0.0,
-            -0.25,
-            Render2dColorRgba8::new(255, 0, 0, 255),
-        )],
-    ));
-    let outer = Render2dEntry::group(Render2dGroup::new(
-        vec![inner],
-        Render2dAffineTransform::IDENTITY,
-        Vec::new(),
-        Render2dOpacity::OPAQUE,
-        // This ancestor ACTUALLY CONSUMES the child's nonpolygonal
-        // completed neutral region. Unlike a shadow-free wrapper,
-        // it must reject before caller-target mutation until the
-        // source-exact continuous F3E caster is qualified.
-        vec![effect(
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            Render2dColorRgba8::new(0, 0, 255, 255),
-        )],
-    ));
-    let scene = Render2dComposition::new(vec![outer]).unwrap();
-    let (texture, target) = target("F3F nonconvex nested signed erosion rejects atomically");
-    let mut executor = Render2dExecutor::new();
-    let result = executor.prepare(
-        &context,
-        &scene,
-        &Render2dResourceBindings::default(),
-        &target,
-    );
-    let failure = match result {
-        Ok(_) => panic!("nonabsorbed shifted nonconvex erosion must not become a fake rectangle"),
-        Err(error) => error,
+    let scene = |child_color| {
+        let inner = Render2dEntry::group(Render2dGroup::new(
+            vec![
+                caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 4.0, 2.0),
+                caster(Render2dColorRgba8::TRANSPARENT, 10.0, 12.0, 2.0, 2.0),
+            ],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            // Euclidean disk erosion of radius .25 is offset +.5 afterward.
+            // Its right edge reaches 14.25, beyond pristine C's edge at 14.
+            vec![effect(0.5, 0.0, 0.0, -0.25, child_color)],
+        ));
+        let outer = Render2dEntry::group(Render2dGroup::new(
+            vec![inner],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            // Independently consume completed C union E, including the
+            // true curved concave inset and the nonabsorbed translated reach.
+            vec![effect(
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                Render2dColorRgba8::new(0, 0, 255, 255),
+            )],
+        ));
+        Render2dComposition::new(vec![outer]).unwrap()
     };
-    assert!(matches!(
-        failure,
-        Render2dExecutionError::UnsupportedEntry {
-            path,
-            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
-                root_index: 0,
-            },
-        } if path == [0, 0]
-    ));
-    drop(texture);
+    let mut executor = Render2dExecutor::new();
+    let painted = execute(
+        &context,
+        &mut executor,
+        &scene(Render2dColorRgba8::new(255, 0, 0, 255)),
+        &Render2dResourceBindings::default(),
+        "F3F shifted concave Euclidean erosion above completed blue ancestor",
+    );
+    // E intersects [14,15]x[10,11] in [.25]x[.75], area 3/16.
+    // Those edges align with correlated .25 cells: red fully covers each
+    // occupied blue sample before resolve. Linear red 3/16 -> sRGB120.
+    pixel_near(pixel(&painted, 14, 10), [120, 0, 0, 48]);
+    // Pristine C fully covers both following pixels. At [13,14]x[11,12],
+    // E covers exactly 3/4; its opaque red source-overs opaque blue C.
+    pixel_near(pixel(&painted, 13, 11), [225, 0, 137, 255]);
+    // At [12,13]x[11,12], the shifted concave corner is (12.5,12).
+    // E covers a .75 strip, a .25-square, and a .25-square less its
+    // quarter disk: area .75+.0625+.0625-pi/64=.8259126147876595.
+    // Independently resolve red area and blue complementary area in
+    // linear premultiplied space, then encode each sRGB channel once.
+    pixel_near(pixel(&painted, 12, 11), [234, 0, 116, 255]);
+    assert_eq!(pixel(&painted, 11, 11), [255, 0, 0, 255]);
+    assert_eq!(pixel(&painted, 13, 13), [0, 0, 0, 0]);
+
+    let neutral = execute(
+        &context,
+        &mut executor,
+        &scene(Render2dColorRgba8::TRANSPARENT),
+        &Render2dResourceBindings::default(),
+        "F3F transparent shifted concave effect retains completed ancestor caster",
+    );
+    // Transparent child color cannot erase E outside C. Only the ancestor's
+    // blue shadow can paint this extension, again with exact area 3/16.
+    pixel_near(pixel(&neutral, 14, 10), [0, 0, 120, 48]);
+    assert_eq!(pixel(&neutral, 12, 11), [0, 0, 255, 255]);
+    assert_eq!(pixel(&neutral, 13, 13), [0, 0, 0, 0]);
 }
 
 #[test]

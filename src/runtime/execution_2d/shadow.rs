@@ -21,7 +21,7 @@ use crate::execution_2d::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
-mod region;
+pub(in crate::runtime::execution_2d) mod region;
 
 const MAX_NEUTRAL_VERTICES: usize = 1_048_576;
 const MAX_NEUTRAL_CLIP_WORK: usize = 16_777_216;
@@ -314,48 +314,32 @@ fn negative_shadow_absorbed_by_source(effect: Render2dDropShadow) -> bool {
 /// Derives source-neutral F1 group support in each immediate-parent frame,
 /// independent of color alpha, materialization details or final-target culling.
 ///
-/// Every shadow-bearing group's pre-shadow C is materialized once for the
-/// unchanged F3E correlated compositor. Descendant completion is represented
-/// by a bounded immutable DAG: only certified polygonal operations are lowered
-/// to triangles, with shared pristine sources and typed unsupported curved
-/// propagation. A positive disk is never silently replaced with child C,
+/// Every shadow-bearing group's pre-shadow C retains one immutable source
+/// expression. Certified polygonal operations may use disposable triangles;
+/// curved support is queried directly for bounded continuous cell areas by
+/// the unchanged F3E correlated compositor. A positive disk is never silently replaced with child C,
 /// an axis-aligned bound, cached alpha or an approximate distance field.
 ///
 /// Deliberately opaque borrowed original-F1 source-neutral expression.
-/// The F3E consumer can only observe its owner-path rejection until a
-/// separately certified continuous coverage interface is implemented.
-/// Keeping the DAG private prevents callers from treating bounds or
-/// disposable alpha as geometric membership.
+/// Its consumer must independently certify continuous coverage, physical
+/// precision and whole-scene resources. Keeping the DAG private prevents
+/// bounds or disposable alpha from becoming geometric membership.
 pub(super) struct SymbolicCaster<'a> {
-    _expression: Arc<region::NeutralRegion<'a>>,
+    expression: Arc<region::NeutralRegion<'a>>,
     first_unqualified_owner: Vec<usize>,
 }
 
 impl SymbolicCaster<'_> {
+    pub(super) fn logical_envelope(&self) -> Option<[f64; 4]> {
+        self.expression.certified_logical_envelope()
+    }
+
     pub(super) fn owner_path(&self) -> &[usize] {
         &self.first_unqualified_owner
     }
 
-    /// A caller may request conservative continuous geometry only; neither
-    /// this interval nor the source DAG is a preapproved sampled mask.
-    #[allow(
-        dead_code,
-        reason = "symbolic F3E consumer acceptance is the next bounded cut"
-    )]
-    pub(super) fn continuous_area_enclosure(
-        &self,
-        root_bounds: [f64; 4],
-        owner_to_root: Option<Render2dAffineTransform>,
-        max_depth: u8,
-        fuel: &mut usize,
-    ) -> Option<[f64; 2]> {
-        self._expression
-            .continuous_area_enclosure(root_bounds, owner_to_root, max_depth, fuel)
-    }
-
     /// Retains original borrowed F1 region authority across coherent sample
     /// blocks. The result is uncertain interval evidence, not paint alpha.
-    #[allow(dead_code, reason = "pending qualified symbolic F3E tile integration")]
     pub(super) fn continuous_grid_enclosures(
         &self,
         root_grid: [u32; 4],
@@ -364,8 +348,8 @@ impl SymbolicCaster<'_> {
         max_cell_depth: u8,
         max_cells: usize,
         fuel: &mut usize,
-    ) -> Option<Vec<[f64; 2]>> {
-        self._expression.continuous_grid_enclosures(
+    ) -> Result<Vec<[f64; 2]>, region::AreaQueryError> {
+        self.expression.continuous_grid_enclosures(
             root_grid,
             samples_per_logical_unit,
             owner_to_root,
@@ -389,16 +373,16 @@ pub(super) enum NeutralCaster<'a> {
     RoundedRectangle(region::CertifiedRoundedRectangle),
     /// The ONE immutable borrowed-F1 neutral expression has reached its
     /// consuming F3E boundary without being falsified into a disposable
-    /// polygon. No raster path for this variant is admitted yet; it retains
-    /// exact provenance and the first unqualified owner for typed rejection.
+    /// polygon. Continuous area intervals qualify its disposable paint;
+    /// unsupported operations retain the original authored owner path.
     Symbolic(SymbolicCaster<'a>),
 }
 
 /// Preserve one borrowed original-F1 expression when polygonalization
 /// cannot represent its exact geometry. This is a transport boundary, NOT
 /// permission to paint or sample unknown curved regions. Resource/precision
-/// errors never become Symbolic. The consumer rejects with the original
-/// authored path before any target mutation until a bounded renderer exists.
+/// errors never become Symbolic. The consumer independently admits continuous
+/// coverage before any target mutation and preserves authored-path failures.
 fn materialized_or_symbolic<'a>(
     graph: &mut region::NeutralRegionBuilder,
     source: &Arc<region::NeutralRegion<'a>>,
@@ -411,7 +395,7 @@ fn materialized_or_symbolic<'a>(
             path,
             kind: Render2dUnsupportedContent::Shadows { .. },
         }) if !source.contains_positive_disk => Ok(NeutralCaster::Symbolic(SymbolicCaster {
-            _expression: Arc::clone(source),
+            expression: Arc::clone(source),
             first_unqualified_owner: path,
         })),
         Err(error) => Err(error),

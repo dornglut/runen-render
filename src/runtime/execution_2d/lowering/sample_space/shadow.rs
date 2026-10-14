@@ -10,6 +10,8 @@ use crate::runtime::execution_2d::{
 };
 use std::sync::Arc;
 
+mod symbolic;
+
 // Retained floating neutral support is separate from per-tile source-backed
 // GPU uploads; both are aggregate limits across one immutable contribution.
 const MAX_SHADOW_COVERAGE_BYTES: u64 = 64 * 1024 * 1024;
@@ -19,7 +21,7 @@ const FORMAT: GpuTextureFormat = GpuTextureFormat::R32Float;
 
 pub(super) struct PreparedShadow {
     pub(super) color: [f32; 4],
-    pub(super) coverage: NeutralCoverage,
+    pub(super) coverage: Arc<NeutralCoverage>,
     /// The mathematically bounded 3σ support reach in the immediate-parent
     /// continuous logical frame, not a rectangle used as membership.
     pub(super) logical_envelope: [f64; 4],
@@ -28,6 +30,9 @@ pub(super) struct PreparedShadow {
     /// Group alpha is a visual admission fact; neutral support ignores it.
     pub(super) group_visible: bool,
     pub(super) path: Vec<usize>,
+    /// Continuous cell area may remain positive when its center misses reach.
+    /// Legacy center-sampled kernels retain their existing envelope guard.
+    sample_area_coverage: bool,
 }
 
 pub(super) type ShadowGroups = BTreeMap<usize, Vec<PreparedShadow>>;
@@ -179,6 +184,26 @@ pub(super) fn prepare(
         let source = sources
             .get(&index)
             .expect("the neutral F1 traversal records each shadow-bearing group");
+        if let geometry_support::NeutralCaster::Symbolic(source) = source {
+            let [a, b, c, d, tx, ty] = parent_to_root.coefficients();
+            let ancestor = Render2dAffineTransform::new(a, b, c, d, tx, ty).map_err(|_| {
+                shadow_precision(path, "symbolic ancestor affine is unrepresentable")
+            })?;
+            let prepared = symbolic::prepare(
+                source,
+                group.shadows(),
+                symbolic::Context {
+                    parent_to_root: ancestor,
+                    paintable,
+                    target,
+                    path,
+                    aggregate_work: &mut aggregate_coverage_work,
+                    retained_bytes: &mut retained_coverage_bytes,
+                },
+            )?;
+            groups.insert(index, prepared);
+            continue;
+        }
         let (mesh, qualified_disk, original_polygons) = match source {
             geometry_support::NeutralCaster::Mesh(mesh) => (mesh.as_ref(), None, false),
             geometry_support::NeutralCaster::OriginalStraightPolygonUnion(mesh) => {
@@ -190,17 +215,10 @@ pub(super) fn prepare(
                 false,
             ),
             geometry_support::NeutralCaster::Symbolic(symbolic) => {
-                // The exact original-F1 DAG is retained to this owner boundary,
-                // but no continuous whole-pixel evaluator has yet qualified
-                // its nonpolygonal nested signed support. Reject before
-                // creating a physical mask or mutating the caller target.
-                let owner = symbolic.owner_path();
-                return Err(crate::runtime::execution_2d::unsupported_at(
-                    owner,
-                    crate::execution_2d::Render2dUnsupportedContent::Shadows {
-                        root_index: owner[0],
-                    },
-                ));
+                unreachable!(
+                    "symbolic caster {} was prepared above",
+                    symbolic.owner_path()[0]
+                );
             }
         };
         let mut prepared = Vec::new();
@@ -463,11 +481,12 @@ pub(super) fn prepare(
             let bounds = output_bounds(&coverage, target, path)?;
             prepared.push(PreparedShadow {
                 color,
-                coverage,
+                coverage: Arc::new(coverage),
                 logical_envelope: envelope,
                 bounds,
                 group_visible: paintable,
                 path: path.clone(),
+                sample_area_coverage: false,
             });
         }
         groups.insert(index, prepared);
@@ -606,10 +625,11 @@ pub(super) fn upload_tile(
                 || y < 0
                 || sample_x >= canvas[0] * f64::from(SAMPLES)
                 || sample_y >= canvas[1] * f64::from(SAMPLES)
-                || logical_x < left
-                || logical_x > right
-                || logical_y < top
-                || logical_y > bottom
+                || (!shadow.sample_area_coverage
+                    && (logical_x < left
+                        || logical_x > right
+                        || logical_y < top
+                        || logical_y > bottom))
             {
                 0.0
             } else {

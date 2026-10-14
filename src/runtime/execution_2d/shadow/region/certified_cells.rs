@@ -10,10 +10,13 @@
 #[cfg(test)]
 mod axis_gaussian;
 mod bezier_winding;
+mod conic_integral;
 #[cfg(test)]
 mod curved_gaussian;
 #[cfg(test)]
 mod linear_x_gaussian;
+mod orthogonal_boundary;
+mod scan_area;
 
 use super::interval::Interval;
 use super::*;
@@ -1164,8 +1167,153 @@ fn certified_negative_exterior_witness(
     false
 }
 
+/// In-place heapsort with every comparison and move admitted before use.
+/// Standard-library stable sorting may allocate outside fallible admission;
+/// charging actual operations also avoids depending on its comparison bound.
+fn sort_admitted<T>(
+    values: &mut [T],
+    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
+    comparison_work: usize,
+    fuel: &mut usize,
+) -> Option<()> {
+    let move_work = std::mem::size_of::<T>()
+        .div_ceil(std::mem::size_of::<usize>())
+        .checked_mul(3)?
+        .checked_add(4)?;
+    let sift = |values: &mut [T], mut root: usize, end: usize, fuel: &mut usize| -> Option<()> {
+        loop {
+            let child = root.checked_mul(2)?.checked_add(1)?;
+            if child >= end {
+                return Some(());
+            }
+            let mut largest = child;
+            if child + 1 < end {
+                *fuel = fuel.checked_sub(comparison_work).or_else(|| {
+                    *fuel = 0;
+                    None
+                })?;
+                if compare(&values[child], &values[child + 1]).is_lt() {
+                    largest += 1;
+                }
+            }
+            *fuel = fuel.checked_sub(comparison_work).or_else(|| {
+                *fuel = 0;
+                None
+            })?;
+            if !compare(&values[root], &values[largest]).is_lt() {
+                return Some(());
+            }
+            *fuel = fuel.checked_sub(move_work).or_else(|| {
+                *fuel = 0;
+                None
+            })?;
+            values.swap(root, largest);
+            root = largest;
+        }
+    };
+    for root in (0..values.len() / 2).rev() {
+        sift(values, root, values.len(), fuel)?;
+    }
+    for end in (1..values.len()).rev() {
+        *fuel = fuel.checked_sub(move_work).or_else(|| {
+            *fuel = 0;
+            None
+        })?;
+        values.swap(0, end);
+        sift(values, 0, end, fuel)?;
+    }
+    Some(())
+}
+
+struct PreparedBoundaries {
+    entries: Vec<(usize, orthogonal_boundary::Boundary)>,
+    edges: usize,
+}
+
+impl PreparedBoundaries {
+    fn prepare(region: &NeutralRegion<'_>, fuel: &mut usize) -> Option<Self> {
+        fn visit(
+            region: &NeutralRegion<'_>,
+            result: &mut PreparedBoundaries,
+            fuel: &mut usize,
+        ) -> Option<()> {
+            if *fuel == 0 {
+                return None;
+            }
+            *fuel -= 1;
+            match &region.kind {
+                Kind::Effect { source, shadow } => {
+                    if *fuel < result.entries.len() {
+                        *fuel = 0;
+                        return None;
+                    }
+                    *fuel -= result.entries.len();
+                    if shadow.spread() < 0.0
+                        && shadow.sigma() == 0.0
+                        && !result.entries.iter().any(|(id, _)| *id == region.id)
+                    {
+                        if result.entries.len() == 256 {
+                            return None;
+                        }
+                        if let Some(boundary) = orthogonal_boundary::Boundary::prepare(source, fuel)
+                        {
+                            result.edges = result.edges.checked_add(boundary.edge_count())?;
+                            if result.edges > 16_384 {
+                                return None;
+                            }
+                            result.entries.try_reserve_exact(1).ok()?;
+                            result.entries.push((region.id, boundary));
+                        }
+                    }
+                    visit(source, result, fuel)
+                }
+                Kind::Union(children) => {
+                    for child in children {
+                        visit(child, result, fuel)?;
+                    }
+                    Some(())
+                }
+                Kind::Affine { source, .. } | Kind::Clip { source, .. } => {
+                    visit(source, result, fuel)
+                }
+                Kind::Source(_) => Some(()),
+            }
+        }
+        let mut result = Self {
+            entries: Vec::new(),
+            edges: 0,
+        };
+        result.entries.try_reserve_exact(256).ok()?;
+        visit(region, &mut result, fuel)?;
+        sort_admitted(&mut result.entries, |a, b| a.0.cmp(&b.0), 1, fuel)?;
+        Some(result)
+    }
+
+    fn get(&self, id: usize, fuel: &mut usize) -> Option<&orthogonal_boundary::Boundary> {
+        let cost = (usize::BITS - self.entries.len().leading_zeros()) as usize;
+        if *fuel < cost {
+            *fuel = 0;
+            return None;
+        }
+        *fuel -= cost;
+        self.entries
+            .binary_search_by_key(&id, |(key, _)| *key)
+            .ok()
+            .map(|index| &self.entries[index].1)
+    }
+}
+
 impl NeutralRegion<'_> {
     fn certify_cell(&self, cell: Cell, visits: &mut usize) -> CellCertificate {
+        self.certify_prepared(cell, visits, None)
+    }
+
+    fn certify_prepared(
+        &self,
+        cell: Cell,
+        visits: &mut usize,
+        prepared: Option<&PreparedBoundaries>,
+    ) -> CellCertificate {
         if *visits == 0 {
             return CellCertificate::Unknown;
         }
@@ -1220,7 +1368,7 @@ impl NeutralRegion<'_> {
             Kind::Union(children) => {
                 let mut unknown = false;
                 for child in children {
-                    match child.certify_cell(cell, visits) {
+                    match child.certify_prepared(cell, visits, prepared) {
                         CellCertificate::Inside => return CellCertificate::Inside,
                         CellCertificate::Unknown => unknown = true,
                         CellCertificate::Outside => {}
@@ -1234,10 +1382,10 @@ impl NeutralRegion<'_> {
             }
             Kind::Affine { source, to_parent } => cell
                 .preimage(*to_parent)
-                .map(|preimage| source.certify_cell(preimage, visits))
+                .map(|preimage| source.certify_prepared(preimage, visits, prepared))
                 .unwrap_or(CellCertificate::Unknown),
             Kind::Clip { source, clips } => {
-                let child = source.certify_cell(cell, visits);
+                let child = source.certify_prepared(cell, visits, prepared);
                 certify_clipped(child, cell, clips, visits)
             }
             Kind::Effect { source, shadow } => {
@@ -1245,14 +1393,21 @@ impl NeutralRegion<'_> {
                     return CellCertificate::Unknown;
                 };
                 let spread = shadow.spread();
+                if let Some(boundary) = prepared.and_then(|p| p.get(self.id, visits)) {
+                    let membership = source.certify_prepared(translated, visits, prepared);
+                    return boundary.eroded_cell(membership, translated, -spread, visits);
+                }
+                if *visits == 0 {
+                    return CellCertificate::Unknown;
+                }
                 // A spread region is contained in its own finite-Gaussian
                 // support, but this says NOTHING about blurred alpha.
                 let definite_inside = if spread < 0.0 {
                     translated
                         .expanded(-spread)
-                        .map(|c| source.certify_cell(c, visits))
+                        .map(|c| source.certify_prepared(c, visits, prepared))
                 } else {
-                    Some(source.certify_cell(translated, visits))
+                    Some(source.certify_prepared(translated, visits, prepared))
                 };
                 // A definite disk-interior witness is sufficient by itself.
                 // Check it FIRST: querying pristine C a second time for an
@@ -1270,7 +1425,8 @@ impl NeutralRegion<'_> {
                 if spread < 0.0
                     && shadow.sigma() == 0.0
                     && (definite_inside == Some(CellCertificate::Outside)
-                        || source.certify_cell(translated, visits) == CellCertificate::Outside)
+                        || source.certify_prepared(translated, visits, prepared)
+                            == CellCertificate::Outside)
                 {
                     return CellCertificate::Outside;
                 }
@@ -1285,7 +1441,7 @@ impl NeutralRegion<'_> {
                 let Some(outer) = translated.expanded(outer_halo) else {
                     return CellCertificate::Unknown;
                 };
-                if source.certify_cell(outer, visits) == CellCertificate::Outside
+                if source.certify_prepared(outer, visits, prepared) == CellCertificate::Outside
                     || (spread < 0.0
                         && certified_negative_exterior_witness(source, outer, -spread, visits))
                 {
@@ -1310,16 +1466,28 @@ impl NeutralRegion<'_> {
 /// <= 12, independently of the numeric coordinates used for classification.
 /// The shared fuel pays for EVERY node, F1 path scan, curve, disk witness and
 /// affine preimage. On exhaustion return None; no partial bound escapes.
-#[allow(
-    dead_code,
-    reason = "private continuous-area admission boundary for the F3F symbolic consumer"
-)]
+#[cfg(test)]
 pub(super) fn certified_area_enclosure(
     region: &NeutralRegion<'_>,
     bounds: [f64; 4],
     owner_to_root: Option<Render2dAffineTransform>,
     max_depth: u8,
     fuel: &mut usize,
+) -> Option<[f64; 2]> {
+    let prepared = PreparedBoundaries::prepare(region, fuel)?;
+    if let Ok(scan) = scan_area::ScanPlan::prepare(region, owner_to_root, &prepared, fuel) {
+        return scan.area(region, bounds, owner_to_root, &prepared, fuel);
+    }
+    area_with_boundaries(region, bounds, owner_to_root, max_depth, fuel, &prepared)
+}
+
+fn area_with_boundaries(
+    region: &NeutralRegion<'_>,
+    bounds: [f64; 4],
+    owner_to_root: Option<Render2dAffineTransform>,
+    max_depth: u8,
+    fuel: &mut usize,
+    prepared: &PreparedBoundaries,
 ) -> Option<[f64; 2]> {
     if max_depth > 12
         || !bounds.iter().all(|v| v.is_finite())
@@ -1339,6 +1507,7 @@ pub(super) fn certified_area_enclosure(
         depth: u8,
         max_depth: u8,
         fuel: &mut usize,
+        prepared: &PreparedBoundaries,
     ) -> Option<[f64; 2]> {
         if *fuel < AREA_NODE_WORK {
             *fuel = 0;
@@ -1357,7 +1526,7 @@ pub(super) fn certified_area_enclosure(
         if let Some(transform) = owner_to_root {
             cell = cell.preimage(transform)?;
         }
-        match region.certify_cell(cell, fuel) {
+        match region.certify_prepared(cell, fuel, Some(prepared)) {
             CellCertificate::Inside => return Some([1.0, 1.0]),
             CellCertificate::Outside => return Some([0.0, 0.0]),
             CellCertificate::Unknown if *fuel == 0 => return None,
@@ -1378,13 +1547,63 @@ pub(super) fn certified_area_enclosure(
         let mut lower = 0.0;
         let mut upper = 0.0;
         for child in children {
-            let [lo, hi] = recurse(region, child, owner_to_root, depth + 1, max_depth, fuel)?;
+            let [lo, hi] = recurse(
+                region,
+                child,
+                owner_to_root,
+                depth + 1,
+                max_depth,
+                fuel,
+                prepared,
+            )?;
             lower += lo * 0.25;
             upper += hi * 0.25;
         }
         Some([lower, upper])
     }
-    recurse(region, bounds, owner_to_root, 0, max_depth, fuel)
+    recurse(region, bounds, owner_to_root, 0, max_depth, fuel, prepared)
+}
+
+/// Qualified production event query. An unhandled source/kernel class is
+/// distinct from exhaustion or numerical uncertainty; none may become alpha.
+/// The generic shared-grid research fallback below is test-only evidence.
+pub(super) fn certified_grid_area_query(
+    region: &NeutralRegion<'_>,
+    root_grid: [u32; 4],
+    scale: f64,
+    owner_to_root: Option<Render2dAffineTransform>,
+    max_depth: u8,
+    max_cells: usize,
+    fuel: &mut usize,
+) -> Result<Vec<[f64; 2]>, AreaQueryError> {
+    let [x0, y0, x1, y1] = root_grid;
+    let count = (|| {
+        usize::try_from(x1.checked_sub(x0)?)
+            .ok()?
+            .checked_mul(usize::try_from(y1.checked_sub(y0)?).ok()?)
+    })()
+    .ok_or(AreaQueryError::Precision)?;
+    if max_depth > 12
+        || !scale.is_finite()
+        || scale <= 0.0
+        || x1 > i32::MAX as u32 / 2
+        || y1 > i32::MAX as u32 / 2
+    {
+        return Err(AreaQueryError::Precision);
+    }
+    if count == 0 || count > max_cells || max_cells > 1_048_576 {
+        return Err(AreaQueryError::Resource);
+    }
+    let prepared = PreparedBoundaries::prepare(region, fuel).ok_or(AreaQueryError::Resource)?;
+    let scan = scan_area::ScanPlan::prepare(region, owner_to_root, &prepared, fuel)?;
+    scan.grid(region, root_grid, scale, owner_to_root, &prepared, fuel)
+        .ok_or({
+            if *fuel == 0 {
+                AreaQueryError::Resource
+            } else {
+                AreaQueryError::Precision
+            }
+        })
 }
 
 /// Evaluate one root-space lattice with shared full/empty region certificates.
@@ -1393,10 +1612,7 @@ pub(super) fn certified_area_enclosure(
 /// only their final individual cells pay adaptive continuous-area integration.
 /// This is a private proof substrate, NOT an alpha texture or paint license.
 /// Every node, region visit and emitted cell shares the caller's work fuel.
-#[allow(
-    dead_code,
-    reason = "private shared-grid F3F coverage gate awaiting compositor qualification"
-)]
+#[cfg(test)]
 pub(super) fn certified_grid_area_enclosures(
     region: &NeutralRegion<'_>,
     root_grid: [u32; 4],
@@ -1421,6 +1637,18 @@ pub(super) fn certified_grid_area_enclosures(
     {
         return None;
     }
+    let prepared = PreparedBoundaries::prepare(region, fuel)?;
+    let scan = scan_area::ScanPlan::prepare(region, owner_to_root, &prepared, fuel);
+    if let Ok(scan) = scan.as_ref() {
+        return scan.grid(
+            region,
+            root_grid,
+            root_samples_per_logical_unit,
+            owner_to_root,
+            &prepared,
+            fuel,
+        );
+    }
     let mut result = Vec::new();
     result.try_reserve_exact(area).ok()?;
     result.resize(area, [0.0, 1.0]);
@@ -1432,6 +1660,7 @@ pub(super) fn certified_grid_area_enclosures(
         scale: f64,
         affine: Option<Render2dAffineTransform>,
         depth: u8,
+        prepared: &'a PreparedBoundaries,
     }
     impl Shared<'_, '_> {
         fn root_bounds(&self, [x0, y0, x1, y1]: [u32; 4]) -> [f64; 4] {
@@ -1489,7 +1718,10 @@ pub(super) fn certified_grid_area_enclosures(
             if let Some(transform) = self.affine {
                 cell = cell.preimage(transform)?;
             }
-            match self.region.certify_cell(cell, fuel) {
+            match self
+                .region
+                .certify_prepared(cell, fuel, Some(self.prepared))
+            {
                 CellCertificate::Inside => return self.fill(block, [1.0, 1.0], output, fuel),
                 CellCertificate::Outside => return self.fill(block, [0.0, 0.0], output, fuel),
                 CellCertificate::Unknown if *fuel == 0 => return None,
@@ -1499,8 +1731,14 @@ pub(super) fn certified_grid_area_enclosures(
             if x1 - x0 == 1 && y1 - y0 == 1 {
                 // The exact same original-F1 classifier and bounded numerical
                 // precision gate used by the preexisting single-cell query.
-                let interval =
-                    certified_area_enclosure(self.region, rect, self.affine, self.depth, fuel)?;
+                let interval = area_with_boundaries(
+                    self.region,
+                    rect,
+                    self.affine,
+                    self.depth,
+                    fuel,
+                    self.prepared,
+                )?;
                 return self.fill(block, interval, output, fuel);
             }
             // Deterministic longest-axis partition. Unlike per-cell loops,
@@ -1524,6 +1762,7 @@ pub(super) fn certified_grid_area_enclosures(
         scale: root_samples_per_logical_unit,
         affine: owner_to_root,
         depth: max_cell_depth,
+        prepared: &prepared,
     }
     .visit(root_grid, &mut result, fuel)?;
     Some(result)

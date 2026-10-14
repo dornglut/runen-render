@@ -14,13 +14,20 @@ use crate::execution_2d::{
 use crate::runtime::execution_2d::{shadow, support};
 use std::sync::Arc;
 
-mod interval;
+pub(in crate::runtime::execution_2d) mod interval;
 mod source_envelope;
 
 const MAX_REGION_NODES: usize = 65_536;
 const MAX_REGION_DEPTH: usize = 512;
 const MAX_REGION_PATH_UNITS: usize = 1_048_576;
 const MAX_REGION_GRAPH_WORK: usize = 16_777_216;
+
+#[derive(Clone, Copy, Debug)]
+pub(in crate::runtime::execution_2d) enum AreaQueryError {
+    Unsupported,
+    Precision,
+    Resource,
+}
 
 pub(super) struct NeutralRegion<'a> {
     kind: Kind<'a>,
@@ -347,33 +354,15 @@ fn certified_complete_disk_erosion(bounds: Option<[f64; 4]>, spread: f64) -> boo
 }
 
 impl NeutralRegion<'_> {
-    /// A root group's authored shadows all vanish when their own negative
-    /// disks are strictly too large to fit anywhere in the complete original
-    /// neutral support, including child effects. The offset and finite
-    /// Gaussian cannot restore a source that erosion proved EMPTY.
-    ///
-    /// The certificate must apply to EVERY shadow independently. A single
-    /// surviving shadow still needs the general original-region evaluator.
-    /// No source triangles, alpha or enclosing box are treated as membership.
-    /// Original-F1 source geometry is authoritative. This private bounded
-    /// predicate returns a continuous area ENCLOSURE, not disposable alpha.
-    /// The consuming F3E path still must establish final-color tolerance,
-    /// whole-invocation admission and GPU resource feasibility.
-    #[allow(dead_code, reason = "production query consumer is the next F3F cut")]
-    pub(super) fn continuous_area_enclosure(
-        &self,
-        bounds: [f64; 4],
-        owner_to_root: Option<Render2dAffineTransform>,
-        max_depth: u8,
-        fuel: &mut usize,
-    ) -> Option<[f64; 2]> {
-        certified_cells::certified_area_enclosure(self, bounds, owner_to_root, max_depth, fuel)
+    pub(super) fn certified_logical_envelope(&self) -> Option<[f64; 4]> {
+        self.certified_source_reach
+            .then_some(self.envelope)
+            .flatten()
     }
 
     /// Classify shared sample spans before the expensive uncertain boundary
     /// cells. This exposes a bounded geometric *interval grid*, never a
     /// physical alpha mask; F3E must separately certify final-color error.
-    #[allow(dead_code, reason = "pending qualified F3F F3E tile consumer")]
     pub(super) fn continuous_grid_enclosures(
         &self,
         root_grid: [u32; 4],
@@ -382,8 +371,8 @@ impl NeutralRegion<'_> {
         max_cell_depth: u8,
         max_cells: usize,
         fuel: &mut usize,
-    ) -> Option<Vec<[f64; 2]>> {
-        certified_cells::certified_grid_area_enclosures(
+    ) -> Result<Vec<[f64; 2]>, AreaQueryError> {
+        certified_cells::certified_grid_area_query(
             self,
             root_grid,
             samples_per_logical_unit,

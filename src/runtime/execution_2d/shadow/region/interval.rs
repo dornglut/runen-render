@@ -2,10 +2,42 @@
 //! geometric certificates. Invalid or overflowing arithmetic is Unknown,
 //! never a point estimate masquerading as source-support truth.
 
+/// Error-free TwoSum qualifies scalar event identities only when their real
+/// sum is exactly representable. Unqualified identities retain interval form.
+pub(in crate::runtime::execution_2d) fn exact_add(a: f64, b: f64) -> Option<f64> {
+    let sum = a + b;
+    let virtual_b = sum - a;
+    let residual = (a - (sum - virtual_b)) + (b - virtual_b);
+    (sum.is_finite() && residual == 0.0).then_some(sum)
+}
+
+/// The exact product residual has at most 106 significant bits. Restricting
+/// the product exponent to +/-900 keeps a nonzero residual representable in
+/// the correctly rounded FMA; a zero residual therefore proves exactness.
+pub(in crate::runtime::execution_2d) fn exact_mul(a: f64, b: f64) -> Option<f64> {
+    let product = a * b;
+    if a == 0.0 || b == 0.0 || a.abs() == 1.0 || b.abs() == 1.0 {
+        return product.is_finite().then_some(product);
+    }
+    (product.is_finite()
+        && product.abs() >= f64::from_bits((1023_u64 - 900) << 52)
+        && product.abs() <= f64::from_bits((1023_u64 + 900) << 52)
+        && a.mul_add(b, -product) == 0.0)
+        .then_some(product)
+}
+
+pub(in crate::runtime::execution_2d) fn exact_div(a: f64, b: f64) -> Option<f64> {
+    if b == 0.0 {
+        return None;
+    }
+    let quotient = a / b;
+    (quotient.is_finite() && exact_mul(quotient, b) == Some(a)).then_some(quotient)
+}
+
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Interval {
-    pub(super) lo: f64,
-    pub(super) hi: f64,
+pub(in crate::runtime::execution_2d) struct Interval {
+    pub(in crate::runtime::execution_2d) lo: f64,
+    pub(in crate::runtime::execution_2d) hi: f64,
 }
 
 impl Interval {
@@ -25,15 +57,15 @@ impl Interval {
         Self::new(-self.hi, -self.lo)
     }
 
-    pub(super) fn new(lo: f64, hi: f64) -> Option<Self> {
+    pub(in crate::runtime::execution_2d) fn new(lo: f64, hi: f64) -> Option<Self> {
         (lo.is_finite() && hi.is_finite() && lo <= hi).then_some(Self { lo, hi })
     }
 
-    pub(super) fn scalar(value: f64) -> Option<Self> {
+    pub(in crate::runtime::execution_2d) fn scalar(value: f64) -> Option<Self> {
         Self::new(value, value)
     }
 
-    pub(super) fn add(self, other: Self) -> Option<Self> {
+    pub(in crate::runtime::execution_2d) fn add(self, other: Self) -> Option<Self> {
         // True algebraic identities are exact, including finite f64::MAX.
         // Blind next_up(MAX) would reject a valid zero-offset envelope.
         if self.is_zero() {
@@ -48,7 +80,7 @@ impl Interval {
         )
     }
 
-    pub(super) fn sub(self, other: Self) -> Option<Self> {
+    pub(in crate::runtime::execution_2d) fn sub(self, other: Self) -> Option<Self> {
         if other.is_zero() {
             return Some(self);
         }
@@ -58,7 +90,7 @@ impl Interval {
         )
     }
 
-    pub(super) fn mul(self, other: Self) -> Option<Self> {
+    pub(in crate::runtime::execution_2d) fn mul(self, other: Self) -> Option<Self> {
         // These exact cases prevent a false infinity and make zero matrix
         // coefficients truly zero, without masking any inexact product.
         if self.is_zero() || other.is_zero() {
@@ -90,7 +122,7 @@ impl Interval {
         Self::new(lo.next_down(), hi.next_up())
     }
 
-    pub(super) fn div(self, other: Self) -> Option<Self> {
+    pub(in crate::runtime::execution_2d) fn div(self, other: Self) -> Option<Self> {
         if other.is_one() {
             return Some(self);
         }
@@ -117,7 +149,21 @@ impl Interval {
 
 #[cfg(test)]
 mod tests {
-    use super::Interval;
+    use super::{Interval, exact_add, exact_div, exact_mul};
+
+    #[test]
+    fn scalar_event_identities_require_proved_representability() {
+        assert_eq!(exact_add(22.0, 0.375), Some(22.375));
+        assert!(exact_add(1.0, f64::from_bits((1023_u64 - 54) << 52)).is_none());
+        assert_eq!(exact_mul(f64::MAX, -1.0), Some(-f64::MAX));
+        assert_eq!(exact_mul(0.5, 0.25), Some(0.125));
+        assert!(exact_mul(0.1, 0.1).is_none());
+        assert!(exact_mul(f64::from_bits(1), 0.5).is_none());
+        assert!(exact_mul(f64::MAX, 2.0).is_none());
+        assert_eq!(exact_div(3.0, 4.0), Some(0.75));
+        assert!(exact_div(1.0, 3.0).is_none());
+        assert!(exact_div(0.0, 0.0).is_none());
+    }
 
     #[test]
     fn exact_scalar_identities_preserve_maximal_finite_bound() {

@@ -49,6 +49,8 @@ mod group;
 mod image;
 #[path = "execution_2d/shadow.rs"]
 mod shadow;
+#[path = "execution_2d/symbolic_shadow.rs"]
+mod symbolic_shadow;
 #[path = "execution_2d/vector.rs"]
 mod vector;
 
