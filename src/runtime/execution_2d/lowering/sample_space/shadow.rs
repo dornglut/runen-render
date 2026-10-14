@@ -127,7 +127,7 @@ fn prepare_symbolic_unblurred(
     symbolic: &geometry_support::SymbolicCaster<'_>,
     group: &crate::composition_2d::Render2dGroup,
     path: &[usize],
-    parent_to_root: scene::AffineTransform,
+    parent_to_root: scene::Affine,
     target: &AdmittedTarget,
     sample_scale: f64,
     paintable: bool,
@@ -213,7 +213,8 @@ fn prepare_symbolic_unblurred(
     // One opaque source-over layer carries <= 255*epsilon linear alpha
     // error; reserve a further 4x margin and divide by the full authored
     // effect count so a worst-case 256-effect overdraw cannot hide error.
-    let tolerance = 1.0 / (1024.0 * authored_effects.max(1) as f64);
+    let effect_count = f64::from(u16::try_from(authored_effects.max(1)).expect("bounded 256 effects"));
+    let tolerance = 1.0 / (1024.0 * effect_count);
     let mut prepared = Vec::new();
     prepared
         .try_reserve_exact(group.shadows().len())
@@ -233,11 +234,13 @@ fn prepare_symbolic_unblurred(
                 .map_err(|_| shadow_resource(path, "symbolic coverage allocation failed"))?;
             for y in edges[1]..edges[3] {
                 for x in edges[0]..edges[2] {
+                    let x0 = f64::from(i32::try_from(x).expect("bounded symbolic root index"));
+                    let y0 = f64::from(i32::try_from(y).expect("bounded symbolic root index"));
                     let bounds = [
-                        x as f64 / sample_scale,
-                        y as f64 / sample_scale,
-                        (x + 1) as f64 / sample_scale,
-                        (y + 1) as f64 / sample_scale,
+                        x0 / sample_scale,
+                        y0 / sample_scale,
+                        (x0 + 1.0) / sample_scale,
+                        (y0 + 1.0) / sample_scale,
                     ];
                     let Some([lo, hi]) = symbolic.continuous_area_enclosure(
                         bounds, Some(to_root), 10, &mut fuel,
@@ -270,26 +273,35 @@ fn prepare_symbolic_unblurred(
                 values,
             });
         }
-        let coverage = retained_one.as_ref().expect("admitted symbolic coverage");
-        let length_bytes = u64::try_from(coverage.values.len())
+        let bytes = u64::try_from(count)
             .ok()
             .and_then(|count| count.checked_mul(8))
             .ok_or_else(|| shadow_resource(path, "symbolic retained bytes overflow"))?;
         let next_retained = retained_coverage_bytes
-            .checked_add(length_bytes)
+            .checked_add(bytes)
             .ok_or_else(|| shadow_resource(path, "symbolic aggregate retained bytes overflow"))?;
         if next_retained > MAX_SHADOW_COVERAGE_BYTES {
             return Err(shadow_resource(path, "symbolic retained coverage memory exhausted"));
         }
-        // A distinct retained physical mask is owned by each authored painter
-        // layer, even though all consume the same pristine neutral support.
-        let values = coverage.values.clone();
-        let layer = NeutralCoverage {
-            origin_x: coverage.origin_x,
-            origin_y: coverage.origin_y,
-            width,
-            height,
-            values,
+        // Move the first certified mask without doubling peak-live bytes.
+        // Other ordered source-over layers consume the same pristine C, but
+        // retain separately admitted, fallibly allocated physical buffers.
+        let layer = if let Some(first) = retained_one.take() {
+            first
+        } else {
+            let first = &prepared[0].coverage;
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(count)
+                .map_err(|_| shadow_resource(path, "symbolic sibling mask allocation failed"))?;
+            values.extend_from_slice(&first.values);
+            NeutralCoverage {
+                origin_x: first.origin_x,
+                origin_y: first.origin_y,
+                width,
+                height,
+                values,
+            }
         };
         let bounds = output_bounds(&layer, target, path)?;
         prepared.push(PreparedShadow {
