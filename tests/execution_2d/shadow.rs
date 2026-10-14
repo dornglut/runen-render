@@ -2480,53 +2480,6 @@ fn nonabsorbed_holed_child_paints_without_an_ancestor_shadow_consumer() {
 }
 
 #[test]
-fn nonabsorbed_zero_blur_holed_erosion_is_painted_by_real_ancestor_vulkan() {
-    let Some(context) = context() else { return };
-    // Four F1 rectangles form exactly [10,30]^2 minus [18,22]^2.
-    // Their UNION, not any tessellation, is the child's C. Disk erosion
-    // radius 1 produces a curved quarter-circle along the inner hole.
-    let ring = vec![
-        caster(Render2dColorRgba8::TRANSPARENT, 10.0, 10.0, 20.0, 8.0),
-        caster(Render2dColorRgba8::TRANSPARENT, 10.0, 22.0, 20.0, 8.0),
-        caster(Render2dColorRgba8::TRANSPARENT, 10.0, 18.0, 8.0, 4.0),
-        caster(Render2dColorRgba8::TRANSPARENT, 22.0, 18.0, 8.0, 4.0),
-    ];
-    let child = Render2dEntry::group(Render2dGroup::new(
-        ring,
-        Render2dAffineTransform::IDENTITY,
-        Vec::new(),
-        Render2dOpacity::TRANSPARENT,
-        vec![effect(8.0, 0.0, 0.0, -1.0, Render2dColorRgba8::TRANSPARENT)],
-    ));
-    let ancestor = Render2dEntry::group(Render2dGroup::new(
-        vec![child],
-        Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
-        Vec::new(),
-        Render2dOpacity::OPAQUE,
-        vec![effect(
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            Render2dColorRgba8::new(0, 0, 255, 255),
-        )],
-    ));
-    let scene = Render2dComposition::new(vec![ancestor]).unwrap();
-    let image = execute(
-        &context,
-        &mut Render2dExecutor::new(),
-        &scene,
-        &Render2dResourceBindings::default(),
-        "F3F F1 holed negative disk reaches ancestor's true correlated GPU pixels",
-    );
-    // Independently integrated exact curved circular-segment cell area:
-    // 0.5868378429496339; F3E blue premul sRGB is 201, alpha 150.
-    // Sampling sixteen POINT CENTERS would incorrectly give alpha 143.
-    pixel_near(pixel(&image, 36, 22), [0, 0, 201, 150]);
-    pixel_near(pixel(&image, 37, 20), [0, 0, 0, 0]);
-}
-
-#[test]
 fn nonabsorbed_offset_holed_erosion_remains_typed_unsupported() {
     let Some(context) = context() else { return };
     let child = Render2dEntry::group(Render2dGroup::new(
@@ -2598,8 +2551,7 @@ fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work()
         Render2dOpacity::OPAQUE,
         // Shifted erosion is NOT a subset of the original C, so a
         // nonconvex nested region with a SHADOW-CONSUMING ancestor
-        // must either qualify against the source-exact pixel budget or fail
-        // atomically with the exact original-F1 owner path.
+        // must remain UnsupportedEntry with the exact F1 owner path.
         vec![effect(
             0.5,
             0.0,
@@ -2635,27 +2587,18 @@ fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work()
         &target,
     );
     let failure = match result {
-        Ok(_) => panic!("unqualified shifted concave source must not become a guessed mask"),
+        Ok(_) => panic!("nonabsorbed shifted nonconvex erosion must not become a fake rectangle"),
         Err(error) => error,
     };
-    // The old nonpolygonal UnsupportedEntry may now reach a certified
-    // continuous-area evaluator. If its admitted precision or work is
-    // insufficient, the exact owner must reject before GPU work instead
-    // of silently inventing the L's eroded concave boundary.
-    assert!(match failure {
+    assert!(matches!(
+        failure,
         Render2dExecutionError::UnsupportedEntry {
             path,
-            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows { root_index: 0 },
-        } => path == [0, 0],
-        Render2dExecutionError::SampleSpace {
-            kind:
-                runen_render::execution_2d::Render2dSampleSpaceError::PrecisionLimit
-                | runen_render::execution_2d::Render2dSampleSpaceError::ResourceLimit,
-            path: Some(path),
-            ..
-        } => path == [0, 0],
-        _ => false,
-    });
+            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
+                root_index: 0,
+            },
+        } if path == [0, 0]
+    ));
     drop(texture);
 }
 

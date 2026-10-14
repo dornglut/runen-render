@@ -20,7 +20,7 @@ pub(super) struct NeutralMesh {
 const MAX_GAUSSIAN_RADIUS_SAMPLES: u32 = 512;
 // Covers repeated neutral grid traversal AND continuous support integration
 // across every authored effect in one contribution, not just one shadow.
-pub(super) const MAX_AGGREGATE_SHADOW_PREPARATION_WORK: usize = 134_217_728;
+const MAX_AGGREGATE_SHADOW_PREPARATION_WORK: usize = 134_217_728;
 const MAX_CERTIFIED_RECTANGLE_AXIS_WORK: usize = 16_777_216;
 
 /// Retained f64 coverage belongs to the entire invocation, not one shadow.
@@ -172,7 +172,7 @@ pub(super) struct NeutralMask {
     pub(super) samples: Vec<u8>,
 }
 
-pub(super) const MAX_NEUTRAL_MASK_SAMPLES: usize = 1_048_576;
+const MAX_NEUTRAL_MASK_SAMPLES: usize = 1_048_576;
 const MAX_SPREAD_RADIUS_SAMPLES: u32 = 512;
 
 fn mask_failure(

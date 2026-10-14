@@ -360,43 +360,6 @@ impl NeutralRegion<'_> {
     /// The consuming F3E path still must establish final-color tolerance,
     /// whole-invocation admission and GPU resource feasibility.
     #[allow(dead_code, reason = "production query consumer is the next F3F cut")]
-    /// Restrict the first physical symbolic consumer to source-exact
-    /// filled F1 supports and completed zero-Gaussian child effect regions.
-    /// Curved signed erosion is allowed; positive disks, finite Gaussians,
-    /// physical glyphs and unqualified leaves still require separate proof.
-    /// This qualification consumes invocation-owned graph-visit fuel.
-    pub(super) fn qualified_unblurred_fills(&self, fuel: &mut usize) -> bool {
-        if *fuel == 0 || !self.certified_source_reach || self.contains_positive_disk {
-            return false;
-        }
-        *fuel -= 1;
-        match &self.kind {
-            Kind::Source(_) => self.semantic_item.is_some_and(|item| {
-                matches!(
-                    item.primitive(),
-                    crate::composition_2d::Render2dPrimitive::Fill { .. }
-                )
-            }),
-            Kind::Union(children) => children
-                .iter()
-                .all(|child| child.qualified_unblurred_fills(fuel)),
-            Kind::Affine { source, to_parent } => {
-                let [a, b, c, d, _, _] = to_parent.components();
-                let det = a.mul_add(d, -(b * c));
-                det.is_finite() && det != 0.0 && source.qualified_unblurred_fills(fuel)
-            }
-            Kind::Clip { source, .. } => source.qualified_unblurred_fills(fuel),
-            Kind::Effect { source, shadow } => {
-                shadow.sigma() == 0.0 && source.qualified_unblurred_fills(fuel)
-            }
-        }
-    }
-
-    /// A reach envelope is a work/crop bound, never membership.
-    pub(super) fn certified_reach_envelope(&self) -> Option<[f64; 4]> {
-        self.envelope
-    }
-
     pub(super) fn continuous_area_enclosure(
         &self,
         bounds: [f64; 4],
