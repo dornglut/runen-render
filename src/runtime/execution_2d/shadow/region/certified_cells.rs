@@ -1260,8 +1260,9 @@ impl NeutralRegion<'_> {
 
 /// Conservative continuous geometric area enclosure for a caller-defined
 /// ROOT-space rectangle. Supply the FORWARD owner-to-root affine;
-/// the predicate computes the conservative root-to-owner preimage. This computes NO paint alpha and does not select a Gaussian
-/// kernel. Full/empty classification is exact; uncertain leaves contribute
+/// the predicate computes the conservative root-to-owner preimage.
+/// This computes NO paint alpha and does not select a Gaussian kernel.
+/// Full/empty classification is exact; uncertain leaves contribute
 /// [0, area], never a midpoint guessed to be source geometry.
 ///
 /// Each binary subdivision is dyadic in the normalized unit cell. Summed
