@@ -1106,6 +1106,19 @@ fn certified_negative_exterior_witness(
             return true;
         }
     }
+    // A single radius-r exterior POINT can cover the complete query
+    // rectangle only if BOTH coordinate spans are strictly below 2r.
+    // Previous vertical/horizontal SEGMENT witnesses remain valid even
+    // for much wider queries; apply this shortcut only after those tests.
+    // Rounding toward a false negative can only lose an optional proof,
+    // never certify a false Outside.
+    let diameter = 2.0 * radius;
+    if !diameter.is_finite()
+        || query.x.hi - query.x.lo >= diameter
+        || query.y.hi - query.y.lo >= diameter
+    {
+        return false;
+    }
     // The fixed cardinal/diagonal probes may miss a *narrow curved
     // corner*: the certified exterior exists only in a small angular
     // interval near the original hole corner. A bounded second pass
@@ -1232,6 +1245,19 @@ impl NeutralRegion<'_> {
                     return CellCertificate::Unknown;
                 };
                 let spread = shadow.spread();
+                // True disk erosion is a SUBSET of the original F1 support.
+                // With ZERO Gaussian halo, proving the whole translated
+                // query Outside the pristine source is already a complete
+                // Outside proof. Avoid the expensive disk-cover strips and
+                // exterior-witness searches for these holes and disjoint
+                // regions. A positive sigma MUST NOT take this shortcut:
+                // finite Gaussian support may reach outside pristine C.
+                if spread < 0.0
+                    && shadow.sigma() == 0.0
+                    && source.certify_cell(translated, visits) == CellCertificate::Outside
+                {
+                    return CellCertificate::Outside;
+                }
                 // A spread region is contained in its own finite-Gaussian
                 // support, but this says NOTHING about blurred alpha.
                 let definite_inside = if spread < 0.0 {
@@ -1783,6 +1809,50 @@ fn certified_cells_handle_holed_union_and_signed_morphology_without_alpha_masks(
 }
 
 #[test]
+fn broad_cell_skips_impossible_single_point_disk_witnesses_without_false_outside() {
+    let mut graph = builder();
+    let source = rectangle(&mut graph, [0.0, 0.0, 1.0, 1.0], &[0, 0]);
+    let broad = Cell::new([0.0, 0.0, 4.0, 4.0]).unwrap();
+    let mut remaining = 4_000;
+    // A radius-one disk cannot contain a four-unit-wide query cell.
+    // Segment witnesses are still attempted; the 256-point fallback is
+    // rigorously impossible and must not burn another ~12k proof units.
+    assert!(!certified_negative_exterior_witness(
+        &source,
+        broad,
+        1.0,
+        &mut remaining
+    ));
+    assert!(remaining > 0, "point-witness exclusion consumed unbounded fuel");
+
+    // With a finite Gaussian the support may extend OUTSIDE pristine C.
+    // The zero-blur subset shortcut must never erase such neutral support.
+    let blurred = graph
+        .effect(
+            source,
+            Render2dDropShadow::new(
+                0.0,
+                0.0,
+                1.0,
+                -0.1,
+                crate::composition_2d::Render2dColorRgba8::TRANSPARENT,
+            )
+            .unwrap(),
+            &[0],
+        )
+        .unwrap();
+    let mut proof_fuel = 100_000;
+    assert_ne!(
+        blurred.certify_cell(
+            Cell::new([1.2, 0.4, 1.25, 0.5]).unwrap(),
+            &mut proof_fuel
+        ),
+        CellCertificate::Outside,
+        "finite Gaussian support was incorrectly pruned as zero blur"
+    );
+}
+
+#[test]
 fn original_f1_holed_nested_negative_exterior_witness_survives_ancestor_shear() {
     use crate::composition_2d::{
         Render2dBrush, Render2dColorRgba8, Render2dOpacity, Render2dRect, Render2dShape,
@@ -1825,6 +1895,33 @@ fn original_f1_holed_nested_negative_exterior_witness_survives_ancestor_shear() 
         .map(|(index, item)| graph.source_from_item(fake(), item, &[0, index]).unwrap())
         .collect::<Vec<_>>();
     let ring = graph.union(sources, &[0]).unwrap();
+    // These are actual transparent original-F1 fills despite the forged
+    // mesh covering the HOLE. Erosion cannot paint outside pristine C:
+    // prove a complete hole cell empty under a SMALL whole-query fuel.
+    let zero_blur = graph
+        .effect(
+            Arc::clone(&ring),
+            Render2dDropShadow::new(
+                8.0,
+                0.0,
+                0.0,
+                -1.0,
+                Render2dColorRgba8::TRANSPARENT,
+            )
+            .unwrap(),
+            &[0, 4],
+        )
+        .unwrap();
+    let mut bounded = 128;
+    assert_eq!(
+        zero_blur.certify_cell(
+            Cell::new([27.25, 20.25, 27.5, 20.5]).unwrap(),
+            &mut bounded
+        ),
+        CellCertificate::Outside
+    );
+    assert!(bounded > 0, "pristine F1 hole should not consume disk search fuel");
+
     let child_shadow =
         Render2dDropShadow::new(8.0, 0.0, 0.001, -1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
     let eroded = graph
