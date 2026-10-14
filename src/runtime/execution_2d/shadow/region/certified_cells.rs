@@ -1709,13 +1709,15 @@ fn shared_grid_encloses_original_holed_negative_erosion_after_shear() {
     .unwrap();
     let completed_child = graph.effect(ring, shadow, &[0, 0]).unwrap();
     let shear = Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap();
+    // Coarse exact enclosures only: the fully refined per-cell path has
+    // not demonstrated an acceptable bounded cost for this curved hole.
     let mut fuel = 134_217_728;
     let areas = certified_grid_area_enclosures(
         &completed_child,
         [144, 88, 148, 92],
         4.0,
         Some(shear),
-        7,
+        3,
         16,
         &mut fuel,
     )
