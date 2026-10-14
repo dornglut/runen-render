@@ -119,6 +119,193 @@ pub(super) fn admit_effect_count(plan: &scene::Plan<'_>) -> Result<usize, Render
     Ok(authored_effects)
 }
 
+/// First production symbolic-caster cut. A zero-spread, zero-blur ancestor
+/// consumes the *completed original-F1 region*, including a child's signed
+/// eroded geometry, without reinterpreting that geometry as triangles or alpha.
+/// A true finite Gaussian/ancestor disk needs a separate admitted integrator.
+fn prepare_symbolic_unblurred(
+    symbolic: &geometry_support::SymbolicCaster<'_>,
+    group: &crate::composition_2d::Render2dGroup,
+    path: &[usize],
+    parent_to_root: scene::AffineTransform,
+    target: &AdmittedTarget,
+    sample_scale: f64,
+    paintable: bool,
+    authored_effects: usize,
+    retained_coverage_bytes: &mut u64,
+    aggregate_coverage_work: &mut usize,
+) -> Result<Vec<PreparedShadow>, Render2dExecutionError> {
+    let unsupported = || {
+        let owner = symbolic.owner_path();
+        crate::runtime::execution_2d::unsupported_at(
+            owner,
+            crate::execution_2d::Render2dUnsupportedContent::Shadows {
+                root_index: owner[0],
+            },
+        )
+    };
+    // Reject even transparent unqualified effects: neutral geometry may be
+    // visible to an ancestor regardless of foreground opacity.
+    if group.shadows().iter().any(|s| {
+        s.spread() != 0.0
+            || s.sigma() != 0.0
+            || s.offset_x() != 0.0
+            || s.offset_y() != 0.0
+    }) {
+        return Err(unsupported());
+    }
+    let limit = support::MAX_AGGREGATE_SHADOW_PREPARATION_WORK;
+    let mut fuel = limit
+        .checked_sub(*aggregate_coverage_work)
+        .ok_or_else(|| shadow_resource(path, "symbolic aggregate work already exhausted"))?;
+    if !symbolic.qualified_unblurred_fills(&mut fuel) {
+        return Err(unsupported());
+    }
+    let [a, b, c, d, tx, ty] = parent_to_root.coefficients();
+    let to_root = Render2dAffineTransform::new(a, b, c, d, tx, ty)
+        .map_err(|_| shadow_precision(path, "symbolic owner-to-root transform is unrepresentable"))?;
+    let det = a.mul_add(d, -(b * c));
+    if !det.is_finite() || det == 0.0 {
+        return Err(shadow_precision(path, "symbolic ancestor transform is singular"));
+    }
+    let Some(owner_envelope) = symbolic.certified_reach_envelope() else {
+        *aggregate_coverage_work = limit - fuel;
+        return Ok(Vec::new());
+    };
+    let envelope = geometry_support::transform_envelope(owner_envelope, to_root, path)?;
+    let scaled = envelope.map(|v| v * sample_scale);
+    if !scaled.iter().all(|v| v.is_finite())
+        || scaled.iter().any(|v| v.abs() > f64::from(i32::MAX) / 2.0)
+    {
+        return Err(shadow_precision(path, "symbolic root coverage reach exceeds precise indices"));
+    }
+    let canvas = [
+        i64::from(target.physical_width) * i64::from(SAMPLES),
+        i64::from(target.physical_height) * i64::from(SAMPLES),
+    ];
+    // Cropping is permitted only after exact original-F1 support reach is
+    // conservatively proven. A shadow can reach the target from outside.
+    #[allow(clippy::cast_possible_truncation)]
+    let edges = [
+        (scaled[0].floor() as i64).clamp(0, canvas[0]),
+        (scaled[1].floor() as i64).clamp(0, canvas[1]),
+        (scaled[2].ceil() as i64).clamp(0, canvas[0]),
+        (scaled[3].ceil() as i64).clamp(0, canvas[1]),
+    ];
+    if edges[0] >= edges[2] || edges[1] >= edges[3] {
+        *aggregate_coverage_work = limit - fuel;
+        return Ok(Vec::new());
+    }
+    let width = usize::try_from(edges[2] - edges[0])
+        .map_err(|_| shadow_resource(path, "symbolic mask width overflow"))?;
+    let height = usize::try_from(edges[3] - edges[1])
+        .map_err(|_| shadow_resource(path, "symbolic mask height overflow"))?;
+    let count = width
+        .checked_mul(height)
+        .ok_or_else(|| shadow_resource(path, "symbolic sample grid overflow"))?;
+    let remaining = MAX_SHADOW_COVERAGE_BYTES
+        .checked_sub(*retained_coverage_bytes)
+        .and_then(|bytes| usize::try_from(bytes / 8).ok())
+        .ok_or_else(|| shadow_resource(path, "symbolic retained coverage budget exhausted"))?;
+    if count > support::MAX_NEUTRAL_MASK_SAMPLES || count > remaining {
+        return Err(shadow_resource(path, "symbolic coverage exceeds aggregate sample admission"));
+    }
+    // One opaque source-over layer carries <= 255*epsilon linear alpha
+    // error; reserve a further 4x margin and divide by the full authored
+    // effect count so a worst-case 256-effect overdraw cannot hide error.
+    let tolerance = 1.0 / (1024.0 * authored_effects.max(1) as f64);
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(group.shadows().len())
+        .map_err(|_| shadow_resource(path, "symbolic effect list allocation failed"))?;
+    let mut retained_one: Option<NeutralCoverage> = None;
+    for effect in group.shadows() {
+        let color = linear_color(effect.color());
+        if !paintable || color[3] == 0.0 {
+            continue;
+        }
+        // Every sibling uses pristine C and the same zero-blur identity
+        // kernel. Reusing one unmodified coverage is semantically exact.
+        if retained_one.is_none() {
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(count)
+                .map_err(|_| shadow_resource(path, "symbolic coverage allocation failed"))?;
+            for y in edges[1]..edges[3] {
+                for x in edges[0]..edges[2] {
+                    let bounds = [
+                        x as f64 / sample_scale,
+                        y as f64 / sample_scale,
+                        (x + 1) as f64 / sample_scale,
+                        (y + 1) as f64 / sample_scale,
+                    ];
+                    let Some([lo, hi]) = symbolic.continuous_area_enclosure(
+                        bounds, Some(to_root), 10, &mut fuel,
+                    ) else {
+                        return Err(shadow_resource(
+                            path,
+                            "symbolic original-F1 area proof exhausted shared work or precision",
+                        ));
+                    };
+                    if !lo.is_finite()
+                        || !hi.is_finite()
+                        || lo < 0.0
+                        || hi > 1.0
+                        || lo > hi
+                        || hi - lo > tolerance
+                    {
+                        return Err(shadow_precision(
+                            path,
+                            "symbolic continuous-area uncertainty exceeds final-color bound",
+                        ));
+                    }
+                    values.push((lo + hi) * 0.5);
+                }
+            }
+            retained_one = Some(NeutralCoverage {
+                origin_x: edges[0],
+                origin_y: edges[1],
+                width,
+                height,
+                values,
+            });
+        }
+        let coverage = retained_one.as_ref().expect("admitted symbolic coverage");
+        let length_bytes = u64::try_from(coverage.values.len())
+            .ok()
+            .and_then(|count| count.checked_mul(8))
+            .ok_or_else(|| shadow_resource(path, "symbolic retained bytes overflow"))?;
+        let next_retained = retained_coverage_bytes
+            .checked_add(length_bytes)
+            .ok_or_else(|| shadow_resource(path, "symbolic aggregate retained bytes overflow"))?;
+        if next_retained > MAX_SHADOW_COVERAGE_BYTES {
+            return Err(shadow_resource(path, "symbolic retained coverage memory exhausted"));
+        }
+        // A distinct retained physical mask is owned by each authored painter
+        // layer, even though all consume the same pristine neutral support.
+        let values = coverage.values.clone();
+        let layer = NeutralCoverage {
+            origin_x: coverage.origin_x,
+            origin_y: coverage.origin_y,
+            width,
+            height,
+            values,
+        };
+        let bounds = output_bounds(&layer, target, path)?;
+        prepared.push(PreparedShadow {
+            color,
+            coverage: layer,
+            logical_envelope: envelope,
+            bounds,
+            group_visible: paintable,
+            path: path.to_vec(),
+        });
+        *retained_coverage_bytes = next_retained;
+    }
+    *aggregate_coverage_work = limit - fuel;
+    Ok(prepared)
+}
+
 /// Independent F1 shadows each derive from the same immutable pre-shadow C.
 /// This preflight runs before caller-target GPU work and retains exact authored
 /// event paths; it is never a reinterpreted public support ontology.
@@ -179,6 +366,22 @@ pub(super) fn prepare(
         let source = sources
             .get(&index)
             .expect("the neutral F1 traversal records each shadow-bearing group");
+        if let geometry_support::NeutralCaster::Symbolic(symbolic) = source {
+            let prepared = prepare_symbolic_unblurred(
+                symbolic,
+                group,
+                path,
+                *parent_to_root,
+                target,
+                sample_scale,
+                paintable,
+                admitted_effects,
+                &mut retained_coverage_bytes,
+                &mut aggregate_coverage_work,
+            )?;
+            groups.insert(index, prepared);
+            continue;
+        }
         let (mesh, qualified_disk, original_polygons) = match source {
             geometry_support::NeutralCaster::Mesh(mesh) => (mesh.as_ref(), None, false),
             geometry_support::NeutralCaster::OriginalStraightPolygonUnion(mesh) => {

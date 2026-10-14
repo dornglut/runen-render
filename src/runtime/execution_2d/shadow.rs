@@ -336,6 +336,16 @@ impl SymbolicCaster<'_> {
         &self.first_unqualified_owner
     }
 
+    /// Qualified first-cut geometry cannot include finite child Gaussian,
+    /// positive disks, strokes, glyphs or uncertified source reach.
+    pub(super) fn qualified_unblurred_fills(&self, fuel: &mut usize) -> bool {
+        self._expression.qualified_unblurred_fills(fuel)
+    }
+
+    pub(super) fn certified_reach_envelope(&self) -> Option<[f64; 4]> {
+        self._expression.certified_reach_envelope()
+    }
+
     /// A caller may request conservative continuous geometry only; neither
     /// this interval nor the source DAG is a preapproved sampled mask.
     #[allow(
