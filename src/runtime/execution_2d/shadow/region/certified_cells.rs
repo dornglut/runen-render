@@ -1428,7 +1428,10 @@ fn production_area_enclosure_preserves_bounds_and_fuel_across_affine() {
     // The exact intersecting area is integral x from 0.25*y to 1,
     // y in [0.5,1.5], divided by total root area 2.
     let exact = 0.375;
-    assert!(lo <= exact && exact <= hi, "positive shear interval [{lo}, {hi}] missed {exact}");
+    assert!(
+        lo <= exact && exact <= hi,
+        "positive shear interval [{lo}, {hi}] missed {exact}"
+    );
     assert!(hi - lo < 0.01);
     // Reverse the FORWARD shear. The threshold x_root>=-0.25*y_root
     // gives normalized source intersection area 0.625, not 0.375.
