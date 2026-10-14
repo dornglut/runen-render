@@ -1579,8 +1579,9 @@ fn original_f1_holed_path_negative_disk_curved_corner_has_16_site_shear_oracle()
             );
         }
     }
-    // True 3/4 circle-crossing pixel: independent 9/16 covered,
-    // 7/16 absent; no sampled SDF, physical triangle or alpha involved.
+    // Independent point-membership witness: 9/16 correlated CENTER sites
+    // inside, 7/16 outside. These are NOT continuous sample-cell areas
+    // and MUST NOT be promoted to final physical pixel coverage or alpha.
     assert_eq!((inside, outside), (9, 7));
     assert!(visits < 16_777_216 && visits > 10_000_000);
     let mut exhausted = 1;
@@ -1590,6 +1591,76 @@ fn original_f1_holed_path_negative_disk_curved_corner_has_16_site_shear_oracle()
             &mut exhausted
         ),
         CellCertificate::Unknown
+    );
+}
+
+#[test]
+fn curved_holed_erosion_center_membership_does_not_prove_continuous_pixel_area() {
+    // The REAL F1 ring + negative disk r=1, offset +8 and ancestor
+    // x_root=x_owner+0.25*y_owner from the preceding proof fixture.
+    // For pixel [36,37]x[22,23], the original C is absent.
+    // Put v=y_root-22, u=x_root-0.25*y_root-30; the child
+    // eroded shadow's exact curved-hole boundary is u²+v²=1.
+    // The occupied x interval at each 0<=v<=1 is:
+    // [35.5+0.25*v+sqrt(1-v²),37], clipped to [36,37].
+    //
+    // This is an independent exact zero-Gaussian-limit AREA oracle,
+    // not a physical mask or a center-point sample count. The finite
+    // child/ancestor Gaussians also need their own normalized area
+    // convolution, so the zero-blur result is NOT their final alpha.
+    let cutoff = (2.0 + 4.0 * 13.0_f64.sqrt()) / 17.0;
+    let circular_height = (1.0 - cutoff * cutoff).sqrt();
+    assert!((0.25 * cutoff + circular_height - 0.5).abs() < 1.0e-13);
+    // Integrate length 1.5-0.25*v-sqrt(1-v²) up to cutoff,
+    // then full width 1 for the remaining v interval.
+    let exact_area = 1.0 + 0.5 * cutoff
+        - 0.125 * cutoff * cutoff
+        - 0.5 * (cutoff * circular_height + cutoff.asin());
+    assert!((exact_area - 0.586_837_842_949_633_9).abs() < 1.0e-12);
+
+    let mut inside_centers = 0;
+    for sy in 0..4 {
+        for sx in 0..4 {
+            let root_x = 36.0 + (f64::from(sx) + 0.5) / 4.0;
+            let root_y = 22.0 + (f64::from(sy) + 0.5) / 4.0;
+            let u = root_x - 0.25 * root_y - 30.0;
+            let v = root_y - 22.0;
+            if u.mul_add(u, v * v) > 1.0 {
+                inside_centers += 1;
+            }
+        }
+    }
+    assert_eq!(inside_centers, 9);
+    let binary_center_fraction = f64::from(inside_centers) / 16.0;
+    assert!((exact_area - binary_center_fraction).abs() > 0.02);
+    // A center-count-as-alpha implementation misses the existing
+    // 4-channel unorm tolerance even BEFORE finite Gaussian effects.
+    let correct_alpha = (exact_area * 255.0).round();
+    let center_alpha = (binary_center_fraction * 255.0).round();
+    assert_eq!(correct_alpha, 150.0);
+    assert_eq!(center_alpha, 143.0);
+    assert!(correct_alpha - center_alpha > 4.0);
+}
+
+#[test]
+fn independent_full_scene_per_site_gaussian_work_cannot_fit_region_fuel() {
+    // This is a falsifier for PROMOTING the current per-site test-only
+    // Gaussian evaluator into production unchanged, NOT a no-go for
+    // event-/tile-shared analytic evaluation. The shared 16_777_216
+    // region budget must also pay for geometry, morphology and DAG work.
+    let samples = 64_usize
+        .checked_mul(64)
+        .and_then(|pixels| pixels.checked_mul(16))
+        .unwrap();
+    let per_site_numeric = samples.checked_mul(GAUSSIAN_WEIGHT_WORK).unwrap();
+    assert_eq!(per_site_numeric, MAX_REGION_GRAPH_WORK);
+    // Even one necessary source-query visit per correlated site already
+    // exceeds the entire admission budget; 256 effects multiply the
+    // independent work. Budget exhaustion cannot be called zero-alpha.
+    let geometry_minimum = per_site_numeric.checked_add(samples).unwrap();
+    assert!(geometry_minimum > MAX_REGION_GRAPH_WORK);
+    assert!(
+        geometry_minimum.checked_mul(256).unwrap() > MAX_REGION_GRAPH_WORK,
     );
 }
 
