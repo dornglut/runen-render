@@ -1656,9 +1656,7 @@ fn sheared_holed_erosion_has_independent_continuous_4x4_cell_area_oracle() {
     }
 
     fn integrated_width(v: f64, x_right: f64) -> f64 {
-        (x_right - 35.5) * v
-            - 0.125 * v * v
-            - 0.5 * (v * (1.0 - v * v).sqrt() + v.asin())
+        (x_right - 35.5) * v - 0.125 * v * v - 0.5 * (v * (1.0 - v * v).sqrt() + v.asin())
     }
 
     fn occupied_cell_area(x0: f64, x1: f64, v0: f64, v1: f64) -> f64 {
@@ -1722,9 +1720,19 @@ fn sheared_holed_erosion_has_independent_continuous_4x4_cell_area_oracle() {
     // globally phased sample cells; six cells are genuinely fractional.
     let reference = [
         [0.0, 0.0, 0.057_316_642_859_978_9, 0.0625],
-        [0.0, 0.000_128_806_734_546_183, 0.057_998_811_660_215_84, 0.0625],
+        [
+            0.0,
+            0.000_128_806_734_546_183,
+            0.057_998_811_660_215_84,
+            0.0625,
+        ],
         [0.0, 0.017_173_013_842_213_2, 0.0625, 0.0625],
-        [0.021_568_309_894_473_73, 0.057_652_257_958_206_11, 0.0625, 0.0625],
+        [
+            0.021_568_309_894_473_73,
+            0.057_652_257_958_206_11,
+            0.0625,
+            0.0625,
+        ],
     ];
     for (actual_row, expected_row) in areas.iter().zip(reference) {
         for (actual, expected) in actual_row.iter().zip(expected_row) {
@@ -1741,7 +1749,12 @@ fn sheared_holed_erosion_has_independent_continuous_4x4_cell_area_oracle() {
     } else {
         1.055 * total.powf(1.0 / 2.4) - 0.055
     };
-    let expected = [0, 0, (blue_srgb * 255.0).round() as u8, (total * 255.0).round() as u8];
+    let expected = [
+        0,
+        0,
+        (blue_srgb * 255.0).round() as u8,
+        (total * 255.0).round() as u8,
+    ];
     assert_eq!(expected, [0, 0, 201, 150]);
 }
 
