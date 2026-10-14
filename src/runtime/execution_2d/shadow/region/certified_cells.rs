@@ -899,6 +899,78 @@ fn certified_adaptive_finite_gaussian_coverage(
     Some((coverage, max_nodes - remaining_nodes))
 }
 
+/// F3F-NS02 proof-only negative-erosion EXTERIOR witness.
+///
+/// For any point q definitely outside C, every x with |x-q|₂<r lies
+/// outside C⊖disk(r). Thus one q that covers the ENTIRE query cell
+/// certifies Outside, including holes, concavities and nonrectangular
+/// original F1 contours. We conservatively use |dx|+|dy|<r rather
+/// than square roots. `query` already includes the child Gaussian
+/// square halo in the effect owner's immediate-parent frame.
+///
+/// Trial nine exact representable witness locations. This is a finite
+/// source-authoritative predicate, NOT an SDF, alpha mask, or sampled
+/// approximation. A missed witness means Unknown, never false Outside.
+/// Cost is charged to the existing shared source-query fuel.
+fn certified_negative_exterior_witness(
+    source: &NeutralRegion<'_>,
+    query: Cell,
+    radius: f64,
+    visits: &mut usize,
+) -> bool {
+    if !radius.is_finite() || radius <= 0.0 {
+        return false;
+    }
+    let center_x = query.x.lo * 0.5 + query.x.hi * 0.5;
+    let center_y = query.y.lo * 0.5 + query.y.hi * 0.5;
+    let displacement = radius * 0.9;
+    if !center_x.is_finite() || !center_y.is_finite() || !displacement.is_finite() {
+        return false;
+    }
+    const PROBE_COST: usize = 32;
+    for [ux, uy] in [
+        [0.0, 0.0],
+        [-1.0, 0.0],
+        [1.0, 0.0],
+        [0.0, -1.0],
+        [0.0, 1.0],
+        [-1.0, -1.0],
+        [-1.0, 1.0],
+        [1.0, -1.0],
+        [1.0, 1.0],
+    ] {
+        if *visits <= PROBE_COST {
+            return false;
+        }
+        *visits -= PROBE_COST;
+        let (qx, qy) = (
+            ux.mul_add(displacement, center_x),
+            uy.mul_add(displacement, center_y),
+        );
+        let Some(point) = Cell::new([qx, qy, qx, qy]) else {
+            continue;
+        };
+        let (Some(dx), Some(dy)) = (
+            Interval::scalar(qx).and_then(|point| point.sub(query.x)),
+            Interval::scalar(qy).and_then(|point| point.sub(query.y)),
+        ) else {
+            continue;
+        };
+        let bound_x = dx.lo.abs().max(dx.hi.abs());
+        let bound_y = dy.lo.abs().max(dy.hi.abs());
+        // Use outward rounding on the full Manhattan displacement.
+        let Some(bound) = Interval::scalar(bound_x)
+            .and_then(|x| x.add(Interval::scalar(bound_y)?))
+        else {
+            continue;
+        };
+        if bound.hi < radius && source.certify_cell(point, visits) == CellCertificate::Outside {
+            return true;
+        }
+    }
+    false
+}
+
 impl NeutralRegion<'_> {
     fn certify_cell(&self, cell: Cell, visits: &mut usize) -> CellCertificate {
         if *visits == 0 {
@@ -977,7 +1049,12 @@ impl NeutralRegion<'_> {
                 let Some(outer) = translated.expanded(outer_halo) else {
                     return CellCertificate::Unknown;
                 };
-                if source.certify_cell(outer, visits) == CellCertificate::Outside {
+                if source.certify_cell(outer, visits) == CellCertificate::Outside
+                    || (spread < 0.0
+                        && certified_negative_exterior_witness(
+                            source, outer, -spread, visits,
+                        ))
+                {
                     CellCertificate::Outside
                 } else {
                     CellCertificate::Unknown
@@ -1083,6 +1160,113 @@ fn certified_cells_handle_holed_union_and_signed_morphology_without_alpha_masks(
             );
         }
     }
+}
+
+#[test]
+fn original_f1_holed_nested_negative_exterior_witness_survives_ancestor_shear() {
+    use crate::composition_2d::{
+        Render2dBrush, Render2dColorRgba8, Render2dOpacity, Render2dRect, Render2dShape,
+    };
+    // A forged physical mesh has no authority over the real F1 source.
+    // This ring's actual F1 hole is [18,22]².
+    let mut graph = builder();
+    let fake = || support::NeutralMesh {
+        units_per_parent_logical_unit: 1.0,
+        triangles: vec![
+            [0.0, 0.0], [64.0, 0.0], [64.0, 64.0],
+            [0.0, 0.0], [64.0, 64.0], [0.0, 64.0],
+        ],
+        bounds: [0.0, 0.0, 64.0, 64.0],
+    };
+    let rects = [
+        [10.0, 10.0, 20.0, 8.0],
+        [10.0, 22.0, 20.0, 8.0],
+        [10.0, 18.0, 8.0, 4.0],
+        [22.0, 18.0, 8.0, 4.0],
+    ];
+    let items = rects.map(|[x,y,w,h]| {
+        Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(x,y,w,h).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        )
+    });
+    let sources = items.iter().enumerate()
+        .map(|(index,item)| graph.source_from_item(fake(), item, &[0,index]).unwrap())
+        .collect::<Vec<_>>();
+    let ring = graph.union(sources, &[0]).unwrap();
+    let child_shadow = Render2dDropShadow::new(
+        8.0, 0.0, 0.001, -1.0, Render2dColorRgba8::TRANSPARENT,
+    ).unwrap();
+    let eroded = graph.effect(Arc::clone(&ring), child_shadow, &[0,4]).unwrap();
+    let union = graph.union(vec![Arc::clone(&ring),Arc::clone(&eroded)], &[0]).unwrap();
+    let ancestor = graph.affine(
+        union, Render2dAffineTransform::new(1.0,0.0,0.5,1.0,0.0,0.0).unwrap(), &[0],
+    ).unwrap();
+    let next_effect = graph.effect(
+        ancestor,
+        Render2dDropShadow::new(
+            0.0,0.0,0.001,0.0,Render2dColorRgba8::TRANSPARENT,
+        ).unwrap(),
+        &[0],
+    ).unwrap();
+
+    let mut visits = 16_777_216;
+    // Root x=30,y=20 -> parent x=20,y=20, within ORIGINAL
+    // empty hole. The translated LEFT eroded arm moves into the hole.
+    // An ancestor must observe this otherwise missing support.
+    assert_eq!(
+        next_effect.certify_cell(Cell::new([30.2,20.2,30.3,20.3]).unwrap(),&mut visits),
+        CellCertificate::Inside
+    );
+    // Root x=40.5,y=20 -> parent x=30.5: outside original C,
+    // but translated source x=22.5 lies just INSIDE the right
+    // hole boundary's erosion disk. This is genuinely outside
+    // nonabsorbed E despite being inside the physical triangles.
+    assert_eq!(
+        next_effect.certify_cell(Cell::new([40.49,19.99,40.51,20.01]).unwrap(),&mut visits),
+        CellCertificate::Outside
+    );
+    // Near the outer-right wall, E extends well BEYOND original C.
+    assert_eq!(
+        next_effect.certify_cell(Cell::new([40.2,12.2,40.3,12.3]).unwrap(),&mut visits),
+        CellCertificate::Inside
+    );
+    assert_eq!(
+        next_effect.certify_cell(Cell::new([60.0,20.0,60.1,20.1]).unwrap(),&mut visits),
+        CellCertificate::Outside
+    );
+    assert!(visits < 16_777_216 && visits > 16_000_000);
+}
+
+#[test]
+fn erosion_exclusion_covers_finite_gaussian_halo_not_just_its_center() {
+    let mut graph = builder();
+    let square = rectangle(&mut graph, [0.0,0.0,10.0,10.0], &[0]);
+    let negative = graph.effect(
+        square,
+        Render2dDropShadow::new(
+            0.0,0.0,0.25,-1.0,
+            crate::composition_2d::Render2dColorRgba8::TRANSPARENT,
+        ).unwrap(),
+        &[0],
+    ).unwrap();
+    let mut visits = 16_777_216;
+    // E begins at x=1.0; its 3-sigma envelope begins at x=.25.
+    // A center outside E can STILL be inside its finite halo.
+    assert_ne!(
+        negative.certify_cell(Cell::new([0.8,5.0,0.8,5.0]).unwrap(),&mut visits),
+        CellCertificate::Outside
+    );
+    assert_eq!(
+        negative.certify_cell(Cell::new([0.1,5.0,0.1,5.0]).unwrap(),&mut visits),
+        CellCertificate::Outside
+    );
+    assert!(visits < 16_777_216);
 }
 
 #[test]
