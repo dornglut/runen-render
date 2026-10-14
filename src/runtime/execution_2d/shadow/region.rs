@@ -838,8 +838,73 @@ impl NeutralRegionBuilder {
         seen == 0b1111
     }
 
+    /// A structural F1 triangle admits exact signed Euclidean support only
+    /// if its ONLY filled contour is three original straight vertices and
+    /// the disposable physical tessellation is precisely the same triangle.
+    /// Neither its AABB nor three physical corners alone can certify a
+    /// curved, crossed, multi-contour, clipped or subdivided authored source.
+    fn exact_original_triangle_source(mesh: &support::NeutralMesh, item: &Render2dItem) -> bool {
+        use crate::composition_2d::Render2dPathCommand as Command;
+        if !item.clips().is_empty() {
+            return false;
+        }
+        let crate::composition_2d::Render2dPrimitive::Fill { shape, .. } = item.primitive() else {
+            return false;
+        };
+        let Some(path) = shape.as_path() else {
+            return false;
+        };
+        let [Command::MoveTo(a), Command::LineTo(b), Command::LineTo(c), rest @ ..] =
+            path.commands()
+        else {
+            return false;
+        };
+        if !(rest.is_empty()
+            || matches!(rest, [Command::Close])
+            || matches!(rest, [Command::LineTo(end)] if end == a)
+            || matches!(rest, [Command::LineTo(end), Command::Close] if end == a))
+            || mesh.triangles.len() != 3
+        {
+            return false;
+        }
+        let authored = [[a.x(), a.y()], [b.x(), b.y()], [c.x(), c.y()]];
+        let orientation = |points: [[f64; 2]; 3]| {
+            let [a, b, c] = points;
+            (b[0] - a[0]).mul_add(c[1] - a[1], -((b[1] - a[1]) * (c[0] - a[0])))
+        };
+        if orientation(authored) == 0.0 || !orientation(authored).is_finite() {
+            return false;
+        }
+        let actual = [
+            mesh.triangles[0],
+            mesh.triangles[1],
+            mesh.triangles[2],
+        ];
+        if orientation(actual) == 0.0 || !orientation(actual).is_finite() {
+            return false;
+        }
+        let [a, b, c, d, tx, ty] = item.local_to_parent().components();
+        let mut seen = 0_u8;
+        for [x, y] in authored {
+            let px = a.mul_add(x, c.mul_add(y, tx)) * mesh.units_per_parent_logical_unit;
+            let py = b.mul_add(x, d.mul_add(y, ty)) * mesh.units_per_parent_logical_unit;
+            if !px.is_finite() || !py.is_finite() {
+                return false;
+            }
+            let Some(index) = actual.iter().position(|vertex| *vertex == [px, py]) else {
+                return false;
+            };
+            let flag = 1_u8 << index;
+            if seen & flag != 0 {
+                return false;
+            }
+            seen |= flag;
+        }
+        seen == 0b111
+    }
+
     /// This narrow polygon-to-rounded-disk specialization may only promote
-    /// a rectangle proven from original F1 polygonal geometry. A disposable
+    /// an exact rectangular union of original F1 straight polygonal geometry. A disposable
     /// Lyon mesh alone cannot certify an ellipse, rounded corner, Bézier,
     /// stroke or curved clip merely because its triangles happen to form a
     /// bounding rectangle. Resolved image destinations and plain rectangular
@@ -862,9 +927,10 @@ impl NeutralRegionBuilder {
             )
         })?;
         let result = match &region.kind {
-            Kind::Source(mesh) => region
-                .semantic_item
-                .is_some_and(|item| Self::exact_original_rectangle_source(mesh, item)),
+            Kind::Source(mesh) => region.semantic_item.is_some_and(|item| {
+                Self::exact_original_rectangle_source(mesh, item)
+                    || Self::exact_original_triangle_source(mesh, item)
+            }),
             Kind::Union(children) => {
                 let mut proven = true;
                 for child in children {
@@ -898,12 +964,13 @@ impl NeutralRegionBuilder {
     }
 
     /// Certify an entire immutable F1 neutral source graph as a union of
-    /// authored rectangles with exactly matching physical triangle support.
+    /// authored rectangles and straight triangle fills with exactly matching
+    /// physical triangle support.
     /// Affine wrappers retain the original straight support; clipped,
     /// Bézier, stroke, glyph and symbolic-effect inputs fail closed. This
     /// authorizes a restricted physical Euclidean erosion query, NEVER
     /// converts a disposable polygon into semantic region authority.
-    pub(super) fn proven_original_rectangle_union<'a>(
+    pub(super) fn proven_original_straight_polygon_union<'a>(
         &mut self,
         root: &Arc<NeutralRegion<'a>>,
     ) -> Result<bool, Render2dExecutionError> {
@@ -957,7 +1024,7 @@ impl NeutralRegionBuilder {
     }
 
     /// Recognize only the exact existing F1 DAG: C union (C ⊕ disk(r)).
-    /// The child source must be a whole, certified axis-aligned rectangle,
+    /// The completed child source must be a whole, certified axis-aligned rectangle,
     /// with identity frames, no clip, zero blur and no effect translation.
     /// All other curved DAGs remain unsupported rather than faceted.
     pub(super) fn qualified_rounded_rectangle<'a>(
@@ -1108,7 +1175,7 @@ impl NeutralRegionBuilder {
                     // Physical convexity cannot certify F1 curved geometry.
                     // Proven complete erosion above is independently exact,
                     // but nonempty erosion must prove F1/mesh correspondence.
-                    if effect.spread() < 0.0 && !self.proven_original_rectangle_union(source)? {
+                    if effect.spread() < 0.0 && !self.proven_original_straight_polygon_union(source)? {
                         return Err(unsupported(path));
                     }
                     let mesh = self.materialize(source)?;
@@ -1592,7 +1659,7 @@ mod tests {
             let leaf = builder
                 .source_from_item(physical(), &authored, &[i, 0])
                 .unwrap();
-            assert!(builder.proven_original_rectangle_union(&leaf).unwrap());
+            assert!(builder.proven_original_straight_polygon_union(&leaf).unwrap());
             let disk =
                 Render2dDropShadow::new(0.0, 0.0, 0.0, -0.25, Render2dColorRgba8::TRANSPARENT)
                     .unwrap();
@@ -1626,7 +1693,7 @@ mod tests {
             let leaf = builder
                 .source_from_item(physical(), &authored, &[7, 0])
                 .unwrap();
-            assert!(!builder.proven_original_rectangle_union(&leaf).unwrap());
+            assert!(!builder.proven_original_straight_polygon_union(&leaf).unwrap());
         }
         // An exact rectangular PATH with a forged mismatched 3x2 tessellation
         // also cannot be certified merely because both shapes are rectangles.
@@ -1647,7 +1714,101 @@ mod tests {
         stale.triangles[2][0] = 3.0;
         stale.triangles[4][0] = 3.0;
         let forged = builder.source_from_item(stale, &authored, &[8, 0]).unwrap();
-        assert!(!builder.proven_original_rectangle_union(&forged).unwrap());
+        assert!(!builder.proven_original_straight_polygon_union(&forged).unwrap());
+    }
+
+    #[test]
+    fn original_straight_triangle_proof_matches_only_exact_authored_fill() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dFillRule, Render2dItem, Render2dOpacity, Render2dPath,
+            Render2dPathCommand as Command, Render2dPoint, Render2dPrimitive, Render2dShape,
+        };
+        let p = |x, y| Render2dPoint::new(x, y).unwrap();
+        let a = p(10.0, 10.0);
+        let b = p(26.0, 10.0);
+        let c = p(10.0, 26.0);
+        let mesh = || support::NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[10.0, 10.0], [26.0, 10.0], [10.0, 26.0]],
+            bounds: [10.0, 10.0, 26.0, 26.0],
+        };
+        let item = |commands: Vec<Command>| {
+            Render2dItem::new(
+                Render2dPrimitive::Fill {
+                    shape: Render2dShape::path(
+                        Render2dPath::new(Render2dFillRule::EvenOdd, commands).unwrap(),
+                    ),
+                    brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+                },
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::TRANSPARENT,
+            )
+        };
+        let mut graph = builder();
+        for (index, commands) in [
+            vec![Command::MoveTo(a), Command::LineTo(b), Command::LineTo(c)],
+            vec![
+                Command::MoveTo(c),
+                Command::LineTo(b),
+                Command::LineTo(a),
+                Command::LineTo(c),
+                Command::Close,
+            ],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let authored = item(commands);
+            let leaf = graph.source_from_item(mesh(), &authored, &[index]).unwrap();
+            assert!(graph.proven_original_straight_polygon_union(&leaf).unwrap());
+            let shadow = Render2dDropShadow::new(
+                6.0,
+                0.0,
+                0.1,
+                -1.0,
+                Render2dColorRgba8::TRANSPARENT,
+            )
+            .unwrap();
+            let eroded = graph.effect(leaf, shadow, &[index]).unwrap();
+            assert!(!graph.materialize(&eroded).unwrap().triangles.is_empty());
+        }
+        // Same physical triangle as a different F1 geometry cannot
+        // certify either signed erosion or original source support.
+        for (index, commands) in [
+            vec![
+                Command::MoveTo(a),
+                Command::LineTo(b),
+                Command::QuadraticTo { control: c, to: a },
+            ],
+            vec![
+                Command::MoveTo(a),
+                Command::LineTo(b),
+                Command::LineTo(c),
+                Command::MoveTo(p(30.0, 30.0)),
+                Command::LineTo(p(32.0, 30.0)),
+                Command::LineTo(p(30.0, 32.0)),
+            ],
+            vec![
+                Command::MoveTo(a),
+                Command::LineTo(p(28.0, 10.0)),
+                Command::LineTo(c),
+            ],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let authored = item(commands);
+            let leaf = graph
+                .source_from_item(mesh(), &authored, &[index + 10])
+                .unwrap();
+            assert!(!graph.proven_original_straight_polygon_union(&leaf).unwrap());
+        }
+        let valid = item(vec![Command::MoveTo(a), Command::LineTo(b), Command::LineTo(c)]);
+        let mut forged = mesh();
+        forged.triangles[1] = [28.0, 10.0];
+        let leaf = graph.source_from_item(forged, &valid, &[20]).unwrap();
+        assert!(!graph.proven_original_straight_polygon_union(&leaf).unwrap());
     }
 
     #[test]

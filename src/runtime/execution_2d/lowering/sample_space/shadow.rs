@@ -179,9 +179,9 @@ pub(super) fn prepare(
         let source = sources
             .get(&index)
             .expect("the neutral F1 traversal records each shadow-bearing group");
-        let (mesh, qualified_disk, original_rectangles) = match source {
+        let (mesh, qualified_disk, original_polygons) = match source {
             geometry_support::NeutralCaster::Mesh(mesh) => (mesh.as_ref(), None, false),
-            geometry_support::NeutralCaster::OriginalRectangleUnion(mesh) => {
+            geometry_support::NeutralCaster::OriginalStraightPolygonUnion(mesh) => {
                 (mesh.as_ref(), None, true)
             }
             geometry_support::NeutralCaster::RoundedRectangle(qualified) => (
@@ -286,7 +286,7 @@ pub(super) fn prepare(
             // stroked curve, glyph outline or clipped F1 geometry into
             // an exact polygonal distance predicate. A qualified rounded
             // caster is separately proved from its original rectangle.
-            if effective.spread() < 0.0 && !original_rectangles && qualified_disk.is_none() {
+            if effective.spread() < 0.0 && !original_polygons && qualified_disk.is_none() {
                 return Err(crate::runtime::execution_2d::unsupported_at(
                     path,
                     crate::execution_2d::Render2dUnsupportedContent::Shadows {
@@ -317,7 +317,7 @@ pub(super) fn prepare(
             // Sigma-zero negative erosion still needs an independently
             // certified inverse-affine pixel-area evaluator.
             let affine_negative = parent_affine.is_some()
-                && original_rectangles
+                && original_polygons
                 && effect.spread() < 0.0
                 && effect.sigma() > 0.0
                 && !axis_isometry;
@@ -329,7 +329,7 @@ pub(super) fn prepare(
                     &mut aggregate_coverage_work,
                 )? {
                     Some(convex) => Some(convex),
-                    None if original_rectangles && axis_isometry => {
+                    None if original_polygons && axis_isometry => {
                         // Signed axis permutation plus translation commutes
                         // with signed Euclidean disks AND the finite square
                         // Gaussian, preserving the

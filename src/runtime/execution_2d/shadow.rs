@@ -325,10 +325,10 @@ fn negative_shadow_absorbed_by_source(effect: Render2dDropShadow) -> bool {
 /// The qualified disk remains an exact curve, never triangle/AABB/alpha support.
 pub(super) enum NeutralCaster {
     Mesh(Arc<NeutralMesh>),
-    /// Every original F1 leaf is a source-exact rectangle. A later physical
-    /// integration can consume this mesh only under a certified isometry;
+    /// Every original F1 leaf is an exact straight rectangle or triangle fill.
+    /// Signed disk integration may consume this geometry after original-F1 proof;
     /// this does not re-author a neutral support representation.
-    OriginalRectangleUnion(Arc<NeutralMesh>),
+    OriginalStraightPolygonUnion(Arc<NeutralMesh>),
     RoundedRectangle(region::CertifiedRoundedRectangle),
 }
 
@@ -446,25 +446,25 @@ fn group_child_sources_with_probe<'a>(
                                     .shadows()
                                     .iter()
                                     .any(|shadow| shadow.spread() < 0.0)
-                                    && graph.proven_original_rectangle_union(&in_parent)?;
+                                    && graph.proven_original_straight_polygon_union(&in_parent)?;
                                 let mesh = graph.materialize(&in_parent)?;
                                 if proven {
-                                    NeutralCaster::OriginalRectangleUnion(mesh)
+                                    NeutralCaster::OriginalStraightPolygonUnion(mesh)
                                 } else {
                                     NeutralCaster::Mesh(mesh)
                                 }
                             }
                         }
                     } else {
-                        let exact_original_rectangles = frame
+                        let exact_original_polygons = frame
                             .group
                             .shadows()
                             .iter()
                             .any(|effect| effect.spread() < 0.0)
-                            && graph.proven_original_rectangle_union(&in_parent)?;
+                            && graph.proven_original_straight_polygon_union(&in_parent)?;
                         let mesh = graph.materialize(&in_parent)?;
-                        if exact_original_rectangles {
-                            NeutralCaster::OriginalRectangleUnion(mesh)
+                        if exact_original_polygons {
+                            NeutralCaster::OriginalStraightPolygonUnion(mesh)
                         } else {
                             NeutralCaster::Mesh(mesh)
                         }

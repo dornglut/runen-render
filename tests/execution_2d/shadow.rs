@@ -2137,6 +2137,102 @@ fn authored_straight_rectangle_path_casts_nonabsorbed_nested_erosion_on_vulkan()
 }
 
 #[test]
+fn authored_straight_triangle_negative_shadow_propagates_exactly_on_vulkan() {
+    use runen_render::composition_2d::{
+        Render2dFillRule, Render2dPath, Render2dPathCommand as Command, Render2dPoint,
+    };
+    let Some(context) = context() else { return };
+    let p = |x, y| Render2dPoint::new(x, y).unwrap();
+    // Original triangle x>=10,y>=10,x+y<=36. Signed Euclidean
+    // erosion by radius 1 has TRUE supporting planes:
+    // x>=11, y>=11, x+y<=36-sqrt(2). No triangle-box shortcut.
+    for (rule, commands) in [
+        (
+            Render2dFillRule::NonZero,
+            vec![
+                Command::MoveTo(p(10.0, 10.0)),
+                Command::LineTo(p(26.0, 10.0)),
+                Command::LineTo(p(10.0, 26.0)),
+                Command::Close,
+            ],
+        ),
+        (
+            Render2dFillRule::EvenOdd,
+            vec![
+                Command::MoveTo(p(10.0, 26.0)),
+                Command::LineTo(p(26.0, 10.0)),
+                Command::LineTo(p(10.0, 10.0)),
+            ],
+        ),
+    ] {
+        let authored = Render2dEntry::item(Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::path(Render2dPath::new(rule, commands).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        ));
+        let root = group(
+            vec![authored.clone()],
+            vec![effect(
+                0.0,
+                0.0,
+                0.0,
+                -1.0,
+                Render2dColorRgba8::new(255, 0, 0, 255),
+            )],
+            1.0,
+        );
+        let root_image = execute(
+            &context,
+            &mut Render2dExecutor::new(),
+            &root,
+            &Render2dResourceBindings::default(),
+            "F3F original F1 triangle signed Euclidean erosion root",
+        );
+        assert_eq!(pixel(&root_image, 14, 14), [255, 0, 0, 255]);
+        assert_eq!(pixel(&root_image, 10, 14), [0, 0, 0, 0]);
+        assert_eq!(pixel(&root_image, 20, 20), [0, 0, 0, 0]);
+
+        let child = Render2dEntry::group(Render2dGroup::new(
+            vec![authored],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            vec![effect(6.0, 0.0, 0.1, -1.0, Render2dColorRgba8::TRANSPARENT)],
+        ));
+        let ancestor = group(
+            vec![child],
+            vec![effect(
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                Render2dColorRgba8::new(0, 0, 255, 255),
+            )],
+            1.0,
+        );
+        let image = execute(
+            &context,
+            &mut Render2dExecutor::new(),
+            &ancestor,
+            &Render2dResourceBindings::default(),
+            "F3F transparent original F1 triangle nonabsorbed signed nested Gaussian",
+        );
+        // Shifted eroded x>=17; finite sigma=.1 square halo extends
+        // 0.3 left to 16.7. At y=13, each subcell remains far from
+        // the diagonal supporting plane. Pixel x=[16,17] has EXACT
+        // area .3; linear blue .3 encodes to about 149 sRGB and
+        // alpha 77. This is not a discrete sampled-alpha caster.
+        pixel_near(pixel(&image, 16, 13), [0, 0, 149, 77]);
+        assert_eq!(pixel(&image, 17, 13), [0, 0, 255, 255]);
+        assert_eq!(pixel(&image, 24, 22), [0, 0, 0, 0]);
+    }
+}
+
+#[test]
 fn authored_rectangular_path_qualifies_exact_positive_disk_on_vulkan() {
     use runen_render::composition_2d::{
         Render2dFillRule, Render2dPath, Render2dPathCommand as Command, Render2dPoint,
