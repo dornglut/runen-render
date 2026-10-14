@@ -854,8 +854,12 @@ impl NeutralRegionBuilder {
         let Some(path) = shape.as_path() else {
             return false;
         };
-        let [Command::MoveTo(a), Command::LineTo(b), Command::LineTo(c), rest @ ..] =
-            path.commands()
+        let [
+            Command::MoveTo(a),
+            Command::LineTo(b),
+            Command::LineTo(c),
+            rest @ ..,
+        ] = path.commands()
         else {
             return false;
         };
@@ -875,11 +879,7 @@ impl NeutralRegionBuilder {
         if orientation(authored) == 0.0 || !orientation(authored).is_finite() {
             return false;
         }
-        let actual = [
-            mesh.triangles[0],
-            mesh.triangles[1],
-            mesh.triangles[2],
-        ];
+        let actual = [mesh.triangles[0], mesh.triangles[1], mesh.triangles[2]];
         if orientation(actual) == 0.0 || !orientation(actual).is_finite() {
             return false;
         }
@@ -1175,7 +1175,9 @@ impl NeutralRegionBuilder {
                     // Physical convexity cannot certify F1 curved geometry.
                     // Proven complete erosion above is independently exact,
                     // but nonempty erosion must prove F1/mesh correspondence.
-                    if effect.spread() < 0.0 && !self.proven_original_straight_polygon_union(source)? {
+                    if effect.spread() < 0.0
+                        && !self.proven_original_straight_polygon_union(source)?
+                    {
                         return Err(unsupported(path));
                     }
                     let mesh = self.materialize(source)?;
@@ -1659,7 +1661,11 @@ mod tests {
             let leaf = builder
                 .source_from_item(physical(), &authored, &[i, 0])
                 .unwrap();
-            assert!(builder.proven_original_straight_polygon_union(&leaf).unwrap());
+            assert!(
+                builder
+                    .proven_original_straight_polygon_union(&leaf)
+                    .unwrap()
+            );
             let disk =
                 Render2dDropShadow::new(0.0, 0.0, 0.0, -0.25, Render2dColorRgba8::TRANSPARENT)
                     .unwrap();
@@ -1693,7 +1699,11 @@ mod tests {
             let leaf = builder
                 .source_from_item(physical(), &authored, &[7, 0])
                 .unwrap();
-            assert!(!builder.proven_original_straight_polygon_union(&leaf).unwrap());
+            assert!(
+                !builder
+                    .proven_original_straight_polygon_union(&leaf)
+                    .unwrap()
+            );
         }
         // An exact rectangular PATH with a forged mismatched 3x2 tessellation
         // also cannot be certified merely because both shapes are rectangles.
@@ -1714,7 +1724,11 @@ mod tests {
         stale.triangles[2][0] = 3.0;
         stale.triangles[4][0] = 3.0;
         let forged = builder.source_from_item(stale, &authored, &[8, 0]).unwrap();
-        assert!(!builder.proven_original_straight_polygon_union(&forged).unwrap());
+        assert!(
+            !builder
+                .proven_original_straight_polygon_union(&forged)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -1762,14 +1776,9 @@ mod tests {
             let authored = item(commands);
             let leaf = graph.source_from_item(mesh(), &authored, &[index]).unwrap();
             assert!(graph.proven_original_straight_polygon_union(&leaf).unwrap());
-            let shadow = Render2dDropShadow::new(
-                6.0,
-                0.0,
-                0.1,
-                -1.0,
-                Render2dColorRgba8::TRANSPARENT,
-            )
-            .unwrap();
+            let shadow =
+                Render2dDropShadow::new(6.0, 0.0, 0.1, -1.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap();
             let eroded = graph.effect(leaf, shadow, &[index]).unwrap();
             assert!(!graph.materialize(&eroded).unwrap().triangles.is_empty());
         }
@@ -1804,7 +1813,11 @@ mod tests {
                 .unwrap();
             assert!(!graph.proven_original_straight_polygon_union(&leaf).unwrap());
         }
-        let valid = item(vec![Command::MoveTo(a), Command::LineTo(b), Command::LineTo(c)]);
+        let valid = item(vec![
+            Command::MoveTo(a),
+            Command::LineTo(b),
+            Command::LineTo(c),
+        ]);
         let mut forged = mesh();
         forged.triangles[1] = [28.0, 10.0];
         let leaf = graph.source_from_item(forged, &valid, &[20]).unwrap();
