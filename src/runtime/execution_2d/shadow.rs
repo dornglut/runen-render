@@ -491,11 +491,7 @@ fn group_child_sources_with_probe<'a>(
                             .iter()
                             .any(|effect| effect.spread() < 0.0)
                             && graph.proven_original_straight_polygon_union(&in_parent)?;
-                        materialized_or_symbolic(
-                            &mut graph,
-                            &in_parent,
-                            exact_original_polygons,
-                        )?
+                        materialized_or_symbolic(&mut graph, &in_parent, exact_original_polygons)?
                     };
                     sources.insert(frame.begin_event, source);
                     if !nested {
@@ -1214,9 +1210,7 @@ mod tests {
         let make_rect = |x, y, width, height| {
             Render2dEntry::item(Render2dItem::new(
                 Render2dPrimitive::Fill {
-                    shape: Render2dShape::rect(
-                        Render2dRect::new(x, y, width, height).unwrap(),
-                    ),
+                    shape: Render2dShape::rect(Render2dRect::new(x, y, width, height).unwrap()),
                     brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
                 },
                 Render2dAffineTransform::IDENTITY,
@@ -1234,15 +1228,13 @@ mod tests {
             make_rect(22.0, 18.0, 8.0, 4.0),
         ];
         let inner = Render2dGroup::new(
-            ring.into(),
+            ring,
             Render2dAffineTransform::IDENTITY,
             Vec::new(),
             Render2dOpacity::TRANSPARENT,
             vec![
-                Render2dDropShadow::new(
-                    8.0, 0.0, 0.01, -1.0, Render2dColorRgba8::TRANSPARENT,
-                )
-                .unwrap(),
+                Render2dDropShadow::new(8.0, 0.0, 0.01, -1.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
             ],
         );
         let outer = Render2dGroup::new(
@@ -1252,7 +1244,11 @@ mod tests {
             Render2dOpacity::OPAQUE,
             vec![
                 Render2dDropShadow::new(
-                    0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 255),
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    Render2dColorRgba8::new(0, 0, 255, 255),
                 )
                 .unwrap(),
             ],
