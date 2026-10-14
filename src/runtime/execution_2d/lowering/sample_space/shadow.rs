@@ -123,6 +123,23 @@ pub(super) fn admit_effect_count(plan: &scene::Plan<'_>) -> Result<usize, Render
 /// consumes the *completed original-F1 region*, including a child's signed
 /// eroded geometry, without reinterpreting that geometry as triangles or alpha.
 /// A true finite Gaussian/ancestor disk needs a separate admitted integrator.
+/// Conservative worst-case output uncertainty for arbitrary prior target
+/// channels and a source-over painter: the largest sRGB8 excursion occurs
+/// for a fully dark/bright channel against its opposite. This constrains
+/// the FINAL resolved channel, not merely unorm alpha or a center hit.
+fn symbolic_srgb8_uncertainty(lower: f64, upper: f64) -> f64 {
+    let encode = |linear: f64| {
+        if linear <= 0.003_130_8 {
+            12.92 * linear
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        }
+    };
+    255.0
+        * (encode(upper) - encode(lower))
+            .max(encode(1.0 - lower) - encode(1.0 - upper))
+}
+
 /// One invocation-owned admission context, not a second scene representation.
 struct SymbolicPreparation<'a> {
     group: &'a crate::composition_2d::Render2dGroup,
@@ -231,12 +248,12 @@ fn prepare_symbolic_unblurred(
             "symbolic coverage exceeds aggregate sample admission",
         ));
     }
-    // One opaque source-over layer carries <= 255*epsilon linear alpha
-    // error; reserve a further 4x margin and divide by the full authored
-    // effect count so a worst-case 256-effect overdraw cannot hide error.
+    // Charge a conservative half of the existing four-code-value output
+    // tolerance to geometric coverage; leave headroom for Rgba16Float
+    // blending/resolve. Sum per-effect errors even across 256 ordered layers.
     let effect_count =
         f64::from(u16::try_from(authored_effects.max(1)).expect("bounded 256 effects"));
-    let tolerance = 1.0 / (1024.0 * effect_count);
+    let color_error_budget = 2.0 / effect_count;
     let mut prepared = Vec::<PreparedShadow>::new();
     prepared
         .try_reserve_exact(group.shadows().len())
@@ -264,27 +281,42 @@ fn prepare_symbolic_unblurred(
                         (x0 + 1.0) / sample_scale,
                         (y0 + 1.0) / sample_scale,
                     ];
-                    let Some([lo, hi]) =
-                        symbolic.continuous_area_enclosure(bounds, Some(to_root), 10, &mut fuel)
-                    else {
-                        return Err(shadow_resource(
-                            path,
-                            "symbolic original-F1 area proof exhausted shared work or precision",
-                        ));
+                    let mut area = symbolic
+                        .continuous_area_enclosure(bounds, Some(to_root), 10, &mut fuel)
+                        .ok_or_else(|| {
+                            shadow_resource(
+                                symbolic.owner_path(),
+                                "symbolic original-F1 cell proof exhausted shared work",
+                            )
+                        })?;
+                    let valid = |[lo, hi]: [f64; 2]| {
+                        lo.is_finite()
+                            && hi.is_finite()
+                            && lo >= 0.0
+                            && hi <= 1.0
+                            && lo <= hi
+                            && symbolic_srgb8_uncertainty(lo, hi) <= color_error_budget
                     };
-                    if !lo.is_finite()
-                        || !hi.is_finite()
-                        || lo < 0.0
-                        || hi > 1.0
-                        || lo > hi
-                        || hi - lo > tolerance
-                    {
+                    // Depth 10 admits most boundaries. Refine only genuinely
+                    // ambiguous sample cells to depth 12, sharing the same
+                    // bounded invocation fuel; never lower alpha to a guess.
+                    if !valid(area) {
+                        area = symbolic
+                            .continuous_area_enclosure(bounds, Some(to_root), 12, &mut fuel)
+                            .ok_or_else(|| {
+                                shadow_resource(
+                                    symbolic.owner_path(),
+                                    "symbolic refined F1 cell proof exhausted shared work",
+                                )
+                            })?;
+                    }
+                    if !valid(area) {
                         return Err(shadow_precision(
-                            path,
+                            symbolic.owner_path(),
                             "symbolic continuous-area uncertainty exceeds final-color bound",
                         ));
                     }
-                    values.push((lo + hi) * 0.5);
+                    values.push((area[0] + area[1]) * 0.5);
                 }
             }
             retained_one = Some(NeutralCoverage {
