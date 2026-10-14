@@ -899,18 +899,92 @@ fn certified_adaptive_finite_gaussian_coverage(
     Some((coverage, max_nodes - remaining_nodes))
 }
 
+/// Certify the full Euclidean disk around an entire query cell from
+/// original F1 membership, rather than requiring the larger axis square.
+///
+/// Slice [-r,r] into a fixed power-of-two number of vertical strips. For
+/// each strip, one outward-rounded bounding rectangle encloses ALL disk
+/// points (including the full query cell's Minkowski translation). If
+/// every rectangle is proven Inside C, Q ⊆ C⊖B_r. Uncertain strips remain
+/// Unknown: finite strips can reject near-tangent requests, never admit
+/// incorrect erosion. Source queries and conservative strip work share
+/// the SAME bounded per-invocation proof fuel.
+///
+/// This is test-only feasibility for the curved inner corner of a truly
+/// holed region. Not an approximate production raster or semantic SDF.
+fn certified_negative_interior_disk_cover(
+    source: &NeutralRegion<'_>,
+    query: Cell,
+    radius: f64,
+    visits: &mut usize,
+) -> bool {
+    if !radius.is_finite() || radius <= 0.0 {
+        return false;
+    }
+    const STRIPS: usize = 64;
+    const STRIP_COST: usize = 48;
+    let Some(r) = Interval::scalar(radius) else {
+        return false;
+    };
+    let Some(radius_squared) = r.mul(r) else {
+        return false;
+    };
+    for i in 0..STRIPS {
+        if *visits <= STRIP_COST {
+            return false;
+        }
+        *visits -= STRIP_COST;
+        // Binary fractions and the outward interval product enclose
+        // every x of the TRUE disk without a piecewise-linear surrogate.
+        let x0 = (i as f64) / 32.0 - 1.0;
+        let x1 = ((i + 1) as f64) / 32.0 - 1.0;
+        let Some(offset_x) = Interval::new(x0, x1).and_then(|unit| unit.mul(r)) else {
+            return false;
+        };
+        let nearest = if offset_x.lo <= 0.0 && offset_x.hi >= 0.0 {
+            0.0
+        } else {
+            offset_x.lo.abs().min(offset_x.hi.abs())
+        };
+        let Some(nearest_squared) = Interval::scalar(nearest).and_then(|v| v.mul(v))
+        else {
+            return false;
+        };
+        // The largest disk y at any x in the strip is reached at
+        // the nearest horizontal location to the disk origin.
+        // Round the *difference* and sqrt outward before building
+        // the full strip envelope.
+        let y_squared = (radius_squared.hi - nearest_squared.lo).next_up();
+        if !y_squared.is_finite() || y_squared < 0.0 {
+            return false;
+        }
+        let y_radius = y_squared.sqrt().next_up();
+        let Some(outer) = Interval::new(-y_radius, y_radius) else {
+            return false;
+        };
+        let (Some(x), Some(y)) = (query.x.add(offset_x), query.y.add(outer)) else {
+            return false;
+        };
+        if source.certify_cell(Cell { x, y }, visits) != CellCertificate::Inside {
+            return false;
+        }
+    }
+    true
+}
+
 /// F3F-NS02 proof-only negative-erosion EXTERIOR witness.
 ///
 /// For any point q definitely outside C, every x with |x-q|₂<r lies
 /// outside C⊖disk(r). Thus one q that covers the ENTIRE query cell
 /// certifies Outside, including holes, concavities and nonrectangular
-/// original F1 contours. We conservatively use |dx|+|dy|<r rather
-/// than square roots. `query` already includes the child Gaussian
+/// original F1 contours. An outward-rounded squared Euclidean bound
+/// avoids falsely treating a disk as a Manhattan diamond.
+/// `query` already includes the child Gaussian
 /// square halo in the effect owner's immediate-parent frame.
 ///
-/// Try a fixed, bounded set of exact representable witness locations. This is a finite
-/// source-authoritative predicate, NOT an SDF, alpha mask, or sampled
-/// approximation. A missed witness means Unknown, never false Outside.
+/// Search a bounded set of cardinal, diagonal and inscribed Euclidean
+/// exterior witnesses. Each is independently checked against the exact
+/// original-F1 source; no sampled SDF or alpha mask is introduced. A missed witness means Unknown, never false Outside.
 /// Cost is charged to the existing shared source-query fuel.
 fn certified_negative_exterior_witness(
     source: &NeutralRegion<'_>,
@@ -945,10 +1019,29 @@ fn certified_negative_exterior_witness(
         [0.95, 0.0],
         [0.0, -0.95],
         [0.0, 0.95],
-        [-0.9, -0.9],
-        [-0.9, 0.9],
-        [0.9, -0.9],
-        [0.9, 0.9],
+        // Diagonal witnesses distinguish true Euclidean rounded-hole
+        // erosion from a square/Manhattan approximation. Every pair is
+        // tested against an outward-rounded squared-distance bound.
+        [-0.2, -0.95],
+        [-0.2, 0.95],
+        [0.2, -0.95],
+        [0.2, 0.95],
+        [-0.4, -0.9],
+        [-0.4, 0.9],
+        [0.4, -0.9],
+        [0.4, 0.9],
+        [-0.7, -0.7],
+        [-0.7, 0.7],
+        [0.7, -0.7],
+        [0.7, 0.7],
+        [-0.9, -0.4],
+        [-0.9, 0.4],
+        [0.9, -0.4],
+        [0.9, 0.4],
+        [-0.95, -0.2],
+        [-0.95, 0.2],
+        [0.95, -0.2],
+        [0.95, 0.2],
     ] {
         if *visits <= PROBE_COST {
             return false;
@@ -976,12 +1069,65 @@ fn certified_negative_exterior_witness(
         {
             return true;
         }
-        // Point witnesses also handle genuinely oblique/local exterior.
-        let Some(bound) = Interval::scalar(bound_x).and_then(|x| x.add(Interval::scalar(bound_y)?))
-        else {
+        // For a definite exterior POINT q the sufficient condition is
+        // Euclidean, not Manhattan: max_{p in query}|p-q|² < r².
+        // Outward-rounded interval products ensure that any uncertain
+        // corner, overflow or subnormal uncertainty fails closed.
+        let Some(radius_i) = Interval::scalar(radius) else {
             continue;
         };
-        if bound.hi < radius
+        let Some(squared_bound) = Interval::scalar(bound_x).and_then(|dx| {
+            dx.mul(dx)?
+                .add(Interval::scalar(bound_y)?.mul(Interval::scalar(bound_y)?)?)
+        }) else {
+            continue;
+        };
+        let Some(squared_radius) = radius_i.mul(radius_i) else {
+            continue;
+        };
+        if squared_bound.hi < squared_radius.lo
+            && source.certify_cell(Cell { x, y }, visits) == CellCertificate::Outside
+        {
+            return true;
+        }
+    }
+    // The fixed cardinal/diagonal probes may miss a *narrow curved
+    // corner*: the certified exterior exists only in a small angular
+    // interval near the original hole corner. A bounded second pass
+    // samples an INSCRIBED witness circle; every candidate must still
+    // prove both the complete query's Euclidean radius bound and
+    // original-F1 exterior membership. Angular sampling is ONLY a
+    // witness search and never substitutes a faceted support boundary.
+    // No witness is a valid Unknown, not a false region classification.
+    const DIRECTIONS: usize = 256;
+    for step in 0..DIRECTIONS {
+        if *visits <= PROBE_COST {
+            return false;
+        }
+        *visits -= PROBE_COST;
+        let angle = (step as f64) * (std::f64::consts::TAU / DIRECTIONS as f64);
+        let (qx, qy) = (
+            (0.985 * radius * angle.cos()).mul_add(1.0, center_x),
+            (0.985 * radius * angle.sin()).mul_add(1.0, center_y),
+        );
+        let (Some(x), Some(y)) = (Interval::scalar(qx), Interval::scalar(qy)) else {
+            continue;
+        };
+        let (Some(dx), Some(dy)) = (x.sub(query.x), y.sub(query.y)) else {
+            continue;
+        };
+        let bound_x = dx.lo.abs().max(dx.hi.abs()).next_up();
+        let bound_y = dy.lo.abs().max(dy.hi.abs()).next_up();
+        let Some(squared_bound) = Interval::scalar(bound_x).and_then(|x| {
+            x.mul(x)?
+                .add(Interval::scalar(bound_y)?.mul(Interval::scalar(bound_y)?)?)
+        }) else {
+            continue;
+        };
+        let Some(squared_radius) = Interval::scalar(radius).and_then(|r| r.mul(r)) else {
+            continue;
+        };
+        if squared_bound.hi < squared_radius.lo
             && source.certify_cell(Cell { x, y }, visits) == CellCertificate::Outside
         {
             return true;
@@ -1059,7 +1205,12 @@ impl NeutralRegion<'_> {
                 } else {
                     Some(source.certify_cell(translated, visits))
                 };
-                if definite_inside == Some(CellCertificate::Inside) {
+                if definite_inside == Some(CellCertificate::Inside)
+                    || (spread < 0.0
+                        && certified_negative_interior_disk_cover(
+                            source, translated, -spread, visits,
+                        ))
+                {
                     return CellCertificate::Inside;
                 }
                 let Some(outer_halo) = certified_effect_outer_halo(spread, shadow.sigma()) else {
@@ -1322,6 +1473,135 @@ fn original_f1_holed_nested_negative_exterior_witness_survives_ancestor_shear() 
     }
     assert_eq!((fully_covered, fully_empty), (12, 4));
     assert!(visits < 16_777_216 && visits > 16_000_000);
+}
+
+#[test]
+fn original_f1_holed_path_negative_disk_curved_corner_has_16_site_shear_oracle() {
+    use crate::composition_2d::{
+        Render2dBrush, Render2dColorRgba8, Render2dFillRule, Render2dOpacity, Render2dPath,
+        Render2dPathCommand as Command, Render2dPoint, Render2dPrimitive, Render2dShape,
+    };
+    let p = |x, y| Render2dPoint::new(x, y).unwrap();
+    // One ORIGINAL F1 EvenOdd path: C=[10,30]² minus hole [18,22]².
+    // The actual Euclidean erosion r=1 has a QUARTER-CIRCLE at the
+    // hole's upper-right corner (22,22), not a beveled polygon or box.
+    let path = Render2dPath::new(
+        Render2dFillRule::EvenOdd,
+        vec![
+            Command::MoveTo(p(10.0, 10.0)),
+            Command::LineTo(p(30.0, 10.0)),
+            Command::LineTo(p(30.0, 30.0)),
+            Command::LineTo(p(10.0, 30.0)),
+            Command::Close,
+            Command::MoveTo(p(18.0, 18.0)),
+            Command::LineTo(p(18.0, 22.0)),
+            Command::LineTo(p(22.0, 22.0)),
+            Command::LineTo(p(22.0, 18.0)),
+            Command::Close,
+        ],
+    )
+    .unwrap();
+    let item = Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::path(path),
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    );
+    let mut graph = builder();
+    // Deliberately FALSE all-canvas physical triangle: the source-exact
+    // proof cannot accidentally inherit polygonal GPU approximation.
+    let fake = support::NeutralMesh {
+        units_per_parent_logical_unit: 1.0,
+        triangles: vec![[0.0, 0.0], [64.0, 0.0], [0.0, 64.0]],
+        bounds: [0.0, 0.0, 64.0, 64.0],
+    };
+    let source = graph.source_from_item(fake, &item, &[0, 0]).unwrap();
+    let child = graph
+        .effect(
+            Arc::clone(&source),
+            Render2dDropShadow::new(
+                8.0,
+                0.0,
+                0.001,
+                -1.0,
+                Render2dColorRgba8::TRANSPARENT,
+            )
+            .unwrap(),
+            &[0, 1],
+        )
+        .unwrap();
+    let union = graph.union(vec![source, child], &[0]).unwrap();
+    let sheared = graph
+        .affine(
+            union,
+            Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
+            &[0],
+        )
+        .unwrap();
+    let ancestor = graph
+        .effect(
+            sheared,
+            Render2dDropShadow::new(
+                0.0,
+                0.0,
+                0.001,
+                0.0,
+                Render2dColorRgba8::TRANSPARENT,
+            )
+            .unwrap(),
+            &[0],
+        )
+        .unwrap();
+    let mut visits = 16_777_216;
+    let mut inside = 0_usize;
+    let mut outside = 0_usize;
+    for sy in 0..4 {
+        for sx in 0..4 {
+            // The globally correlated site is inverse-mapped BEFORE
+            // the child's disk, offset or Gaussian is evaluated.
+            let root_x = 36.0 + (f64::from(sx) + 0.5) / 4.0;
+            let root_y = 22.0 + (f64::from(sy) + 0.5) / 4.0;
+            let owner_x = root_x - 0.25 * root_y - 8.0;
+            let owner_y = root_y;
+            // Exact independent signed distance to the inner-hole
+            // axis-aligned corner. Here C's exterior outer edge and
+            // original unshifted C are provably far away.
+            let dx = (owner_x - 22.0).max(0.0);
+            let dy = (owner_y - 22.0).max(0.0);
+            let distance = dx.hypot(dy);
+            assert!(
+                (distance - 1.0).abs() > 0.02,
+                "independent oracle site must avoid halo ambiguity"
+            );
+            let expected = if distance > 1.0 {
+                inside += 1;
+                CellCertificate::Inside
+            } else {
+                outside += 1;
+                CellCertificate::Outside
+            };
+            assert_eq!(
+                ancestor.certify_cell(
+                    Cell::new([root_x, root_y, root_x, root_y]).unwrap(),
+                    &mut visits,
+                ),
+                expected,
+                "curved holed F1 signed disk, ancestor shear, 4x4 site ({sx},{sy})"
+            );
+        }
+    }
+    // True 3/4 circle-crossing pixel: independent 9/16 covered,
+    // 7/16 absent; no sampled SDF, physical triangle or alpha involved.
+    assert_eq!((inside, outside), (9, 7));
+    assert!(visits < 16_777_216 && visits > 10_000_000);
+    let mut exhausted = 1;
+    assert_eq!(
+        ancestor.certify_cell(Cell::new([36.875, 22.625, 36.875, 22.625]).unwrap(), &mut exhausted),
+        CellCertificate::Unknown
+    );
 }
 
 #[test]
