@@ -123,18 +123,32 @@ pub(super) fn admit_effect_count(plan: &scene::Plan<'_>) -> Result<usize, Render
 /// consumes the *completed original-F1 region*, including a child's signed
 /// eroded geometry, without reinterpreting that geometry as triangles or alpha.
 /// A true finite Gaussian/ancestor disk needs a separate admitted integrator.
-fn prepare_symbolic_unblurred(
-    symbolic: &geometry_support::SymbolicCaster<'_>,
-    group: &crate::composition_2d::Render2dGroup,
-    path: &[usize],
+/// One invocation-owned admission context, not a second scene representation.
+struct SymbolicPreparation<'a> {
+    group: &'a crate::composition_2d::Render2dGroup,
+    path: &'a [usize],
     parent_to_root: scene::Affine,
-    target: &AdmittedTarget,
+    target: &'a AdmittedTarget,
     sample_scale: f64,
     paintable: bool,
     authored_effects: usize,
+}
+
+fn prepare_symbolic_unblurred(
+    symbolic: &geometry_support::SymbolicCaster<'_>,
+    request: SymbolicPreparation<'_>,
     retained_coverage_bytes: &mut u64,
     aggregate_coverage_work: &mut usize,
 ) -> Result<Vec<PreparedShadow>, Render2dExecutionError> {
+    let SymbolicPreparation {
+        group,
+        path,
+        parent_to_root,
+        target,
+        sample_scale,
+        paintable,
+        authored_effects,
+    } = request;
     let unsupported = || {
         let owner = symbolic.owner_path();
         crate::runtime::execution_2d::unsupported_at(
@@ -392,13 +406,15 @@ pub(super) fn prepare(
         if let geometry_support::NeutralCaster::Symbolic(symbolic) = source {
             let prepared = prepare_symbolic_unblurred(
                 symbolic,
-                group,
-                path,
-                *parent_to_root,
-                target,
-                sample_scale,
-                paintable,
-                admitted_effects,
+                SymbolicPreparation {
+                    group,
+                    path,
+                    parent_to_root: *parent_to_root,
+                    target,
+                    sample_scale,
+                    paintable,
+                    authored_effects: admitted_effects,
+                },
                 &mut retained_coverage_bytes,
                 &mut aggregate_coverage_work,
             )?;
