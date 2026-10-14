@@ -2645,9 +2645,7 @@ fn nested_nonconvex_shifted_erosion_rejects_with_authored_path_before_gpu_work()
     assert!(match failure {
         Render2dExecutionError::UnsupportedEntry {
             path,
-            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows {
-                root_index: 0,
-            },
+            kind: runen_render::execution_2d::Render2dUnsupportedContent::Shadows { root_index: 0 },
         } => path == [0, 0],
         Render2dExecutionError::SampleSpace {
             kind:

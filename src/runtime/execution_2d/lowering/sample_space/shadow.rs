@@ -135,9 +135,7 @@ fn symbolic_srgb8_uncertainty(lower: f64, upper: f64) -> f64 {
             1.055 * linear.powf(1.0 / 2.4) - 0.055
         }
     };
-    255.0
-        * (encode(upper) - encode(lower))
-            .max(encode(1.0 - lower) - encode(1.0 - upper))
+    255.0 * (encode(upper) - encode(lower)).max(encode(1.0 - lower) - encode(1.0 - upper))
 }
 
 /// One invocation-owned admission context, not a second scene representation.
