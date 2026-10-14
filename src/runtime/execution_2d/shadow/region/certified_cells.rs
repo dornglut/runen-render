@@ -1440,12 +1440,7 @@ pub(super) fn certified_grid_area_enclosures(
             Some(())
         }
 
-        fn visit(
-            &self,
-            block: [u32; 4],
-            output: &mut [[f64; 2]],
-            fuel: &mut usize,
-        ) -> Option<()> {
+        fn visit(&self, block: [u32; 4], output: &mut [[f64; 2]], fuel: &mut usize) -> Option<()> {
             // Account for interval construction and inverse-affine arithmetic
             // before any potentially expensive DAG/source predicate.
             const GRID_NODE_WORK: usize = 128;
@@ -1474,13 +1469,8 @@ pub(super) fn certified_grid_area_enclosures(
             if x1 - x0 == 1 && y1 - y0 == 1 {
                 // The exact same original-F1 classifier and bounded numerical
                 // precision gate used by the preexisting single-cell query.
-                let interval = certified_area_enclosure(
-                    self.region,
-                    rect,
-                    self.affine,
-                    self.depth,
-                    fuel,
-                )?;
+                let interval =
+                    certified_area_enclosure(self.region, rect, self.affine, self.depth, fuel)?;
                 return self.fill(block, interval, output, fuel);
             }
             // Deterministic longest-axis partition. Unlike per-cell loops,
@@ -1652,7 +1642,12 @@ fn shared_grid_certifies_whole_interior_once_and_retains_2d_boundary_area() {
             assert_eq!(
                 certified_area_enclosure(
                     &region,
-                    [f64::from(x), f64::from(y), f64::from(x + 1), f64::from(y + 1)],
+                    [
+                        f64::from(x),
+                        f64::from(y),
+                        f64::from(x + 1),
+                        f64::from(y + 1)
+                    ],
                     None,
                     8,
                     &mut separate_fuel,
@@ -1666,16 +1661,8 @@ fn shared_grid_certifies_whole_interior_once_and_retains_2d_boundary_area() {
     // Four genuinely fractional cells from original rectangle geometry.
     let region = rectangle(&mut graph, [0.25, 0.25, 1.25, 1.25], &[0, 1]);
     let mut fuel = start;
-    let coverage = certified_grid_area_enclosures(
-        &region,
-        [0, 0, 2, 2],
-        1.0,
-        None,
-        10,
-        4,
-        &mut fuel,
-    )
-    .unwrap();
+    let coverage =
+        certified_grid_area_enclosures(&region, [0, 0, 2, 2], 1.0, None, 10, 4, &mut fuel).unwrap();
     for (actual, exact) in coverage.iter().zip([0.5625, 0.1875, 0.1875, 0.0625]) {
         assert!(
             actual[0] <= exact && exact <= actual[1],
@@ -1686,31 +1673,15 @@ fn shared_grid_certifies_whole_interior_once_and_retains_2d_boundary_area() {
     // Resource-limit exhaustion returns no partially usable grid.
     let mut exhausted = 1;
     assert!(
-        certified_grid_area_enclosures(
-            &region,
-            [0, 0, 2, 2],
-            1.0,
-            None,
-            10,
-            4,
-            &mut exhausted,
-        )
-        .is_none()
+        certified_grid_area_enclosures(&region, [0, 0, 2, 2], 1.0, None, 10, 4, &mut exhausted,)
+            .is_none()
     );
     assert_eq!(exhausted, 0);
     // The admitted array size is non-negotiable even for a full interior.
     let mut unused = start;
     assert!(
-        certified_grid_area_enclosures(
-            &region,
-            [0, 0, 64, 64],
-            1.0,
-            None,
-            8,
-            4095,
-            &mut unused,
-        )
-        .is_none()
+        certified_grid_area_enclosures(&region, [0, 0, 64, 64], 1.0, None, 8, 4095, &mut unused,)
+            .is_none()
     );
 }
 
@@ -1753,8 +1724,10 @@ fn shared_grid_encloses_original_holed_negative_erosion_after_shear() {
     let low = areas.iter().map(|cell| cell[0]).sum::<f64>() / 16.0;
     let high = areas.iter().map(|cell| cell[1]).sum::<f64>() / 16.0;
     let independent = 0.586_837_842_949_633_9;
-    assert!(low <= independent && independent <= high,
-        "certified original F1 curved-hole grid [{low},{high}] missed {independent}");
+    assert!(
+        low <= independent && independent <= high,
+        "certified original F1 curved-hole grid [{low},{high}] missed {independent}"
+    );
     assert!(fuel < 134_217_728);
 }
 
