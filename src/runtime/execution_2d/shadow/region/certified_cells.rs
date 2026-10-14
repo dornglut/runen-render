@@ -1245,19 +1245,6 @@ impl NeutralRegion<'_> {
                     return CellCertificate::Unknown;
                 };
                 let spread = shadow.spread();
-                // True disk erosion is a SUBSET of the original F1 support.
-                // With ZERO Gaussian halo, proving the whole translated
-                // query Outside the pristine source is already a complete
-                // Outside proof. Avoid the expensive disk-cover strips and
-                // exterior-witness searches for these holes and disjoint
-                // regions. A positive sigma MUST NOT take this shortcut:
-                // finite Gaussian support may reach outside pristine C.
-                if spread < 0.0
-                    && shadow.sigma() == 0.0
-                    && source.certify_cell(translated, visits) == CellCertificate::Outside
-                {
-                    return CellCertificate::Outside;
-                }
                 // A spread region is contained in its own finite-Gaussian
                 // support, but this says NOTHING about blurred alpha.
                 let definite_inside = if spread < 0.0 {
@@ -1267,11 +1254,26 @@ impl NeutralRegion<'_> {
                 } else {
                     Some(source.certify_cell(translated, visits))
                 };
-                if definite_inside == Some(CellCertificate::Inside)
-                    || (spread < 0.0
-                        && certified_negative_interior_disk_cover(
-                            source, translated, -spread, visits,
-                        ))
+                // A definite disk-interior witness is sufficient by itself.
+                // Check it FIRST: querying pristine C a second time for an
+                // ordinary interior span would duplicate expensive original
+                // path / neutral-DAG traversals.
+                if definite_inside == Some(CellCertificate::Inside) {
+                    return CellCertificate::Inside;
+                }
+                // True disk erosion is a SUBSET of the original F1 support.
+                // With ZERO Gaussian halo, proving the translated query
+                // Outside pristine C avoids 64 disk-cover strips and up to
+                // 256 exterior point witnesses. Positive sigma cannot take
+                // this shortcut because finite Gaussian support extends C.
+                if spread < 0.0
+                    && shadow.sigma() == 0.0
+                    && source.certify_cell(translated, visits) == CellCertificate::Outside
+                {
+                    return CellCertificate::Outside;
+                }
+                if spread < 0.0
+                    && certified_negative_interior_disk_cover(source, translated, -spread, visits)
                 {
                     return CellCertificate::Inside;
                 }
