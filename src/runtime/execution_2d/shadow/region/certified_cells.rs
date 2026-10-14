@@ -1152,7 +1152,7 @@ fn certified_negative_exterior_witness(
 }
 
 impl NeutralRegion<'_> {
-    pub(super) fn certify_cell(&self, cell: Cell, visits: &mut usize) -> CellCertificate {
+    fn certify_cell(&self, cell: Cell, visits: &mut usize) -> CellCertificate {
         if *visits == 0 {
             return CellCertificate::Unknown;
         }
@@ -2337,6 +2337,7 @@ fn authored_concave_and_holed_straight_paths_certify_actual_fill_rules_without_m
     assert_eq!(query(&open, [8.0, 8.0, 9.0, 9.0]), CellCertificate::Outside);
 }
 
+#[cfg(test)]
 fn shared_authored_path_scene_certificate(commands: Vec<Render2dPathCommand>) {
     use crate::composition_2d::{
         Render2dBrush, Render2dColorRgba8, Render2dFillRule, Render2dOpacity, Render2dPath,
