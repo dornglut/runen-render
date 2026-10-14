@@ -338,7 +338,10 @@ impl SymbolicCaster<'_> {
 
     /// A caller may request conservative continuous geometry only; neither
     /// this interval nor the source DAG is a preapproved sampled mask.
-    #[allow(dead_code, reason = "symbolic F3E consumer acceptance is the next bounded cut")]
+    #[allow(
+        dead_code,
+        reason = "symbolic F3E consumer acceptance is the next bounded cut"
+    )]
     pub(super) fn continuous_area_enclosure(
         &self,
         root_bounds: [f64; 4],
@@ -346,7 +349,8 @@ impl SymbolicCaster<'_> {
         max_depth: u8,
         fuel: &mut usize,
     ) -> Option<[f64; 2]> {
-        self._expression.continuous_area_enclosure(root_bounds, root_to_parent, max_depth, fuel)
+        self._expression
+            .continuous_area_enclosure(root_bounds, root_to_parent, max_depth, fuel)
     }
 }
 

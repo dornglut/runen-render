@@ -1258,7 +1258,10 @@ impl NeutralRegion<'_> {
 /// <= 12, independently of the numeric coordinates used for classification.
 /// The shared fuel pays for EVERY node, F1 path scan, curve, disk witness and
 /// affine preimage. On exhaustion return None; no partial bound escapes.
-#[allow(dead_code, reason = "private continuous-area admission boundary for the F3F symbolic consumer")]
+#[allow(
+    dead_code,
+    reason = "private continuous-area admission boundary for the F3F symbolic consumer"
+)]
 pub(super) fn certified_area_enclosure(
     region: &NeutralRegion<'_>,
     bounds: [f64; 4],
@@ -1306,9 +1309,7 @@ pub(super) fn certified_area_enclosure(
         }
         let mid_x = rect[0] + 0.5 * (rect[2] - rect[0]);
         let mid_y = rect[1] + 0.5 * (rect[3] - rect[1]);
-        if !(rect[0] < mid_x && mid_x < rect[2])
-            || !(rect[1] < mid_y && mid_y < rect[3])
-        {
+        if !(rect[0] < mid_x && mid_x < rect[2]) || !(rect[1] < mid_y && mid_y < rect[3]) {
             return None;
         }
         let children = [
@@ -1381,7 +1382,6 @@ fn builder() -> NeutralRegionBuilder {
     )
 }
 
-
 #[test]
 fn production_area_enclosure_preserves_bounds_and_fuel_across_affine() {
     let mut graph = builder();
@@ -1416,8 +1416,14 @@ fn production_area_enclosure_preserves_bounds_and_fuel_across_affine() {
     assert!(budget < 16_777_216);
     let mut exhausted = 1;
     assert!(
-        certified_area_enclosure(&region, [-1.0, 0.5, 1.0, 1.5], Some(transform), 9, &mut exhausted)
-            .is_none()
+        certified_area_enclosure(
+            &region,
+            [-1.0, 0.5, 1.0, 1.5],
+            Some(transform),
+            9,
+            &mut exhausted
+        )
+        .is_none()
     );
     assert_eq!(exhausted, 0);
 }
