@@ -2201,7 +2201,13 @@ fn authored_straight_triangle_negative_shadow_propagates_exactly_on_vulkan() {
             Render2dAffineTransform::IDENTITY,
             Vec::new(),
             Render2dOpacity::TRANSPARENT,
-            vec![effect(20.0, 0.0, 0.1, -1.0, Render2dColorRgba8::TRANSPARENT)],
+            vec![effect(
+                20.0,
+                0.0,
+                0.1,
+                -1.0,
+                Render2dColorRgba8::TRANSPARENT,
+            )],
         ));
         let ancestor = group(
             vec![child],
