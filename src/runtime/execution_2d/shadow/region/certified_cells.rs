@@ -1643,6 +1643,109 @@ fn curved_holed_erosion_center_membership_does_not_prove_continuous_pixel_area()
 }
 
 #[test]
+fn sheared_holed_erosion_has_independent_continuous_4x4_cell_area_oracle() {
+    // Independently integrate the TRUE Euclidean curved boundary from
+    // the original F1 ring's inner hole, erosion r=1, offset (+8,0),
+    // and x_root=x_parent+0.25*y_parent ancestor shear.
+    // On root pixel [36,37]x[22,23], original C and outer edges are
+    // absent. The support's left boundary is:
+    //   x_root=35.5+0.25*v+sqrt(1-v*v), v=y_root-22.
+    // This oracle integrates 16 continuous sample CELLS, not 16 centers.
+    fn curved_boundary(v: f64) -> f64 {
+        35.5 + 0.25 * v + (1.0 - v * v).sqrt()
+    }
+
+    fn integrated_width(v: f64, x_right: f64) -> f64 {
+        (x_right - 35.5) * v
+            - 0.125 * v * v
+            - 0.5 * (v * (1.0 - v * v).sqrt() + v.asin())
+    }
+
+    fn occupied_cell_area(x0: f64, x1: f64, v0: f64, v1: f64) -> f64 {
+        let mut cuts = vec![v0, v1];
+        // Solve sqrt(1-v²)=k-v/4 for k=x-35.5.
+        // Squaring yields v=4/17*(k +/- sqrt(17-16*k²)).
+        // Check the original unsquared equation to exclude false roots.
+        for x in [x0, x1] {
+            let k = x - 35.5;
+            let discriminant = 17.0 - 16.0 * k * k;
+            if discriminant < 0.0 {
+                continue;
+            }
+            for sign in [-1.0, 1.0] {
+                let v = (4.0 / 17.0) * (k + sign * discriminant.sqrt());
+                if v0 < v
+                    && v < v1
+                    && k - 0.25 * v >= 0.0
+                    && (curved_boundary(v) - x).abs() < 1.0e-12
+                {
+                    cuts.push(v);
+                }
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup_by(|a, b| (*a - *b).abs() < 1.0e-13);
+        let mut result = 0.0;
+        for window in cuts.windows(2) {
+            let (lo, hi) = (window[0], window[1]);
+            let boundary = curved_boundary(lo + 0.5 * (hi - lo));
+            if boundary <= x0 {
+                result += (x1 - x0) * (hi - lo);
+            } else if boundary < x1 {
+                result += integrated_width(hi, x1) - integrated_width(lo, x1);
+            }
+        }
+        assert!(result >= -1.0e-13 && result <= (x1 - x0) * (v1 - v0) + 1.0e-13);
+        result
+    }
+
+    let mut areas = [[0.0_f64; 4]; 4];
+    let (mut empty, mut full, mut fractional) = (0, 0, 0);
+    for (sy, row) in areas.iter_mut().enumerate() {
+        for (sx, area) in row.iter_mut().enumerate() {
+            let x0 = 36.0 + sx as f64 / 4.0;
+            let x1 = x0 + 0.25;
+            let v0 = sy as f64 / 4.0;
+            let v1 = v0 + 0.25;
+            *area = occupied_cell_area(x0, x1, v0, v1);
+            if area.abs() < 1.0e-13 {
+                empty += 1;
+            } else if (*area - 1.0 / 16.0).abs() < 1.0e-13 {
+                full += 1;
+            } else {
+                fractional += 1;
+            }
+        }
+    }
+    assert_eq!((empty, full, fractional), (4, 6, 6));
+    // Independently tabulated circular-segment integrals for all sixteen
+    // globally phased sample cells; six cells are genuinely fractional.
+    let reference = [
+        [0.0, 0.0, 0.057_316_642_859_978_9, 0.0625],
+        [0.0, 0.000_128_806_734_546_183, 0.057_998_811_660_215_84, 0.0625],
+        [0.0, 0.017_173_013_842_213_2, 0.0625, 0.0625],
+        [0.021_568_309_894_473_73, 0.057_652_257_958_206_11, 0.0625, 0.0625],
+    ];
+    for (actual_row, expected_row) in areas.iter().zip(reference) {
+        for (actual, expected) in actual_row.iter().zip(expected_row) {
+            assert!((*actual - expected).abs() < 1.0e-12);
+        }
+    }
+    let total: f64 = areas.iter().flatten().sum();
+    assert!((total - 0.586_837_842_949_633_9).abs() < 1.0e-12);
+
+    // Opaque BLUE ancestor over transparent prior target. F3E resolves
+    // linear-premultiplied blue=total via sRGB, alpha=total via UNORM8.
+    let blue_srgb = if total <= 0.003_130_8 {
+        12.92 * total
+    } else {
+        1.055 * total.powf(1.0 / 2.4) - 0.055
+    };
+    let expected = [0, 0, (blue_srgb * 255.0).round() as u8, (total * 255.0).round() as u8];
+    assert_eq!(expected, [0, 0, 201, 150]);
+}
+
+#[test]
 fn independent_full_scene_per_site_gaussian_work_cannot_fit_region_fuel() {
     // This is a falsifier for PROMOTING the current per-site test-only
     // Gaussian evaluator into production unchanged, NOT a no-go for
