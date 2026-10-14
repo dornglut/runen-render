@@ -946,8 +946,7 @@ fn certified_negative_interior_disk_cover(
         } else {
             offset_x.lo.abs().min(offset_x.hi.abs())
         };
-        let Some(nearest_squared) = Interval::scalar(nearest).and_then(|v| v.mul(v))
-        else {
+        let Some(nearest_squared) = Interval::scalar(nearest).and_then(|v| v.mul(v)) else {
             return false;
         };
         // The largest disk y at any x in the strip is reached at
@@ -1522,14 +1521,8 @@ fn original_f1_holed_path_negative_disk_curved_corner_has_16_site_shear_oracle()
     let child = graph
         .effect(
             Arc::clone(&source),
-            Render2dDropShadow::new(
-                8.0,
-                0.0,
-                0.001,
-                -1.0,
-                Render2dColorRgba8::TRANSPARENT,
-            )
-            .unwrap(),
+            Render2dDropShadow::new(8.0, 0.0, 0.001, -1.0, Render2dColorRgba8::TRANSPARENT)
+                .unwrap(),
             &[0, 1],
         )
         .unwrap();
@@ -1544,14 +1537,7 @@ fn original_f1_holed_path_negative_disk_curved_corner_has_16_site_shear_oracle()
     let ancestor = graph
         .effect(
             sheared,
-            Render2dDropShadow::new(
-                0.0,
-                0.0,
-                0.001,
-                0.0,
-                Render2dColorRgba8::TRANSPARENT,
-            )
-            .unwrap(),
+            Render2dDropShadow::new(0.0, 0.0, 0.001, 0.0, Render2dColorRgba8::TRANSPARENT).unwrap(),
             &[0],
         )
         .unwrap();
@@ -1599,7 +1585,10 @@ fn original_f1_holed_path_negative_disk_curved_corner_has_16_site_shear_oracle()
     assert!(visits < 16_777_216 && visits > 10_000_000);
     let mut exhausted = 1;
     assert_eq!(
-        ancestor.certify_cell(Cell::new([36.875, 22.625, 36.875, 22.625]).unwrap(), &mut exhausted),
+        ancestor.certify_cell(
+            Cell::new([36.875, 22.625, 36.875, 22.625]).unwrap(),
+            &mut exhausted
+        ),
         CellCertificate::Unknown
     );
 }
