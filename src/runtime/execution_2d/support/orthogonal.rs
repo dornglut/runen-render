@@ -10,7 +10,9 @@
 //! capsule-slice extent over a bounded vertical interval. Best-first
 //! refinement stops ONLY when certified uncertainty is <= 1/2048 of
 //! cell area; no sampled-mask approximation is substituted.
-use super::{UnionBoundaryEdge, gaussian_axis_mass, mask_failure};
+use super::{
+    PreparationBudget, PreparationWork, UnionBoundaryEdge, gaussian_axis_mass, mask_failure,
+};
 use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 use std::collections::BinaryHeap;
 
@@ -28,18 +30,17 @@ fn resource(path: &[usize], detail: &'static str) -> Render2dExecutionError {
 fn precision(path: &[usize], detail: &'static str) -> Render2dExecutionError {
     mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail)
 }
-fn charge(work: &mut usize, count: usize, path: &[usize]) -> Result<(), Render2dExecutionError> {
-    let next = work
-        .checked_add(count)
-        .ok_or_else(|| resource(path, "orthogonal erosion work counter overflow"))?;
-    if next > MAX_GLOBAL_WORK {
-        return Err(resource(
-            path,
-            "orthogonal erosion exceeds bounded whole-scene work",
-        ));
-    }
-    *work = next;
-    Ok(())
+fn charge(
+    work: &mut dyn PreparationWork,
+    count: usize,
+    path: &[usize],
+) -> Result<(), Render2dExecutionError> {
+    work.charge(
+        count,
+        MAX_GLOBAL_WORK,
+        path,
+        "orthogonal erosion exceeds bounded whole-scene work",
+    )
 }
 
 pub(super) struct OrthogonalExterior<'a> {
@@ -116,7 +117,7 @@ impl<'a> OrthogonalExterior<'a> {
     pub(super) fn new(
         edges: &'a [UnionBoundaryEdge],
         path: &[usize],
-        work: &mut usize,
+        work: &mut dyn PreparationWork,
     ) -> Result<Option<Self>, Render2dExecutionError> {
         if edges.is_empty() || edges.len() > MAX_ORTHOGONAL_EDGES {
             return Ok(None);
@@ -164,7 +165,7 @@ impl<'a> OrthogonalExterior<'a> {
             let preparation = max_inventory
                 .and_then(|n| n.checked_mul(levels + 2))
                 .ok_or_else(|| resource(path, "cached orthogonal crossing preparation overflow"))?;
-            let mut admitted = *work;
+            let mut admitted = PreparationBudget::snapshot(work);
             if charge(&mut admitted, preparation, path).is_ok() {
                 let mut offsets = Vec::new();
                 offsets
@@ -218,7 +219,7 @@ impl<'a> OrthogonalExterior<'a> {
                     offsets.push(crossings.len());
                 }
                 if offsets.len() == bands_count + 1 {
-                    *work = admitted;
+                    work.record(admitted.used());
                     bands = Some(OrthogonalBands { offsets, crossings });
                 }
             }
@@ -284,7 +285,7 @@ impl<'a> OrthogonalExterior<'a> {
         y: [f64; 2],
         x: [f64; 2],
         radius: f64,
-        work: &mut usize,
+        work: &mut dyn PreparationWork,
         path: &[usize],
     ) -> Result<Slice, Render2dExecutionError> {
         let [y0, y1] = y;
@@ -417,7 +418,7 @@ impl<'a> OrthogonalExterior<'a> {
         &self,
         query: GaussianRow,
         values: &mut [f64],
-        work: &mut usize,
+        work: &mut dyn PreparationWork,
         path: &[usize],
     ) -> Result<(), Render2dExecutionError> {
         let GaussianRow {
@@ -619,7 +620,7 @@ impl<'a> OrthogonalExterior<'a> {
         &self,
         cell: [f64; 4],
         radius: f64,
-        work: &mut usize,
+        work: &mut dyn PreparationWork,
         path: &[usize],
     ) -> Result<f64, Render2dExecutionError> {
         let [x0, y0, x1, y1] = cell;
@@ -973,6 +974,18 @@ mod tests {
             }) if path == [4, 7]
         ));
         assert_eq!(used, MAX_GLOBAL_WORK);
+    }
+
+    #[test]
+    fn orthogonal_evaluator_keeps_its_limit_under_legacy_policy() {
+        let mut work = PreparationBudget::for_contribution(false);
+        charge(&mut work, MAX_GLOBAL_WORK, &[4, 1]).unwrap();
+        let error = charge(&mut work, 1, &[4, 2]).unwrap_err();
+        assert!(matches!(error, Render2dExecutionError::SampleSpace {
+            kind: Render2dSampleSpaceError::ResourceLimit,
+            path: Some(path), ..
+        } if path == [4, 2]));
+        assert_eq!(work.used(), MAX_GLOBAL_WORK);
     }
 
     #[test]

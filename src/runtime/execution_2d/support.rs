@@ -21,7 +21,96 @@ const MAX_GAUSSIAN_RADIUS_SAMPLES: u32 = 512;
 // Covers repeated neutral grid traversal AND continuous support integration
 // across every authored effect in one contribution, not just one shadow.
 const MAX_AGGREGATE_SHADOW_PREPARATION_WORK: usize = 134_217_728;
+pub(super) const MAX_COMPOSITIONAL_SHADOW_WORK: usize = 16_777_216;
 const MAX_CERTIFIED_RECTANGLE_AXIS_WORK: usize = 16_777_216;
+
+/// One counter carries the immutable contribution policy through every
+/// geometric evaluator. Legacy geometry owners retain their established
+/// ceiling; mixed symbolic contributions select their stricter policy once.
+pub(super) trait PreparationWork {
+    fn used(&self) -> usize;
+    fn maximum(&self) -> usize;
+    fn record(&mut self, used: usize);
+
+    fn remaining(&self, evaluator_maximum: usize) -> usize {
+        self.maximum()
+            .min(evaluator_maximum)
+            .saturating_sub(self.used())
+    }
+
+    fn charge(
+        &mut self,
+        cost: usize,
+        evaluator_maximum: usize,
+        path: &[usize],
+        detail: &'static str,
+    ) -> Result<(), crate::execution_2d::Render2dExecutionError> {
+        let fail = || {
+            mask_failure(
+                path,
+                crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                detail,
+            )
+        };
+        let next = self.used().checked_add(cost).ok_or_else(fail)?;
+        if next > self.maximum().min(evaluator_maximum) {
+            return Err(fail());
+        }
+        self.record(next);
+        Ok(())
+    }
+}
+
+/// Existing geometry-only counters have the same legacy admission policy.
+impl PreparationWork for usize {
+    fn used(&self) -> usize {
+        *self
+    }
+    fn maximum(&self) -> usize {
+        MAX_AGGREGATE_SHADOW_PREPARATION_WORK
+    }
+    fn record(&mut self, used: usize) {
+        *self = used;
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PreparationBudget {
+    used: usize,
+    maximum: usize,
+}
+
+impl PreparationBudget {
+    pub(super) fn for_contribution(has_symbolic: bool) -> Self {
+        Self {
+            used: 0,
+            maximum: if has_symbolic {
+                MAX_COMPOSITIONAL_SHADOW_WORK
+            } else {
+                MAX_AGGREGATE_SHADOW_PREPARATION_WORK
+            },
+        }
+    }
+
+    fn snapshot(work: &dyn PreparationWork) -> Self {
+        Self {
+            used: work.used(),
+            maximum: work.maximum(),
+        }
+    }
+}
+
+impl PreparationWork for PreparationBudget {
+    fn used(&self) -> usize {
+        self.used
+    }
+    fn maximum(&self) -> usize {
+        self.maximum
+    }
+    fn record(&mut self, used: usize) {
+        self.used = used;
+    }
+}
 
 /// Retained f64 coverage belongs to the entire invocation, not one shadow.
 /// Reject before reserving retained float coverage storage. Bounded temporary
@@ -42,27 +131,19 @@ fn admit_retained_coverage_samples(
 }
 
 fn charge_shadow_preparation_work(
-    used: &mut usize,
+    used: &mut dyn PreparationWork,
     cost: usize,
     path: &[usize],
 ) -> Result<(), crate::execution_2d::Render2dExecutionError> {
-    use crate::execution_2d::Render2dSampleSpaceError;
-    let fail = || {
-        mask_failure(
-            path,
-            Render2dSampleSpaceError::ResourceLimit,
-            "aggregate shadow preparation work exceeds bounded admission",
-        )
-    };
     // A rejected charge must leave the shared invocation counter intact.
     // The next sibling still owns the remaining work budget and its path.
     // Compute and check the candidate before committing the charge.
-    let next = used.checked_add(cost).ok_or_else(fail)?;
-    if next > MAX_AGGREGATE_SHADOW_PREPARATION_WORK {
-        return Err(fail());
-    }
-    *used = next;
-    Ok(())
+    used.charge(
+        cost,
+        MAX_AGGREGATE_SHADOW_PREPARATION_WORK,
+        path,
+        "aggregate shadow preparation work exceeds bounded admission",
+    )
 }
 
 /// Historical finite truncated-Gaussian sampled-kernel comparator for
@@ -333,7 +414,7 @@ fn rasterize_mesh_with_positive_spread(
     samples_per_logical_unit: f64,
     positive_spread: f64,
     path: &[usize],
-    aggregate_work: Option<&mut usize>,
+    aggregate_work: Option<&mut dyn PreparationWork>,
 ) -> Result<Option<NeutralMask>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
@@ -522,7 +603,7 @@ impl NeutralUnionSweep {
         triangles: &[[f64; 2]],
         bounds: [f64; 4],
         work_multiplier: usize,
-        work: &mut usize,
+        work: &mut dyn PreparationWork,
         path: &[usize],
     ) -> Result<Self, crate::execution_2d::Render2dExecutionError> {
         use crate::execution_2d::Render2dSampleSpaceError;
@@ -577,14 +658,12 @@ impl NeutralUnionSweep {
             .checked_pow(3)
             .and_then(|n| n.checked_mul(work_multiplier))
             .ok_or_else(|| resource("neutral scanline arrangement work overflow"))?;
-        *work = work
-            .checked_add(charge)
-            .ok_or_else(|| resource("aggregate neutral scanline work overflow"))?;
-        if *work > 134_217_728 {
-            return Err(resource(
-                "neutral scanline arrangement exceeds bounded work",
-            ));
-        }
+        work.charge(
+            charge,
+            MAX_AGGREGATE_SHADOW_PREPARATION_WORK,
+            path,
+            "neutral scanline arrangement exceeds bounded work",
+        )?;
         let mut events = vec![y0, y1];
         let mut edges = Vec::new();
         edges
@@ -703,7 +782,7 @@ fn area_sample(
     triangles: &[[f64; 2]],
     x0: f64,
     y0: f64,
-    work: &mut usize,
+    work: &mut dyn PreparationWork,
     path: &[usize],
 ) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
     let sweep = NeutralUnionSweep::new(triangles, [x0, y0, x0 + 1.0, y0 + 1.0], 8, work, path)?;
@@ -737,7 +816,7 @@ fn rasterize_area_coverage(
     mesh: &NeutralMesh,
     scale: f64,
     path: &[usize],
-    aggregate_work: &mut usize,
+    aggregate_work: &mut dyn PreparationWork,
     remaining_coverage_samples: usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     let Some(grid) =
@@ -823,7 +902,7 @@ fn gaussian_union_sample(
     triangles: &[[f64; 2]],
     center: [f64; 2],
     sigma: f64,
-    work: &mut usize,
+    work: &mut dyn PreparationWork,
     path: &[usize],
 ) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
@@ -1099,7 +1178,7 @@ impl AffinePositiveDiskArea<'_> {
     fn sample(
         &self,
         root_lower: [f64; 2],
-        work: &mut usize,
+        work: &mut dyn PreparationWork,
         path: &[usize],
     ) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
         use crate::execution_2d::Render2dSampleSpaceError;
@@ -1130,12 +1209,12 @@ impl AffinePositiveDiskArea<'_> {
             // separately from the more costly clipped circular integration.
             // A large rectangle must not exhaust the global work budget
             // solely for cells whose membership is geometrically certain.
-            *work = work
-                .checked_add(8)
-                .ok_or_else(|| resource("rounded rectangle area work overflow"))?;
-            if *work > 16_777_216 {
-                return Err(resource("rounded rectangle area exceeds bounded work"));
-            }
+            work.charge(
+                8,
+                MAX_COMPOSITIONAL_SHADOW_WORK,
+                path,
+                "rounded rectangle area exceeds bounded work",
+            )?;
             let [m00, m01, m10, m11] = self.inverse;
             let mapped = |root: [f64; 2]| {
                 let p = [
@@ -1209,12 +1288,12 @@ impl AffinePositiveDiskArea<'_> {
             }
             // 8 units were charged for all cells; 1016 additional units
             // complete the conservative 1024-unit exact clipped integration.
-            *work = work
-                .checked_add(1016)
-                .ok_or_else(|| resource("rounded rectangle area work overflow"))?;
-            if *work > 16_777_216 {
-                return Err(resource("rounded rectangle area exceeds bounded work"));
-            }
+            work.charge(
+                1016,
+                MAX_COMPOSITIONAL_SHADOW_WORK,
+                path,
+                "rounded rectangle area exceeds bounded work",
+            )?;
             let clipped_area = certified_rounded_rectangle_area(polygon, rect, self.radius)
                 .ok_or_else(|| precision("rounded rectangle circle integral is invalid"))?;
             let coverage = clipped_area / parent_cell_area;
@@ -1248,12 +1327,15 @@ impl AffinePositiveDiskArea<'_> {
             visited = visited
                 .checked_add(1)
                 .ok_or_else(|| resource("affine disk area visit count overflow"))?;
-            *work = work
-                .checked_add(self.triangles.len() / 3)
-                .ok_or_else(|| resource("affine disk geometry work overflow"))?;
-            if visited > MAX_VISITS || *work > 16_777_216 {
+            if visited > MAX_VISITS {
                 return Err(resource("affine disk area exceeds bounded work"));
             }
+            work.charge(
+                self.triangles.len() / 3,
+                MAX_COMPOSITIONAL_SHADOW_WORK,
+                path,
+                "affine disk area exceeds bounded work",
+            )?;
             let [x0, y0, x1, y1] = cell.bounds;
             let half_x = (x1 - x0) * 0.5;
             let half_y = (y1 - y0) * 0.5;
@@ -1294,14 +1376,12 @@ impl AffinePositiveDiskArea<'_> {
             let certificate_work = (self.triangles.len() / 3)
                 .checked_mul(4)
                 .ok_or_else(|| resource("affine disk convex certificate work overflow"))?;
-            *work = work
-                .checked_add(certificate_work)
-                .ok_or_else(|| resource("affine disk convex certificate work overflow"))?;
-            if *work > 16_777_216 {
-                return Err(resource(
-                    "affine disk convex certificate exceeds bounded work",
-                ));
-            }
+            work.charge(
+                certificate_work,
+                MAX_COMPOSITIONAL_SHADOW_WORK,
+                path,
+                "affine disk convex certificate exceeds bounded work",
+            )?;
             let corners = [
                 [point[0] - dx - ex, point[1] - dy - ey],
                 [point[0] - dx + ex, point[1] - dy + ey],
@@ -1380,7 +1460,7 @@ pub(super) fn affine_parent_effect_coverage_admitted(
     kernel: ParentEffectKernel,
     frame: ParentEffectFrame,
     path: &[usize],
-    aggregate_work: &mut usize,
+    aggregate_work: &mut dyn PreparationWork,
     remaining_coverage_samples: usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
@@ -1767,7 +1847,7 @@ fn oriented_triangle_contains_outward(tri: &[[f64; 2]; 3], p: [f64; 2], outward:
 fn union_exterior_boundary(
     triangles: &[[f64; 2]],
     path: &[usize],
-    mut aggregate_work: Option<&mut usize>,
+    mut aggregate_work: Option<&mut dyn PreparationWork>,
 ) -> Result<Vec<UnionBoundaryEdge>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
@@ -1959,7 +2039,7 @@ fn certified_convex_eroded_union(
     exterior: &[UnionBoundaryEdge],
     radius: f64,
     path: &[usize],
-    aggregate_work: Option<&mut usize>,
+    aggregate_work: Option<&mut dyn PreparationWork>,
 ) -> Result<Option<Vec<[f64; 2]>>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
@@ -2125,7 +2205,7 @@ pub(super) fn certified_convex_erosion_mesh(
     source: &NeutralMesh,
     radius: f64,
     path: &[usize],
-    aggregate_work: &mut usize,
+    aggregate_work: &mut dyn PreparationWork,
 ) -> Result<Option<NeutralMesh>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
@@ -2250,7 +2330,7 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
     source: &NeutralMesh,
     radius: f64,
     path: &[usize],
-    aggregate_work: &mut usize,
+    aggregate_work: &mut dyn PreparationWork,
 ) -> Result<Option<NeutralMesh>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
@@ -2283,7 +2363,7 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
     // fallible output allocation must not poison the caller's budget.
     // An ineligible geometric classification pays its actual linear work
     // exactly once before the pre-existing convex fallback.
-    let mut trial_work = *aggregate_work;
+    let mut trial_work = PreparationBudget::snapshot(aggregate_work);
     charge_shadow_preparation_work(&mut trial_work, source.triangles.len(), path)?;
     let mut rectangles = Vec::<[f64; 4]>::new();
     rectangles
@@ -2292,7 +2372,7 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
     let mut largest = 0.0_f64;
     for triangles in source.triangles.as_chunks::<6>().0 {
         let Some(bounds) = certified_axis_aligned_rectangle(triangles) else {
-            *aggregate_work = trial_work;
+            aggregate_work.record(trial_work.used());
             return Ok(None);
         };
         let rect = bounds.map(|x| x / source.units_per_parent_logical_unit);
@@ -2311,6 +2391,7 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
         .checked_mul(count)
         .ok_or_else(|| resource("separated rectangle pairwise work overflow"))?;
     let next = trial_work
+        .used()
         .checked_add(separation_work)
         .ok_or_else(|| resource("separated rectangle scene work overflow"))?;
     if next > MAX_CERTIFIED_RECTANGLE_AXIS_WORK {
@@ -2337,7 +2418,7 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
                 || a[3] + separation_margin < b[1]
                 || b[3] + separation_margin < a[1])
             {
-                *aggregate_work = trial_work;
+                aggregate_work.record(trial_work.used());
                 return Ok(None);
             }
         }
@@ -2386,7 +2467,7 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
             result.triangles.push(point);
         }
     }
-    *aggregate_work = trial_work;
+    aggregate_work.record(trial_work.used());
     Ok(Some(result))
 }
 
@@ -2471,7 +2552,7 @@ fn charge_certified_rectangle_axis_work(
     height: usize,
     area: usize,
     sigma: f64,
-    aggregate_work: &mut usize,
+    aggregate_work: &mut dyn PreparationWork,
     path: &[usize],
 ) -> Result<(), crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
@@ -2533,7 +2614,7 @@ fn continuous_signed_spread_sample(
     center: [f64; 2],
     signed_spread: f64,
     sigma: f64,
-    work: &mut usize,
+    work: &mut dyn PreparationWork,
     path: &[usize],
 ) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
@@ -2596,14 +2677,17 @@ fn continuous_signed_spread_sample(
         let classification_cost = (triangles.len() / 3)
             .checked_add(boundary_visits)
             .ok_or_else(|| resource("continuous signed spread classification work overflow"))?;
-        *work = work
-            .checked_add(classification_cost)
-            .ok_or_else(|| resource("continuous signed spread geometry-work overflow"))?;
-        if visited > MAX_SAMPLE_CELLS || *work > MAX_GLOBAL_SPREAD_WORK {
+        if visited > MAX_SAMPLE_CELLS {
             return Err(resource(
                 "continuous positive spread Gaussian exceeds bounded work",
             ));
         }
+        work.charge(
+            classification_cost,
+            MAX_GLOBAL_SPREAD_WORK,
+            path,
+            "continuous positive spread Gaussian exceeds bounded work",
+        )?;
         let [x0, y0, x1, y1] = cell.bounds;
         if signed_spread < 0.0
             && let Some(edges) = boundary
@@ -2733,7 +2817,7 @@ fn rasterize_continuous_shadow_coverage(
     sigma: f64,
     scale: f64,
     path: &[usize],
-    aggregate_work: &mut usize,
+    aggregate_work: &mut dyn PreparationWork,
     remaining_coverage_samples: usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
@@ -3215,7 +3299,7 @@ pub(super) fn prepare_shadow_coverage_admitted(
     sigma: f64,
     samples_per_logical_unit: f64,
     path: &[usize],
-    aggregate_work: &mut usize,
+    aggregate_work: &mut dyn PreparationWork,
     remaining_coverage_samples: usize,
 ) -> Result<Option<NeutralCoverage>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;

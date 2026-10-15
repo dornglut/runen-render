@@ -6,8 +6,9 @@
 //! F3E compositor and RunenGPU upload remain the sole physical consumers.
 use super::*;
 use geometry_support::region::interval::{Interval, exact_add, exact_mul};
+use support::PreparationWork;
 
-const MAX_QUERY_WORK: usize = 16_777_216;
+use support::MAX_COMPOSITIONAL_SHADOW_WORK as MAX_QUERY_WORK;
 const MAX_QUERY_CELLS: usize = 1_048_576;
 const MAX_CELL_UNCERTAINTY: f64 = 1.0 / (2048.0 * 256.0);
 use geometry_support::region::MAX_AREA_QUERY_FIXED_BYTES as QUERY_FIXED_SCRATCH_BYTES;
@@ -17,23 +18,21 @@ pub(super) struct Context<'a> {
     pub(super) paintable: bool,
     pub(super) target: &'a AdmittedTarget,
     pub(super) path: &'a [usize],
-    pub(super) aggregate_work: &'a mut usize,
+    pub(super) aggregate_work: &'a mut support::PreparationBudget,
     pub(super) retained_bytes: &'a mut u64,
 }
 
-fn charge(work: &mut usize, amount: usize, path: &[usize]) -> Result<(), Render2dExecutionError> {
-    let next = work
-        .checked_add(amount)
-        .ok_or_else(|| shadow_resource(path, "symbolic shadow numerical work counter overflow"))?;
-    if next > MAX_QUERY_WORK {
-        *work = MAX_QUERY_WORK;
-        return Err(shadow_resource(
-            path,
-            "symbolic shadow exceeds bounded whole-scene numerical work",
-        ));
-    }
-    *work = next;
-    Ok(())
+fn charge(
+    work: &mut dyn PreparationWork,
+    amount: usize,
+    path: &[usize],
+) -> Result<(), Render2dExecutionError> {
+    work.charge(
+        amount,
+        MAX_QUERY_WORK,
+        path,
+        "symbolic shadow exceeds bounded whole-scene numerical work",
+    )
 }
 
 fn unsupported(owner: &[usize]) -> Render2dExecutionError {
@@ -266,7 +265,7 @@ fn midpoint([lo, hi]: [f64; 2], path: &[usize]) -> Result<f64, Render2dExecution
 }
 
 fn occurrence_path(
-    work: &mut usize,
+    work: &mut dyn PreparationWork,
     owner: &[usize],
 ) -> Result<Vec<usize>, Render2dExecutionError> {
     charge(work, owner.len() + 64, owner)?;
@@ -382,14 +381,8 @@ pub(super) fn prepare(
                 ));
             }
         }
-        let mut fuel = MAX_QUERY_WORK
-            .checked_sub(*context.aggregate_work)
-            .ok_or_else(|| {
-                shadow_resource(
-                    context.path,
-                    "symbolic remaining scene-work admission underflows",
-                )
-            })?;
+        let available = context.aggregate_work.remaining(MAX_QUERY_WORK);
+        let mut fuel = available;
         let enclosures = source.continuous_grid_enclosures(
             root_grid,
             sample_scale,
@@ -398,7 +391,7 @@ pub(super) fn prepare(
             count,
             &mut fuel,
         );
-        *context.aggregate_work = MAX_QUERY_WORK - fuel;
+        charge(context.aggregate_work, available - fuel, context.path)?;
         let enclosures = enclosures.map_err(|error| match error {
             geometry_support::region::AreaQueryError::Unsupported => unsupported(owner),
             geometry_support::region::AreaQueryError::Resource => shadow_resource(
@@ -556,7 +549,69 @@ mod tests {
         assert!(grid([0.0, 0.0, 1000.0, 1000.0], 4.0, [4000, 4000], &[0]).is_err());
         let mut work = MAX_QUERY_WORK - 2;
         assert!(charge(&mut work, 3, &[0]).is_err());
-        assert_eq!(work, MAX_QUERY_WORK);
+        assert_eq!(work, MAX_QUERY_WORK - 2);
+    }
+
+    #[test]
+    fn mixed_siblings_share_one_limit_in_both_orders() {
+        use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
+
+        let mesh = support::NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            bounds: [0.0, 0.0, 1.0, 1.0],
+        };
+        let legacy = |work: &mut support::PreparationBudget| {
+            support::prepare_shadow_coverage_admitted(&mesh, 0.0, 0.0, 4.0, &[3, 1], work, 16)
+        };
+        let mut probe = support::PreparationBudget::for_contribution(false);
+        let expected = legacy(&mut probe).unwrap().unwrap();
+        let legacy_cost = probe.used();
+        assert!(legacy_cost > 0 && legacy_cost < MAX_QUERY_WORK);
+        assert!((expected.values.iter().sum::<f64>() - 8.0).abs() < 1.0e-12);
+
+        for symbolic_first in [false, true] {
+            // The complete caster inventory selected the 16M policy before
+            // either sibling. Prior invocation work leaves exactly enough
+            // room for the legacy coverage, but not the extra symbolic unit.
+            let mut work = support::PreparationBudget::for_contribution(true);
+            charge(&mut work, MAX_QUERY_WORK - legacy_cost, &[0]).unwrap();
+            let error = if symbolic_first {
+                charge(&mut work, 1, &[3, 2]).unwrap();
+                legacy(&mut work).unwrap_err()
+            } else {
+                let coverage = legacy(&mut work).unwrap().unwrap();
+                assert_eq!(coverage.values, expected.values);
+                charge(&mut work, 1, &[3, 2]).unwrap_err()
+            };
+            let owner = if symbolic_first { [3, 1] } else { [3, 2] };
+            assert!(matches!(error, Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            } if path == owner));
+            assert!(work.used() <= MAX_QUERY_WORK);
+
+            // A genuinely admissible mixed contribution succeeds in either
+            // order and produces identical continuous legacy coverage.
+            let mut work = support::PreparationBudget::for_contribution(true);
+            if symbolic_first {
+                charge(&mut work, 1, &[3, 2]).unwrap();
+            }
+            let coverage = legacy(&mut work).unwrap().unwrap();
+            if !symbolic_first {
+                charge(&mut work, 1, &[3, 2]).unwrap();
+            }
+            assert_eq!(coverage.values, expected.values);
+            assert_eq!(work.used(), legacy_cost + 1);
+        }
+
+        // A pure legacy invocation retains its established 134M admission.
+        let mut work = support::PreparationBudget::for_contribution(false);
+        work.charge(MAX_QUERY_WORK, usize::MAX, &[0], "test prior work")
+            .unwrap();
+        let coverage = legacy(&mut work).unwrap().unwrap();
+        assert_eq!(coverage.values, expected.values);
+        assert_eq!(work.used(), MAX_QUERY_WORK + legacy_cost);
     }
 
     #[test]

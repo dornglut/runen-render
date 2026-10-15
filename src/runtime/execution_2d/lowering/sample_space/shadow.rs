@@ -229,7 +229,12 @@ pub(super) fn prepare(
         ));
     }
     let mut retained_coverage_bytes = metadata;
-    let mut aggregate_coverage_work = 0_usize;
+    // Select policy from the complete immutable inventory before visiting any
+    // sibling. A later symbolic caster must constrain earlier legacy work too.
+    let has_symbolic = sources
+        .values()
+        .any(|source| matches!(source, geometry_support::NeutralCaster::Symbolic(_)));
+    let mut aggregate_coverage_work = support::PreparationBudget::for_contribution(has_symbolic);
     // This is ONLY paint reachability. Alpha-neutral structural support for
     // ancestors is independently prepared from every borrowed F1 group,
     // including transparent effects and zero-opacity children.
