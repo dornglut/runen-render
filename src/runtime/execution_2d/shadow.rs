@@ -105,6 +105,40 @@ pub(super) struct NeutralPreparationScale {
     pub(super) geometry_sample_scale: f64,
 }
 
+/// Preserve nested occurrence ownership when root-oriented physical helpers
+/// decline neutral source preparation. Root paint diagnostics keep their API.
+fn neutral_source_error(error: Render2dExecutionError, path: &[usize]) -> Render2dExecutionError {
+    if path.len() <= 1 {
+        return error;
+    }
+    use crate::execution_2d::{Render2dImageError, Render2dVectorError};
+    match error {
+        Render2dExecutionError::Image {
+            kind: Render2dImageError::PrecisionLimit,
+            ..
+        }
+        | Render2dExecutionError::Vector {
+            kind: Render2dVectorError::PrecisionLimit,
+            ..
+        } => precision(
+            path,
+            "nested original neutral source cannot preserve physical precision",
+        ),
+        Render2dExecutionError::Image {
+            kind: Render2dImageError::ResourceLimit,
+            ..
+        }
+        | Render2dExecutionError::Vector {
+            kind: Render2dVectorError::ResourceLimit,
+            ..
+        } => resource(
+            path,
+            "nested original neutral source exceeds physical resource admission",
+        ),
+        other => other,
+    }
+}
+
 fn neutral_item(
     item: &Render2dItem,
     path: &[usize],
@@ -122,7 +156,8 @@ fn neutral_item(
                 root_index,
                 scales.geometry_sample_scale,
                 max_buffer_bytes,
-            )?
+            )
+            .map_err(|error| neutral_source_error(error, path))?
         }
         Render2dPrimitive::Image(primitive) => image::neutral_support(
             item,
@@ -130,7 +165,8 @@ fn neutral_item(
             root_index,
             scales.geometry_sample_scale,
             max_buffer_bytes,
-        )?,
+        )
+        .map_err(|error| neutral_source_error(error, path))?,
         Render2dPrimitive::ShapedText(primitive) => {
             let value = bindings
                 .get(primitive.resource_id())
@@ -145,11 +181,13 @@ fn neutral_item(
                 .get(&key)
                 .ok_or_else(|| precision(path, "missing validated immutable font outlines"))?;
             let mut result = empty_mesh();
+            let mut has_original_outline = false;
             for glyph in resource.glyphs() {
                 let Some(field) = fields.glyph(glyph.id()) else {
                     // An admitted empty glyph outline has no neutral area.
                     continue;
                 };
+                has_original_outline = true;
                 let origin = [
                     primitive.origin().x() + glyph.x(),
                     primitive.origin().y() + glyph.y(),
@@ -170,12 +208,21 @@ fn neutral_item(
                     append(&mut result, &mesh, Render2dAffineTransform::IDENTITY, path)?;
                 }
             }
-            (!result.triangles.is_empty()).then_some(result)
+            if !has_original_outline {
+                // The immutable admitted glyph facts prove absence. An empty
+                // disposable realization of a PRESENT outline does not.
+                return Ok(None);
+            }
+            Some(result)
         }
     };
-    let Some(mesh) = result else {
+    // Missing physical triangles cannot delete borrowed original F1. Keep a
+    // leaf even when tessellation/culling produced no disposable geometry;
+    // materialization must independently prove emptiness or stay symbolic.
+    let mesh = result.unwrap_or_else(empty_mesh);
+    if region::trivially_empty_original_source(item) {
         return Ok(None);
-    };
+    }
     let clipped = intersect_clips(
         &mesh,
         item.clips(),
@@ -185,7 +232,7 @@ fn neutral_item(
         max_buffer_bytes,
         clip_work_used,
     )?;
-    Ok((!clipped.triangles.is_empty()).then_some(clipped))
+    Ok(Some(clipped))
 }
 
 /// An exact geometric Minkowski sum of a triangle UNION with the finite
@@ -643,6 +690,9 @@ pub(super) fn append(
         ));
     }
     let [a, b, c, d, tx, ty] = source_to_parent.components();
+    if region::interval::exact_products_equal(a, d, b, c) == Some(true) {
+        return Ok(());
+    }
     let scale = source.units_per_parent_logical_unit;
     let mut prepared = Vec::new();
     prepared
@@ -667,7 +717,6 @@ pub(super) fn append(
     // to no filled area. A FULL-RANK affine whose triangles *numerically*
     // collapse instead is a representability failure, never an empty caster.
     // Complete the precision preflight before changing the output mesh.
-    let determinant = a.mul_add(d, -(b * c));
     for (before, after) in source
         .triangles
         .as_chunks::<3>()
@@ -676,7 +725,6 @@ pub(super) fn append(
         .zip(prepared.as_chunks::<3>().0)
     {
         if orient(after[0], after[1], after[2]) == 0.0
-            && determinant != 0.0
             && orient(before[0], before[1], before[2]) != 0.0
         {
             return Err(precision(
@@ -871,7 +919,8 @@ pub(super) fn intersect_clips(
             Render2dOpacity::TRANSPARENT,
         );
         let Some(clip_mesh) =
-            vector::neutral_support(&item, root_index, resolution, max_buffer_bytes)?
+            vector::neutral_support(&item, root_index, resolution, max_buffer_bytes)
+                .map_err(|error| neutral_source_error(error, path))?
         else {
             return Ok(empty_mesh());
         };
@@ -926,6 +975,210 @@ pub(super) fn intersect_clips(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_group_clip_retains_positive_strip_when_tessellation_disappears() {
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 4.0, 4.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let width = 2.0_f64.powi(-24);
+        let clips = [Render2dClip::new(
+            Render2dShape::rect(Render2dRect::new(1.0, 1.0, width, 1.0).unwrap()),
+            Render2dAffineTransform::IDENTITY,
+        )];
+        let scales = NeutralPreparationScale {
+            field_raster_scale: 1.0,
+            geometry_sample_scale: 4.0,
+        };
+        let mut graph = region::NeutralRegionBuilder::new(scales, 1_048_576);
+        let mesh = vector::neutral_support(&item, 0, 4.0, 1_048_576)
+            .unwrap()
+            .unwrap();
+        let source = graph.source_from_item(mesh, &item, &[0, 0, 0]).unwrap();
+        let clipped = graph.clip(source, &clips, &[0, 0]).unwrap();
+        let NeutralCaster::Symbolic(caster) =
+            materialized_or_symbolic(&mut graph, &clipped, false).unwrap()
+        else {
+            panic!("positive original group clip cannot become an empty mesh");
+        };
+        assert_eq!(caster.owner_path(), [0, 0]);
+        let mut fuel = 16_777_216;
+        let areas = caster
+            .continuous_grid_enclosures([4, 4, 8, 8], 4.0, None, 8, 16, &mut fuel)
+            .unwrap();
+        assert!(areas[0][0] > 0.0 && areas[0][0] <= 4.0 * width && 4.0 * width <= areas[0][1]);
+    }
+
+    #[test]
+    fn original_f1_missing_realization_keeps_thin_rectangle_and_lens() {
+        use crate::composition_2d::{
+            Render2dFillRule, Render2dPath, Render2dPathCommand, Render2dPoint, Render2dRect,
+            Render2dShape,
+        };
+        let width = f64::from_bits((1023_u64 - 24) << 52);
+        let p = |x, y| Render2dPoint::new(x, y).unwrap();
+        let shapes = [
+            Render2dShape::rect(Render2dRect::new(1.0, 1.0, width, 1.0).unwrap()),
+            Render2dShape::path(
+                Render2dPath::new(
+                    Render2dFillRule::NonZero,
+                    vec![
+                        Render2dPathCommand::MoveTo(p(1.0, 1.0)),
+                        Render2dPathCommand::QuadraticTo {
+                            control: p(1.5, 1.0 + width / 2.0),
+                            to: p(2.0, 1.0),
+                        },
+                        Render2dPathCommand::QuadraticTo {
+                            control: p(1.5, 1.0 - width / 2.0),
+                            to: p(1.0, 1.0),
+                        },
+                        Render2dPathCommand::Close,
+                    ],
+                )
+                .unwrap(),
+            ),
+        ];
+        let bindings = Render2dResourceBindings::new(Vec::new()).unwrap();
+        let scales = NeutralPreparationScale {
+            field_raster_scale: 1.0,
+            geometry_sample_scale: 4.0,
+        };
+        for (index, shape) in shapes.into_iter().enumerate() {
+            let item = Render2dItem::new(
+                Render2dPrimitive::Fill {
+                    shape,
+                    brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+                },
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::TRANSPARENT,
+            );
+            assert!(
+                vector::neutral_support(&item, 3, 4.0, 1_048_576)
+                    .unwrap()
+                    .is_none(),
+                "fixture must exercise an absent disposable realization"
+            );
+            let owner = [3, index];
+            let mesh = neutral_item(
+                &item,
+                &owner,
+                &bindings,
+                &BTreeMap::new(),
+                scales,
+                1_048_576,
+                &mut 0,
+            )
+            .unwrap()
+            .unwrap();
+            assert!(mesh.triangles.is_empty());
+            let mut graph = region::NeutralRegionBuilder::new(scales, 1_048_576);
+            let source = graph.source_from_item(mesh, &item, &owner).unwrap();
+            let NeutralCaster::Symbolic(caster) =
+                materialized_or_symbolic(&mut graph, &source, false).unwrap()
+            else {
+                panic!("missing physical mesh cannot materialize as an empty caster");
+            };
+            assert_eq!(caster.owner_path(), owner);
+            let reach = caster.logical_envelope().unwrap();
+            assert!(reach[0] < reach[2] && reach[1] < reach[3]);
+            if index == 0 {
+                let mut fuel = 16_777_216;
+                let areas = caster
+                    .continuous_grid_enclosures([4, 4, 8, 8], 4.0, None, 8, 16, &mut fuel)
+                    .unwrap();
+                let expected = 4.0 * width;
+                assert!(areas[0][0] > 0.0 && areas[0][0] <= expected && expected <= areas[0][1]);
+            }
+        }
+    }
+
+    #[test]
+    fn original_f1_empty_receipts_preserve_empty_and_disjoint_clip_cases() {
+        use crate::composition_2d::{
+            Render2dRect, Render2dShape, Render2dStrokeCap, Render2dStrokeJoin, Render2dStrokeStyle,
+        };
+        let fill = |rect| Render2dPrimitive::Fill {
+            shape: Render2dShape::rect(rect),
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        };
+        let ordinary = Render2dRect::new(0.0, 0.0, 4.0, 4.0).unwrap();
+        let items = [
+            Render2dItem::new(
+                fill(Render2dRect::new(0.0, 0.0, 0.0, 4.0).unwrap()),
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::TRANSPARENT,
+            ),
+            Render2dItem::new(
+                fill(ordinary),
+                Render2dAffineTransform::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0).unwrap(),
+                Vec::new(),
+                Render2dOpacity::TRANSPARENT,
+            ),
+            Render2dItem::new(
+                Render2dPrimitive::Stroke {
+                    shape: Render2dShape::rect(ordinary),
+                    brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+                    style: Render2dStrokeStyle::new(
+                        0.0,
+                        Render2dStrokeCap::Round,
+                        Render2dStrokeJoin::Round,
+                        4.0,
+                    )
+                    .unwrap(),
+                },
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::TRANSPARENT,
+            ),
+            Render2dItem::new(
+                fill(ordinary),
+                Render2dAffineTransform::IDENTITY,
+                vec![Render2dClip::new(
+                    Render2dShape::rect(Render2dRect::new(10.0, 10.0, 1.0, 1.0).unwrap()),
+                    Render2dAffineTransform::IDENTITY,
+                )],
+                Render2dOpacity::TRANSPARENT,
+            ),
+        ];
+        let scales = NeutralPreparationScale {
+            field_raster_scale: 1.0,
+            geometry_sample_scale: 4.0,
+        };
+        let bindings = Render2dResourceBindings::new(Vec::new()).unwrap();
+        for (index, item) in items.iter().enumerate() {
+            let mut graph = region::NeutralRegionBuilder::new(scales, 1_048_576);
+            let source = graph
+                .source_from_item(empty_mesh(), item, &[7, index])
+                .unwrap();
+            assert!(
+                graph.materialize(&source).unwrap().triangles.is_empty(),
+                "an original empty fact must remain accepted"
+            );
+            let realized = neutral_item(
+                item,
+                &[7, index],
+                &bindings,
+                &BTreeMap::new(),
+                scales,
+                1_048_576,
+                &mut 0,
+            )
+            .unwrap();
+            if index < 3 {
+                assert!(realized.is_none());
+            } else {
+                assert!(realized.unwrap().triangles.is_empty());
+            }
+        }
+    }
     use crate::composition_2d::{Render2dRect, Render2dShape};
     use crate::execution_2d::Render2dUnsupportedContent;
 

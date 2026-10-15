@@ -74,6 +74,34 @@ enum Kind<'a> {
     },
 }
 
+/// Constant-work original F1 facts that establish no positive-area source.
+/// This receipt is independent of disposable tessellation and paint alpha.
+fn structurally_empty_fill_shape(shape: &crate::composition_2d::Render2dShape) -> bool {
+    shape.as_rect().is_some_and(|rect| rect.is_empty())
+        || shape.as_ellipse().is_some_and(|rect| rect.is_empty())
+        || shape
+            .as_rounded_rect()
+            .is_some_and(|(rect, _)| rect.is_empty())
+        || shape
+            .as_path()
+            .is_some_and(|path| path.commands().is_empty())
+}
+
+pub(super) fn trivially_empty_original_source(item: &Render2dItem) -> bool {
+    let [a, b, c, d, _, _] = item.local_to_parent().components();
+    if interval::exact_products_equal(a, d, b, c) == Some(true) {
+        return true;
+    }
+    match item.primitive() {
+        crate::composition_2d::Render2dPrimitive::Fill { shape, .. } => {
+            structurally_empty_fill_shape(shape)
+        }
+        crate::composition_2d::Render2dPrimitive::Stroke { style, .. } => style.width() == 0.0,
+        crate::composition_2d::Render2dPrimitive::Image(image) => image.patches().is_empty(),
+        crate::composition_2d::Render2dPrimitive::ShapedText(_) => false,
+    }
+}
+
 fn resource(path: &[usize], detail: &'static str) -> Render2dExecutionError {
     Render2dExecutionError::SampleSpace {
         kind: Render2dSampleSpaceError::ResourceLimit,
@@ -1281,6 +1309,21 @@ impl NeutralRegionBuilder {
                 }
             }
         };
+        if mesh.triangles.is_empty()
+            && (matches!(&region.kind, Kind::Clip { .. }) || region.semantic_item.is_some())
+        {
+            let mut fuel = MAX_REGION_GRAPH_WORK
+                .checked_sub(self.graph_work)
+                .ok_or_else(|| resource(path, "original absence proof work overflow"))?;
+            let empty = region.original_empty_certificate(&mut fuel);
+            self.graph_work = MAX_REGION_GRAPH_WORK - fuel;
+            if fuel == 0 {
+                return Err(resource(path, "original absence proof exhausted work"));
+            }
+            if !empty {
+                return Err(unsupported(path));
+            }
+        }
         // Every node ID is monotonic and bounded by MAX_REGION_NODES.
         // Geometric Vec growth amortizes allocation across node inserts;
         // each growth uses fallible try_reserve BEFORE changing cache state.

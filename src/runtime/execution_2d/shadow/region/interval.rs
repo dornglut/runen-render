@@ -34,6 +34,51 @@ pub(in crate::runtime::execution_2d) fn exact_div(a: f64, b: f64) -> Option<f64>
     (quotient.is_finite() && exact_mul(quotient, b) == Some(a)).then_some(quotient)
 }
 
+/// Compare two REAL products of finite binary64 inputs without rounding.
+/// Each significand has at most 53 bits, so its 106-bit product fits u128.
+/// Removing powers of two gives one exact signed-integer/exponent identity,
+/// including subnormal inputs and products beyond binary64's exponent range.
+/// This is a rank/identity proof only, never a rounded determinant value.
+pub(in crate::runtime::execution_2d) fn exact_products_equal(
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+) -> Option<bool> {
+    fn parts(value: f64) -> Option<(u128, i32, bool)> {
+        let bits = value.to_bits();
+        let exponent = ((bits >> 52) & 0x7ff) as i32;
+        if exponent == 0x7ff {
+            return None;
+        }
+        let fraction = u128::from(bits & ((1_u64 << 52) - 1));
+        Some((
+            if exponent == 0 {
+                fraction
+            } else {
+                fraction | (1_u128 << 52)
+            },
+            if exponent == 0 {
+                -1074
+            } else {
+                exponent - 1075
+            },
+            bits >> 63 != 0,
+        ))
+    }
+    fn product(a: f64, b: f64) -> Option<(u128, i32, bool)> {
+        let (a, ae, an) = parts(a)?;
+        let (b, be, bn) = parts(b)?;
+        let significand = a * b;
+        if significand == 0 {
+            return Some((0, 0, false));
+        }
+        let zeros = significand.trailing_zeros();
+        Some((significand >> zeros, ae + be + zeros as i32, an ^ bn))
+    }
+    Some(product(a, b)? == product(c, d)?)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(in crate::runtime::execution_2d) struct Interval {
     pub(in crate::runtime::execution_2d) lo: f64,
@@ -149,7 +194,29 @@ impl Interval {
 
 #[cfg(test)]
 mod tests {
-    use super::{Interval, exact_add, exact_div, exact_mul};
+    use super::{Interval, exact_add, exact_div, exact_mul, exact_products_equal};
+
+    #[test]
+    fn product_identity_proves_rank_without_underflow_or_cancellation() {
+        assert_eq!(exact_products_equal(1.1, 1.1, 1.1, 1.1), Some(true));
+        assert_eq!(exact_products_equal(1.1, 2.6, 1.3, 2.2), Some(true));
+        let step = 2.0_f64.powi(-27);
+        assert_eq!(
+            exact_products_equal(1.0, 1.0, 1.0 - step, 1.0 + step),
+            Some(false)
+        );
+        assert_eq!(
+            exact_products_equal(f64::MAX, f64::MAX, f64::MAX, f64::MAX),
+            Some(true)
+        );
+        assert_eq!(
+            exact_products_equal(f64::from_bits(1), f64::from_bits(1), 0.0, 1.0),
+            Some(false)
+        );
+        assert_eq!(exact_products_equal(-0.0, f64::MAX, 0.0, -1.0), Some(true));
+        assert_eq!(exact_products_equal(-1.1, 1.1, 1.1, 1.1), Some(false));
+        assert_eq!(exact_products_equal(f64::INFINITY, 0.0, 0.0, 1.0), None);
+    }
 
     #[test]
     fn scalar_event_identities_require_proved_representability() {

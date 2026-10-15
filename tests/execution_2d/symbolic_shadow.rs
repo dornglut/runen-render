@@ -15,6 +15,12 @@ fn context() -> Option<GpuContext> {
             )
             .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Blendable)
             .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource)
+            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Sampled)
+            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Filterable)
+            .require_format_role(
+                GpuTextureFormat::Rgba8UnormSrgb,
+                GpuFormatRole::CopyDestination,
+            )
             .require_format_role(
                 GpuTextureFormat::Rgba16Float,
                 GpuFormatRole::ColorAttachment,
@@ -231,4 +237,92 @@ fn reflected_finite_child_caster_keeps_original_quadrant_domains() {
             );
         }
     }
+}
+
+#[test]
+fn nested_image_rank_precision_keeps_original_occurrence_and_executor_reuse() {
+    let Some(context) = context() else { return };
+    use runen_render::composition_2d::{
+        Render2dImagePatch, Render2dImagePrimitive, Render2dImageResource, Render2dImageSourceRect,
+        Render2dPixelExtent,
+    };
+    let id = Render2dResourceId::new(2801).unwrap();
+    let extent = Render2dPixelExtent::new(1, 1).unwrap();
+    let primitive = Render2dPrimitive::Image(
+        Render2dImagePrimitive::new(
+            id,
+            extent,
+            vec![Render2dImagePatch::new(
+                Render2dImageSourceRect::new(0.0, 0.0, 1.0, 1.0).unwrap(),
+                Render2dRect::new(1.0, 1.0, 1.0, 1.0).unwrap(),
+            )],
+        )
+        .unwrap(),
+    );
+    let step = 2.0_f64.powi(-27);
+    let scene = |frame| {
+        Render2dComposition::new(vec![Render2dEntry::group(Render2dGroup::new(
+            vec![Render2dEntry::group(Render2dGroup::new(
+                vec![Render2dEntry::item(Render2dItem::new(
+                    primitive.clone(),
+                    frame,
+                    Vec::new(),
+                    Render2dOpacity::TRANSPARENT,
+                ))],
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::TRANSPARENT,
+                Vec::new(),
+            ))],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![
+                Render2dDropShadow::new(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    Render2dColorRgba8::new(0, 0, 255, 255),
+                )
+                .unwrap(),
+            ],
+        ))])
+        .unwrap()
+    };
+    let bindings = Render2dResourceBindings::new(vec![Render2dResourceBinding::new(
+        id,
+        Render2dResourceValue::ImageRgba8Srgb(
+            Render2dImageResource::new(extent, vec![0; 4]).unwrap(),
+        ),
+    )])
+    .unwrap();
+    let (_, target) = target("nested original image rank preflight");
+    let mut executor = Render2dExecutor::new();
+    let uncertain =
+        scene(Render2dAffineTransform::new(1.0, 1.0 - step, 1.0 + step, 1.0, 0.0, 0.0).unwrap());
+    let error = match executor.prepare(&context, &uncertain, &bindings, &target) {
+        Ok(_) => panic!("uncertain inverse must fail preflight"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(error, Render2dExecutionError::SampleSpace {kind:runen_render::execution_2d::Render2dSampleSpaceError::PrecisionLimit,path:Some(path),..} if path==[0,0,0])
+    );
+    // Identical nonexact products prove actual rank deficiency, even though
+    // the rounded FMA determinant is nonzero. It remains genuine no-work.
+    let singular = scene(Render2dAffineTransform::new(1.1, 1.1, 1.1, 1.1, 0.0, 0.0).unwrap());
+    assert!(
+        !executor
+            .prepare(&context, &singular, &bindings, &target)
+            .unwrap()
+            .has_render_work()
+    );
+    let bytes = execute(
+        &context,
+        &mut executor,
+        &scene(Render2dAffineTransform::IDENTITY),
+        &bindings,
+        "nested rank failure reuse",
+    );
+    assert_eq!(pixel(&bytes, 1, 1), [0, 0, 255, 255]);
 }

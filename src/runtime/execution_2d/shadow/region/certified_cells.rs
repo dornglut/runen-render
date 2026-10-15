@@ -1934,6 +1934,64 @@ fn certify_authored_item(item: &Render2dItem, cell: Cell, visits: &mut usize) ->
     certify_clipped(source, cell, item.clips(), visits)
 }
 
+impl NeutralRegion<'_> {
+    /// Authoritative absence evidence for an unrealized original source.
+    /// Failure is not nonemptiness: an unqualified empty physical mesh must
+    /// remain symbolic or reject at its original owner, never erase F1.
+    pub(super) fn original_empty_certificate(&self, fuel: &mut usize) -> bool {
+        if !admit_query_work(fuel, 512) {
+            return false;
+        }
+        let clips = if let Some(item) = self.semantic_item {
+            if trivially_empty_original_source(item) {
+                return true;
+            }
+            if let Render2dPrimitive::Image(image) = item.primitive() {
+                if !admit_query_work(fuel, image.patches().len().saturating_mul(8)) {
+                    return false;
+                }
+                if image
+                    .patches()
+                    .iter()
+                    .all(|patch| patch.destination().is_empty())
+                {
+                    return true;
+                }
+            }
+            item.clips()
+        } else if let Kind::Clip { clips, .. } = &self.kind {
+            clips
+        } else {
+            return false;
+        };
+        if !admit_query_work(fuel, clips.len().saturating_mul(160)) {
+            return false;
+        }
+        if clips.iter().any(|clip| {
+            let [a, b, c, d, _, _] = clip.clip_to_parent().components();
+            structurally_empty_fill_shape(clip.shape())
+                || super::interval::exact_products_equal(a, d, b, c) == Some(true)
+        }) {
+            return true;
+        }
+        if self.certified_source_reach {
+            let Some(bounds) = self.envelope else {
+                return true;
+            };
+            if bounds[0] == bounds[2] || bounds[1] == bounds[3] {
+                return true;
+            }
+            if let Some(cell) = Cell::new(bounds) {
+                // This is the same original F1 classifier used by all region
+                // queries, including group clips; physical emptiness is never
+                // evidence. A full enclosing cell being Outside is sufficient.
+                return self.certify_cell(cell, fuel) == CellCertificate::Outside;
+            }
+        }
+        false
+    }
+}
+
 #[cfg(test)]
 fn certify(region: &NeutralRegion<'_>, bounds: [f64; 4]) -> CellCertificate {
     let Some(cell) = Cell::new(bounds) else {

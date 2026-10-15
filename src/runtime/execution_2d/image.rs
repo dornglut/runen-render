@@ -20,6 +20,24 @@ pub(super) fn failure(root_index: usize, kind: Render2dImageError) -> Render2dEx
 
 const MAX_IMAGE_PATCHES: usize = 65_536;
 
+/// Exact product identity owns rank, independently of rounded determinant
+/// cancellation. Full-rank numerical inversion still requires a finite value.
+fn admitted_determinant(
+    item: &Render2dItem,
+    root_index: usize,
+) -> Result<Option<f64>, Render2dExecutionError> {
+    let [a, b, c, d, _, _] = item.local_to_parent().components();
+    use super::shadow::region::interval::exact_products_equal;
+    if exact_products_equal(a, d, b, c) == Some(true) {
+        return Ok(None);
+    }
+    let determinant = a.mul_add(d, -(b * c));
+    if determinant == 0.0 || !determinant.is_finite() {
+        return Err(failure(root_index, Render2dImageError::PrecisionLimit));
+    }
+    Ok(Some(determinant))
+}
+
 fn narrow(value: f64, root_index: usize) -> Result<f32, Render2dExecutionError> {
     let result = value as f32;
     if !result.is_finite()
@@ -49,11 +67,10 @@ pub(super) fn neutral_support(
         return Err(failure(root_index, Render2dImageError::ResourceLimit));
     }
     let [a, b, c, d, tx, ty] = item.local_to_parent().components();
-    let det = a.mul_add(d, -(b * c));
-    if !det.is_finite() || !raster_scale.is_finite() || raster_scale <= 0.0 {
+    if !raster_scale.is_finite() || raster_scale <= 0.0 {
         return Err(failure(root_index, Render2dImageError::PrecisionLimit));
     }
-    if det == 0.0 {
+    if admitted_determinant(item, root_index)?.is_none() {
         return Ok(None);
     }
     let mut triangles = Vec::new();
@@ -143,14 +160,10 @@ pub(super) fn realize(
         return Err(failure(root_index, Render2dImageError::ResourceLimit));
     }
     let [a, b, c, d, tx, ty] = item.local_to_parent().components();
-    let determinant = a.mul_add(d, -(b * c));
-    // A singular affine transform has no 2D area to paint.
-    if determinant == 0.0 {
+    // Only proved rank deficiency has no 2D area to paint.
+    let Some(determinant) = admitted_determinant(item, root_index)? else {
         return Ok(Vec::new());
-    }
-    if !determinant.is_finite() {
-        return Err(failure(root_index, Render2dImageError::PrecisionLimit));
-    }
+    };
     let inverse = [
         d / determinant / raster_scale,
         -c / determinant / raster_scale,
@@ -281,6 +294,72 @@ mod neutral_tests {
         Render2dAffineTransform, Render2dImagePatch, Render2dImageSourceRect, Render2dOpacity,
         Render2dPixelExtent, Render2dResourceId,
     };
+
+    #[test]
+    fn rounded_zero_image_determinant_is_precision_not_empty_support() {
+        let step = f64::from_bits((1023_u64 - 27) << 52);
+        // Real determinant=1-(1-step)(1+step)=2^-54. The rounded
+        // intermediate product is1, so the old FMA expression returned0.
+        let transform =
+            Render2dAffineTransform::new(1.0, 1.0 - step, 1.0 + step, 1.0, 0.0, 0.0).unwrap();
+        let [a, b, c, d, _, _] = transform.components();
+        assert_eq!(a.mul_add(d, -(b * c)), 0.0);
+        let extent = Render2dPixelExtent::new(1, 1).unwrap();
+        let image = Render2dImagePrimitive::new(
+            Render2dResourceId::new(1).unwrap(),
+            extent,
+            vec![Render2dImagePatch::new(
+                Render2dImageSourceRect::new(0.0, 0.0, 1.0, 1.0).unwrap(),
+                Render2dRect::new(0.0, 0.0, 1.0, 1.0).unwrap(),
+            )],
+        )
+        .unwrap();
+        let item = Render2dItem::new(
+            crate::composition_2d::Render2dPrimitive::Image(image.clone()),
+            transform,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+        );
+        let source = Render2dImageResource::new(extent, vec![255; 4]).unwrap();
+        for error in [
+            neutral_support(&item, &image, 7, 1.0, 4096).unwrap_err(),
+            realize(&item, &image, &source, 7, 1.0, [64.0, 64.0], 8192).unwrap_err(),
+        ] {
+            assert!(matches!(
+                error,
+                Render2dExecutionError::Image {
+                    root_index: 7,
+                    kind: Render2dImageError::PrecisionLimit,
+                }
+            ));
+        }
+        for coefficient in [1.0, 1.1] {
+            let singular = Render2dItem::new(
+                item.primitive().clone(),
+                Render2dAffineTransform::new(
+                    coefficient,
+                    coefficient,
+                    coefficient,
+                    coefficient,
+                    0.0,
+                    0.0,
+                )
+                .unwrap(),
+                Vec::new(),
+                Render2dOpacity::OPAQUE,
+            );
+            assert!(
+                neutral_support(&singular, &image, 7, 1.0, 4096)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                realize(&singular, &image, &source, 7, 1.0, [64.0, 64.0], 8192)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
 
     #[test]
     fn completely_transparent_offscreen_image_retains_destination_support() {
