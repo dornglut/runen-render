@@ -9,6 +9,7 @@ use crate::runtime::execution_2d::{
     support::{self, NeutralCoverage},
 };
 use std::sync::Arc;
+use support::PreparationWork;
 
 mod symbolic;
 
@@ -499,8 +500,15 @@ pub(super) fn prepare(
                     || (remaining_spread >= 0.0 && (effect.sigma() > 0.0 || remaining_spread > 0.0))
                 {
                     let [a, b, c, d, _, _] = ancestor.components();
-                    let determinant = a.mul_add(d, -(b * c));
-                    if determinant == 0.0 {
+                    aggregate_coverage_work.charge(
+                        128,
+                        usize::MAX,
+                        path,
+                        "affine shadow rank proof exceeds invocation work",
+                    )?;
+                    if geometry_support::region::interval::exact_products_equal(a, d, b, c)
+                        == Some(true)
+                    {
                         // Rank-deficient ancestor transforms collapse 2D
                         // painted area; the source-neutral propagation pass
                         // separately discards degenerate affine triangles.

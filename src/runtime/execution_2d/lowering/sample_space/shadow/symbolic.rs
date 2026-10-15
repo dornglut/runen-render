@@ -5,7 +5,7 @@
 //! precision, scene work and peak-live host storage admission. The existing
 //! F3E compositor and RunenGPU upload remain the sole physical consumers.
 use super::*;
-use geometry_support::region::interval::{Interval, exact_add, exact_mul};
+use geometry_support::region::interval::{Interval, exact_add, exact_mul, exact_products_equal};
 use support::PreparationWork;
 
 use support::MAX_COMPOSITIONAL_SHADOW_WORK as MAX_QUERY_WORK;
@@ -78,6 +78,9 @@ fn forward(
     path: &[usize],
 ) -> Result<Option<Render2dAffineTransform>, Render2dExecutionError> {
     let [a, b, c, d, tx, ty] = ancestor.components();
+    if exact_products_equal(a, d, b, c) == Some(true) {
+        return Ok(None);
+    }
     let compose = |p, q, t| {
         exact_add(
             exact_add(exact_mul(p, offset[0])?, exact_mul(q, offset[1])?)?,
@@ -103,13 +106,6 @@ fn forward(
             shadow_precision(path, "symbolic ancestor determinant cannot be enclosed")
         })?;
     if determinant.lo <= 0.0 && determinant.hi >= 0.0 {
-        let ad = exact_mul(a, d);
-        let bc = exact_mul(b, c);
-        if ad.is_some() && ad == bc {
-            // A proved rank-deficient forward map has no 2D painted area.
-            // The retained source DAG still supplies any ancestor support.
-            return Ok(None);
-        }
         return Err(shadow_precision(
             path,
             "symbolic ancestor invertibility is numerically uncertain",
@@ -320,7 +316,7 @@ pub(super) fn prepare(
     let mut query_keys = Vec::<[u64; 6]>::new();
     let mut retained = *context.retained_bytes;
     for effect in effects {
-        charge(context.aggregate_work, 512, context.path)?;
+        charge(context.aggregate_work, 640, context.path)?;
         let Some(to_root) = forward(
             context.parent_to_root,
             [effect.offset_x(), effect.offset_y()],
@@ -500,6 +496,20 @@ mod tests {
             crate::composition_2d::Render2dColorRgba8::new(0, 0, 255, 255),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn exact_rank_distinguishes_empty_from_unrepresentable_inverse() {
+        let singular = Render2dAffineTransform::new(1.1, 1.1, 1.1, 1.1, 0.0, 0.0).unwrap();
+        assert!(forward(singular, [0.0, 0.0], &[2, 1]).unwrap().is_none());
+        let step = 2.0_f64.powi(-27);
+        let full_rank =
+            Render2dAffineTransform::new(1.0, 1.0 - step, 1.0 + step, 1.0, 0.0, 0.0).unwrap();
+        assert!(
+            matches!(forward(full_rank,[0.0,0.0],&[2,1]), Err(Render2dExecutionError::SampleSpace {
+            kind:crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,path:Some(path),..
+        }) if path==[2,1])
+        );
     }
 
     #[test]

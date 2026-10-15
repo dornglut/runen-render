@@ -326,3 +326,60 @@ fn nested_image_rank_precision_keeps_original_occurrence_and_executor_reuse() {
     );
     assert_eq!(pixel(&bytes, 1, 1), [0, 0, 255, 255]);
 }
+
+#[test]
+fn affine_shadow_rank_uses_original_products_before_culling() {
+    let Some(context) = context() else { return };
+    let scene = |frame| {
+        Render2dComposition::new(vec![Render2dEntry::group(Render2dGroup::new(
+            vec![Render2dEntry::group(Render2dGroup::new(
+                vec![rectangle(10.0, 10.0, 4.0, 4.0)],
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::OPAQUE,
+                vec![
+                    Render2dDropShadow::new(
+                        0.0,
+                        0.0,
+                        0.1,
+                        1.0,
+                        Render2dColorRgba8::new(0, 0, 255, 255),
+                    )
+                    .unwrap(),
+                ],
+            ))],
+            frame,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            Vec::new(),
+        ))])
+        .unwrap()
+    };
+    let (_, target) = target("original shadow affine rank preflight");
+    let mut executor = Render2dExecutor::new();
+    let step = 2.0_f64.powi(-27);
+    let error = match executor.prepare(
+        &context,
+        &scene(Render2dAffineTransform::new(1.0, 1.0 - step, 1.0 + step, 1.0, 0.0, 0.0).unwrap()),
+        &Render2dResourceBindings::default(),
+        &target,
+    ) {
+        Ok(_) => panic!("full-rank shadow may not be culled by rounded zero"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error,Render2dExecutionError::SampleSpace {kind:runen_render::execution_2d::Render2dSampleSpaceError::PrecisionLimit,path:Some(path),..} if path==[0,0])
+    );
+    let singular = scene(Render2dAffineTransform::new(1.1, 1.1, 1.1, 1.1, 0.0, 0.0).unwrap());
+    assert!(
+        !executor
+            .prepare(
+                &context,
+                &singular,
+                &Render2dResourceBindings::default(),
+                &target
+            )
+            .unwrap()
+            .has_render_work()
+    );
+}
