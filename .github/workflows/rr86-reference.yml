@@ -1,0 +1,83 @@
+name: RR86 Reference Research
+
+on:
+  push:
+    branches:
+      - research/86-field-certificates
+    paths:
+      - research/rr86/**
+      - .github/workflows/rr86-reference.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - research/rr86/**
+      - .github/workflows/rr86-reference.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rr86-reference-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-independent-reference:
+    name: Validate RR86 Python reference experiments
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Resolve exact event revision
+        id: revision
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SHA: ${{ github.sha }}
+          PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request) expected="$PULL_REQUEST_HEAD_SHA" ;;
+            push) expected="$EVENT_SHA" ;;
+            *) echo "Unsupported event: $EVENT_NAME" >&2; exit 1 ;;
+          esac
+          test -n "$expected"
+          echo "expected_revision=$expected" >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact research revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4 pinned, match existing RunenRender conformance
+        with:
+          ref: ${{ steps.revision.outputs.expected_revision }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prove exact checkout
+        env:
+          EXPECTED_REVISION: ${{ steps.revision.outputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          printf 'Expected: %s\nActual:   %s\n' "$EXPECTED_REVISION" "$actual"
+          test "$actual" = "$EXPECTED_REVISION"
+
+      - name: Execute independent deterministic reference proofs
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONHASHSEED: '0'
+        run: |
+          set -euo pipefail
+          python3 --version
+          python3 -B - <<'PY'
+          from pathlib import Path
+          scripts = sorted(Path('research/rr86').glob('*.py'))
+          assert len(scripts) == 6, (len(scripts), scripts)
+          for script in scripts:
+              compile(script.read_bytes(), str(script), 'exec')
+          print(f'Preflight compiled {len(scripts)} independent Python scripts')
+          PY
+          python3 -B research/rr86/field_certificates.py
+          python3 -B research/rr86/nested_affine_gaussian.py
+          python3 -B research/rr86/nested_boolean_blur.py
+          python3 -B research/rr86/orthogonal_csg_reference.py
+          python3 -B research/rr86/preflight_scaling.py
+          python3 -B research/rr86/indexed_exact_region.py
