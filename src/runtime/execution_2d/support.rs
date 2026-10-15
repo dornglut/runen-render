@@ -888,6 +888,18 @@ const GAUSS_WEIGHTS: [f64; 16] = [
     0.062253523938647456,
     0.027152459411754176,
 ];
+/// Upper bound in primitive evaluator operations, not machine instructions:
+/// `exp` and `mul_add` each count as one primitive. Each quadrature node
+/// performs eight arithmetic/intrinsic operations; sixteen units also cover
+/// its two input loads, accumulation/store and bounded loop/index control.
+/// The fixed 32 cover clipping, setup, normalization and caller finite/range
+/// checks. Counting nodes alone is not a bound on their executed arithmetic.
+const GAUSSIAN_AXIS_WORK: usize = 32 + 16 * GAUSS_NODES.len();
+/// Clipped identity-axis setup, intersection, loop and stored result.
+const IDENTITY_AXIS_WORK: usize = 32;
+/// One x/y product, clamp, destination index/store and loop progression.
+const COVERAGE_PRODUCT_WORK: usize = 16;
+
 /// Analytic 1D integral of exp(-u²/2), u ∈ [-3, 3].
 const GAUSS_3SIGMA_NORMALIZER: f64 = 2.499_860_889_483_094_7;
 
@@ -2557,11 +2569,18 @@ fn charge_certified_rectangle_axis_work(
 ) -> Result<(), crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
-    let axis_cost = if sigma > 0.0 { GAUSS_NODES.len() } else { 1 };
+    let axis_cost = if sigma > 0.0 {
+        GAUSSIAN_AXIS_WORK
+    } else {
+        IDENTITY_AXIS_WORK
+    };
     let axis_work = width
         .checked_add(height)
         .and_then(|axes| axes.checked_mul(axis_cost))
-        .and_then(|work| work.checked_add(area))
+        .and_then(|work| {
+            area.checked_mul(COVERAGE_PRODUCT_WORK)
+                .and_then(|cells| work.checked_add(cells))
+        })
         .ok_or_else(|| resource("certified rectangle axis work overflow"))?;
     if axis_work > MAX_CERTIFIED_RECTANGLE_AXIS_WORK {
         return Err(resource(
@@ -4776,10 +4795,10 @@ mod tests {
     #[test]
     fn certified_rectangle_axis_work_is_charged_before_float_allocation() {
         use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
-        // Two 14-element axes, 16 quadrature nodes and 196 products: 644
-        // work units. The charge is shared across all sibling effects and
-        // must reject atomically without allocating or consuming work.
-        let axis_work = 16 * (14 + 14) + 14 * 14;
+        // Charge each node's executed arithmetic, not just its existence:
+        // 28 axes * 288 operations plus 196 products * 16 = 11,200.
+        // Rejection is atomic before x-axis or retained coverage allocation.
+        let axis_work = 11_200;
         let mut charged = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - axis_work + 1;
         assert!(matches!(
             charge_certified_rectangle_axis_work(14, 14, 14 * 14, 1.0, &mut charged, &[9, 4]),
@@ -4804,6 +4823,86 @@ mod tests {
                 path: Some(path), ..
             }) if path == [9, 6]
         ));
+    }
+
+    #[test]
+    fn finite_gaussian_stage_one_complete_scenes_keep_primitive_work_admission() {
+        let rectangle = |[x0, y0, x1, y1]: [f64; 4]| {
+            [[x0, y0], [x1, y0], [x1, y1], [x0, y0], [x1, y1], [x0, y1]]
+        };
+        let scenes = [
+            (
+                "concave L",
+                vec![[10.0, 10.0, 20.0, 15.0], [10.0, 15.0, 15.0, 20.0]],
+                [14, 14],
+                [12, 12],
+                [18, 18],
+            ),
+            (
+                "holed ring",
+                vec![
+                    [10.0, 10.0, 30.0, 16.0],
+                    [10.0, 16.0, 16.0, 24.0],
+                    [24.0, 16.0, 30.0, 24.0],
+                    [10.0, 24.0, 30.0, 30.0],
+                ],
+                [15, 15],
+                [13, 20],
+                [20, 20],
+            ),
+        ];
+        for (name, rectangles, corner, interior, exterior) in scenes {
+            let triangles = rectangles
+                .into_iter()
+                .flat_map(rectangle)
+                .collect::<Vec<_>>();
+            let bounds = triangles.iter().fold(
+                [
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NEG_INFINITY,
+                ],
+                |b, &[x, y]| [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)],
+            );
+            let mesh = NeutralMesh {
+                units_per_parent_logical_unit: 1.0,
+                triangles,
+                bounds,
+            };
+            let mut work = PreparationBudget::for_contribution(true);
+            let result = prepare_shadow_coverage_admitted(
+                &mesh,
+                -1.0,
+                0.1,
+                4.0,
+                &[9, 1],
+                &mut work,
+                MAX_NEUTRAL_MASK_SAMPLES,
+            );
+            eprintln!(
+                "{name}: charged primitive work={}, maximum={}",
+                work.used(),
+                work.maximum()
+            );
+            let coverage = result
+                .expect("complete Stage-1 geometry must fit unchanged scene work")
+                .unwrap();
+            let pixel = |[x, y]: [i64; 2]| {
+                let mut alpha = 0.0;
+                for row in 0..4 {
+                    for column in 0..4 {
+                        let sx = usize::try_from(x * 4 + column - coverage.origin_x).unwrap();
+                        let sy = usize::try_from(y * 4 + row - coverage.origin_y).unwrap();
+                        alpha += coverage.values[sy * coverage.width + sx];
+                    }
+                }
+                alpha / 16.0
+            };
+            assert!((pixel(corner) - 0.227_529_040_847_66).abs() <= 1.0 / 2048.0);
+            assert!((pixel(interior) - 1.0).abs() <= 1.0 / 2048.0);
+            assert_eq!(pixel(exterior), 0.0);
+        }
     }
 
     #[test]

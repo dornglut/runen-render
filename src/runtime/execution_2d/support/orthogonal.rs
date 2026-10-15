@@ -11,7 +11,8 @@
 //! refinement stops ONLY when certified uncertainty is <= 1/2048 of
 //! cell area; no sampled-mask approximation is substituted.
 use super::{
-    PreparationBudget, PreparationWork, UnionBoundaryEdge, gaussian_axis_mass, mask_failure,
+    GAUSSIAN_AXIS_WORK, PreparationBudget, PreparationWork, UnionBoundaryEdge, gaussian_axis_mass,
+    mask_failure,
 };
 use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 use std::collections::BinaryHeap;
@@ -23,6 +24,12 @@ const MAX_INTERVALS: usize = 32_768;
 const MAX_CACHED_CROSSINGS: usize = 16_384;
 const MAX_GLOBAL_WORK: usize = 16_777_216;
 const ERROR_TARGET: f64 = 1.0 / 2048.0;
+// Coordinate construction, mask accumulation, clamp/index/store and loops.
+const GAUSSIAN_COLUMN_WORK: usize = 32;
+// Interval loads/clips, empty/full-window comparisons and loop progression.
+const GAUSSIAN_INTERVAL_WORK: usize = 24;
+// Final finite/range checks, clamp, store and loop progression.
+const GAUSSIAN_NORMALIZE_WORK: usize = 16;
 
 fn resource(path: &[usize], detail: &'static str) -> Render2dExecutionError {
     mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail)
@@ -450,6 +457,14 @@ impl<'a> OrthogonalExterior<'a> {
                 "orthogonal Gaussian row is unrepresentable",
             ));
         }
+        // Admit row initialization and final normalization before mutating
+        // the caller's already allocated slice. Geometry/event work retains
+        // its separately charged section preparation below.
+        let row_work = width
+            .checked_mul(1 + GAUSSIAN_NORMALIZE_WORK)
+            .and_then(|count| count.checked_add(64))
+            .ok_or_else(|| resource(path, "Gaussian row setup work overflow"))?;
+        charge(work, row_work, path)?;
         let mut cuts = Vec::new();
         cuts.try_reserve(self.y_events.len() * 3 + 2)
             .map_err(|_| resource(path, "Gaussian y-event allocation failed"))?;
@@ -501,7 +516,7 @@ impl<'a> OrthogonalExterior<'a> {
                 continue;
             }
             let middle = pair[0] + half;
-            charge(work, 32, path)?;
+            charge(work, GAUSSIAN_AXIS_WORK, path)?;
             let mass_y = gaussian_axis_mass(pair[0], pair[1], y, sigma);
             if !mass_y.is_finite() || mass_y < 0.0 {
                 return Err(precision(path, "Gaussian y mass is invalid"));
@@ -511,6 +526,10 @@ impl<'a> OrthogonalExterior<'a> {
             }
             // Normalize each slab's positive quadrature weights so fully
             // covered interiors preserve the admitted truncated y mass.
+            // The weight loop executes the same eight arithmetic/intrinsic
+            // primitives per node as the axis integral, plus bounded indexed
+            // loads/stores. Reuse its conservative operation bound.
+            charge(work, GAUSSIAN_AXIS_WORK, path)?;
             let mut weights = [0.0; 16];
             let mut weight_total = 0.0;
             for (i, &node) in super::GAUSS_NODES.iter().enumerate() {
@@ -582,12 +601,12 @@ impl<'a> OrthogonalExterior<'a> {
                 }
                 let y_mass = mass_y * weight / weight_total;
                 for (column, value) in values.iter_mut().enumerate() {
-                    charge(work, 1, path)?;
+                    charge(work, GAUSSIAN_COLUMN_WORK, path)?;
                     let sample_x = origin_x + column as f64 + 0.5;
                     let window = [sample_x - reach, sample_x + reach];
                     let mut x_mass = 0.0;
                     for &[left, right] in &allowed {
-                        charge(work, 1, path)?;
+                        charge(work, GAUSSIAN_INTERVAL_WORK, path)?;
                         let start = left.max(window[0]);
                         let end = right.min(window[1]);
                         if start >= end {
@@ -597,7 +616,7 @@ impl<'a> OrthogonalExterior<'a> {
                             x_mass = 1.0;
                             break;
                         }
-                        charge(work, 16, path)?;
+                        charge(work, GAUSSIAN_AXIS_WORK, path)?;
                         x_mass += gaussian_axis_mass(start, end, sample_x, sigma);
                     }
                     *value += y_mass * x_mass.min(1.0);
@@ -903,6 +922,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let mut exhausted = MAX_GLOBAL_WORK;
+        let mut untouched = [7.0; 6];
         assert!(matches!(
             region.gaussian_row(
                 GaussianRow {
@@ -912,7 +932,7 @@ mod tests {
                     radius: 0.5,
                     sigma: 0.1,
                 },
-                &mut [0.0; 6],
+                &mut untouched,
                 &mut exhausted,
                 &[8, 4],
             ),
@@ -923,6 +943,7 @@ mod tests {
             }) if path == [8, 4]
         ));
         assert_eq!(exhausted, MAX_GLOBAL_WORK);
+        assert_eq!(untouched, [7.0; 6], "reject before row initialization");
     }
 
     #[test]
