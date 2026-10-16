@@ -620,6 +620,16 @@ impl NeutralUnionSweep {
                 "neutral scanline union bounds or triangle payload invalid",
             ));
         }
+        // Source filtering and the whole-window containment shortcut execute
+        // even when no arrangement is built. Prepay the complete inventory
+        // before scanning or growing active storage. Per triangle: bbox and
+        // degeneracy tests, up to four three-edge containment tests, and
+        // amortized active-Vec relocation (each copied vertex has two words).
+        let scan_work = (triangles.len() / 3)
+            .checked_mul(320)
+            .and_then(|cost| cost.checked_add(64))
+            .ok_or_else(|| resource("neutral scanline source scan work overflow"))?;
+        charge_shadow_preparation_work(work, scan_work, path)?;
         let mut active = Vec::<[[f64; 2]; 3]>::new();
         for tri in triangles.as_chunks::<3>().0 {
             let xs = [tri[0][0], tri[1][0], tri[2][0]];
@@ -4867,12 +4877,32 @@ mod tests {
     }
 
     #[test]
+    fn full_window_triangle_shortcut_still_pays_source_scan_before_work() {
+        use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
+        let triangle = [[-10.0, -10.0], [10.0, -10.0], [0.0, 10.0]];
+        let mut work = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 100;
+        assert!(matches!(
+            gaussian_union_sample(&triangle, [0.0, 0.0], 1.0, &mut work, &[5, 8]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+            }) if path == [5, 8]
+        ));
+        assert_eq!(work, MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 100);
+        let mut admitted = 0;
+        assert_eq!(
+            gaussian_union_sample(&triangle, [0.0, 0.0], 1.0, &mut admitted, &[5, 8]).unwrap(),
+            1.0
+        );
+        assert!(admitted > 0);
+    }
+
+    #[test]
     fn gaussian_union_rejects_unfunded_quadrature_before_allocating_rows() {
         use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
         let triangle = [[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]];
         // The old n³ * 256 arrangement charge fits, but cannot also pay for
         // all executed x/y quadrature arithmetic. Reject before row work.
-        let mut work = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 256 - 1_000;
+        let mut work = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 384 - 256 - 1_000;
         assert!(matches!(
             gaussian_union_sample(&triangle, [0.0, 0.0], 1.0, &mut work, &[5, 7]),
             Err(Render2dExecutionError::SampleSpace {
