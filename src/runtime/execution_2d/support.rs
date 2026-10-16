@@ -938,6 +938,35 @@ fn gaussian_union_sample(
     if sweep.active.is_empty() {
         return Ok(0.0);
     }
+    // The arrangement charge above does not pay for the arithmetic inside
+    // 16x16 quadrature. Bound every possible disjoint interval by the active
+    // triangle count and admit all rows before the first row allocation.
+    // Row construction scans three edges/triangle, sorts at most n intervals
+    // and merges them; 128n + 16n² covers that work, including comparisons
+    // and moves. Each surviving interval then executes one 16-node x integral.
+    let active = sweep.active.len();
+    let row_work = active
+        .checked_mul(128 + GAUSSIAN_AXIS_WORK)
+        .and_then(|linear| {
+            active
+                .checked_mul(active)
+                .and_then(|pairs| pairs.checked_mul(16))
+                .and_then(|sort| linear.checked_add(sort))
+        })
+        .and_then(|cost| cost.checked_add(64));
+    let integration_work = row_work
+        .and_then(|row| row.checked_mul(GAUSS_NODES.len()))
+        .and_then(|slab| slab.checked_add(32))
+        .and_then(|slab| slab.checked_mul(sweep.events.len().saturating_sub(1)))
+        .and_then(|cost| cost.checked_add(32))
+        .ok_or_else(|| {
+            mask_failure(
+                path,
+                Render2dSampleSpaceError::ResourceLimit,
+                "continuous Gaussian quadrature work overflow",
+            )
+        })?;
+    charge_shadow_preparation_work(work, integration_work, path)?;
     let mut total = 0.0;
     for interval in sweep.events.windows(2) {
         let half_y = (interval[1] - interval[0]) * 0.5;
@@ -4745,6 +4774,23 @@ mod tests {
             .unwrap()
             .expect("sigma-zero caster retains its exact integrated area");
         assert!((exact_identity.values.iter().sum::<f64>() - 0.0016).abs() < 1.0e-10);
+    }
+
+    #[test]
+    fn gaussian_union_rejects_unfunded_quadrature_before_allocating_rows() {
+        use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
+        let triangle = [[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]];
+        // The old n³ * 256 arrangement charge fits, but cannot also pay for
+        // all executed x/y quadrature arithmetic. Reject before row work.
+        let mut work = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 256 - 1_000;
+        assert!(matches!(
+            gaussian_union_sample(&triangle, [0.0, 0.0], 1.0, &mut work, &[5, 7]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [5, 7]
+        ));
+        assert_eq!(work, MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 1_000);
     }
 
     #[test]
