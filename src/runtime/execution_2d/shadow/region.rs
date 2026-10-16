@@ -1446,7 +1446,10 @@ impl NeutralRegionBuilder {
                     path,
                     self.scales.geometry_sample_scale,
                     self.max_buffer_bytes,
-                    &mut self.clip_work,
+                    &mut shadow::NeutralPreparationWork {
+                        graph: &mut self.graph_work,
+                        clip_pairs: &mut self.clip_work,
+                    },
                 )?;
                 shadow::charge_vertices(
                     &mut self.retained_vertices,

@@ -8,7 +8,7 @@
 use super::{
     field::{FieldSetKey, QualityTier, ResourceFields},
     image, scene,
-    support::NeutralMesh,
+    support::{MAX_COMPOSITIONAL_SHADOW_WORK, NeutralMesh, PreparationWork},
     vector,
 };
 use crate::composition_2d::{
@@ -25,6 +25,34 @@ pub(in crate::runtime::execution_2d) mod region;
 
 const MAX_NEUTRAL_VERTICES: usize = 1_048_576;
 const MAX_NEUTRAL_CLIP_WORK: usize = 16_777_216;
+
+/// Numerical work and the clip-pair inventory are distinct quantities. Both
+/// belong to this invocation; neither starts again for an item or group.
+pub(super) struct NeutralPreparationWork<'a> {
+    graph: &'a mut usize,
+    clip_pairs: &'a mut usize,
+}
+
+impl NeutralPreparationWork<'_> {
+    fn charge(&mut self, cost: usize, path: &[usize]) -> Result<(), Render2dExecutionError> {
+        self.graph.charge(
+            cost,
+            MAX_COMPOSITIONAL_SHADOW_WORK,
+            path,
+            "neutral source preparation exceeds shared graph work",
+        )
+    }
+
+    fn append(
+        &mut self,
+        output: &mut NeutralMesh,
+        source: &NeutralMesh,
+        path: &[usize],
+    ) -> Result<(), Render2dExecutionError> {
+        self.charge(append_work(output, source, path)?, path)?;
+        append(output, source, Render2dAffineTransform::IDENTITY, path)
+    }
+}
 
 fn failed(
     path: &[usize],
@@ -146,7 +174,7 @@ fn neutral_item(
     field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
-    clip_work_used: &mut usize,
+    work: &mut NeutralPreparationWork<'_>,
 ) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
     let root_index = path[0];
     let result = match item.primitive() {
@@ -205,7 +233,7 @@ fn neutral_item(
                     scales.geometry_sample_scale,
                     max_buffer_bytes,
                 )? {
-                    append(&mut result, &mesh, Render2dAffineTransform::IDENTITY, path)?;
+                    work.append(&mut result, &mesh, path)?;
                 }
             }
             if !has_original_outline {
@@ -230,7 +258,7 @@ fn neutral_item(
         path,
         scales.geometry_sample_scale,
         max_buffer_bytes,
-        clip_work_used,
+        work,
     )?;
     Ok(Some(clipped))
 }
@@ -512,7 +540,10 @@ fn group_child_sources_with_probe<'a>(
                     field_sets,
                     scales,
                     max_buffer_bytes,
-                    &mut graph.clip_work,
+                    &mut NeutralPreparationWork {
+                        graph: &mut graph.graph_work,
+                        clip_pairs: &mut graph.clip_work,
+                    },
                 )? {
                     let leaf = graph.source_from_item(mesh, item, path)?;
                     active
@@ -679,19 +710,32 @@ pub(super) fn append(
     source_to_parent: Render2dAffineTransform,
     path: &[usize],
 ) -> Result<(), Render2dExecutionError> {
-    if source.triangles.is_empty() {
+    append_triangles(
+        output,
+        &source.triangles,
+        source.units_per_parent_logical_unit,
+        source_to_parent,
+        path,
+    )
+}
+
+fn append_triangles(
+    output: &mut NeutralMesh,
+    triangles: &[[f64; 2]],
+    scale: f64,
+    source_to_parent: Render2dAffineTransform,
+    path: &[usize],
+) -> Result<(), Render2dExecutionError> {
+    if triangles.is_empty() {
         return Ok(());
     }
-    if !source.triangles.len().is_multiple_of(3)
-        || !source.units_per_parent_logical_unit.is_finite()
-        || source.units_per_parent_logical_unit <= 0.0
-    {
+    if !triangles.len().is_multiple_of(3) || !scale.is_finite() || scale <= 0.0 {
         return Err(precision(path, "invalid neutral mesh source or scale"));
     }
     let required = output
         .triangles
         .len()
-        .checked_add(source.triangles.len())
+        .checked_add(triangles.len())
         .ok_or_else(|| resource(path, "neutral geometry vertex count overflow"))?;
     if required > MAX_NEUTRAL_VERTICES {
         return Err(resource(
@@ -703,12 +747,11 @@ pub(super) fn append(
     if region::interval::exact_products_equal(a, d, b, c) == Some(true) {
         return Ok(());
     }
-    let scale = source.units_per_parent_logical_unit;
     let mut prepared = Vec::new();
     prepared
-        .try_reserve_exact(source.triangles.len())
+        .try_reserve_exact(triangles.len())
         .map_err(|_| resource(path, "neutral geometry allocation failed"))?;
-    for &[x, y] in &source.triangles {
+    for &[x, y] in triangles {
         let x = x / scale;
         let y = y / scale;
         let transformed = [
@@ -727,8 +770,7 @@ pub(super) fn append(
     // to no filled area. A FULL-RANK affine whose triangles *numerically*
     // collapse instead is a representability failure, never an empty caster.
     // Complete the precision preflight before changing the output mesh.
-    for (before, after) in source
-        .triangles
+    for (before, after) in triangles
         .as_chunks::<3>()
         .0
         .iter()
@@ -770,19 +812,25 @@ pub(super) fn append_work(
     source: &NeutralMesh,
     path: &[usize],
 ) -> Result<usize, Render2dExecutionError> {
+    append_vertices_work(output, source.triangles.len(), path)
+}
+
+fn append_vertices_work(
+    output: &NeutralMesh,
+    source_vertices: usize,
+    path: &[usize],
+) -> Result<usize, Render2dExecutionError> {
     let required = output
         .triangles
         .len()
-        .checked_add(source.triangles.len())
+        .checked_add(source_vertices)
         .ok_or_else(|| resource(path, "neutral append work extent overflow"))?;
     let relocation = if required > output.triangles.capacity() {
         output.triangles.len()
     } else {
         0
     };
-    source
-        .triangles
-        .len()
+    source_vertices
         .checked_mul(64)
         .and_then(|cost| {
             relocation
@@ -868,6 +916,43 @@ pub(super) fn transform_envelope(
     Ok(result)
 }
 
+/// Three triangle half-planes need at most nine vertices. Rounded predicates
+/// are not an authority for that combinatorial proof: every insertion checks
+/// the fixed capacity, so uncertain topology cannot grow a temporary heap.
+struct ClipPolygon {
+    points: [[f64; 2]; 9],
+    len: usize,
+}
+
+impl ClipPolygon {
+    fn empty() -> Self {
+        Self {
+            points: [[0.0; 2]; 9],
+            len: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn points(&self) -> &[[f64; 2]] {
+        &self.points[..self.len]
+    }
+
+    fn push(&mut self, point: [f64; 2], path: &[usize]) -> Result<(), Render2dExecutionError> {
+        let Some(slot) = self.points.get_mut(self.len) else {
+            return Err(precision(
+                path,
+                "neutral clip polygon exceeds bounded representation",
+            ));
+        };
+        *slot = point;
+        self.len += 1;
+        Ok(())
+    }
+}
+
 /// The intersection of two *convex triangles*, without a rectangular/alpha
 /// approximation. Clipping against a polygon-union clip means retaining each
 /// triangle intersection's union (overlaps are resolved by area coverage).
@@ -875,22 +960,31 @@ fn triangle_intersection(
     source: [[f64; 2]; 3],
     clip: [[f64; 2]; 3],
     path: &[usize],
-) -> Result<Vec<[f64; 2]>, Render2dExecutionError> {
+    work: &mut NeutralPreparationWork<'_>,
+) -> Result<ClipPolygon, Render2dExecutionError> {
+    // Two orientations, fixed stack initialization, winding, and source copy.
+    work.charge(128, path)?;
     let winding = orient(clip[0], clip[1], clip[2]);
     if winding == 0.0 || orient(source[0], source[1], source[2]) == 0.0 {
-        return Ok(Vec::new());
+        return Ok(ClipPolygon::empty());
     }
-    let mut polygon = source.to_vec();
+    let mut polygon = ClipPolygon::empty();
+    for point in source {
+        polygon.push(point, path)?;
+    }
     for i in 0..3 {
+        // Each visited edge has two orientations, sign/inside tests, at most
+        // one division and two FMAs, finite guards, two bounded insertions,
+        // and index/loop work. 128 per edge bounds all of those operations;
+        // 128 also covers the fixed output initialization and pass bookkeeping.
+        // Charge the ACTUAL current length before starting this pass.
+        work.charge(128 + 128 * polygon.len(), path)?;
         let a = clip[i];
         let b = clip[(i + 1) % 3];
-        let mut result = Vec::new();
-        result
-            .try_reserve_exact(9)
-            .map_err(|_| resource(path, "neutral polygon intersection allocation failed"))?;
+        let mut result = ClipPolygon::empty();
         for j in 0..polygon.len() {
-            let p = polygon[j];
-            let q = polygon[(j + 1) % polygon.len()];
+            let p = polygon.points()[j];
+            let q = polygon.points()[(j + 1) % polygon.len()];
             let d0 = orient(a, b, p) * winding.signum();
             let d1 = orient(a, b, q) * winding.signum();
             let inside_p = d0 >= 0.0;
@@ -911,10 +1005,10 @@ fn triangle_intersection(
                 if !intersection.iter().all(|x| x.is_finite()) {
                     return Err(precision(path, "neutral clip intersection lost precision"));
                 }
-                result.push(intersection);
+                result.push(intersection, path)?;
             }
             if inside_q {
-                result.push(q);
+                result.push(q, path)?;
             }
         }
         polygon = result;
@@ -935,20 +1029,15 @@ pub(super) fn intersect_clips(
     path: &[usize],
     resolution: f64,
     max_buffer_bytes: u64,
-    clip_work_used: &mut usize,
+    work: &mut NeutralPreparationWork<'_>,
 ) -> Result<NeutralMesh, Render2dExecutionError> {
     if clips.is_empty() || source.triangles.is_empty() {
         let mut result = empty_mesh();
-        append(&mut result, source, Render2dAffineTransform::IDENTITY, path)?;
+        work.append(&mut result, source, path)?;
         return Ok(result);
     }
     let mut current = empty_mesh();
-    append(
-        &mut current,
-        source,
-        Render2dAffineTransform::IDENTITY,
-        path,
-    )?;
+    work.append(&mut current, source, path)?;
     for clip in clips {
         let item = Render2dItem::new(
             Render2dPrimitive::Fill {
@@ -966,39 +1055,37 @@ pub(super) fn intersect_clips(
             return Ok(empty_mesh());
         };
         let mut clip_local = empty_mesh();
-        append(
-            &mut clip_local,
-            &clip_mesh,
-            Render2dAffineTransform::IDENTITY,
-            path,
-        )?;
+        work.append(&mut clip_local, &clip_mesh, path)?;
         let mut next = empty_mesh();
         let cost = (current.triangles.len() / 3)
             .checked_mul(clip_local.triangles.len() / 3)
             .ok_or_else(|| resource(path, "neutral conjunctive clip work overflow"))?;
-        charge_clip_work(clip_work_used, cost, path)?;
+        charge_clip_work(work.clip_pairs, cost, path)?;
         for source in current.triangles.as_chunks::<3>().0 {
             for clipping in clip_local.triangles.as_chunks::<3>().0 {
                 let polygon = triangle_intersection(
                     [source[0], source[1], source[2]],
                     [clipping[0], clipping[1], clipping[2]],
                     path,
+                    work,
                 )?;
                 if polygon.len() < 3 {
                     continue;
                 }
                 for index in 1..polygon.len() - 1 {
-                    let triangle = [polygon[0], polygon[index], polygon[index + 1]];
+                    // Fan lookup/copy, orientation and loop bookkeeping precede
+                    // the separately charged transform/copy of an emitted fan.
+                    work.charge(64, path)?;
+                    let points = polygon.points();
+                    let triangle = [points[0], points[index], points[index + 1]];
                     if orient(triangle[0], triangle[1], triangle[2]) == 0.0 {
                         continue;
                     }
-                    append(
+                    work.charge(append_vertices_work(&next, 3, path)?, path)?;
+                    append_triangles(
                         &mut next,
-                        &NeutralMesh {
-                            units_per_parent_logical_unit: 1.0,
-                            bounds: [0.0; 4],
-                            triangles: triangle.to_vec(),
-                        },
+                        &triangle,
+                        1.0,
                         Render2dAffineTransform::IDENTITY,
                         path,
                     )?;
@@ -1114,7 +1201,10 @@ mod tests {
                 &BTreeMap::new(),
                 scales,
                 1_048_576,
-                &mut 0,
+                &mut NeutralPreparationWork {
+                    graph: &mut 0,
+                    clip_pairs: &mut 0,
+                },
             )
             .unwrap()
             .unwrap();
@@ -1210,7 +1300,10 @@ mod tests {
                 &BTreeMap::new(),
                 scales,
                 1_048_576,
-                &mut 0,
+                &mut NeutralPreparationWork {
+                    graph: &mut 0,
+                    clip_pairs: &mut 0,
+                },
             )
             .unwrap();
             if index < 3 {
@@ -1436,6 +1529,24 @@ mod tests {
         );
         let shadow =
             Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT).unwrap();
+        let mut exhausted = MAX_COMPOSITIONAL_SHADOW_WORK;
+        assert!(matches!(
+            neutral_item(
+                &glyph,
+                &[0, 0],
+                &bindings,
+                &cached,
+                NeutralPreparationScale { field_raster_scale: 1.0, geometry_sample_scale: 4.0 },
+                1_048_576,
+                &mut NeutralPreparationWork { graph: &mut exhausted, clip_pairs: &mut 0 },
+            ),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [0, 0]
+        ));
+        assert_eq!(exhausted, MAX_COMPOSITIONAL_SHADOW_WORK);
         let group = Render2dGroup::new(
             vec![Render2dEntry::item(glyph)],
             Render2dAffineTransform::IDENTITY,
@@ -1683,18 +1794,87 @@ mod tests {
         let clip = [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]];
         let disjoint_corner = [[1.6, 1.6], [2.2, 1.6], [1.6, 2.2]];
         assert!(
-            triangle_intersection(disjoint_corner, clip, &[1])
-                .unwrap()
-                .len()
+            triangle_intersection(
+                disjoint_corner,
+                clip,
+                &[1],
+                &mut NeutralPreparationWork {
+                    graph: &mut 0,
+                    clip_pairs: &mut 0
+                }
+            )
+            .unwrap()
+            .len()
                 < 3
         );
         let crossing = [[0.8, 0.8], [1.6, 0.8], [0.8, 1.6]];
-        let clipped = triangle_intersection(crossing, clip, &[1]).unwrap();
+        let clipped = triangle_intersection(
+            crossing,
+            clip,
+            &[1],
+            &mut NeutralPreparationWork {
+                graph: &mut 0,
+                clip_pairs: &mut 0,
+            },
+        )
+        .unwrap();
         assert!(clipped.len() >= 3);
-        for point in clipped {
+        for point in clipped.points() {
             assert!(point[0] >= 0.0 && point[1] >= 0.0);
             assert!(point[0] + point[1] <= 2.0 + 1.0e-12);
         }
+    }
+
+    #[test]
+    fn clip_copy_and_each_half_plane_require_remaining_graph_work() {
+        let triangle = [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]];
+        let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: triangle.to_vec(),
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let mut exhausted = MAX_COMPOSITIONAL_SHADOW_WORK;
+        let mut clip_pairs = 0;
+        assert!(matches!(
+            intersect_clips(
+                &mesh, &[], 2, &[2, 1], 4.0, 1_048_576,
+                &mut NeutralPreparationWork { graph: &mut exhausted, clip_pairs: &mut clip_pairs },
+            ),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+            }) if path == [2, 1]
+        ));
+        assert_eq!(exhausted, MAX_COMPOSITIONAL_SHADOW_WORK);
+        assert_eq!(clip_pairs, 0);
+        assert_eq!(mesh.triangles, triangle);
+
+        // Only setup fits. The first clipping pass must fail before visiting
+        // an edge, retaining the paid setup rather than refunding it.
+        let mut setup_only = MAX_COMPOSITIONAL_SHADOW_WORK - 128;
+        assert!(matches!(
+            triangle_intersection(triangle, triangle, &[2, 3],
+                &mut NeutralPreparationWork { graph: &mut setup_only, clip_pairs: &mut clip_pairs }),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+            }) if path == [2, 3]
+        ));
+        assert_eq!(setup_only, MAX_COMPOSITIONAL_SHADOW_WORK);
+        assert_eq!(clip_pairs, 0, "pair inventory is not numerical work");
+    }
+
+    #[test]
+    fn clip_temporary_capacity_rejects_uncertified_growth_without_mutation() {
+        let mut polygon = ClipPolygon::empty();
+        for _ in 0..9 {
+            polygon.push([1.0, 2.0], &[4, 2]).unwrap();
+        }
+        assert!(matches!(
+            polygon.push([3.0, 4.0], &[4, 2]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit, path: Some(path), ..
+            }) if path == [4, 2]
+        ));
+        assert_eq!(polygon.points(), &[[1.0, 2.0]; 9]);
     }
 
     #[test]
@@ -1719,7 +1899,10 @@ mod tests {
             &[0, 0],
             4.0,
             1_048_576,
-            &mut used,
+            &mut NeutralPreparationWork {
+                graph: &mut 0,
+                clip_pairs: &mut used,
+            },
         )
         .unwrap();
         assert!(!first.triangles.is_empty());
@@ -1732,7 +1915,7 @@ mod tests {
                 &[0, 1],
                 4.0,
                 1_048_576,
-                &mut used,
+                &mut NeutralPreparationWork { graph: &mut 0, clip_pairs: &mut used },
             ),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit,
@@ -1765,8 +1948,19 @@ mod tests {
             Render2dAffineTransform::IDENTITY,
         );
         let mut clip_work_used = 0;
-        let clipped =
-            intersect_clips(&mesh, &[clip], 1, &[1], 4.0, 1_048_576, &mut clip_work_used).unwrap();
+        let clipped = intersect_clips(
+            &mesh,
+            &[clip],
+            1,
+            &[1],
+            4.0,
+            1_048_576,
+            &mut NeutralPreparationWork {
+                graph: &mut 0,
+                clip_pairs: &mut clip_work_used,
+            },
+        )
+        .unwrap();
         let coverage = super::super::support::prepare_untranslated_shadow_coverage(
             &clipped,
             0.0,
