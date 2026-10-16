@@ -36,6 +36,15 @@ const UNION_FIXED_WORK: usize = 128;
 const SOURCE_VERTEX_WORK: usize = 16;
 const MATERIALIZATION_LOOKUP_WORK: usize = 16;
 const MATERIALIZATION_NODE_WORK: usize = 128;
+// Fixed node/path bookkeeping and nonleaf affine/effect interval envelopes.
+const REGION_NODE_WORK: usize = 1_024;
+const AFFINE_REACH_VERTEX_WORK: usize = 32;
+// A control visits both item and ancestor frames: at most eight interval
+// products and eight sums, plus scalar/validity/loop/extrema work.
+const SOURCE_REACH_CONTROL_WORK: usize = 2_048;
+// Stroke radius and transformed cap/miter bounds have additional interval
+// work independent of the number of source controls.
+const SOURCE_REACH_STROKE_WORK: usize = 2_048;
 
 /// Fixed query inventory reserved by the physical consumer, excluding its
 /// separately admitted width-dependent rows and output/conversion buffers.
@@ -562,12 +571,35 @@ impl NeutralRegionBuilder {
                 .map_or(0, source_envelope::control_visits),
             _ => 0,
         };
-        let visits = mesh_visits
-            .checked_add(original_visits)
+        let stroke = semantic_item
+            .or_else(|| match &kind {
+                Kind::Affine { source, .. } => source.semantic_item,
+                _ => None,
+            })
+            .is_some_and(|item| {
+                matches!(
+                    item.primitive(),
+                    crate::composition_2d::Render2dPrimitive::Stroke { .. }
+                )
+            });
+        let work = mesh_visits
+            .checked_mul(AFFINE_REACH_VERTEX_WORK)
+            .and_then(|cost| {
+                original_visits
+                    .checked_mul(SOURCE_REACH_CONTROL_WORK)
+                    .and_then(|controls| cost.checked_add(controls))
+            })
+            .and_then(|cost| {
+                path.len()
+                    .checked_mul(2)
+                    .and_then(|copy| cost.checked_add(copy))
+            })
+            .and_then(|cost| cost.checked_add(REGION_NODE_WORK))
+            .and_then(|cost| cost.checked_add(if stroke { SOURCE_REACH_STROKE_WORK } else { 0 }))
             .ok_or_else(|| resource(path, "original F1 source-reach work overflow"))?;
         let affine_work = self
             .graph_work
-            .checked_add(visits)
+            .checked_add(work)
             .ok_or_else(|| resource(path, "neutral affine reach work overflow"))?;
         if affine_work > MAX_REGION_GRAPH_WORK {
             return Err(resource(
@@ -575,8 +607,10 @@ impl NeutralRegionBuilder {
                 "neutral affine reach exceeds bounded whole-invocation work",
             ));
         }
-        // Validate every finite support reach before committing either graph
-        // or work admission. Curved region bounds remain reach-only.
+        // Pay before traversing controls/vertices or computing an envelope.
+        // A later Precision failure did spend this work, but cannot commit a
+        // node ID or retained owner path. Curved bounds remain reach-only.
+        self.graph_work = affine_work;
         let envelope = region_envelope(&kind, semantic_item, path)?;
         // Carry original-source reach provenance through the same immutable
         // DAG. A glyph outline reconstructed into physical triangles is NOT
@@ -603,13 +637,23 @@ impl NeutralRegionBuilder {
                 shadow.spread() > 0.0 || source.contains_positive_disk
             }
         };
+        let mut owner_path = Vec::new();
+        owner_path
+            .try_reserve_exact(path.len())
+            .map_err(|_| resource(path, "neutral support owner path allocation failed"))?;
+        if owner_path.capacity() > path.len() {
+            return Err(resource(
+                path,
+                "neutral support owner path capacity exceeds admission",
+            ));
+        }
+        owner_path.extend_from_slice(path);
         self.nodes = next;
         self.retained_path_units = paths;
-        self.graph_work = affine_work;
         Ok(Arc::new(NeutralRegion {
             kind,
             semantic_item,
-            path: path.to_vec(),
+            path: owner_path,
             id: next,
             depth,
             envelope,
@@ -2461,6 +2505,67 @@ mod tests {
     }
 
     #[test]
+    fn symbolic_node_needs_fuel_even_without_source_vertices() {
+        let mut graph = builder();
+        let source = graph.source(shadow::empty_mesh(), &[5, 0]).unwrap();
+        let nodes = graph.nodes;
+        let paths = graph.retained_path_units;
+        let work = REGION_NODE_WORK + 4;
+        graph.graph_work = MAX_REGION_GRAPH_WORK - work + 1;
+        let before = graph.graph_work;
+        let effect =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT).unwrap();
+        assert!(matches!(graph.effect(source, effect, &[5, 1]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [5, 1]));
+        assert_eq!(graph.graph_work, before);
+        assert_eq!(graph.nodes, nodes);
+        assert_eq!(graph.retained_path_units, paths);
+    }
+
+    #[test]
+    fn authored_controls_are_admitted_before_source_reach_traversal() {
+        let item = provenance_rectangle_item();
+        let mesh = provenance_rectangle_mesh(1);
+        let scan = 64 + SOURCE_VERTEX_WORK * mesh.triangles.len();
+        let mut graph = builder();
+        // The physical scan and fixed node work fit, but four original
+        // controls require the interval transforms' full operation allowance.
+        graph.graph_work = MAX_REGION_GRAPH_WORK - scan - REGION_NODE_WORK - 4;
+        let before = graph.graph_work;
+        assert!(matches!(graph.source_from_item(mesh, &item, &[8, 2]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [8, 2]));
+        assert_eq!(graph.graph_work, before + scan);
+        assert_eq!(graph.nodes, 0);
+        assert_eq!(graph.retained_path_units, 0);
+    }
+
+    #[test]
+    fn failed_envelope_keeps_paid_work_without_committing_node_or_path() {
+        let mut graph = builder();
+        let left = graph.source(triangle(), &[2, 0]).unwrap();
+        let right = graph.source(triangle(), &[2, 1]).unwrap();
+        let source = graph.union(vec![left, right], &[2]).unwrap();
+        let nodes = graph.nodes;
+        let paths = graph.retained_path_units;
+        let before = graph.graph_work;
+        let extreme = Render2dAffineTransform::new(f64::MAX, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap();
+        assert!(matches!(graph.affine(source, extreme, &[2, 3]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path), ..
+            }) if path == [2, 3]));
+        assert_eq!(graph.graph_work, before + REGION_NODE_WORK + 4);
+        assert_eq!(graph.nodes, nodes);
+        assert_eq!(graph.retained_path_units, paths);
+    }
+
+    #[test]
     fn original_f1_provenance_reuses_shared_dag_proofs_with_atomic_budget() {
         use crate::composition_2d::{
             Render2dBrush, Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dRect,
@@ -3352,7 +3457,10 @@ mod tests {
         let before_affine = builder.graph_work;
         let projected = builder.affine(leaf, affine, &[9, 1]).unwrap();
         assert_eq!(projected.envelope, Some([0.0, 0.0, f64::MAX, 1.0]));
-        assert_eq!(builder.graph_work - before_affine, 3);
+        assert_eq!(
+            builder.graph_work - before_affine,
+            REGION_NODE_WORK + 4 + 3 * AFFINE_REACH_VERTEX_WORK
+        );
         let realized = builder.materialize(&projected).unwrap();
         assert_eq!(realized.bounds, [0.0, 0.0, f64::MAX, 1.0]);
         assert_eq!(realized.triangles.len(), 3);
