@@ -805,6 +805,29 @@ impl NeutralUnionSweep {
         })
     }
 
+    /// Primitive scan, sorting, merging and row-allocation operations for one
+    /// horizontal union query. All area/Gaussian schedules pay this same bound.
+    fn interval_work(
+        &self,
+        path: &[usize],
+    ) -> Result<usize, crate::execution_2d::Render2dExecutionError> {
+        let n = self.active.len();
+        n.checked_mul(128)
+            .and_then(|linear| {
+                n.checked_mul(n)
+                    .and_then(|pairs| pairs.checked_mul(16))
+                    .and_then(|sort| linear.checked_add(sort))
+            })
+            .and_then(|cost| cost.checked_add(64))
+            .ok_or_else(|| {
+                mask_failure(
+                    path,
+                    crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                    "neutral union interval work overflow",
+                )
+            })
+    }
+
     /// Disjoint union intervals of immutable triangle interiors at this y.
     /// A single topology and clipping implementation feeds both integrators.
     fn intervals(
@@ -894,6 +917,25 @@ fn area_sample(
     if sweep.active.is_empty() {
         return Ok(0.0);
     }
+    // Prepay every slab's union scan/sort/merge and width integration. The
+    // constructor's arrangement charge does not also pay these row queries.
+    let interval_work = sweep.interval_work(path)?;
+    let integration_work = sweep
+        .active
+        .len()
+        .checked_mul(16)
+        .and_then(|width| width.checked_add(interval_work))
+        .and_then(|row| row.checked_add(32))
+        .and_then(|row| row.checked_mul(sweep.events.len().saturating_sub(1)))
+        .and_then(|cost| cost.checked_add(32))
+        .ok_or_else(|| {
+            mask_failure(
+                path,
+                crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                "continuous area slab work overflow",
+            )
+        })?;
+    charge_shadow_preparation_work(work, integration_work, path)?;
     let mut area = 0.0;
     for slab in sweep.events.windows(2) {
         let height = slab[1] - slab[0];
@@ -1037,16 +1079,12 @@ fn gaussian_union_sample(
     // Row construction scans three edges/triangle, sorts at most n intervals
     // and merges them; 128n + 16n² covers that work, including comparisons
     // and moves. Each surviving interval then executes one 16-node x integral.
-    let active = sweep.active.len();
-    let row_work = active
-        .checked_mul(128 + GAUSSIAN_AXIS_WORK)
-        .and_then(|linear| {
-            active
-                .checked_mul(active)
-                .and_then(|pairs| pairs.checked_mul(16))
-                .and_then(|sort| linear.checked_add(sort))
-        })
-        .and_then(|cost| cost.checked_add(64));
+    let interval_work = sweep.interval_work(path)?;
+    let row_work = sweep
+        .active
+        .len()
+        .checked_mul(GAUSSIAN_AXIS_WORK)
+        .and_then(|axes| axes.checked_add(interval_work));
     let integration_work = row_work
         .and_then(|row| row.checked_mul(GAUSS_NODES.len()))
         .and_then(|slab| slab.checked_add(32))
@@ -4978,6 +5016,34 @@ mod tests {
             1.0
         );
         assert!(admitted > 0);
+    }
+
+    #[test]
+    fn continuous_area_rejects_unfunded_slabs_before_allocating_rows() {
+        use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
+        let triangle = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let initial = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 524;
+        let mut construction_work = initial;
+        NeutralUnionSweep::new(
+            &triangle,
+            [0.0, 0.0, 1.0, 1.0],
+            8,
+            &mut construction_work,
+            &[5, 9],
+        )
+        .unwrap();
+        let mut work = initial;
+        assert!(
+            matches!(area_sample(&triangle, 0.0, 0.0, &mut work, &[5, 9]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+            }) if path == [5, 9])
+        );
+        assert_eq!(
+            work, construction_work,
+            "unfunded rows must execute no slab work"
+        );
+        assert!((area_sample(&triangle, 0.0, 0.0, &mut 0, &[5, 9]).unwrap() - 0.5).abs() < 1.0e-14);
     }
 
     #[test]

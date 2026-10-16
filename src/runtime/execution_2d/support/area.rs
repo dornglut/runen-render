@@ -46,6 +46,112 @@ pub(super) fn rasterize(
     work: &mut dyn PreparationWork,
     path: &[usize],
 ) -> Result<Vec<f64>, Render2dExecutionError> {
+    // Both schedules integrate the same canonical triangle union. A global
+    // arrangement can be much more expensive than local cells for a detailed
+    // curved tessellation. Select BEFORE constructing it, without spending a
+    // failed query's work or giving the alternative a fresh allowance. This
+    // estimate selects a schedule; actual debits still decide admission.
+    charge_shadow_preparation_work(work, 128, path)?;
+    let n = triangles.len() / 3;
+    let estimate = (|| {
+        let edges = n.checked_mul(3)?;
+        let pairs = edges.checked_mul(edges.saturating_sub(1))?.checked_div(2)?;
+        let events = grid
+            .width
+            .checked_add(4)?
+            .checked_mul(edges)?
+            .checked_add(pairs)?
+            .checked_add(grid.height)?
+            .checked_add(2)?;
+        if events > MAX_EVENTS {
+            return None;
+        }
+        let row = n
+            .checked_mul(128)?
+            .checked_add(n.checked_mul(n)?.checked_mul(16)?)?
+            .checked_add(64)?;
+        // Disjoint intervals write at most width+2n column fragments per row.
+        let columns = grid.width.checked_add(n.checked_mul(3)?)?.checked_mul(32)?;
+        let sorting = usize::try_from(events.ilog2())
+            .ok()?
+            .checked_add(2)?
+            .checked_mul(64)?;
+        let bands = row
+            .checked_add(columns)?
+            .checked_add(sorting)?
+            .checked_mul(events)?;
+        n.checked_pow(3)?
+            .checked_mul(8)?
+            .checked_add(bands)?
+            .checked_add(grid.width.checked_mul(grid.height)?.checked_mul(32)?)
+    })();
+    if estimate.is_some_and(|cost| cost <= work.remaining(usize::MAX)) {
+        rasterize_shared(triangles, grid, work, path)
+    } else {
+        rasterize_cells(triangles, grid, work, path)
+    }
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the caller admits safe i32-range integer sample origins"
+)]
+fn rasterize_cells(
+    triangles: &[[f64; 2]],
+    grid: &NeutralMask,
+    work: &mut dyn PreparationWork,
+    path: &[usize],
+) -> Result<Vec<f64>, Render2dExecutionError> {
+    let area = grid
+        .width
+        .checked_mul(grid.height)
+        .ok_or_else(|| resource(path, "cell area extent overflow"))?;
+    // Retained output coexists with a local sweep's constructor. Geometric
+    // active growth is bounded by twice the copied input; admitted n³*8 edge
+    // construction has at most 256 active triangles, as in the shared path.
+    let peak = triangles
+        .len()
+        .checked_mul(3 * std::mem::size_of::<[f64; 2]>())
+        .and_then(|bytes| {
+            area.checked_mul(std::mem::size_of::<f64>())
+                .and_then(|output| bytes.checked_add(output))
+        })
+        .and_then(|bytes| bytes.checked_add(grid.samples.capacity()))
+        .and_then(|bytes| bytes.checked_add(2 * MAX_EVENTS * 8 + 256 * 3 * 32 + 4_096));
+    if peak.is_none_or(|bytes| bytes > 64 * 1024 * 1024) {
+        return Err(resource(path, "cell area peak storage exceeds admission"));
+    }
+    let cost = area
+        .checked_mul(32)
+        .ok_or_else(|| resource(path, "cell area initialization work overflow"))?;
+    charge_shadow_preparation_work(work, cost, path)?;
+    let mut values = filled(area, 0.0, path)?;
+    for row in 0..grid.height {
+        for column in 0..grid.width {
+            values[row * grid.width + column] = super::area_sample(
+                triangles,
+                grid.origin_x as f64 + as_f64(column),
+                grid.origin_y as f64 + as_f64(row),
+                work,
+                path,
+            )?;
+        }
+    }
+    Ok(values)
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "the caller admits integer lattice edges into the safe i32 range; cell indices are clipped to that lattice"
+)]
+fn rasterize_shared(
+    triangles: &[[f64; 2]],
+    grid: &NeutralMask,
+    work: &mut dyn PreparationWork,
+    path: &[usize],
+) -> Result<Vec<f64>, Render2dExecutionError> {
     let left = grid.origin_x as f64;
     let top = grid.origin_y as f64;
     let right = left + as_f64(grid.width);
@@ -187,16 +293,7 @@ pub(super) fn rasterize(
     charge_shadow_preparation_work(work, sorting, path)?;
     sweep.events.sort_unstable_by(f64::total_cmp);
     sweep.events.dedup();
-    let n = sweep.active.len();
-    let row_work = n
-        .checked_mul(128)
-        .and_then(|linear| {
-            n.checked_mul(n)
-                .and_then(|pairs| pairs.checked_mul(16))
-                .and_then(|sort| linear.checked_add(sort))
-        })
-        .and_then(|cost| cost.checked_add(64))
-        .ok_or_else(|| resource(path, "shared area interval work overflow"))?;
+    let row_work = sweep.interval_work(path)?;
     // Initialization plus final finite/range/clamp checks and stores.
     let initialization = area
         .checked_mul(32)
@@ -260,6 +357,45 @@ pub(super) fn rasterize(
 mod tests {
     use super::*;
     use crate::runtime::execution_2d::support::area_sample;
+
+    #[test]
+    fn curved_physical_inventory_keeps_identity_area_admission() {
+        use crate::composition_2d::*;
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::ellipse(Render2dRect::new(10.0, 10.0, 8.0, 8.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let mesh =
+            crate::runtime::execution_2d::vector::neutral_support(&item, 0, 4.0, 16 * 1024 * 1024)
+                .unwrap()
+                .unwrap();
+        let expected = mesh
+            .triangles
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|triangle| super::super::orient(triangle[0], triangle[1], triangle[2]).abs() * 0.5)
+            .sum::<f64>();
+        let mut work = 0;
+        let coverage = super::super::prepare_shadow_coverage_admitted(
+            &mesh,
+            0.0,
+            0.0,
+            4.0,
+            &[7, 8],
+            &mut work,
+            1_048_576,
+        )
+        .unwrap()
+        .unwrap();
+        assert!((coverage.values.iter().sum::<f64>() - expected).abs() < 1.0e-9);
+        assert!(coverage.values.contains(&1.0));
+    }
 
     #[test]
     fn shared_bands_match_independent_cell_arrangements_at_crossings_and_seams() {
@@ -363,10 +499,12 @@ mod tests {
             samples: Vec::new(),
         };
         for mut fuel in [super::super::MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 1, 0] {
-            assert!(matches!(rasterize(&triangles, &grid, &mut fuel, &[7, 4]),
+            assert!(
+                matches!(rasterize_shared(&triangles, &grid, &mut fuel, &[7, 4]),
                 Err(Render2dExecutionError::SampleSpace {
                     kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
-                }) if path == [7, 4]));
+                }) if path == [7, 4])
+            );
         }
     }
 }
