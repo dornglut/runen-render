@@ -4,6 +4,7 @@
 //! geometry authority. They are never public renderer semantics, paint alpha,
 //! an MSDF/image sampled footprint, or a second scene representation.
 
+mod area;
 mod orthogonal;
 use orthogonal::{GaussianRow, OrthogonalExterior};
 
@@ -282,6 +283,13 @@ fn filled<T: Clone>(
             "neutral mask allocation failed",
         )
     })?;
+    if std::mem::size_of::<T>() != 0 && buffer.capacity() > count {
+        return Err(mask_failure(
+            path,
+            Render2dSampleSpaceError::ResourceLimit,
+            "neutral mask allocated capacity exceeds admission",
+        ));
+    }
     buffer.resize(count, value);
     Ok(buffer)
 }
@@ -586,6 +594,48 @@ pub(super) struct NeutralCoverage {
  * Unlike point samples or summed triangle areas, this computes the UNION:
  * overlapping stroke triangles cannot inflate neutral coverage.
  */
+/// Bound the one event inventory before either area or Gaussian consumption.
+const MAX_NEUTRAL_UNION_EVENTS: usize = 65_536;
+
+/// The one bounded event owner serves both the original cell integrator and
+/// its shared-grid consumer. Growth pays old-word relocation before reserve.
+fn push_union_event(
+    events: &mut Vec<f64>,
+    value: f64,
+    work: &mut dyn PreparationWork,
+    path: &[usize],
+) -> Result<(), crate::execution_2d::Render2dExecutionError> {
+    use crate::execution_2d::Render2dSampleSpaceError;
+    let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
+    if events.len() >= MAX_NEUTRAL_UNION_EVENTS {
+        return Err(resource("neutral union event inventory exceeds admission"));
+    }
+    let relocation = if events.len() == events.capacity() {
+        events.len()
+    } else {
+        0
+    };
+    let cost = relocation
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(16))
+        .ok_or_else(|| resource("neutral union event growth work overflow"))?;
+    charge_shadow_preparation_work(work, cost, path)?;
+    if events.len() == events.capacity() {
+        let capacity = events
+            .capacity()
+            .saturating_mul(2)
+            .clamp(8, MAX_NEUTRAL_UNION_EVENTS);
+        events
+            .try_reserve_exact(capacity - events.len())
+            .map_err(|_| resource("neutral union event allocation failed"))?;
+        if events.capacity() > MAX_NEUTRAL_UNION_EVENTS {
+            return Err(resource("neutral union event capacity exceeds admission"));
+        }
+    }
+    events.push(value);
+    Ok(())
+}
+
 /// Single geometric source of truth for continuous neutral triangle-union
 /// cross-sections. The area and Gaussian integrators consume exactly the same
 /// clipped contours, topology-change events and disjoint horizontal intervals.
@@ -620,18 +670,13 @@ impl NeutralUnionSweep {
                 "neutral scanline union bounds or triangle payload invalid",
             ));
         }
-        // Source filtering and the whole-window containment shortcut execute
-        // even when no arrangement is built. Prepay the complete inventory
-        // before scanning or growing active storage. Per triangle: bbox and
-        // degeneracy tests, up to four three-edge containment tests, and
-        // amortized active-Vec relocation (each copied vertex has two words).
-        let scan_work = (triangles.len() / 3)
-            .checked_mul(320)
-            .and_then(|cost| cost.checked_add(64))
-            .ok_or_else(|| resource("neutral scanline source scan work overflow"))?;
-        charge_shadow_preparation_work(work, scan_work, path)?;
+        // Pay the scan's fixed setup, then each executed source stage before
+        // it runs. Disjoint triangles need only their bbox/degeneracy tests;
+        // a whole-window proof can stop without inspecting later triangles.
+        charge_shadow_preparation_work(work, 64, path)?;
         let mut active = Vec::<[[f64; 2]; 3]>::new();
         for tri in triangles.as_chunks::<3>().0 {
+            charge_shadow_preparation_work(work, 64, path)?;
             let xs = [tri[0][0], tri[1][0], tri[2][0]];
             let ys = [tri[0][1], tri[1][1], tri[2][1]];
             if xs.iter().copied().fold(f64::INFINITY, f64::min) >= x1
@@ -642,6 +687,9 @@ impl NeutralUnionSweep {
             {
                 continue;
             }
+            // Up to four three-edge containment tests plus amortized active
+            // Vec relocation, copied vertex words, push and loop control.
+            charge_shadow_preparation_work(work, 256, path)?;
             // One convex triangle containing the whole integration window
             // proves union coverage of its interior, independent of siblings.
             if [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].iter().all(|&p| {
@@ -650,17 +698,32 @@ impl NeutralUnionSweep {
                 let c = orient(tri[2], tri[0], p);
                 (a >= 0.0 && b >= 0.0 && c >= 0.0) || (a <= 0.0 && b <= 0.0 && c <= 0.0)
             }) {
+                let mut events = Vec::new();
+                push_union_event(&mut events, y0, work, path)?;
+                push_union_event(&mut events, y1, work, path)?;
                 return Ok(Self {
                     active: Vec::new(),
-                    events: vec![y0, y1],
+                    events,
                     x0,
                     x1,
                     fully_covered: true,
                 });
             }
-            active
-                .try_reserve(1)
-                .map_err(|_| resource("neutral scanline triangle allocation failed"))?;
+            if active.len() == active.capacity() {
+                let capacity = active
+                    .capacity()
+                    .saturating_mul(2)
+                    .max(4)
+                    .min(triangles.len() / 3);
+                active
+                    .try_reserve_exact(capacity - active.len())
+                    .map_err(|_| resource("neutral scanline triangle allocation failed"))?;
+                if active.capacity() > capacity {
+                    return Err(resource(
+                        "neutral scanline triangle capacity exceeds admission",
+                    ));
+                }
+            }
             active.push(*tri);
         }
         let charge = active
@@ -674,23 +737,28 @@ impl NeutralUnionSweep {
             path,
             "neutral scanline arrangement exceeds bounded work",
         )?;
-        let mut events = vec![y0, y1];
+        let mut events = Vec::new();
+        push_union_event(&mut events, y0, work, path)?;
+        push_union_event(&mut events, y1, work, path)?;
         let mut edges = Vec::new();
         edges
-            .try_reserve(
+            .try_reserve_exact(
                 active
                     .len()
                     .checked_mul(3)
                     .ok_or_else(|| resource("neutral scanline edges overflow"))?,
             )
             .map_err(|_| resource("neutral scanline edge allocation failed"))?;
+        if edges.capacity() > active.len() * 3 {
+            return Err(resource("neutral scanline edge capacity exceeds admission"));
+        }
         for triangle in &active {
             for i in 0..3 {
                 let a = triangle[i];
                 let b = triangle[(i + 1) % 3];
                 edges.push((a, b));
                 if a[1] > y0 && a[1] < y1 {
-                    events.push(a[1]);
+                    push_union_event(&mut events, a[1], work, path)?;
                 }
                 if a[0] != b[0] {
                     for x in [x0, x1] {
@@ -698,7 +766,7 @@ impl NeutralUnionSweep {
                         if t > 0.0 && t < 1.0 {
                             let y = (b[1] - a[1]).mul_add(t, a[1]);
                             if y > y0 && y < y1 {
-                                events.push(y);
+                                push_union_event(&mut events, y, work, path)?;
                             }
                         }
                     }
@@ -721,12 +789,12 @@ impl NeutralUnionSweep {
                 if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
                     let y = r[1].mul_add(t, a[1]);
                     if y > y0 && y < y1 {
-                        events.push(y);
+                        push_union_event(&mut events, y, work, path)?;
                     }
                 }
             }
         }
-        events.sort_by(|a, b| a.total_cmp(b));
+        events.sort_unstable_by(f64::total_cmp);
         events.dedup();
         Ok(Self {
             active,
@@ -744,19 +812,38 @@ impl NeutralUnionSweep {
         y: f64,
         path: &[usize],
     ) -> Result<Vec<[f64; 2]>, crate::execution_2d::Render2dExecutionError> {
+        self.intervals_limit(y, true, path)
+    }
+
+    /// Horizontal one-sided limit. This also defines a slab whose endpoints
+    /// are adjacent floats, without inventing or dropping its geometric area.
+    fn intervals_limit(
+        &self,
+        y: f64,
+        from_above: bool,
+        path: &[usize],
+    ) -> Result<Vec<[f64; 2]>, crate::execution_2d::Render2dExecutionError> {
         use crate::execution_2d::Render2dSampleSpaceError;
         let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
         let mut segments = Vec::<[f64; 2]>::new();
         segments
             .try_reserve_exact(self.active.len())
             .map_err(|_| resource("neutral union row allocation failed"))?;
+        if segments.capacity() > self.active.len() {
+            return Err(resource("neutral union row capacity exceeds admission"));
+        }
         for triangle in &self.active {
             let mut min_x = f64::INFINITY;
             let mut max_x = f64::NEG_INFINITY;
             for i in 0..3 {
                 let a = triangle[i];
                 let b = triangle[(i + 1) % 3];
-                if (a[1] <= y && y < b[1]) || (b[1] <= y && y < a[1]) {
+                let crosses = if from_above {
+                    (a[1] <= y && y < b[1]) || (b[1] <= y && y < a[1])
+                } else {
+                    (a[1] < y && y <= b[1]) || (b[1] < y && y <= a[1])
+                };
+                if crosses {
                     let x = (b[0] - a[0]).mul_add((y - a[1]) / (b[1] - a[1]), a[0]);
                     min_x = min_x.min(x);
                     max_x = max_x.max(x);
@@ -773,6 +860,11 @@ impl NeutralUnionSweep {
         merged
             .try_reserve_exact(segments.len())
             .map_err(|_| resource("neutral union intervals allocation failed"))?;
+        if merged.capacity() > segments.len() {
+            return Err(resource(
+                "neutral union interval capacity exceeds admission",
+            ));
+        }
         for [start, end] in segments {
             if let Some(last) = merged.last_mut()
                 && start <= last[1]
@@ -840,16 +932,7 @@ fn rasterize_area_coverage(
     for (out, &[x, y]) in triangles.iter_mut().zip(&mesh.triangles) {
         *out = [x * transform, y * transform];
     }
-    let mut values = filled(grid.samples.len(), 0.0_f64, path)?;
-    for y in 0..grid.height {
-        for x in 0..grid.width {
-            let x0 = f64::from(i32::try_from(grid.origin_x).expect("bounded lattice origin"))
-                + as_f64(x);
-            let y0 = f64::from(i32::try_from(grid.origin_y).expect("bounded lattice origin"))
-                + as_f64(y);
-            values[y * grid.width + x] = area_sample(&triangles, x0, y0, aggregate_work, path)?;
-        }
-    }
+    let values = area::rasterize(&triangles, &grid, aggregate_work, path)?;
     Ok(Some(NeutralCoverage {
         origin_x: grid.origin_x,
         origin_y: grid.origin_y,
@@ -4887,7 +4970,8 @@ mod tests {
                 kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
             }) if path == [5, 8]
         ));
-        assert_eq!(work, MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 100);
+        // The fixed setup was executed; no triangle scan/row work ran.
+        assert_eq!(work, MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 100 + 64);
         let mut admitted = 0;
         assert_eq!(
             gaussian_union_sample(&triangle, [0.0, 0.0], 1.0, &mut admitted, &[5, 8]).unwrap(),
@@ -4902,7 +4986,16 @@ mod tests {
         let triangle = [[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]];
         // The old n³ * 256 arrangement charge fits, but cannot also pay for
         // all executed x/y quadrature arithmetic. Reject before row work.
-        let mut work = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 384 - 256 - 1_000;
+        let mut work = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 384 - 256 - 32 - 1_000;
+        let mut arrangement_work = work;
+        NeutralUnionSweep::new(
+            &triangle,
+            [-3.0, -3.0, 3.0, 3.0],
+            256,
+            &mut arrangement_work,
+            &[5, 7],
+        )
+        .unwrap();
         assert!(matches!(
             gaussian_union_sample(&triangle, [0.0, 0.0], 1.0, &mut work, &[5, 7]),
             Err(Render2dExecutionError::SampleSpace {
@@ -4910,7 +5003,10 @@ mod tests {
                 path: Some(path), ..
             }) if path == [5, 7]
         ));
-        assert_eq!(work, MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 1_000);
+        assert_eq!(
+            work, arrangement_work,
+            "unfunded quadrature must execute no rows"
+        );
     }
 
     #[test]
