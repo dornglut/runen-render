@@ -582,24 +582,21 @@ mod tests {
 
         for symbolic_first in [false, true] {
             // The complete caster inventory selected the 16M policy before
-            // either sibling. Prior invocation work leaves exactly enough
-            // room for the legacy coverage, but not the extra symbolic unit.
+            // either sibling. The area integrator selects its schedule from
+            // remaining fuel, so a fresh invocation's measured cost is not an
+            // admission promise at the exhausted boundary. Leave insufficient
+            // room for either area schedule and keep the legacy owner path.
             let mut work = support::PreparationBudget::for_contribution(true);
-            charge(&mut work, MAX_QUERY_WORK - legacy_cost, &[0]).unwrap();
-            let error = if symbolic_first {
+            charge(&mut work, MAX_QUERY_WORK - 1, &[0]).unwrap();
+            if symbolic_first {
                 charge(&mut work, 1, &[3, 2]).unwrap();
-                legacy(&mut work).unwrap_err()
-            } else {
-                let coverage = legacy(&mut work).unwrap().unwrap();
-                assert_eq!(coverage.values, expected.values);
-                charge(&mut work, 1, &[3, 2]).unwrap_err()
-            };
-            let owner = if symbolic_first { [3, 1] } else { [3, 2] };
+            }
+            let error = legacy(&mut work).unwrap_err();
             assert!(matches!(error, Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path), ..
-            } if path == owner));
-            assert!(work.used() <= MAX_QUERY_WORK);
+            } if path == [3, 1]));
+            assert_eq!(work.used(), MAX_QUERY_WORK - usize::from(!symbolic_first));
 
             // A genuinely admissible mixed contribution succeeds in either
             // order and produces identical continuous legacy coverage.
@@ -613,6 +610,16 @@ mod tests {
             }
             assert_eq!(coverage.values, expected.values);
             assert_eq!(work.used(), legacy_cost + 1);
+
+            // Successful legacy preparation also leaves its actual debits in
+            // the same budget used by a later symbolic sibling.
+            let remaining = MAX_QUERY_WORK - work.used();
+            charge(&mut work, remaining, &[0]).unwrap();
+            assert!(matches!(charge(&mut work, 1, &[3, 2]),
+                Err(Render2dExecutionError::SampleSpace {
+                    kind: Render2dSampleSpaceError::ResourceLimit,
+                    path: Some(path), ..
+                }) if path == [3, 2]));
         }
 
         // A pure legacy invocation retains its established 134M admission.
