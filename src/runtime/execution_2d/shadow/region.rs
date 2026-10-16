@@ -30,6 +30,9 @@ const PROVENANCE_NODE_WORK: usize = 64;
 const PROVENANCE_SOURCE_WORK: usize = 1_024;
 // Four extrema scans plus triangle/corner membership, bit tests and loops.
 const RECTANGLE_VERTEX_WORK: usize = 48;
+// ID scan, stable retain/drop, depth/envelope scans and propagated flags.
+const UNION_CHILD_WORK: usize = 64;
+const UNION_FIXED_WORK: usize = 128;
 
 /// Fixed query inventory reserved by the physical consumer, excluding its
 /// separately admitted width-dependent rows and output/conversion buffers.
@@ -683,6 +686,12 @@ impl NeutralRegionBuilder {
         mut children: Vec<Arc<NeutralRegion<'a>>>,
         path: &[usize],
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
+        let scan_work = children
+            .len()
+            .checked_mul(UNION_CHILD_WORK)
+            .and_then(|cost| cost.checked_add(UNION_FIXED_WORK))
+            .ok_or_else(|| resource(path, "neutral union scan work overflow"))?;
+        self.charge_graph_work(scan_work, path)?;
         if children.len() == 1 {
             return Ok(children.pop().expect("single union member"));
         }
@@ -691,16 +700,6 @@ impl NeutralRegionBuilder {
             // Keep the FIRST occurrence to preserve authored error paths.
             // A bounded stamp table avoids the O(n^2) duplicate search and
             // O(total DAG nodes) repeated allocation per group.
-            let next_work = self
-                .graph_work
-                .checked_add(children.len())
-                .ok_or_else(|| resource(path, "neutral union scan work overflow"))?;
-            if next_work > MAX_REGION_GRAPH_WORK {
-                return Err(resource(
-                    path,
-                    "neutral union scan exceeds whole-invocation work",
-                ));
-            }
             let epoch = self
                 .union_epoch
                 .checked_add(1)
@@ -723,9 +722,50 @@ impl NeutralRegionBuilder {
                 return Err(resource(path, "neutral union stamp exceeds bounded memory"));
             }
             if needed > self.union_seen.len() {
+                let old_len = self.union_seen.len();
+                let grows = needed > self.union_seen.capacity();
+                let relocation = if grows { old_len } else { 0 };
+                let work = (needed - old_len)
+                    .checked_add(relocation)
+                    .and_then(|slots| slots.checked_mul(2))
+                    .ok_or_else(|| resource(path, "neutral union stamp work overflow"))?;
+                self.charge_graph_work(work, path)?;
+                // Bounded geometric capacity prevents an exact one-slot
+                // reservation at every new union from repeatedly relocating
+                // the whole invocation's stamp table. Initialize only live IDs.
+                let capacity_limit = usize::try_from(
+                    (self.max_buffer_bytes / std::mem::size_of::<usize>() as u64)
+                        .min((MAX_REGION_NODES + 1) as u64),
+                )
+                .map_err(|_| resource(path, "neutral union capacity limit overflow"))?;
+                let desired = if grows {
+                    self.union_seen
+                        .capacity()
+                        .saturating_mul(2)
+                        .min(capacity_limit)
+                        .max(needed)
+                } else {
+                    self.union_seen.capacity()
+                };
+                let capacity_bytes = desired
+                    .checked_mul(std::mem::size_of::<usize>())
+                    .and_then(|bytes| u64::try_from(bytes).ok())
+                    .ok_or_else(|| resource(path, "neutral union capacity bytes overflow"))?;
+                if capacity_bytes > self.max_buffer_bytes {
+                    return Err(resource(
+                        path,
+                        "neutral union capacity exceeds bounded memory",
+                    ));
+                }
                 self.union_seen
-                    .try_reserve_exact(needed - self.union_seen.len())
+                    .try_reserve_exact(desired - old_len)
                     .map_err(|_| resource(path, "neutral union stamp allocation failed"))?;
+                if self.union_seen.capacity() > desired {
+                    return Err(resource(
+                        path,
+                        "neutral union allocated capacity exceeds admission",
+                    ));
+                }
                 self.union_seen.resize(needed, 0);
             }
             // Even when node admission fails after normalization, advance
@@ -742,10 +782,28 @@ impl NeutralRegionBuilder {
                 let depth = children.iter().map(|node| node.depth).max().unwrap_or(0) + 1;
                 self.node(Kind::Union(children), path, depth, None)?
             };
-            self.graph_work = next_work;
             return Ok(result);
         }
         self.node(Kind::Union(children), path, 1, None)
+    }
+
+    fn charge_graph_work(
+        &mut self,
+        work: usize,
+        path: &[usize],
+    ) -> Result<(), Render2dExecutionError> {
+        let next = self
+            .graph_work
+            .checked_add(work)
+            .ok_or_else(|| resource(path, "neutral graph work overflow"))?;
+        if next > MAX_REGION_GRAPH_WORK {
+            return Err(resource(
+                path,
+                "neutral graph exceeds whole-invocation work",
+            ));
+        }
+        self.graph_work = next;
+        Ok(())
     }
 
     pub(super) fn affine<'a>(
@@ -2151,8 +2209,15 @@ mod tests {
             graph.nodes, nodes,
             "union idempotence must not mint fake nodes"
         );
-        // Four real entries plus 24 repeated references, all admitted.
-        assert_eq!(graph.graph_work, 28);
+        // Four entries, three initialized stamp slots, then twelve duplicate
+        // scans. Idempotence avoids nodes, not the work of proving identity.
+        assert_eq!(
+            graph.graph_work,
+            UNION_FIXED_WORK
+                + 4 * UNION_CHILD_WORK
+                + 6
+                + 12 * (UNION_FIXED_WORK + 2 * UNION_CHILD_WORK)
+        );
 
         // An admitted stamp scan is not an authored node commitment.
         // Trigger a late owner-path rejection, restore that test-only
@@ -2170,7 +2235,10 @@ mod tests {
                 path: Some(path), ..
             }) if path == [4, 3]
         ));
-        assert_eq!(graph.graph_work, committed);
+        assert_eq!(
+            graph.graph_work,
+            committed + UNION_FIXED_WORK + 2 * UNION_CHILD_WORK
+        );
         graph.retained_path_units = paths;
         let retried = graph
             .union(vec![Arc::clone(&first), Arc::clone(&second)], &[4, 3])
@@ -2179,6 +2247,53 @@ mod tests {
             panic!("late rejection cannot poison the next union epoch");
         };
         assert_eq!(children.len(), 2);
+    }
+
+    #[test]
+    fn union_stamp_initialization_rejects_before_unfunded_allocation() {
+        let mut graph = builder();
+        let mut last = graph.source(shadow::empty_mesh(), &[7, 0]).unwrap();
+        for _ in 1..4_095 {
+            last = graph.source(shadow::empty_mesh(), &[7, 0]).unwrap();
+        }
+        let next = graph.source(shadow::empty_mesh(), &[7, 1]).unwrap();
+        let scan = UNION_FIXED_WORK + 2 * UNION_CHILD_WORK;
+        graph.graph_work = MAX_REGION_GRAPH_WORK - scan - 2;
+        let nodes = graph.nodes;
+        assert!(matches!(graph.union(vec![last, next], &[7, 3]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [7, 3]));
+        assert_eq!(graph.graph_work, MAX_REGION_GRAPH_WORK - 2);
+        assert_eq!(graph.union_seen.len(), 0);
+        assert_eq!(graph.union_seen.capacity(), 0);
+        assert_eq!(graph.union_epoch, 0);
+        assert_eq!(graph.nodes, nodes);
+    }
+
+    #[test]
+    fn union_stamp_growth_pays_relocation_before_reservation() {
+        let mut graph = builder();
+        graph.union_seen = vec![0; 4_096];
+        let capacity = graph.union_seen.capacity();
+        graph.nodes = capacity - 1;
+        let left = graph.source(shadow::empty_mesh(), &[8, 0]).unwrap();
+        let right = graph.source(shadow::empty_mesh(), &[8, 1]).unwrap();
+        let scan = UNION_FIXED_WORK + 2 * UNION_CHILD_WORK;
+        // Initializing two new slots would fit; relocating all old slots
+        // would not. Reject before reserve can move the retained table.
+        graph.graph_work = MAX_REGION_GRAPH_WORK - scan - capacity;
+        assert!(matches!(graph.union(vec![left, right], &[8, 3]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [8, 3]));
+        assert_eq!(graph.graph_work, MAX_REGION_GRAPH_WORK - capacity);
+        assert_eq!(graph.union_seen.len(), 4_096);
+        assert_eq!(graph.union_seen.capacity(), capacity);
+        assert_eq!(graph.union_epoch, 0);
+        assert!(graph.union_seen.iter().all(|mark| *mark == 0));
     }
 
     #[test]
