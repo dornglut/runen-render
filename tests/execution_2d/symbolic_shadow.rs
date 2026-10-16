@@ -187,6 +187,34 @@ fn finite_child_kernel_integrates_completed_caster_before_ancestor_shear() {
 }
 
 #[test]
+fn interval_halo_completed_caster_keeps_independent_curved_boundary_on_vulkan() {
+    let Some(context) = context() else { return };
+    let effect =
+        Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 255))
+            .unwrap();
+    let bytes = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &completed_ring(vec![effect], 0.05),
+        &Render2dResourceBindings::default(),
+        "interval-valued finite halo original completed caster",
+    );
+    // Independent exact-binary64(.05) halo h=3*sigma and 110-digit
+    // circle-segment integration of all16 cells gives alpha
+    // .8103862966359923233; sRGB blue232, unorm alpha207.
+    for (actual, expected) in pixel(&bytes, 36, 22).into_iter().zip([0_u8, 0, 232, 207]) {
+        assert!(
+            actual.abs_diff(expected) <= 4,
+            "interval halo {actual} vs {expected}"
+        );
+    }
+    assert_eq!(pixel(&bytes, 20, 12), [0, 0, 255, 255]);
+    assert_eq!(pixel(&bytes, 33, 20), [0, 0, 255, 255]);
+    assert_eq!(pixel(&bytes, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(pixel(&bytes, 48, 20), [0, 0, 0, 0]);
+}
+
+#[test]
 fn four_finite_child_caster_shadows_preserve_cell_correlation() {
     let Some(context) = context() else { return };
     let effect =

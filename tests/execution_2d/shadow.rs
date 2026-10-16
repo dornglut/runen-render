@@ -2480,7 +2480,7 @@ fn nonabsorbed_holed_child_paints_without_an_ancestor_shadow_consumer() {
 }
 
 #[test]
-fn unqualified_finite_holed_halo_reports_owner_precision_before_gpu() {
+fn unqualified_finite_holed_halo_reports_owner_resource_before_gpu() {
     let Some(context) = context() else { return };
     let child = Render2dEntry::group(Render2dGroup::new(
         vec![
@@ -2492,9 +2492,9 @@ fn unqualified_finite_holed_halo_reports_owner_precision_before_gpu() {
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::TRANSPARENT,
-        // This finite halo has interval-valued corner centers (3*.05 is
-        // not an exact f64 product). Their scanner qualification remains
-        // incomplete; transparency cannot silently erase that geometry.
+        // Interval-valued corner centers now retain certified geometry.
+        // This radius/offset/shear still exceeds aggregate query resources;
+        // transparency cannot silently erase that geometric obligation.
         vec![effect(
             4.0,
             0.0,
@@ -2528,14 +2528,17 @@ fn unqualified_finite_holed_halo_reports_owner_precision_before_gpu() {
         Ok(_) => panic!("unqualified interval-valued finite halo must fail preflight"),
         Err(error) => error,
     };
-    assert!(matches!(
-        error,
-        Render2dExecutionError::SampleSpace {
-            path: Some(path),
-            kind: runen_render::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
-            ..
-        } if path == [0, 0]
-    ));
+    assert!(
+        matches!(
+            &error,
+            Render2dExecutionError::SampleSpace {
+                path: Some(path),
+                kind: runen_render::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                ..
+            } if path.as_slice() == [0, 0]
+        ),
+        "unexpected finite-halo failure: {error:?}"
+    );
 
     // Rejection retains the executor for an independently valid request.
     let valid = group(

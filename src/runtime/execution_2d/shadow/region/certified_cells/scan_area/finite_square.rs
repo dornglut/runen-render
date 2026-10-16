@@ -35,9 +35,6 @@ impl ScanPlan {
             self.interval_line(line, shifted, fuel)?;
         }
         for circle in inventory.circles {
-            if circle.center.iter().any(|v| v.lo != v.hi) {
-                return Err(AreaQueryError::Precision);
-            }
             self.finite_circle(circle, shifted, fuel)?;
         }
         Ok(())
@@ -49,24 +46,50 @@ impl ScanPlan {
         affine: Affine,
         fuel: &mut usize,
     ) -> Result<(), AreaQueryError> {
-        if let (Some([a, 0.0, c, d, _, _]), Some([sx, sy])) = (affine.2, circle.quadrant)
+        if let (Some([a, 0.0, c, d, tx, ty]), Some([sx, sy])) = (affine.2, circle.quadrant)
             && a.abs() == 1.0
             && d.abs() == 1.0
         {
             charge(fuel, 4096).ok_or(AreaQueryError::Resource)?;
             let build = || -> Option<Curve> {
-                let [h, k] = affine.point(circle.center.map(|v| v.lo))?;
-                if h.lo != h.hi || k.lo != k.hi {
-                    return None;
-                }
-                let tip = exact_add(k.lo, d * sy * circle.radius)?;
-                let raw = [h.lo, c / d, a * sx, k.lo, circle.radius, 1.0];
-                let [h, a, b, k, r, c] = raw.map(|v| Interval::scalar(v).unwrap());
+                let scalar = |v| Interval::scalar(v);
+                let [h, k] = if circle.center.iter().all(|v| v.lo == v.hi) {
+                    affine.point(circle.center.map(|v| v.lo))?
+                } else {
+                    let [x, y] = circle.center;
+                    [
+                        scalar(a)?
+                            .mul(x)?
+                            .add(scalar(c)?.mul(y)?)?
+                            .add(scalar(tx)?)?,
+                        scalar(d)?.mul(y)?.add(scalar(ty)?)?,
+                    ]
+                };
+                let displacement = d * sy * circle.radius;
+                let tip = if k.lo == k.hi {
+                    exact_add(k.lo, displacement)
+                        .and_then(scalar)
+                        .or_else(|| k.add(scalar(displacement)?))?
+                } else {
+                    k.add(scalar(displacement)?)?
+                };
+                let key = if h.lo == h.hi && k.lo == k.hi {
+                    CurveKey::ExactConic([h.lo, c / d, a * sx, k.lo, circle.radius, 1.0])
+                } else {
+                    CurveKey::ConstructedCircle(affine.1, circle.origin?, circle.radius, a * sx)
+                };
                 Some(Curve {
-                    function: Conic { h, a, b, k, r, c },
-                    start: Interval::scalar(k.lo.min(tip))?,
-                    end: Interval::scalar(k.hi.max(tip))?,
-                    key: CurveKey::ExactConic(raw),
+                    function: Conic {
+                        h,
+                        a: scalar(c / d)?,
+                        b: scalar(a * sx)?,
+                        k,
+                        r: scalar(circle.radius)?,
+                        c: scalar(1.0)?,
+                    },
+                    start: if displacement > 0.0 { k } else { tip },
+                    end: if displacement > 0.0 { tip } else { k },
+                    key,
                     reach: Interval::scalar(0.0)?,
                 })
             };
@@ -74,6 +97,9 @@ impl ScanPlan {
         }
         // Foreign affines can add root-space extrema. Retaining the complete
         // circle is a conservative cover until that domain split is qualified.
+        if circle.center.iter().any(|v| v.lo != v.hi) {
+            return Err(AreaQueryError::Precision);
+        }
         self.circle(circle.center.map(|v| v.lo), circle.radius, affine, fuel)
     }
 
@@ -161,13 +187,16 @@ impl ScanPlan {
                 fuel,
             );
         }
-        let frame = self.frame().ok_or(AreaQueryError::Resource)?;
+        let key = match line.origin {
+            Some(origin) => CurveKey::ConstructedLine(affine.1, line.axis, origin),
+            None => CurveKey::Vertical(self.frame().ok_or(AreaQueryError::Resource)?, 0.0),
+        };
         self.push(
             Curve {
                 function,
                 start,
                 end,
-                key: CurveKey::Vertical(frame, 0.0),
+                key,
                 reach: Interval::scalar(0.0).unwrap(),
             },
             fuel,

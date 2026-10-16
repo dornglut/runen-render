@@ -20,11 +20,28 @@ const MAX_LINES: usize = 1_024;
 const MAX_CIRCLES: usize = 128;
 const MAX_VERTICES: usize = 4_096;
 
+/// Exact construction identity within ONE finite-square Effect invocation.
+/// HaloShift means base + sign * the shared REAL halo, not its interval box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum CoordinateOrigin {
+    Exact(f64),
+    HaloShift(f64, f64),
+}
+
+fn exact_coordinate(value: Interval) -> Option<CoordinateOrigin> {
+    (value.lo == value.hi).then_some(CoordinateOrigin::Exact(value.lo))
+}
+
+fn shifted_coordinate(value: Interval, sign: f64) -> Option<CoordinateOrigin> {
+    (value.lo == value.hi).then_some(CoordinateOrigin::HaloShift(value.lo, sign))
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Line {
     /// Constant local-coordinate axis supplied by construction provenance.
     pub(super) axis: usize,
     pub(super) ends: [[Interval; 2]; 2],
+    pub(super) origin: Option<CoordinateOrigin>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -34,6 +51,7 @@ pub(super) struct Circle {
     /// None is a full source capsule circle. Translated candidates keep this
     /// original radial quadrant, derived from the eroded set's outward normal.
     pub(super) quadrant: Option<[f64; 2]>,
+    pub(super) origin: Option<[CoordinateOrigin; 2]>,
 }
 
 pub(super) struct Inventory {
@@ -242,6 +260,7 @@ impl Inventory {
         &mut self,
         axis: usize,
         ends: [[Interval; 2]; 2],
+        origin: Option<CoordinateOrigin>,
         fuel: &mut usize,
     ) -> Result<(), AreaQueryError> {
         charge(
@@ -258,14 +277,14 @@ impl Inventory {
         if axis > 1 {
             return Err(AreaQueryError::Unsupported);
         }
-        if ends[0][axis].lo == ends[0][axis].hi {
+        let origin = origin.or_else(|| {
+            (ends[0][axis].lo == ends[1][axis].lo && ends[0][axis].hi == ends[1][axis].hi)
+                .then(|| exact_coordinate(ends[0][axis]))
+                .flatten()
+        });
+        if let Some(origin) = origin {
             for old in &mut self.lines {
-                if old.axis == axis
-                    && old.ends[0][axis].lo == ends[0][axis].lo
-                    && old.ends[0][axis].hi == ends[0][axis].lo
-                    && old.ends[1][axis].lo == ends[0][axis].lo
-                    && old.ends[1][axis].hi == ends[0][axis].lo
-                {
+                if old.axis == axis && old.origin == Some(origin) {
                     let other = 1 - axis;
                     old.ends[0][other] = Interval::new(
                         old.ends[0][other].lo.min(ends[0][other].lo),
@@ -284,7 +303,7 @@ impl Inventory {
         if self.lines.len() >= MAX_LINES || self.lines.len() == self.lines.capacity() {
             return Err(AreaQueryError::Resource);
         }
-        self.lines.push(Line { axis, ends });
+        self.lines.push(Line { axis, ends, origin });
         Ok(())
     }
     fn circle(
@@ -292,6 +311,7 @@ impl Inventory {
         center: [Interval; 2],
         radius: f64,
         quadrant: Option<[f64; 2]>,
+        origin: Option<[CoordinateOrigin; 2]>,
         fuel: &mut usize,
     ) -> Result<(), AreaQueryError> {
         charge(
@@ -302,14 +322,13 @@ impl Inventory {
                 .and_then(|n| n.checked_add(128))
                 .ok_or(AreaQueryError::Resource)?,
         )?;
-        if center.iter().all(|v| v.lo == v.hi)
-            && self.circles.iter().any(|old| {
-                old.radius == radius
-                    && old.quadrant == quadrant
-                    && (0..2).all(|a| {
-                        old.center[a].lo == center[a].lo && old.center[a].hi == center[a].lo
-                    })
-            })
+        let origin =
+            origin.or_else(|| Some([exact_coordinate(center[0])?, exact_coordinate(center[1])?]));
+        if origin.is_some()
+            && self
+                .circles
+                .iter()
+                .any(|old| old.radius == radius && old.quadrant == quadrant && old.origin == origin)
         {
             return Ok(());
         }
@@ -320,6 +339,7 @@ impl Inventory {
             center,
             radius,
             quadrant,
+            origin,
         });
         Ok(())
     }
@@ -485,10 +505,10 @@ impl Inventory {
                 let mut b = q.map(|v| scalar(v).unwrap());
                 a[axis] = add(a[axis], scalar(sign * radius)?)?;
                 b[axis] = add(b[axis], scalar(sign * radius)?)?;
-                source.line(axis, [a, b], fuel)?;
+                source.line(axis, [a, b], None, fuel)?;
             }
-            source.circle(p.map(|v| scalar(v).unwrap()), radius, None, fuel)?;
-            source.circle(q.map(|v| scalar(v).unwrap()), radius, None, fuel)?;
+            source.circle(p.map(|v| scalar(v).unwrap()), radius, None, None, fuel)?;
+            source.circle(q.map(|v| scalar(v).unwrap()), radius, None, None, fuel)?;
         }
         source.complete_vertices(fuel)?;
         source.retain_possible_boundary(boundary, radius, fuel)?;
@@ -502,11 +522,13 @@ impl Inventory {
                 result.line(
                     0,
                     [[x, sub(vertex[1], halo)?], [x, add(vertex[1], halo)?]],
+                    shifted_coordinate(vertex[0], sign),
                     fuel,
                 )?;
                 result.line(
                     1,
                     [[sub(vertex[0], halo)?, y], [add(vertex[0], halo)?, y]],
+                    shifted_coordinate(vertex[1], sign),
                     fuel,
                 )?;
             }
@@ -520,6 +542,10 @@ impl Inventory {
                     result.line(
                         line.axis,
                         [point(line.ends[0])?, point(line.ends[1])?],
+                        shifted_coordinate(
+                            line.ends[0][line.axis],
+                            if line.axis == 0 { xsign } else { ysign },
+                        ),
                         fuel,
                     )?;
                 }
@@ -536,6 +562,9 @@ impl Inventory {
                         // opposite radial quadrant for this square corner.
                         // Axis-normal and vertex cases retain all connectors.
                         Some([-xsign, -ysign]),
+                        shifted_coordinate(circle.center[0], xsign)
+                            .zip(shifted_coordinate(circle.center[1], ysign))
+                            .map(|(x, y)| [x, y]),
                         fuel,
                     )?;
                 }
@@ -738,10 +767,11 @@ mod tests {
             Line {
                 axis: 0,
                 ends: [[zero, zero], [zero, one]],
+                origin: None,
             },
         );
         assert!(matches!(
-            inventory.line(0, [[one, zero], [one, one]], &mut fuel),
+            inventory.line(0, [[one, zero], [one, one]], None, &mut fuel),
             Err(AreaQueryError::Resource)
         ));
         inventory.circles.resize(
@@ -750,10 +780,11 @@ mod tests {
                 center: [zero, zero],
                 radius: 1.0,
                 quadrant: None,
+                origin: None,
             },
         );
         assert!(matches!(
-            inventory.circle([one, one], 1.0, None, &mut fuel),
+            inventory.circle([one, one], 1.0, None, None, &mut fuel),
             Err(AreaQueryError::Resource)
         ));
         inventory.vertices.resize(MAX_VERTICES, [zero, zero]);
@@ -783,11 +814,11 @@ mod tests {
         };
         let mut fuel = 16_777_216;
         assert!(matches!(
-            inventory.line(0, [[zero, zero], [zero, one]], &mut fuel),
+            inventory.line(0, [[zero, zero], [zero, one]], None, &mut fuel),
             Err(AreaQueryError::Resource)
         ));
         assert!(matches!(
-            inventory.circle([zero, zero], 1.0, None, &mut fuel),
+            inventory.circle([zero, zero], 1.0, None, None, &mut fuel),
             Err(AreaQueryError::Resource)
         ));
         assert!(matches!(
@@ -811,7 +842,7 @@ mod tests {
         let mut inventory = Inventory::empty().unwrap();
         let mut fuel = 16_777_216;
         assert!(matches!(
-            inventory.line(2, [[zero, zero], [zero, one]], &mut fuel),
+            inventory.line(2, [[zero, zero], [zero, one]], None, &mut fuel),
             Err(AreaQueryError::Unsupported)
         ));
         assert!(matches!(
@@ -823,12 +854,14 @@ mod tests {
                 Circle {
                     center: [zero, zero],
                     radius: 1.0,
-                    quadrant: None
+                    quadrant: None,
+                    origin: None,
                 },
                 Circle {
                     center: [one, one],
                     radius: 2.0,
-                    quadrant: None
+                    quadrant: None,
+                    origin: None,
                 },
                 &mut fuel
             ),

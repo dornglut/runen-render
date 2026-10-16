@@ -124,7 +124,7 @@ impl Affine {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum CurveKey {
     Vertical(usize, f64),
     Horizontal(usize, f64),
@@ -132,6 +132,13 @@ enum CurveKey {
     Circle(usize, [f64; 2], f64, f64),
     ExactLine(f64, f64),
     ExactConic([f64; 6]),
+    ConstructedLine(usize, usize, finite_square_geometry::CoordinateOrigin),
+    ConstructedCircle(
+        usize,
+        [finite_square_geometry::CoordinateOrigin; 2],
+        f64,
+        f64,
+    ),
 }
 struct Curve {
     function: Conic,
@@ -329,6 +336,18 @@ impl ScanPlan {
             for y in [curve.start.lo, curve.start.hi, curve.end.lo, curve.end.hi] {
                 add(&mut events, y)?;
             }
+            // Interval-valued branch endpoints delimit unresolved event
+            // strips. Their complete possible area must enter the bound;
+            // subdivision cannot resolve coefficient uncertainty.
+            charge(fuel, 64).ok_or(AreaQueryError::Resource)?;
+            for endpoint in [curve.start, curve.end] {
+                if endpoint.lo < endpoint.hi && endpoint.hi > y0 && endpoint.lo < y1 {
+                    if query.vertical_uncertainty.len() == MAX_BANDS {
+                        return Err(AreaQueryError::Resource);
+                    }
+                    query.vertical_uncertainty.push(endpoint);
+                }
+            }
         }
         for &event in &self.extra_y_events {
             charge(fuel, 16).ok_or(AreaQueryError::Resource)?;
@@ -368,6 +387,7 @@ impl ScanPlan {
                 charge(fuel, 128 + Self::crossing_work(curve, &edge))
                     .ok_or(AreaQueryError::Resource)?;
                 let crossing = Self::crossings(curve, &edge).ok_or(AreaQueryError::Precision)?;
+
                 for root in crossing.roots.into_iter().flatten() {
                     add(&mut events, root.lo)?;
                     add(&mut events, root.hi)?;
@@ -835,6 +855,7 @@ impl ScanPlan {
                     complete: false,
                     roots: [None, None],
                 });
+
                 result.crossings[left * result.curves.len() + right] = crossing;
                 result.crossings[right * result.curves.len() + left] = crossing;
             }
@@ -1267,7 +1288,20 @@ impl ScanPlan {
                     Interval::scalar(exact_add(a, -b)?)?,
                     Interval::scalar(exact_add(h, -k)?)?,
                 ),
-                _ => (f.a.sub(g.a)?, f.h.sub(g.h)?),
+                _ => {
+                    // A scalar slope is a proved real coefficient even when
+                    // the parallel line's intercept remains an interval.
+                    // Preserve exact cancellation instead of dividing by an
+                    // artificial interval around zero and losing topology.
+                    let slope = if f.a.lo == f.a.hi && g.a.lo == g.a.hi {
+                        exact_add(f.a.lo, -g.a.lo)
+                            .and_then(Interval::scalar)
+                            .or_else(|| f.a.sub(g.a))?
+                    } else {
+                        f.a.sub(g.a)?
+                    };
+                    (slope, f.h.sub(g.h)?)
+                }
             };
             if zero(slope) {
                 return (offset.lo > 0.0 || offset.hi < 0.0).then_some(empty);
@@ -1279,6 +1313,36 @@ impl ScanPlan {
             });
         }
         if zero(f.b) || zero(g.b) {
+            let (line_curve, arc_curve) = if zero(f.b) {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            if let (
+                CurveKey::ConstructedLine(frame, 0, line_origin),
+                CurveKey::ConstructedCircle(other_frame, center, radius, _),
+            ) = (line_curve.key, arc_curve.key)
+                && frame == other_frame
+            {
+                use finite_square_geometry::CoordinateOrigin::{Exact, HaloShift};
+                let difference = match (line_origin, center[0]) {
+                    (Exact(a), Exact(b)) => exact_add(a, -b),
+                    (HaloShift(a, sign), HaloShift(b, other_sign)) if sign == other_sign => {
+                        // The SAME real halo cancels exactly, irrespective of
+                        // its enclosing interval or the common ancestor shear.
+                        exact_add(a, -b)
+                    }
+                    _ => None,
+                };
+                if difference.is_some_and(|value| value.abs() == radius) {
+                    // A parent vertical tangent meets its circle only at the
+                    // center height. Wrong radial branches add harmless cuts.
+                    return Some(Crossings {
+                        complete: true,
+                        roots: [Some(arc_curve.function.k), None],
+                    });
+                }
+            }
             let (line, arc) = if zero(f.b) { (f, g) } else { (g, f) };
             let delta = line.h.add(line.a.mul(arc.k)?)?.sub(arc.h)?;
             let slope = line.a.sub(arc.a)?;
@@ -1315,7 +1379,7 @@ impl ScanPlan {
         // original circular intersection equations in (x-a*y,y). Reflection
         // exchanges branches without changing the complete intersection set.
         let (CurveKey::ExactConic(p), CurveKey::ExactConic(q)) = (left.key, right.key) else {
-            return None;
+            return Self::enclosed_circle_crossings(left, right);
         };
         if p[1] != q[1] || p[2].abs() != 1.0 || q[2].abs() != 1.0 || p[5] != 1.0 || q[5] != 1.0 {
             return None;
@@ -1362,6 +1426,67 @@ impl ScanPlan {
         }
         let height = sqrt_enclosure(Interval::new(h2.lo.max(0.0), h2.hi)?)?;
         let base = Interval::scalar(p[3])?.add(dy.mul(t)?.div(distance)?)?;
+        let width = dx.mul(height)?.div(distance)?;
+        Some(Crossings {
+            complete: true,
+            roots: [Some(base.sub(width)?), Some(base.add(width)?)],
+        })
+    }
+
+    /// The same circle intersection equations with uncertain centers.
+    /// Roots may over-enclose or be spurious; original DAG membership still
+    /// decides occupied strips. Equal boxes never prove circle coincidence.
+    fn enclosed_circle_crossings(left: &Curve, right: &Curve) -> Option<Crossings> {
+        let qualify = |curve: &Curve| match curve.key {
+            CurveKey::ExactConic(raw) if raw[2].abs() == 1.0 && raw[5] == 1.0 => Some(raw[1]),
+            CurveKey::ConstructedCircle(_, _, _, _)
+                if curve.function.a.lo == curve.function.a.hi =>
+            {
+                Some(curve.function.a.lo)
+            }
+            _ => None,
+        };
+        let shear = qualify(left)?;
+        if qualify(right)? != shear {
+            return None;
+        }
+        let empty = Crossings {
+            complete: true,
+            roots: [None, None],
+        };
+        if let (
+            CurveKey::ConstructedCircle(frame, center, _, _),
+            CurveKey::ConstructedCircle(other_frame, other_center, _, _),
+        ) = (left.key, right.key)
+            && frame == other_frame
+            && center == other_center
+        {
+            // Proven same real center. Equal circles meet at known branch
+            // tips; unequal concentric circles have no intersections.
+            return Some(empty);
+        }
+        let f = &left.function;
+        let g = &right.function;
+        let slope = Interval::scalar(shear)?;
+        let px = f.h.sub(slope.mul(f.k)?)?;
+        let qx = g.h.sub(slope.mul(g.k)?)?;
+        let dx = qx.sub(px)?;
+        let dy = g.k.sub(f.k)?;
+        let d2 = squared_interval(dx)?.add(squared_interval(dy)?)?;
+        if d2.lo <= 0.0 {
+            return None;
+        }
+        let distance = sqrt_enclosure(d2)?;
+        let t = squared_interval(f.r)?
+            .sub(squared_interval(g.r)?)?
+            .add(d2)?
+            .div(Interval::scalar(2.0)?.mul(distance)?)?;
+        let h2 = squared_interval(f.r)?.sub(squared_interval(t)?)?;
+        if h2.hi < 0.0 {
+            return Some(empty);
+        }
+        let height = sqrt_enclosure(Interval::new(h2.lo.max(0.0), h2.hi)?)?;
+        let base = f.k.add(dy.mul(t)?.div(distance)?)?;
         let width = dx.mul(height)?.div(distance)?;
         Some(Crossings {
             complete: true,
@@ -1658,6 +1783,70 @@ impl ScanPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn enclosed_circle(origin: finite_square_geometry::CoordinateOrigin, sign: f64) -> Curve {
+        let scalar = |v| Interval::scalar(v).unwrap();
+        Curve {
+            function: Conic {
+                h: Interval::new(-0.1, 0.1).unwrap(),
+                a: scalar(0.0),
+                b: scalar(sign),
+                k: Interval::new(-0.1, 0.1).unwrap(),
+                r: scalar(1.0),
+                c: scalar(1.0),
+            },
+            start: Interval::new(-1.1, -0.9).unwrap(),
+            end: Interval::new(0.9, 1.1).unwrap(),
+            key: CurveKey::ConstructedCircle(7, [origin, origin], 1.0, sign),
+            reach: Interval::new(-1.1, 1.1).unwrap(),
+        }
+    }
+
+    #[test]
+    fn coincident_interval_boxes_never_supply_circle_or_line_identity() {
+        use finite_square_geometry::CoordinateOrigin::HaloShift;
+        let left = enclosed_circle(HaloShift(0.0, -1.0), -1.0);
+        let right = enclosed_circle(HaloShift(0.0, 1.0), 1.0);
+        assert!(!left.same_function(&right));
+        assert!(
+            ScanPlan::crossings(&left, &right).is_none(),
+            "uncertain center separation cannot prove a complete crossing inventory"
+        );
+        let same = enclosed_circle(HaloShift(0.0, -1.0), 1.0);
+        let tips = ScanPlan::crossings(&left, &same).unwrap();
+        assert!(tips.complete && tips.roots.iter().all(Option::is_none));
+        assert!(
+            left.function
+                .value(Interval::scalar(1.0).unwrap())
+                .is_none(),
+            "an uncertain tip radicand cannot be clamped into a value"
+        );
+        let a = CurveKey::ConstructedLine(7, 0, HaloShift(0.0, -1.0));
+        let b = CurveKey::ConstructedLine(7, 0, HaloShift(0.0, 1.0));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn shared_halo_tangent_is_an_exact_expression_proof() {
+        use finite_square_geometry::CoordinateOrigin::HaloShift;
+        let arc = enclosed_circle(HaloShift(0.0, -1.0), 1.0);
+        let mut tangent = ScanPlan::constant_curve(-1.0, -2.0, 2.0).unwrap();
+        tangent.key = CurveKey::ConstructedLine(7, 0, HaloShift(-1.0, -1.0));
+        let roots = ScanPlan::crossings(&tangent, &arc).unwrap();
+        assert!(roots.complete);
+        let root = roots.roots[0].unwrap();
+        assert_eq!([root.lo, root.hi], [arc.function.k.lo, arc.function.k.hi]);
+        tangent.key = CurveKey::ConstructedLine(8, 0, HaloShift(-1.0, -1.0));
+        let other = ScanPlan::crossings(&tangent, &arc).unwrap();
+        assert!(
+            other
+                .roots
+                .iter()
+                .flatten()
+                .any(|r| r.hi - r.lo > root.hi - root.lo),
+            "a foreign Effect/frame must not inherit the shared halo cancellation"
+        );
+    }
 
     fn empty_plan() -> ScanPlan {
         ScanPlan {

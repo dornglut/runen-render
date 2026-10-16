@@ -2032,6 +2032,114 @@ fn builder() -> NeutralRegionBuilder {
 }
 
 #[test]
+fn interval_halo_complete_plane_encloses_independent_sixteen_cell_oracle() {
+    use crate::composition_2d::{
+        Render2dBrush, Render2dColorRgba8, Render2dFillRule, Render2dOpacity, Render2dPath,
+        Render2dPathCommand, Render2dPoint,
+    };
+    let mut commands = Vec::new();
+    for [x0, y0, x1, y1] in [[10.0, 10.0, 30.0, 30.0], [18.0, 18.0, 22.0, 22.0]] {
+        for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+            .into_iter()
+            .enumerate()
+        {
+            let point = Render2dPoint::new(x, y).unwrap();
+            commands.push(if i == 0 {
+                Render2dPathCommand::MoveTo(point)
+            } else {
+                Render2dPathCommand::LineTo(point)
+            });
+        }
+        commands.push(Render2dPathCommand::Close);
+    }
+    let item = Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::path(
+                Render2dPath::new(Render2dFillRule::EvenOdd, commands).unwrap(),
+            ),
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    );
+    let mut graph = builder();
+    // Deliberately unrelated physical support must never become membership.
+    let source = graph
+        .source_from_item(
+            support::NeutralMesh {
+                units_per_parent_logical_unit: 1.0,
+                triangles: vec![[0.0, 0.0], [64.0, 0.0], [0.0, 64.0]],
+                bounds: [0.0, 0.0, 64.0, 64.0],
+            },
+            &item,
+            &[0, 0],
+        )
+        .unwrap();
+    let child = graph
+        .effect(
+            Arc::clone(&source),
+            Render2dDropShadow::new(8.0, 0.0, 0.05, -1.0, Render2dColorRgba8::TRANSPARENT).unwrap(),
+            &[0, 0],
+        )
+        .unwrap();
+    let completed = graph.union(vec![source, child], &[0]).unwrap();
+    let projected = graph
+        .affine(
+            completed,
+            Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
+            &[0],
+        )
+        .unwrap();
+    let mut fuel = 16_777_216 - graph.graph_work;
+    let areas = certified_grid_area_query(
+        &projected,
+        [0, 0, 256, 256],
+        4.0,
+        None,
+        8,
+        65_536,
+        &mut fuel,
+    );
+    assert!(
+        areas.is_ok(),
+        "interval-halo whole plane {:?}; remaining={fuel}",
+        areas.as_ref().err()
+    );
+    let areas = areas.unwrap();
+    assert_eq!(areas.len(), 65_536);
+    // Independent 110-digit Decimal circle-segment primitive, using exact
+    // h=3*binary64(.05), 220-term half-angle atan with remainder <1e-120.
+    let reference = [
+        0.0,
+        0.6409861648989578,
+        1.0,
+        1.0,
+        0.0030983267419556765,
+        0.834551512838469,
+        1.0,
+        1.0,
+        0.4875447416964947,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+    ];
+    for (i, expected) in reference.into_iter().enumerate() {
+        let actual = areas[(88 + i / 4) * 256 + 144 + i % 4];
+        assert!(
+            actual[0] <= expected && expected <= actual[1],
+            "cell{i}: {actual:?} vs {expected}"
+        );
+    }
+    assert!(areas.iter().all(|a| a[1] - a[0] <= 1.0 / (2048.0 * 256.0)));
+    eprintln!("interval halo complete-plane work {}", 16_777_216 - fuel);
+}
+
+#[test]
 fn production_area_enclosure_preserves_bounds_and_fuel_across_affine() {
     let mut graph = builder();
     let region = rectangle(&mut graph, [0.0, 0.0, 2.0, 2.0], &[0, 0]);
