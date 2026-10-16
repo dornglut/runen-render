@@ -1610,9 +1610,24 @@ pub(super) fn affine_parent_effect_coverage_admitted(
             ));
         }
     }
+    let certified_rectangle = charge_and_certify_rectangle(&triangles, aggregate_work, path)?;
+    // A zero-spread rectangle has a separable parent-frame Gaussian even
+    // under an arbitrary invertible ancestor. Transform the query point,
+    // then integrate the two original axes; no 2D triangle sweep is needed.
+    let gaussian_rectangle = if signed_spread == 0.0 && physical_sigma > 0.0 {
+        certified_rectangle
+    } else {
+        None
+    };
+    if gaussian_rectangle.is_some() {
+        let cost = area
+            .checked_mul(2 * GAUSSIAN_AXIS_WORK + 64)
+            .ok_or_else(|| resource("nested rectangle Gaussian work overflow"))?;
+        charge_shadow_preparation_work(aggregate_work, cost, path)?;
+    }
     let disk_area = AffinePositiveDiskArea {
         triangles: &triangles,
-        certified_rectangle: certified_axis_aligned_rectangle(&triangles),
+        certified_rectangle,
         inverse: [
             d / determinant,
             -c / determinant,
@@ -1745,6 +1760,10 @@ pub(super) fn affine_parent_effect_coverage_admitted(
                     aggregate_work,
                     path,
                 )?
+            } else if let Some(rect) = gaussian_rectangle {
+                let x = inset_rectangle_axis_mass(rect[0], rect[2], point[0], physical_sigma);
+                let y = inset_rectangle_axis_mass(rect[1], rect[3], point[1], physical_sigma);
+                (x * y).clamp(0.0, 1.0)
             } else {
                 gaussian_union_sample(&triangles, point, physical_sigma, aggregate_work, path)?
             };
@@ -2564,6 +2583,28 @@ pub(super) fn certified_axis_aligned_rectangle(triangles: &[[f64; 2]]) -> Option
         .then_some([min_x, min_y, max_x, max_y])
 }
 
+/// Pay for the four extrema scans and complete triangle/corner proof before
+/// executing it. The caller may reuse this completed geometric certificate.
+fn charge_and_certify_rectangle(
+    triangles: &[[f64; 2]],
+    work: &mut dyn PreparationWork,
+    path: &[usize],
+) -> Result<Option<[f64; 4]>, crate::execution_2d::Render2dExecutionError> {
+    let cost = triangles
+        .len()
+        .checked_mul(48)
+        .and_then(|cost| cost.checked_add(64))
+        .ok_or_else(|| {
+            mask_failure(
+                path,
+                crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                "rectangle certificate work overflow",
+            )
+        })?;
+    charge_shadow_preparation_work(work, cost, path)?;
+    Ok(certified_axis_aligned_rectangle(triangles))
+}
+
 /// Exact area of a certified axis-aligned inset rectangle under either
 /// the identity blur (one physical sample cell) or the normalized finite
 /// 3sigma Gaussian. A rectangular footprint never requires adaptive
@@ -2959,8 +3000,8 @@ fn rasterize_continuous_shadow_coverage(
     // negative disk erosion. This avoids a long adaptive search along
     // straight edges, while retaining the same continuous geometry law.
     // An AABB without the full two-triangle coverage proof never qualifies.
-    let inset = if signed_spread < 0.0 {
-        certified_axis_aligned_rectangle(&triangles).map(|rect| {
+    let inset = if signed_spread <= 0.0 {
+        charge_and_certify_rectangle(&triangles, aggregate_work, path)?.map(|rect| {
             [
                 rect[0] - physical_spread,
                 rect[1] - physical_spread,
@@ -4774,6 +4815,55 @@ mod tests {
             .unwrap()
             .expect("sigma-zero caster retains its exact integrated area");
         assert!((exact_identity.values.iter().sum::<f64>() - 0.0016).abs() < 1.0e-10);
+    }
+
+    #[test]
+    fn parent_rectangle_gaussian_retains_independent_affine_pixels_under_scene_budget() {
+        use crate::composition_2d::Render2dAffineTransform;
+        let mesh = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [10.0, 10.0],
+                [20.0, 10.0],
+                [20.0, 20.0],
+                [10.0, 10.0],
+                [20.0, 20.0],
+                [10.0, 20.0],
+            ],
+            bounds: [10.0, 10.0, 20.0, 20.0],
+        };
+        let mut budget = PreparationBudget::for_contribution(true);
+        let coverage = affine_parent_effect_coverage_admitted(
+            &mesh,
+            ParentEffectKernel {
+                signed_spread: 0.0,
+                sigma: 0.5,
+            },
+            ParentEffectFrame {
+                to_root: Render2dAffineTransform::new(2.0, 0.0, 0.5, 1.0, 4.0, 0.0).unwrap(),
+                root_envelope: [25.25, 8.5, 57.75, 21.5],
+                sample_scale: 4.0,
+            },
+            &[0, 0],
+            &mut budget,
+            MAX_NEUTRAL_MASK_SAMPLES,
+        )
+        .unwrap()
+        .unwrap();
+        // Independent normalized erf-CDF values, also asserted by the Vulkan
+        // fixture. Average all globally phased points after parent inversion.
+        for (pixel_x, expected) in [(30, 0.405_534), (31, 0.763_495), (32, 0.953_792)] {
+            let mut sum = 0.0;
+            for y in 0..4 {
+                for x in 0..4 {
+                    let column = usize::try_from(pixel_x * 4 + x - coverage.origin_x).unwrap();
+                    let row = usize::try_from(13 * 4 + y - coverage.origin_y).unwrap();
+                    sum += coverage.values[row * coverage.width + column];
+                }
+            }
+            assert!((sum / 16.0 - expected).abs() < 1.0e-6);
+        }
+        assert!(budget.used() < 5_000_000);
     }
 
     #[test]
