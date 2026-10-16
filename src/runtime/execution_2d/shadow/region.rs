@@ -21,6 +21,15 @@ const MAX_REGION_NODES: usize = 65_536;
 const MAX_REGION_DEPTH: usize = 512;
 const MAX_REGION_PATH_UNITS: usize = 1_048_576;
 const MAX_REGION_GRAPH_WORK: usize = 16_777_216;
+// Primitive source-level arithmetic/comparisons, loads/stores and bounded
+// control steps, not machine instructions. Proof receipts still pay lookup.
+const PROVENANCE_LOOKUP_WORK: usize = 16;
+const PROVENANCE_NODE_WORK: usize = 64;
+// Authored rectangle/path/triangle checks, finite transforms and corner
+// correspondence are bounded independently of the physical vertex count.
+const PROVENANCE_SOURCE_WORK: usize = 1_024;
+// Four extrema scans plus triangle/corner membership, bit tests and loops.
+const RECTANGLE_VERTEX_WORK: usize = 48;
 
 /// Fixed query inventory reserved by the physical consumer, excluding its
 /// separately admitted width-dependent rows and output/conversion buffers.
@@ -476,6 +485,9 @@ pub(super) struct NeutralRegionBuilder {
     // Stable first-source order is preserved for owner-path diagnostics.
     union_seen: Vec<usize>,
     union_epoch: usize,
+    // Completed original-F1 proofs belong to this immutable invocation DAG.
+    // A cached false result is a paid rejection, never physical authority.
+    polygonal_proofs: Vec<Option<bool>>,
     scales: shadow::NeutralPreparationScale,
     max_buffer_bytes: u64,
 }
@@ -500,6 +512,7 @@ impl NeutralRegionBuilder {
             materialized: Vec::new(),
             union_seen: Vec::new(),
             union_epoch: 0,
+            polygonal_proofs: Vec::new(),
             scales,
             max_buffer_bytes,
         }
@@ -966,29 +979,63 @@ impl NeutralRegionBuilder {
         seen == 0b111
     }
 
-    /// This narrow polygon-to-rounded-disk specialization may only promote
-    /// an exact rectangular union of original F1 straight polygonal geometry. A disposable
-    /// Lyon mesh alone cannot certify an ellipse, rounded corner, Bézier,
-    /// stroke or curved clip merely because its triangles happen to form a
-    /// bounding rectangle. Resolved image destinations and plain rectangular
-    /// fills remain exact polygonal sources, independent of color alpha.
-    fn polygonal_source_proven<'a>(
-        region: &NeutralRegion<'a>,
-        remaining_visits: &mut usize,
+    fn provenance_charge(
+        remaining: &mut usize,
+        cost: usize,
+        path: &[usize],
+    ) -> Result<(), Render2dExecutionError> {
+        *remaining = remaining
+            .checked_sub(cost)
+            .ok_or_else(|| resource(path, "original F1 provenance exceeds remaining graph work"))?;
+        Ok(())
+    }
+
+    fn rectangle_scan_work(
+        mesh: &support::NeutralMesh,
+        path: &[usize],
+    ) -> Result<usize, Render2dExecutionError> {
+        mesh.triangles
+            .len()
+            .checked_mul(RECTANGLE_VERTEX_WORK)
+            .and_then(|cost| cost.checked_add(PROVENANCE_NODE_WORK))
+            .ok_or_else(|| resource(path, "original rectangle proof work overflow"))
+    }
+
+    fn provenance_node_work(region: &NeutralRegion<'_>) -> Result<usize, Render2dExecutionError> {
+        let extra = match &region.kind {
+            Kind::Source(mesh) if region.semantic_item.is_some() => {
+                Self::rectangle_scan_work(mesh, &region.path)?.checked_add(PROVENANCE_SOURCE_WORK)
+            }
+            // Pay the complete child-edge inventory BEFORE visiting it.
+            // Child receipt lookups and uncached bodies pay separately.
+            Kind::Union(children) => children.len().checked_mul(PROVENANCE_LOOKUP_WORK),
+            _ => Some(0),
+        };
+        extra
+            .and_then(|cost| cost.checked_add(PROVENANCE_NODE_WORK))
+            .ok_or_else(|| resource(&region.path, "original source proof work overflow"))
+    }
+
+    fn polygonal_source_proven(
+        region: &NeutralRegion<'_>,
+        remaining: &mut usize,
         memo: &mut [Option<bool>],
     ) -> Result<bool, Render2dExecutionError> {
-        // Node IDs are immutable, unique within this builder and bounded.
-        // Every retained Arc branch must reuse the same source verdict:
-        // the 65_536-node budget cannot permit 2^depth repeated work.
+        Self::provenance_charge(remaining, PROVENANCE_LOOKUP_WORK, &region.path)?;
         if let Some(cached) = memo.get(region.id).copied().flatten() {
             return Ok(cached);
         }
-        *remaining_visits = remaining_visits.checked_sub(1).ok_or_else(|| {
-            resource(
-                &region.path,
-                "original F1 provenance query exceeds work budget",
-            )
-        })?;
+        Self::provenance_charge(remaining, Self::provenance_node_work(region)?, &region.path)?;
+        Self::polygonal_source_uncached(region, remaining, memo)
+    }
+
+    /// The node body and its entire possible leaf/fanout work were admitted
+    /// before entry. Only COMPLETED results become reusable receipts.
+    fn polygonal_source_uncached(
+        region: &NeutralRegion<'_>,
+        remaining: &mut usize,
+        memo: &mut [Option<bool>],
+    ) -> Result<bool, Render2dExecutionError> {
         let result = match &region.kind {
             Kind::Source(mesh) => region.semantic_item.is_some_and(|item| {
                 Self::exact_original_rectangle_source(mesh, item)
@@ -997,22 +1044,18 @@ impl NeutralRegionBuilder {
             Kind::Union(children) => {
                 let mut proven = true;
                 for child in children {
-                    if !Self::polygonal_source_proven(child, remaining_visits, memo)? {
+                    if !Self::polygonal_source_proven(child, remaining, memo)? {
                         proven = false;
                         break;
                     }
                 }
                 proven
             }
-            Kind::Affine { source, .. } => {
-                Self::polygonal_source_proven(source, remaining_visits, memo)?
-            }
+            Kind::Affine { source, .. } => Self::polygonal_source_proven(source, remaining, memo)?,
             Kind::Clip { source, clips } => {
-                // A rectangular *shape type* is not proof that its separate
-                // clip_to_parent affine and physical intersection preserve
-                // the original F1 rectangle. Only the identity/no-op clip
-                // wrapper qualifies for this exact rounded-caster shortcut.
-                clips.is_empty() && Self::polygonal_source_proven(source, remaining_visits, memo)?
+                // Only the existing no-op clip wrapper qualifies. Curved or
+                // transformed clip geometry never inherits a mesh-only proof.
+                clips.is_empty() && Self::polygonal_source_proven(source, remaining, memo)?
             }
             Kind::Effect { .. } => false,
         };
@@ -1026,17 +1069,16 @@ impl NeutralRegionBuilder {
         Ok(result)
     }
 
-    /// Certify an entire immutable F1 neutral source graph as a union of
-    /// authored rectangles and straight triangle fills with exactly matching
-    /// physical triangle support.
-    /// Affine wrappers retain the original straight support; clipped,
-    /// Bézier, stroke, glyph and symbolic-effect inputs fail closed. This
-    /// authorizes a restricted physical Euclidean erosion query, NEVER
-    /// converts a disposable polygon into semantic region authority.
-    pub(super) fn proven_original_straight_polygon_union<'a>(
-        &mut self,
-        root: &Arc<NeutralRegion<'a>>,
+    fn prepare_polygonal_proof(
+        root: &NeutralRegion<'_>,
+        remaining: &mut usize,
+        memo: &mut Vec<Option<bool>>,
+        max_buffer_bytes: u64,
     ) -> Result<bool, Render2dExecutionError> {
+        Self::provenance_charge(remaining, PROVENANCE_LOOKUP_WORK, &root.path)?;
+        if let Some(cached) = memo.get(root.id).copied().flatten() {
+            return Ok(cached);
+        }
         let entries = root
             .id
             .checked_add(1)
@@ -1047,43 +1089,76 @@ impl NeutralRegionBuilder {
         if entries > MAX_REGION_NODES + 1
             || u64::try_from(bytes)
                 .ok()
-                .is_none_or(|n| n > self.max_buffer_bytes)
+                .is_none_or(|bytes| bytes > max_buffer_bytes)
         {
             return Err(resource(
                 &root.path,
                 "original F1 provenance exceeds bounded memory",
             ));
         }
-        let mut memo = Vec::<Option<bool>>::new();
-        memo.try_reserve_exact(entries)
-            .map_err(|_| resource(&root.path, "original F1 provenance allocation failed"))?;
-        if memo
-            .capacity()
-            .checked_mul(std::mem::size_of::<Option<bool>>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .is_none_or(|bytes| bytes > self.max_buffer_bytes)
-        {
-            return Err(resource(
-                &root.path,
-                "original F1 provenance allocated capacity exceeds bounded memory",
-            ));
+        let growth = entries.saturating_sub(memo.len());
+        let node_work = Self::provenance_node_work(root)?;
+        // Exact reservation may relocate every retained receipt even for a
+        // single new slot. Pay both its read and write before allocation.
+        let relocation = if entries > memo.capacity() {
+            memo.len()
+        } else {
+            0
+        };
+        let work = growth
+            .checked_add(relocation)
+            .and_then(|slots| slots.checked_mul(2))
+            .and_then(|cost| cost.checked_add(PROVENANCE_NODE_WORK))
+            .and_then(|cost| cost.checked_add(node_work))
+            .ok_or_else(|| {
+                resource(
+                    &root.path,
+                    "original F1 provenance preparation work overflow",
+                )
+            })?;
+        // Both a large root leaf and a large fanout reject here, before any
+        // proof-cache allocation or source/child traversal can begin.
+        Self::provenance_charge(remaining, work, &root.path)?;
+        if growth != 0 {
+            memo.try_reserve_exact(growth)
+                .map_err(|_| resource(&root.path, "original F1 provenance allocation failed"))?;
+            if memo.capacity() > MAX_REGION_NODES + 1
+                || memo
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Option<bool>>())
+                    .and_then(|bytes| u64::try_from(bytes).ok())
+                    .is_none_or(|bytes| bytes > max_buffer_bytes)
+            {
+                return Err(resource(
+                    &root.path,
+                    "original F1 provenance allocated capacity exceeds admission",
+                ));
+            }
+            memo.resize(entries, None);
         }
-        memo.resize(entries, None);
-        let mut remaining = MAX_REGION_NODES;
-        let proof = Self::polygonal_source_proven(root, &mut remaining, &mut memo)?;
-        let visits = MAX_REGION_NODES - remaining;
-        let next_work = self
-            .graph_work
-            .checked_add(visits)
-            .ok_or_else(|| resource(&root.path, "original F1 provenance work overflow"))?;
-        if next_work > MAX_REGION_GRAPH_WORK {
-            return Err(resource(
-                &root.path,
-                "original F1 provenance exceeds whole-scene work",
-            ));
-        }
-        self.graph_work = next_work;
-        Ok(proof)
+        Self::polygonal_source_uncached(root, remaining, memo)
+    }
+
+    /// Certify authored rectangles/straight triangles and their immutable
+    /// unions using invocation-wide, source-derived proof receipts. Physical
+    /// convexity never proves an authored curve, stroke, glyph or clip.
+    pub(super) fn proven_original_straight_polygon_union(
+        &mut self,
+        root: &Arc<NeutralRegion<'_>>,
+    ) -> Result<bool, Render2dExecutionError> {
+        let mut remaining = MAX_REGION_GRAPH_WORK
+            .checked_sub(self.graph_work)
+            .ok_or_else(|| resource(&root.path, "original F1 graph work exceeds admission"))?;
+        let proof = Self::prepare_polygonal_proof(
+            root,
+            &mut remaining,
+            &mut self.polygonal_proofs,
+            self.max_buffer_bytes,
+        );
+        // Failed/false queries keep every actually admitted charge; errors
+        // cannot fall through to a free second proof or fresh allowance.
+        self.graph_work = MAX_REGION_GRAPH_WORK - remaining;
+        proof
     }
 
     /// Recognize only the exact existing F1 DAG: C union (C ⊕ disk(r)).
@@ -1094,8 +1169,16 @@ impl NeutralRegionBuilder {
         &mut self,
         root: &Arc<NeutralRegion<'a>>,
     ) -> Result<Option<CertifiedRoundedRectangle>, Render2dExecutionError> {
-        fn identity<'a, 'b>(mut node: &'b Arc<NeutralRegion<'a>>) -> &'b Arc<NeutralRegion<'a>> {
+        fn identity<'a, 'b>(
+            mut node: &'b Arc<NeutralRegion<'a>>,
+            remaining: &mut usize,
+        ) -> Result<&'b Arc<NeutralRegion<'a>>, Render2dExecutionError> {
             loop {
+                NeutralRegionBuilder::provenance_charge(
+                    remaining,
+                    PROVENANCE_NODE_WORK,
+                    &node.path,
+                )?;
                 match &node.kind {
                     Kind::Affine { source, to_parent }
                         if to_parent.components()
@@ -1105,17 +1188,25 @@ impl NeutralRegionBuilder {
                     }
                     Kind::Clip { source, clips: [] } => node = source,
                     Kind::Union(children) if children.len() == 1 => node = &children[0],
-                    _ => return node,
+                    _ => return Ok(node),
                 }
             }
         }
-        let Kind::Union(children) = &identity(root).kind else {
+        let mut remaining = MAX_REGION_GRAPH_WORK
+            .checked_sub(self.graph_work)
+            .ok_or_else(|| resource(&root.path, "original F1 graph work exceeds admission"))?;
+        let unwrapped = identity(root, &mut remaining);
+        self.graph_work = MAX_REGION_GRAPH_WORK - remaining;
+        let Kind::Union(children) = &unwrapped?.kind else {
             return Ok(None);
         };
         if children.len() != 2 {
             return Ok(None);
         }
-        let (original, curved) = (&children[0], identity(&children[1]));
+        let mut remaining = MAX_REGION_GRAPH_WORK - self.graph_work;
+        let curved = identity(&children[1], &mut remaining);
+        self.graph_work = MAX_REGION_GRAPH_WORK - remaining;
+        let (original, curved) = (&children[0], curved?);
         let Kind::Effect { source, shadow } = &curved.kind else {
             return Ok(None);
         };
@@ -1127,35 +1218,17 @@ impl NeutralRegionBuilder {
         {
             return Ok(None);
         }
-        // One fallibly admitted dense per-query cache, keyed by unique
-        // immutable F1 graph ID. Repeated Arc edges never re-evaluate a
-        // shared subtree; no exponential proof walk or global scene cache.
-        let cache_entries = original
-            .id
-            .checked_add(1)
-            .ok_or_else(|| resource(&original.path, "original F1 proof cache size overflow"))?;
-        let cache_bytes = cache_entries
-            .checked_mul(std::mem::size_of::<Option<bool>>())
-            .ok_or_else(|| resource(&original.path, "original F1 proof cache bytes overflow"))?;
-        if cache_entries > MAX_REGION_NODES + 1
-            || u64::try_from(cache_bytes)
-                .ok()
-                .is_none_or(|bytes| bytes > self.max_buffer_bytes)
-        {
-            return Err(resource(
-                &original.path,
-                "original F1 proof cache exceeds bounded memory",
-            ));
-        }
-        let mut memo = Vec::<Option<bool>>::new();
-        memo.try_reserve_exact(cache_entries)
-            .map_err(|_| resource(&original.path, "original F1 proof cache allocation failed"))?;
-        memo.resize(cache_entries, None);
-        let mut remaining_visits = MAX_REGION_NODES;
-        if !Self::polygonal_source_proven(original, &mut remaining_visits, &mut memo)? {
+        if !self.proven_original_straight_polygon_union(original)? {
             return Ok(None);
         }
         let rectangle = self.materialize(original)?;
+        let mut remaining = MAX_REGION_GRAPH_WORK
+            .checked_sub(self.graph_work)
+            .ok_or_else(|| resource(&original.path, "original F1 graph work exceeds admission"))?;
+        let scan = Self::rectangle_scan_work(&rectangle, &original.path)?;
+        let charge = Self::provenance_charge(&mut remaining, scan, &original.path);
+        self.graph_work = MAX_REGION_GRAPH_WORK - remaining;
+        charge?;
         if support::certified_axis_aligned_rectangle(&rectangle.triangles).is_none() {
             return Ok(None);
         }
@@ -2151,34 +2224,238 @@ mod tests {
                 )
                 .unwrap();
         }
-        // One unique leaf and 12 unique union nodes: 13 semantic checks,
-        // NOT 8191 visits through duplicated immutable Arc branches.
-        let mut memo = [None; 14];
-        let mut visits = 13;
+        let before = builder.graph_work;
         assert!(
-            NeutralRegionBuilder::polygonal_source_proven(&shared, &mut visits, &mut memo,)
+            builder
+                .proven_original_straight_polygon_union(&shared)
                 .unwrap()
         );
-        assert_eq!(visits, 0);
-        assert!(memo[1..14].iter().all(|entry| *entry == Some(true)));
-        // Even a cached query with an exhausted budget remains deterministic.
+        let paid = builder.graph_work - before;
         assert!(
-            NeutralRegionBuilder::polygonal_source_proven(&shared, &mut visits, &mut memo,)
+            paid > 13,
+            "node visits must include their actual source work"
+        );
+        assert!(paid < 20_000, "shared branches reuse completed receipts");
+        assert!(
+            builder.polygonal_proofs[1..14]
+                .iter()
+                .all(|entry| *entry == Some(true))
+        );
+        assert!(
+            builder
+                .proven_original_straight_polygon_union(&shared)
                 .unwrap()
         );
-        let mut cold = [None; 14];
-        let mut insufficient = 12;
-        assert!(matches!(
-            NeutralRegionBuilder::polygonal_source_proven(
-                &shared, &mut insufficient, &mut cold,
-            ),
+        assert_eq!(builder.graph_work - before, paid + PROVENANCE_LOOKUP_WORK);
+        assert!(builder.materialized.is_empty());
+
+        // Cached truth still pays bounded lookup; it cannot mint extra fuel.
+        builder.graph_work = MAX_REGION_GRAPH_WORK - PROVENANCE_LOOKUP_WORK;
+        assert!(
+            builder
+                .proven_original_straight_polygon_union(&shared)
+                .unwrap()
+        );
+        assert_eq!(builder.graph_work, MAX_REGION_GRAPH_WORK);
+        assert!(
+            matches!(builder.proven_original_straight_polygon_union(&shared),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path), ..
-            }) if path.first() == Some(&2)
-        ));
-        assert_eq!(insufficient, 0);
-        assert!(builder.materialized.is_empty());
+            }) if path == [2, 9])
+        );
+        assert_eq!(builder.graph_work, MAX_REGION_GRAPH_WORK);
+    }
+
+    fn provenance_rectangle_item() -> Render2dItem {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dOpacity, Render2dPrimitive, Render2dRect, Render2dShape,
+        };
+        Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        )
+    }
+
+    fn provenance_rectangle_mesh(repeats: usize) -> support::NeutralMesh {
+        support::NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: [
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
+            ]
+            .repeat(repeats),
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        }
+    }
+
+    #[test]
+    fn provenance_large_leaf_and_fanout_reject_before_proof_cache_allocation() {
+        let item = provenance_rectangle_item();
+        let mut graph = builder();
+        let leaf = graph
+            .source_from_item(provenance_rectangle_mesh(4_096), &item, &[6, 2])
+            .unwrap();
+        graph.graph_work = MAX_REGION_GRAPH_WORK - 512;
+        assert!(
+            matches!(graph.proven_original_straight_polygon_union(&leaf),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+            }) if path == [6, 2])
+        );
+        assert_eq!(
+            graph.graph_work,
+            MAX_REGION_GRAPH_WORK - 512 + PROVENANCE_LOOKUP_WORK
+        );
+        assert_eq!(graph.polygonal_proofs.capacity(), 0);
+        assert!(graph.materialized.is_empty());
+
+        let mut graph = builder();
+        let leaf = graph
+            .source_from_item(provenance_rectangle_mesh(1), &item, &[7, 2])
+            .unwrap();
+        let fanout = graph
+            .node(Kind::Union(vec![leaf; 2_048]), &[7, 3], 2, None)
+            .unwrap();
+        graph.graph_work = MAX_REGION_GRAPH_WORK - 512;
+        assert!(
+            matches!(graph.proven_original_straight_polygon_union(&fanout),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+            }) if path == [7, 3])
+        );
+        assert_eq!(
+            graph.graph_work,
+            MAX_REGION_GRAPH_WORK - 512 + PROVENANCE_LOOKUP_WORK
+        );
+        assert_eq!(graph.polygonal_proofs.capacity(), 0);
+        assert!(graph.materialized.is_empty());
+    }
+
+    #[test]
+    fn provenance_growth_cannot_relocate_unfunded_existing_receipts() {
+        let item = provenance_rectangle_item();
+        let mut graph = builder();
+        graph.polygonal_proofs = vec![None; 4_096];
+        let previous_capacity = graph.polygonal_proofs.capacity();
+        // Simulate the valid monotonic ID inventory after earlier completed
+        // queries. One new root needs only one initialized slot, but may copy
+        // all old receipts. The old initialization-only charge would fit.
+        graph.nodes = previous_capacity - 1;
+        let root = graph
+            .source_from_item(provenance_rectangle_mesh(1), &item, &[7, 8])
+            .unwrap();
+        assert_eq!(root.id, previous_capacity);
+        graph.graph_work = MAX_REGION_GRAPH_WORK - 4_096;
+        assert!(
+            matches!(graph.proven_original_straight_polygon_union(&root),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+            }) if path == [7, 8])
+        );
+        assert_eq!(graph.polygonal_proofs.capacity(), previous_capacity);
+        assert_eq!(graph.polygonal_proofs.len(), 4_096);
+        assert!(graph.polygonal_proofs.iter().all(Option::is_none));
+        assert_eq!(
+            graph.graph_work,
+            MAX_REGION_GRAPH_WORK - 4_096 + PROVENANCE_LOOKUP_WORK
+        );
+    }
+
+    #[test]
+    fn provenance_failed_child_keeps_paid_work_and_completed_receipts_only() {
+        let item = provenance_rectangle_item();
+        let mut graph = builder();
+        let small = graph
+            .source_from_item(provenance_rectangle_mesh(1), &item, &[6, 1])
+            .unwrap();
+        let large = graph
+            .source_from_item(provenance_rectangle_mesh(4_096), &item, &[6, 2])
+            .unwrap();
+        let root = graph
+            .union(vec![Arc::clone(&small), Arc::clone(&large)], &[6, 9])
+            .unwrap();
+        graph.graph_work = MAX_REGION_GRAPH_WORK - 10_000;
+        let before = graph.graph_work;
+        assert!(
+            matches!(graph.proven_original_straight_polygon_union(&root),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+            }) if path == [6, 2])
+        );
+        assert!(graph.graph_work > before + PROVENANCE_LOOKUP_WORK);
+        assert!(graph.graph_work < MAX_REGION_GRAPH_WORK);
+        assert_eq!(graph.polygonal_proofs[small.id], Some(true));
+        assert_eq!(graph.polygonal_proofs[large.id], None);
+        assert_eq!(graph.polygonal_proofs[root.id], None);
+        let paid = graph.graph_work;
+        assert!(
+            graph
+                .proven_original_straight_polygon_union(&small)
+                .unwrap()
+        );
+        assert_eq!(graph.graph_work, paid + PROVENANCE_LOOKUP_WORK);
+        assert!(graph.materialized.is_empty());
+    }
+
+    #[test]
+    fn provenance_cache_memory_rejects_before_allocation_with_owner_path() {
+        let item = provenance_rectangle_item();
+        let mut graph = builder();
+        let leaf = graph
+            .source_from_item(provenance_rectangle_mesh(1), &item, &[7, 4])
+            .unwrap();
+        graph.max_buffer_bytes = 1;
+        let before = graph.graph_work;
+        assert!(
+            matches!(graph.proven_original_straight_polygon_union(&leaf),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+            }) if path == [7, 4])
+        );
+        assert_eq!(graph.graph_work, before + PROVENANCE_LOOKUP_WORK);
+        assert_eq!(graph.polygonal_proofs.capacity(), 0);
+    }
+
+    #[test]
+    fn rounded_caster_qualification_reuses_canonical_source_receipt_and_pays_work() {
+        let item = provenance_rectangle_item();
+        let mut graph = builder();
+        let leaf = graph
+            .source_from_item(provenance_rectangle_mesh(1), &item, &[8, 0])
+            .unwrap();
+        let disk = graph
+            .effect(
+                Arc::clone(&leaf),
+                Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+                &[8, 1],
+            )
+            .unwrap();
+        let root = graph.union(vec![Arc::clone(&leaf), disk], &[8]).unwrap();
+        let before = graph.graph_work;
+        assert!(graph.qualified_rounded_rectangle(&root).unwrap().is_some());
+        assert!(graph.graph_work > before);
+        assert_eq!(graph.polygonal_proofs[leaf.id], Some(true));
+        let paid = graph.graph_work;
+        assert!(graph.proven_original_straight_polygon_union(&leaf).unwrap());
+        assert_eq!(graph.graph_work, paid + PROVENANCE_LOOKUP_WORK);
+
+        graph.graph_work = MAX_REGION_GRAPH_WORK;
+        assert!(matches!(graph.qualified_rounded_rectangle(&root),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+            }) if path == [8]));
+        assert_eq!(graph.graph_work, MAX_REGION_GRAPH_WORK);
     }
 
     #[test]
