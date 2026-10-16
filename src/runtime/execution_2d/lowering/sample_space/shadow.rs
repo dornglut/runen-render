@@ -430,6 +430,12 @@ pub(super) fn prepare(
                     shadow_precision(path, "shadow offset transform is unrepresentable")
                 })?;
             let mut shifted = geometry_support::empty_mesh();
+            aggregate_coverage_work.charge(
+                geometry_support::append_work(&shifted, mesh, path)?,
+                usize::MAX,
+                path,
+                "shadow offset preparation exceeds invocation work",
+            )?;
             geometry_support::append(&mut shifted, mesh, offset, path)?;
             // A certified negative Euclidean disk erosion has EXACT convex
             // polygonal geometry, so carry that into the already-owned
@@ -546,6 +552,12 @@ pub(super) fn prepare(
                     )?
                 } else {
                     let mut projected = geometry_support::empty_mesh();
+                    aggregate_coverage_work.charge(
+                        geometry_support::append_work(&projected, caster, path)?,
+                        usize::MAX,
+                        path,
+                        "shadow ancestor preparation exceeds invocation work",
+                    )?;
                     geometry_support::append(&mut projected, caster, ancestor, path)?;
                     support::prepare_shadow_coverage_admitted(
                         &projected,

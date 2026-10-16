@@ -1380,6 +1380,7 @@ impl NeutralRegionBuilder {
                         mesh.triangles.len(),
                         path,
                     )?;
+                    self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
                     shadow::append(&mut output, &mesh, Render2dAffineTransform::IDENTITY, path)?;
                 }
                 Arc::new(output)
@@ -1388,6 +1389,7 @@ impl NeutralRegionBuilder {
                 let mesh = self.materialize(source)?;
                 shadow::charge_vertices(&mut self.retained_vertices, mesh.triangles.len(), path)?;
                 let mut output = shadow::empty_mesh();
+                self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
                 shadow::append(&mut output, &mesh, *to_parent, path)?;
                 Arc::new(output)
             }
@@ -1485,8 +1487,19 @@ impl NeutralRegionBuilder {
                         path,
                     )?;
                     let mut shifted = shadow::empty_mesh();
+                    self.charge_graph_work(shadow::append_work(&shifted, caster, path)?, path)?;
                     shadow::append(&mut shifted, caster, offset, path)?;
                     if effect.sigma() > 0.0 && !shifted.triangles.is_empty() {
+                        // Twelve translated vertices; at most 12² comparison/
+                        // movement steps in the small sort; deduplication;
+                        // at most 48 orientation steps across both monotone
+                        // hull passes; at most thirty emitted vertices. The
+                        // 8192 bound includes all primitive guards and copies.
+                        let hull_work = (shifted.triangles.len() / 3)
+                            .checked_mul(8_192)
+                            .and_then(|cost| cost.checked_add(256))
+                            .ok_or_else(|| resource(path, "neutral Gaussian hull work overflow"))?;
+                        self.charge_graph_work(hull_work, path)?;
                         let square =
                             shadow::gaussian_square_support(&shifted, effect.sigma() * 3.0, path)?;
                         shadow::charge_vertices(
@@ -2392,6 +2405,59 @@ mod tests {
         graph.graph_work = MAX_REGION_GRAPH_WORK;
         assert!(graph.materialize(&source).is_err());
         assert!(graph.materialized[source.id].is_some());
+    }
+
+    #[test]
+    fn materialized_transform_rejects_before_unfunded_vertex_copy() {
+        let mut graph = builder();
+        let source = graph.source(triangle(), &[4, 0]).unwrap();
+        graph.materialize(&source).unwrap();
+        let parent = graph
+            .affine(
+                Arc::clone(&source),
+                Render2dAffineTransform::IDENTITY,
+                &[4, 1],
+            )
+            .unwrap();
+        // Parent lookup/receipt, three initialized/copied cache slots and
+        // child lookup fit. The subsequent vertex transform/copy does not.
+        let prefix = 2 * MATERIALIZATION_LOOKUP_WORK + MATERIALIZATION_NODE_WORK + 6;
+        let copy = shadow::append_work(&shadow::empty_mesh(), &triangle(), &[4, 1]).unwrap();
+        graph.graph_work = MAX_REGION_GRAPH_WORK - prefix - copy + 1;
+        assert!(matches!(graph.materialize(&parent),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [4, 1]));
+        assert_eq!(graph.graph_work, MAX_REGION_GRAPH_WORK - copy + 1);
+        assert!(graph.materialized[source.id].is_some());
+        assert!(graph.materialized[parent.id].is_none());
+    }
+
+    #[test]
+    fn finite_square_hull_rejects_before_unfunded_construction() {
+        let mut graph = builder();
+        let source = graph.source(triangle(), &[3, 0]).unwrap();
+        graph.materialize(&source).unwrap();
+        let parent = graph
+            .effect(
+                source,
+                Render2dDropShadow::new(0.0, 0.0, 0.5, 0.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+                &[3, 1],
+            )
+            .unwrap();
+        let prefix = 2 * MATERIALIZATION_LOOKUP_WORK + MATERIALIZATION_NODE_WORK + 6;
+        let copy = shadow::append_work(&shadow::empty_mesh(), &triangle(), &[3, 1]).unwrap();
+        let hull = 8_192 + 256;
+        graph.graph_work = MAX_REGION_GRAPH_WORK - prefix - copy - hull + 1;
+        assert!(matches!(graph.materialize(&parent),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [3, 1]));
+        assert_eq!(graph.graph_work, MAX_REGION_GRAPH_WORK - hull + 1);
+        assert!(graph.materialized[parent.id].is_none());
     }
 
     #[test]

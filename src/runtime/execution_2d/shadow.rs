@@ -762,6 +762,37 @@ pub(super) fn append(
     Ok(())
 }
 
+/// Primitive preparation work for the transform, positive-area checks and
+/// destination writes in append. Reserve can also relocate retained output.
+/// Geometry retention and numerical work remain separate admission concerns.
+pub(super) fn append_work(
+    output: &NeutralMesh,
+    source: &NeutralMesh,
+    path: &[usize],
+) -> Result<usize, Render2dExecutionError> {
+    let required = output
+        .triangles
+        .len()
+        .checked_add(source.triangles.len())
+        .ok_or_else(|| resource(path, "neutral append work extent overflow"))?;
+    let relocation = if required > output.triangles.capacity() {
+        output.triangles.len()
+    } else {
+        0
+    };
+    source
+        .triangles
+        .len()
+        .checked_mul(64)
+        .and_then(|cost| {
+            relocation
+                .checked_mul(4)
+                .and_then(|copy| cost.checked_add(copy))
+        })
+        .and_then(|cost| cost.checked_add(256))
+        .ok_or_else(|| resource(path, "neutral append preparation work overflow"))
+}
+
 fn orient(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
     (b[0] - a[0]).mul_add(p[1] - a[1], -(b[1] - a[1]) * (p[0] - a[0]))
 }
