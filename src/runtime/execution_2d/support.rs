@@ -92,12 +92,47 @@ impl PreparationBudget {
             },
         }
     }
+}
 
-    fn snapshot(work: &dyn PreparationWork) -> Self {
+/// Borrow one existing evaluator counter and the already-paid graph receipt.
+/// Every accepted local debit also consumes graph fuel; neither counter resets.
+#[allow(dead_code, reason = "region integration follows independent review")]
+pub(super) struct SharedPreparationWork<'a> {
+    local: &'a mut usize,
+    graph: &'a mut usize,
+    maximum: usize,
+}
+
+#[allow(dead_code, reason = "region integration follows independent review")]
+impl<'a> SharedPreparationWork<'a> {
+    pub(super) fn new(local: &'a mut usize, graph: &'a mut usize) -> Self {
+        let remaining = MAX_COMPOSITIONAL_SHADOW_WORK.saturating_sub(*graph);
+        let maximum = local
+            .saturating_add(remaining)
+            .min(MAX_AGGREGATE_SHADOW_PREPARATION_WORK);
         Self {
-            used: work.used(),
-            maximum: work.maximum(),
+            local,
+            graph,
+            maximum,
         }
+    }
+}
+
+impl PreparationWork for SharedPreparationWork<'_> {
+    fn used(&self) -> usize {
+        *self.local
+    }
+    fn maximum(&self) -> usize {
+        self.maximum
+    }
+    fn record(&mut self, used: usize) {
+        // PreparationWork::charge checks both limits before this commit.
+        // No speculative construction may refund already executed work.
+        let delta = used.checked_sub(*self.local).expect("monotone work debit");
+        let graph = self.graph.checked_add(delta).expect("admitted graph debit");
+        assert!(used <= self.maximum && graph <= MAX_COMPOSITIONAL_SHADOW_WORK);
+        *self.local = used;
+        *self.graph = graph;
     }
 }
 
@@ -2427,7 +2462,15 @@ pub(super) fn certified_convex_erosion_mesh(
     }
     // Charge contribution-wide inspection and normalization BEFORE another
     // potentially large temporary triangle payload is materialized.
-    charge_shadow_preparation_work(aggregate_work, source.triangles.len(), path)?;
+    // Per vertex: zero initialization, two divisions, finite checks, two
+    // stores and the later two abs/max reductions, including loop control.
+    let normalization = source
+        .triangles
+        .len()
+        .checked_mul(32)
+        .and_then(|cost| cost.checked_add(64))
+        .ok_or_else(|| resource("nested convex normalization work overflow"))?;
+    charge_shadow_preparation_work(aggregate_work, normalization, path)?;
     let mut triangles = filled(source.triangles.len(), [0.0_f64; 2], path)?;
     for (out, &[x, y]) in triangles.iter_mut().zip(&source.triangles) {
         *out = [
@@ -2455,43 +2498,57 @@ pub(super) fn certified_convex_erosion_mesh(
     // A rectangle is certified from the WHOLE triangle union, not its AABB.
     // Its Euclidean disk erosion is exactly an inset rectangle. This common
     // class avoids an otherwise redundant quadratic exposed-edge arrangement.
-    let derived = if let Some(rect) = certified_axis_aligned_rectangle(&triangles) {
-        let [x0, y0, x1, y1] = rect;
-        let bounds = [x0 + radius, y0 + radius, x1 - radius, y1 - radius];
-        if !bounds.iter().all(|coordinate| coordinate.is_finite()) {
-            return Err(precision(
-                "nested certified rectangle erosion lost precision",
-            ));
-        }
-        if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
-            Vec::new()
+    let derived =
+        if let Some(rect) = charge_and_certify_rectangle(&triangles, aggregate_work, path)? {
+            // Inset arithmetic, finite/empty guards and six generated vertices.
+            charge_shadow_preparation_work(aggregate_work, 160, path)?;
+            let [x0, y0, x1, y1] = rect;
+            let bounds = [x0 + radius, y0 + radius, x1 - radius, y1 - radius];
+            if !bounds.iter().all(|coordinate| coordinate.is_finite()) {
+                return Err(precision(
+                    "nested certified rectangle erosion lost precision",
+                ));
+            }
+            if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
+                Vec::new()
+            } else {
+                let [x0, y0, x1, y1] = bounds;
+                vec![[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]]
+            }
         } else {
-            let [x0, y0, x1, y1] = bounds;
-            vec![[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]]
-        }
-    } else {
-        let boundary = union_exterior_boundary(&triangles, path, Some(aggregate_work))?;
-        let Some(derived) = certified_convex_eroded_union(
-            &triangles,
-            &boundary,
-            radius,
-            path,
-            Some(aggregate_work),
-        )?
-        else {
-            return Ok(None);
+            let boundary = union_exterior_boundary(&triangles, path, Some(aggregate_work))?;
+            let Some(derived) = certified_convex_eroded_union(
+                &triangles,
+                &boundary,
+                radius,
+                path,
+                Some(aggregate_work),
+            )?
+            else {
+                return Ok(None);
+            };
+            derived
         };
-        derived
-    };
     if derived.len() > MAX_NEUTRAL_MASK_SAMPLES {
         return Err(resource(
             "nested convex erosion mesh exceeds bounded vertices",
         ));
     }
+    // Each triangle orientation and each retained point's four bounds updates,
+    // coordinate copies and push are paid before output allocation or scans.
+    let output_work = derived
+        .len()
+        .checked_mul(24)
+        .and_then(|cost| cost.checked_add(64))
+        .ok_or_else(|| resource("nested convex output work overflow"))?;
+    charge_shadow_preparation_work(aggregate_work, output_work, path)?;
     result
         .triangles
         .try_reserve_exact(derived.len())
         .map_err(|_| resource("nested convex erosion output allocation failed"))?;
+    if result.triangles.capacity() > derived.len() {
+        return Err(resource("nested convex output capacity exceeds admission"));
+    }
     for triangle in derived.as_chunks::<3>().0 {
         if orient(triangle[0], triangle[1], triangle[2]) == 0.0 {
             continue;
@@ -2550,22 +2607,25 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
     {
         return Ok(None);
     }
-    // Stage all work admission locally: a late failed qualification or
-    // fallible output allocation must not poison the caller's budget.
-    // An ineligible geometric classification pays its actual linear work
-    // exactly once before the pre-existing convex fallback.
-    let mut trial_work = PreparationBudget::snapshot(aggregate_work);
-    charge_shadow_preparation_work(&mut trial_work, source.triangles.len(), path)?;
+    // A failed qualification still executed work. Debit the live counter
+    // before each phase, retaining every paid debit on all return paths.
+    charge_shadow_preparation_work(aggregate_work, 64, path)?;
     let mut rectangles = Vec::<[f64; 4]>::new();
     rectangles
         .try_reserve_exact(count)
         .map_err(|_| resource("separated rectangle proof allocation failed"))?;
+    if rectangles.capacity() > count {
+        return Err(resource(
+            "separated rectangle proof capacity exceeds admission",
+        ));
+    }
     let mut largest = 0.0_f64;
     for triangles in source.triangles.as_chunks::<6>().0 {
-        let Some(bounds) = certified_axis_aligned_rectangle(triangles) else {
-            aggregate_work.record(trial_work.used());
+        let Some(bounds) = charge_and_certify_rectangle(triangles, aggregate_work, path)? else {
             return Ok(None);
         };
+        // Four divisions, finite checks, four abs/max updates and one copy.
+        charge_shadow_preparation_work(aggregate_work, 64, path)?;
         let rect = bounds.map(|x| x / source.units_per_parent_logical_unit);
         if !rect.iter().all(|value| value.is_finite()) {
             return Err(precision(
@@ -2581,7 +2641,7 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
     let separation_work = count
         .checked_mul(count)
         .ok_or_else(|| resource("separated rectangle pairwise work overflow"))?;
-    let next = trial_work
+    let next = aggregate_work
         .used()
         .checked_add(separation_work)
         .ok_or_else(|| resource("separated rectangle scene work overflow"))?;
@@ -2590,7 +2650,10 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
             "separated rectangle erosion exceeds 16M scene work",
         ));
     }
-    charge_shadow_preparation_work(&mut trial_work, separation_work, path)?;
+    // Preserve the established candidate/pair class gate independently of
+    // actual arithmetic admission. At most four adds/comparisons and three
+    // short-circuit tests per visited pair, plus indices and loop control.
+    charge_shadow_preparation_work(aggregate_work, 64, path)?;
     if radius <= largest * (16.0 * f64::EPSILON) {
         return Err(precision(
             "separated rectangle erosion radius below coordinate precision",
@@ -2604,12 +2667,17 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
     }
     for (index, a) in rectangles.iter().enumerate() {
         for b in rectangles.iter().skip(index + 1) {
+            aggregate_work.charge(
+                32,
+                MAX_CERTIFIED_RECTANGLE_AXIS_WORK,
+                path,
+                "separated rectangle erosion exceeds 16M scene work",
+            )?;
             if !(a[2] + separation_margin < b[0]
                 || b[2] + separation_margin < a[0]
                 || a[3] + separation_margin < b[1]
                 || b[3] + separation_margin < a[1])
             {
-                aggregate_work.record(trial_work.used());
                 return Ok(None);
             }
         }
@@ -2630,11 +2698,30 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
     if maximum_vertices > MAX_NEUTRAL_MASK_SAMPLES {
         return Err(resource("separated rectangle output exceeds vertex limit"));
     }
+    aggregate_work.charge(
+        64,
+        MAX_CERTIFIED_RECTANGLE_AXIS_WORK,
+        path,
+        "separated rectangle erosion exceeds 16M scene work",
+    )?;
     result
         .triangles
         .try_reserve_exact(maximum_vertices)
         .map_err(|_| resource("separated rectangle output allocation failed"))?;
+    if result.triangles.capacity() > maximum_vertices {
+        return Err(resource(
+            "separated rectangle output capacity exceeds admission",
+        ));
+    }
     for [x0, y0, x1, y1] in rectangles {
+        // Inset/finite/empty guards and up to six points. Each point pays
+        // four bounds updates, coordinate copies, push and loop progression.
+        aggregate_work.charge(
+            64 + 6 * 16,
+            MAX_CERTIFIED_RECTANGLE_AXIS_WORK,
+            path,
+            "separated rectangle erosion exceeds 16M scene work",
+        )?;
         let inset = [x0 + radius, y0 + radius, x1 - radius, y1 - radius];
         if !inset.iter().all(|value| value.is_finite()) {
             return Err(precision("separated rectangle inset lost precision"));
@@ -2658,7 +2745,6 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
             result.triangles.push(point);
         }
     }
-    aggregate_work.record(trial_work.used());
     Ok(Some(result))
 }
 
@@ -3932,6 +4018,108 @@ mod tests {
     }
 
     #[test]
+    fn shared_erosion_work_preserves_both_limits_and_rejected_debits() {
+        let mut local = 100;
+        let mut graph = MAX_COMPOSITIONAL_SHADOW_WORK - 10;
+        {
+            let mut work = SharedPreparationWork::new(&mut local, &mut graph);
+            assert_eq!(work.remaining(MAX_AGGREGATE_SHADOW_PREPARATION_WORK), 10);
+            charge_shadow_preparation_work(&mut work, 7, &[4, 2]).unwrap();
+            let rejected = charge_shadow_preparation_work(&mut work, 4, &[4, 2]);
+            assert!(
+                matches!(rejected, Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [4, 2])
+            );
+            assert_eq!(work.used(), 107);
+            assert_eq!(work.remaining(MAX_AGGREGATE_SHADOW_PREPARATION_WORK), 3);
+            charge_shadow_preparation_work(&mut work, 3, &[4, 2]).unwrap();
+        }
+        assert_eq!(local, 110);
+        assert_eq!(graph, MAX_COMPOSITIONAL_SHADOW_WORK);
+
+        let mut local = MAX_AGGREGATE_SHADOW_PREPARATION_WORK - 2;
+        let mut graph = 20;
+        {
+            let mut work = SharedPreparationWork::new(&mut local, &mut graph);
+            charge_shadow_preparation_work(&mut work, 2, &[4, 3]).unwrap();
+            assert!(charge_shadow_preparation_work(&mut work, 1, &[4, 3]).is_err());
+        }
+        assert_eq!(local, MAX_AGGREGATE_SHADOW_PREPARATION_WORK);
+        assert_eq!(graph, 22);
+
+        let mut local = MAX_CERTIFIED_RECTANGLE_AXIS_WORK - 1;
+        let mut graph = 0;
+        {
+            let mut work = SharedPreparationWork::new(&mut local, &mut graph);
+            assert!(
+                work.charge(2, MAX_CERTIFIED_RECTANGLE_AXIS_WORK, &[4, 4], "class cap")
+                    .is_err()
+            );
+            work.charge(1, MAX_CERTIFIED_RECTANGLE_AXIS_WORK, &[4, 4], "class cap")
+                .unwrap();
+        }
+        assert_eq!(local, MAX_CERTIFIED_RECTANGLE_AXIS_WORK);
+        assert_eq!(
+            graph, 1,
+            "the evaluator limit remains independent of graph fuel"
+        );
+    }
+
+    #[test]
+    fn shared_erosion_failure_keeps_paid_geometry_work() {
+        let mut triangles = Vec::new();
+        for x in [10.0, 22.0] {
+            triangles.extend([
+                [x, 10.0],
+                [x + 4.0, 10.0],
+                [x, 14.0],
+                [x + 4.0, 10.0],
+                [x + 4.0, 14.0],
+                [x, 14.0],
+            ]);
+        }
+        let mesh = NeutralMesh {
+            // The rectangle proof succeeds, then normalization overflows.
+            units_per_parent_logical_unit: f64::MIN_POSITIVE,
+            triangles,
+            bounds: [10.0, 10.0, 26.0, 14.0],
+        };
+        let mut local = 0;
+        let mut graph = 700;
+        {
+            let mut work = SharedPreparationWork::new(&mut local, &mut graph);
+            assert!(matches!(
+                certified_separated_rectangles_erosion_mesh(&mesh, 0.5, &[9, 2], &mut work),
+                Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                    kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+                    path: Some(path), ..
+                }) if path == [9, 2]
+            ));
+        }
+        assert!(
+            local > 0,
+            "executed failed normalization cannot refund work"
+        );
+        assert_eq!(graph, 700 + local);
+        let paid = local;
+        graph = MAX_COMPOSITIONAL_SHADOW_WORK - 1;
+        {
+            let mut work = SharedPreparationWork::new(&mut local, &mut graph);
+            assert!(matches!(
+                certified_separated_rectangles_erosion_mesh(&mesh, 0.5, &[9, 2], &mut work),
+                Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                    kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                    path: Some(path), ..
+                }) if path == [9, 2]
+            ));
+        }
+        assert_eq!(local, paid, "rejected admission executes no geometry phase");
+        assert_eq!(graph, MAX_COMPOSITIONAL_SHADOW_WORK - 1);
+    }
+
+    #[test]
     fn disjoint_original_rectangles_have_exact_nonabsorbed_erosion() {
         // Original-F1 rectangle provenance is established by the caller.
         // The physical representation is exactly two separated rectangles.
@@ -3980,7 +4168,8 @@ mod tests {
         );
 
         // The 16M scene-work limit is retained with atomic rejection.
-        let mut exhausted = MAX_CERTIFIED_RECTANGLE_AXIS_WORK;
+        let mut exhausted = PreparationBudget::for_contribution(true);
+        exhausted.record(MAX_CERTIFIED_RECTANGLE_AXIS_WORK);
         assert!(matches!(
             certified_separated_rectangles_erosion_mesh(&mesh, 0.5, &[5, 4], &mut exhausted),
             Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
@@ -3989,7 +4178,7 @@ mod tests {
                 ..
             }) if path == [5, 4]
         ));
-        assert_eq!(exhausted, MAX_CERTIFIED_RECTANGLE_AXIS_WORK);
+        assert_eq!(exhausted.used(), MAX_CERTIFIED_RECTANGLE_AXIS_WORK);
     }
 
     #[test]

@@ -11,8 +11,7 @@
 //! refinement stops ONLY when certified uncertainty is <= 1/2048 of
 //! cell area; no sampled-mask approximation is substituted.
 use super::{
-    GAUSSIAN_AXIS_WORK, PreparationBudget, PreparationWork, UnionBoundaryEdge, gaussian_axis_mass,
-    mask_failure,
+    GAUSSIAN_AXIS_WORK, PreparationWork, UnionBoundaryEdge, gaussian_axis_mass, mask_failure,
 };
 use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 use std::collections::BinaryHeap;
@@ -129,6 +128,8 @@ impl<'a> OrthogonalExterior<'a> {
         if edges.is_empty() || edges.len() > MAX_ORTHOGONAL_EDGES {
             return Ok(None);
         }
+        // Four finite checks, axis/degeneracy comparisons and loop control.
+        charge(work, 16 * edges.len() + 64, path)?;
         for &[a, b] in edges {
             if !a.iter().chain(b.iter()).all(|v| v.is_finite()) {
                 return Err(precision(path, "orthogonal exterior edge is nonfinite"));
@@ -149,6 +150,12 @@ impl<'a> OrthogonalExterior<'a> {
         y_events
             .try_reserve_exact(edges.len().saturating_mul(2))
             .map_err(|_| resource(path, "orthogonal exterior event allocation failed"))?;
+        if y_events.capacity() > edges.len() * 2 {
+            return Err(resource(
+                path,
+                "orthogonal event capacity exceeds admission",
+            ));
+        }
         for &[a, b] in edges {
             y_events.extend([a[1], b[1]]);
         }
@@ -156,8 +163,8 @@ impl<'a> OrthogonalExterior<'a> {
         y_events.dedup();
 
         // Only eligible, small arrangements are cached. The construction
-        // charge is admitted against a LOCAL candidate counter before any
-        // cache allocations and committed only after construction succeeds.
+        // charge is admitted against the LIVE counter before any cache
+        // allocations. Failed or abandoned construction retains paid work.
         // If the scene budget cannot admit optional caching, the original
         // correct per-slice path remains available with its full work charge.
         let cached_charge_per_slice = edges
@@ -170,18 +177,33 @@ impl<'a> OrthogonalExterior<'a> {
         let mut bands = None;
         if bands_count > 0 && max_inventory.is_some_and(|n| n <= MAX_CACHED_CROSSINGS) {
             let preparation = max_inventory
-                .and_then(|n| n.checked_mul(levels + 2))
+                // Keep the existing sort comparison allowance; separately
+                // pay edge tests, min/max, crossings copies, suffix dedup and
+                // loop progression, plus midpoint/offset setup per band.
+                .and_then(|n| n.checked_mul(levels + 24))
+                .and_then(|n| bands_count.checked_mul(32).and_then(|b| n.checked_add(b)))
                 .ok_or_else(|| resource(path, "cached orthogonal crossing preparation overflow"))?;
-            let mut admitted = PreparationBudget::snapshot(work);
-            if charge(&mut admitted, preparation, path).is_ok() {
+            if charge(work, preparation, path).is_ok() {
                 let mut offsets = Vec::new();
                 offsets
                     .try_reserve_exact(bands_count + 1)
                     .map_err(|_| resource(path, "orthogonal band offsets allocation failed"))?;
+                if offsets.capacity() > bands_count + 1 {
+                    return Err(resource(
+                        path,
+                        "orthogonal offsets capacity exceeds admission",
+                    ));
+                }
                 let mut crossings = Vec::new();
                 crossings
                     .try_reserve_exact(max_inventory.unwrap_or(0))
                     .map_err(|_| resource(path, "orthogonal band crossings allocation failed"))?;
+                if crossings.capacity() > max_inventory.unwrap_or(0) {
+                    return Err(resource(
+                        path,
+                        "orthogonal crossings capacity exceeds admission",
+                    ));
+                }
                 offsets.push(0);
                 for window in y_events.windows(2) {
                     let mid = window[0] + (window[1] - window[0]) * 0.5;
@@ -226,7 +248,6 @@ impl<'a> OrthogonalExterior<'a> {
                     offsets.push(crossings.len());
                 }
                 if offsets.len() == bands_count + 1 {
-                    work.record(admitted.used());
                     bands = Some(OrthogonalBands { offsets, crossings });
                 }
             }
@@ -716,6 +737,7 @@ impl<'a> OrthogonalExterior<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::PreparationBudget;
     use super::*;
 
     // Exact exposed L boundary. The concave notch is real source EXTERIOR.
@@ -836,6 +858,38 @@ mod tests {
             cached_work < fallback_work,
             "shared band construction must amortize"
         );
+    }
+
+    #[test]
+    fn abandoned_cache_keeps_work_but_unadmitted_cache_performs_no_construction() {
+        let low = 1.0_f64;
+        let high = low.next_up();
+        let edges = [
+            [[0.0, low], [1.0, low]],
+            [[1.0, low], [1.0, high]],
+            [[1.0, high], [0.0, high]],
+            [[0.0, high], [0.0, low]],
+        ];
+        // No binary64 midpoint exists. Optional construction starts, then
+        // abandons its cache while preserving the certified per-slice path.
+        let mut attempted_work = 0;
+        let fallback = OrthogonalExterior::new(&edges, &[3, 1], &mut attempted_work)
+            .unwrap()
+            .unwrap();
+        assert!(fallback.bands.is_none());
+
+        let mut local = 0;
+        let mut graph = MAX_GLOBAL_WORK - 256;
+        let before = graph;
+        {
+            let mut work = super::super::SharedPreparationWork::new(&mut local, &mut graph);
+            let fallback = OrthogonalExterior::new(&edges, &[3, 1], &mut work)
+                .unwrap()
+                .unwrap();
+            assert!(fallback.bands.is_none());
+        }
+        assert!(local > 0 && local < attempted_work);
+        assert_eq!(graph, before + local);
     }
 
     #[test]
