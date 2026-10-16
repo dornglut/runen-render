@@ -1,6 +1,7 @@
 //! Bounded private tessellation. Stroke geometry stays local until after expansion;
 //! affine transforms therefore preserve centered widths under non-uniform scale.
 
+use super::support::NeutralMesh;
 use crate::composition_2d::*;
 use crate::execution_2d::{Render2dExecutionError, Render2dVectorError};
 use lyon_tessellation::{
@@ -31,48 +32,14 @@ pub(super) fn error(root_index: usize, kind: Render2dVectorError) -> Render2dExe
     Render2dExecutionError::Vector { root_index, kind }
 }
 
-pub(super) fn realize(
-    item: &Render2dItem,
+/// Disposable backend-neutral tessellation shared by visible paint and neutral support.
+fn tessellate_shape(
+    shape: &Render2dShape,
+    stroke: Option<Render2dStrokeStyle>,
     root_index: usize,
-    scale: f64,
-    canvas: [f64; 2],
-    max_buffer_bytes: u64,
-) -> Result<Option<VectorMesh>, Render2dExecutionError> {
-    let (shape, brush, stroke) = match item.primitive() {
-        Render2dPrimitive::Fill { shape, brush } => (shape, brush, None),
-        Render2dPrimitive::Stroke {
-            shape,
-            brush,
-            style,
-        } => (shape, brush, Some(*style)),
-        _ => unreachable!("vector admission"),
-    };
+    stretch: f64,
+) -> Result<BoundedGeometry, Render2dExecutionError> {
     let fail = |kind| error(root_index, kind);
-    let [a, b, c, d, tx, ty] = item.local_to_parent().components();
-    // Frobenius norm is a conservative upper bound on all directional scale.
-    let stretch = a.hypot(b).hypot(c.hypot(d)) * scale;
-    if !stretch.is_finite() {
-        return Err(fail(Render2dVectorError::PrecisionLimit));
-    }
-    if stretch == 0.0
-        || item.opacity().get() == 0.0
-        || match brush {
-            Render2dBrush::Solid(color) => color.channels()[3] == 0,
-            Render2dBrush::Linear(gradient) => gradient
-                .stops()
-                .as_slice()
-                .iter()
-                .all(|stop| stop.color().channels()[3] == 0),
-            Render2dBrush::Radial(gradient) => gradient
-                .stops()
-                .as_slice()
-                .iter()
-                .all(|stop| stop.color().channels()[3] == 0),
-        }
-        || stroke.is_some_and(|style| style.width() == 0.0)
-    {
-        return Ok(None);
-    }
     let tolerance = PHYSICAL_TOLERANCE / stretch;
     if !tolerance.is_finite() || tolerance < f64::from(f32::MIN_POSITIVE) {
         return Err(fail(Render2dVectorError::PrecisionLimit));
@@ -131,26 +98,60 @@ pub(super) fn realize(
         return Err(fail(Render2dVectorError::ResourceLimit));
     }
     result.map_err(|_| fail(Render2dVectorError::TessellationFailed))?;
+    Ok(geometry)
+}
+
+pub(super) fn realize(
+    item: &Render2dItem,
+    root_index: usize,
+    scale: f64,
+    canvas: [f64; 2],
+    max_buffer_bytes: u64,
+) -> Result<Option<VectorMesh>, Render2dExecutionError> {
+    let (shape, brush, stroke) = match item.primitive() {
+        Render2dPrimitive::Fill { shape, brush } => (shape, brush, None),
+        Render2dPrimitive::Stroke {
+            shape,
+            brush,
+            style,
+        } => (shape, brush, Some(*style)),
+        _ => unreachable!("vector admission"),
+    };
+    let fail = |kind| error(root_index, kind);
+    let [a, b, c, d, tx, ty] = item.local_to_parent().components();
+    // Frobenius norm is a conservative upper bound on all directional scale.
+    let stretch = a.hypot(b).hypot(c.hypot(d)) * scale;
+    if !stretch.is_finite() {
+        return Err(fail(Render2dVectorError::PrecisionLimit));
+    }
+    if stretch == 0.0
+        || item.opacity().get() == 0.0
+        || match brush {
+            Render2dBrush::Solid(color) => color.channels()[3] == 0,
+            Render2dBrush::Linear(gradient) => gradient
+                .stops()
+                .as_slice()
+                .iter()
+                .all(|stop| stop.color().channels()[3] == 0),
+            Render2dBrush::Radial(gradient) => gradient
+                .stops()
+                .as_slice()
+                .iter()
+                .all(|stop| stop.color().channels()[3] == 0),
+        }
+        || stroke.is_some_and(|style| style.width() == 0.0)
+    {
+        return Ok(None);
+    }
+    let geometry = tessellate_shape(shape, stroke, root_index, stretch)?;
     let mut triangles = Vec::new();
     for indices in geometry.indices.as_chunks::<3>().0 {
-        let mut polygon = Vec::with_capacity(7);
-        for index in indices {
-            let p = geometry.vertices[*index as usize];
-            let x = (a.mul_add(f64::from(p.x), c.mul_add(f64::from(p.y), tx))) * scale;
-            let y = (b.mul_add(f64::from(p.x), d.mul_add(f64::from(p.y), ty))) * scale;
-            if !x.is_finite()
-                || !y.is_finite()
-                || x.abs().max(y.abs()) * f64::EPSILON > PHYSICAL_TOLERANCE / 8.0
-            {
-                return Err(fail(Render2dVectorError::PrecisionLimit));
-            }
-            polygon.push([x, y]);
-        }
-        let u = [polygon[1][0] - polygon[0][0], polygon[1][1] - polygon[0][1]];
-        let v = [polygon[2][0] - polygon[0][0], polygon[2][1] - polygon[0][1]];
-        if u[0] * v[1] - u[1] * v[0] == 0.0 {
+        let Some(triangle) =
+            transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
+        else {
             continue;
-        }
+        };
+        let mut polygon = Vec::from(triangle);
         // Clip in f64 before the GPU ABI narrowing. Continuous canvas edges, including
         // a fractional final pixel, participate in coverage rather than a rounded scissor.
         for (axis, edge, greater) in [
@@ -200,6 +201,172 @@ pub(super) fn realize(
         raster_scale: scale,
         opacity: item.opacity().get(),
         root_index,
+    }))
+}
+
+/// Retained shaped-glyph geometry in the owning item's immediate-parent frame.
+///
+/// The same unhinted, variation-resolved font outline used for F2 MSDF
+/// generation is re-tessellated by the F3 vector authority. MSDF pixels,
+/// foreground alpha, field overscan and final-target clipping never define
+/// neutral glyph support. An ancestor affine is deliberately absent: effects
+/// using this support operate in their group's parent frame first.
+#[allow(dead_code, reason = "F3F group support integration in progress")]
+pub(super) struct NeutralGlyphInstance<'a> {
+    pub(super) field: &'a super::field::GlyphField,
+    pub(super) resource_id: Render2dResourceId,
+    pub(super) origin: [f64; 2],
+    pub(super) font_size: f64,
+    pub(super) to_parent: Render2dAffineTransform,
+}
+
+#[allow(dead_code, reason = "F3F group support integration in progress")]
+pub(super) fn neutral_shaped_glyph(
+    glyph: NeutralGlyphInstance<'_>,
+    path: &[usize],
+    samples_per_parent_logical_unit: f64,
+    max_buffer_bytes: u64,
+) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
+    let NeutralGlyphInstance {
+        field,
+        resource_id,
+        origin: glyph_origin,
+        font_size,
+        to_parent: glyph_to_parent,
+    } = glyph;
+    let precision = || Render2dExecutionError::SampleSpace {
+        kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+        path: Some(path.to_vec()),
+        detail: "unrepresentable shaped-glyph parent-frame support".to_owned(),
+    };
+    if !font_size.is_finite()
+        || font_size <= 0.0
+        || !samples_per_parent_logical_unit.is_finite()
+        || samples_per_parent_logical_unit <= 0.0
+        || !glyph_origin.iter().all(|component| component.is_finite())
+    {
+        return Err(precision());
+    }
+    let [a, b, c, d, tx, ty] = glyph_to_parent.components();
+    let transform = Render2dAffineTransform::new(
+        a * font_size,
+        b * font_size,
+        c * font_size,
+        d * font_size,
+        a.mul_add(glyph_origin[0], c.mul_add(glyph_origin[1], tx)),
+        b.mul_add(glyph_origin[0], d.mul_add(glyph_origin[1], ty)),
+    )
+    .map_err(|_| precision())?;
+    let item = Render2dItem::new(
+        Render2dPrimitive::Fill {
+            shape: field.neutral_shape(resource_id)?,
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        },
+        transform,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+    );
+    neutral_support(
+        &item,
+        path[0],
+        samples_per_parent_logical_unit,
+        max_buffer_bytes,
+    )
+}
+
+/// A source-neutral vector's tessellated physical support before paint/canvas culling.
+///
+/// Triangles are disposable physical approximations of the accepted semantic geometry;
+/// neither their boundaries nor these bounds define a second semantic support authority.
+fn transformed_triangle(
+    geometry: &BoundedGeometry,
+    indices: &[u32; 3],
+    [a, b, c, d, tx, ty]: [f64; 6],
+    scale: f64,
+    root_index: usize,
+) -> Result<Option<[[f64; 2]; 3]>, Render2dExecutionError> {
+    let mut polygon = [[0.0; 2]; 3];
+    for (position, index) in indices.iter().enumerate() {
+        let point = geometry.vertices[*index as usize];
+        let x = (a.mul_add(f64::from(point.x), c.mul_add(f64::from(point.y), tx))) * scale;
+        let y = (b.mul_add(f64::from(point.x), d.mul_add(f64::from(point.y), ty))) * scale;
+        if !x.is_finite()
+            || !y.is_finite()
+            || x.abs().max(y.abs()) * f64::EPSILON > PHYSICAL_TOLERANCE / 8.0
+        {
+            return Err(error(root_index, Render2dVectorError::PrecisionLimit));
+        }
+        polygon[position] = [x, y];
+    }
+    let u = [polygon[1][0] - polygon[0][0], polygon[1][1] - polygon[0][1]];
+    let v = [polygon[2][0] - polygon[0][0], polygon[2][1] - polygon[0][1]];
+    Ok((u[0] * v[1] - u[1] * v[0] != 0.0).then_some(polygon))
+}
+
+/// Reconstructs the geometry that may cast shadows, before visible-paint alpha
+/// or final-canvas culling. Signed coordinates are retained: off-canvas casters
+/// may still reach the target after later group offsets, spreads or blurs.
+///
+/// This private geometry retains the same bounded tessellation and precision
+/// admission as visible vectors. Shadow-specific morphology, clips, halo, and
+/// group support are derived by the F3F composition compiler, not by this leaf.
+#[allow(dead_code, reason = "awaiting F3F group lowering")]
+pub(super) fn neutral_support(
+    item: &Render2dItem,
+    root_index: usize,
+    scale: f64,
+    max_buffer_bytes: u64,
+) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
+    let (shape, stroke) = match item.primitive() {
+        Render2dPrimitive::Fill { shape, .. } => (shape, None),
+        Render2dPrimitive::Stroke { shape, style, .. } => (shape, Some(*style)),
+        _ => unreachable!("vector neutral geometry admission"),
+    };
+    let [a, b, c, d, tx, ty] = item.local_to_parent().components();
+    let stretch = a.hypot(b).hypot(c.hypot(d)) * scale;
+    if !stretch.is_finite() {
+        return Err(error(root_index, Render2dVectorError::PrecisionLimit));
+    }
+    if stretch == 0.0 || stroke.is_some_and(|style| style.width() == 0.0) {
+        return Ok(None);
+    }
+    let geometry = tessellate_shape(shape, stroke, root_index, stretch)?;
+    let mut triangles = Vec::new();
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for indices in geometry.indices.as_chunks::<3>().0 {
+        let Some(triangle) =
+            transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
+        else {
+            continue;
+        };
+        let count = triangles
+            .len()
+            .checked_add(3)
+            .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
+        let bytes = u64::try_from(count)
+            .ok()
+            .and_then(|n| n.checked_mul(crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE))
+            .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
+        if count > MAX_ELEMENTS || bytes > max_buffer_bytes {
+            return Err(error(root_index, Render2dVectorError::ResourceLimit));
+        }
+        for [x, y] in triangle {
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(y);
+            triangles.push([x, y]);
+        }
+    }
+    Ok((!triangles.is_empty()).then_some(NeutralMesh {
+        units_per_parent_logical_unit: scale,
+        triangles,
+        bounds,
     }))
 }
 
@@ -445,6 +612,87 @@ impl StrokeGeometryBuilder for BoundedGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neutral_support_preserves_transparent_offscreen_fill_and_signed_bounds() {
+        let source = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(-10.0, -2.0, 9.0, 4.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        assert!(
+            realize(&source, 3, 1.0, [16.0, 16.0], 4096)
+                .unwrap()
+                .is_none()
+        );
+        let support = neutral_support(&source, 3, 1.0, 4096)
+            .unwrap()
+            .expect("transparent offscreen source has semantic geometry");
+        assert_eq!(support.bounds, [-10.0, -2.0, -1.0, 2.0]);
+        assert_eq!(support.triangles.len(), 6);
+    }
+
+    #[test]
+    fn neutral_support_applies_local_to_parent_before_parent_frame_effects() {
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 1.0, 1.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 4.0, 0.0).unwrap(),
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let support = neutral_support(&item, 0, 1.0, 4096).unwrap().unwrap();
+        assert_eq!(support.bounds, [4.0, 0.0, 6.0, 1.0]);
+        assert_eq!(support.triangles.len(), 6);
+        assert!(matches!(
+            neutral_support(&item, 0, 1.0, 32),
+            Err(Render2dExecutionError::Vector {
+                root_index: 0,
+                kind: Render2dVectorError::ResourceLimit
+            })
+        ));
+    }
+
+    #[test]
+    fn neutral_support_preserves_transparent_stroke_and_singular_empty_geometry() {
+        let stroke = Render2dItem::new(
+            Render2dPrimitive::Stroke {
+                shape: Render2dShape::rect(Render2dRect::new(-2.0, -2.0, 4.0, 4.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+                style: Render2dStrokeStyle::new(
+                    2.0,
+                    Render2dStrokeCap::Round,
+                    Render2dStrokeJoin::Round,
+                    4.0,
+                )
+                .unwrap(),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let support = neutral_support(&stroke, 0, 1.0, 1_048_576)
+            .unwrap()
+            .unwrap();
+        assert!(support.bounds[0] < -2.0 && support.bounds[2] > 2.0);
+        let collapsed = Render2dItem::new(
+            stroke.primitive().clone(),
+            Render2dAffineTransform::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0).unwrap(),
+            vec![],
+            Render2dOpacity::OPAQUE,
+        );
+        assert!(
+            neutral_support(&collapsed, 0, 1.0, 1_048_576)
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn geometry_buffer_limit_and_collapsed_affine_are_explicit() {

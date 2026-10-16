@@ -162,6 +162,7 @@ pub(super) fn admit_tile_work(
     plan_events: usize,
     items: &[Option<PreparedItem>],
     tiles: u64,
+    shadow_work: u64,
 ) -> Result<(), Render2dExecutionError> {
     let mut units = u64::try_from(plan_events).map_err(|_| failure("tile event count overflow"))?;
     for item in items.iter().flatten() {
@@ -176,7 +177,8 @@ pub(super) fn admit_tile_work(
     }
     let total = units
         .checked_mul(tiles)
-        .ok_or_else(|| failure("aggregate tile work count overflow"))?;
+        .and_then(|replay| replay.checked_add(shadow_work))
+        .ok_or_else(|| failure("aggregate tile and shadow work count overflow"))?;
     if total > MAX_TILE_WORK_UNITS {
         return Err(failure(
             "aggregate tile preparation work exceeds bounded admission",
@@ -200,13 +202,7 @@ pub(super) fn inspect(
     let mut retained_vector_vertices = 0usize;
     for (event_index, event) in plan.events.iter().enumerate() {
         match event {
-            scene::Event::BeginGroup { group, path, .. } => {
-                if !group.shadows().is_empty() {
-                    let kind = Render2dUnsupportedContent::Shadows {
-                        root_index: path[0],
-                    };
-                    return Err(crate::runtime::execution_2d::unsupported_at(path, kind));
-                }
+            scene::Event::BeginGroup { .. } => {
                 depth += 1;
                 peak = peak.max(depth);
                 active_groups.push(items.len());

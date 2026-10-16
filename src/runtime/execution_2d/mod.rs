@@ -6,6 +6,12 @@ mod image;
 mod intrinsic;
 mod lowering;
 mod scene;
+#[allow(
+    dead_code,
+    reason = "F3F geometry preflight wiring into group compositor"
+)]
+mod shadow;
+mod support;
 mod vector;
 
 use self::field::{FieldSetKey, QualityTier, ResourceFields};
@@ -193,6 +199,7 @@ impl Render2dExecutionState {
             &plan,
             bindings,
             &occurrences,
+            &resolved_fields,
         )?;
         for (resource_id, value) in observed_updates {
             let previous = self.observed.insert(resource_id, value);
@@ -233,6 +240,10 @@ fn unsupported_at(path: &[usize], kind: Render2dUnsupportedContent) -> Render2dE
 
 fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecutionError> {
     let mut runs = Vec::new();
+    // Shaped-text run admission owns only the F2 text/translation contract.
+    // F3F neutral-region preparation is the sole authority for whether an
+    // ancestor can consume a curved descendant; checking that here would
+    // reject a valid region before its certified evaluator could inspect it.
     for (event_index, event) in plan.events.iter().enumerate() {
         let (root_index, item, to_root) = match event {
             scene::Event::Item {
@@ -244,16 +255,7 @@ fn admit_runs(plan: &scene::Plan<'_>) -> Result<Vec<AdmittedRun>, Render2dExecut
                 let root_index = path[0];
                 (root_index, *item, *to_root)
             }
-            scene::Event::BeginGroup { path, group, .. } => {
-                if !group.shadows().is_empty() {
-                    let kind = Render2dUnsupportedContent::Shadows {
-                        root_index: path[0],
-                    };
-                    return Err(unsupported_at(path, kind));
-                }
-                continue;
-            }
-            scene::Event::EndGroup => continue,
+            scene::Event::BeginGroup { .. } | scene::Event::EndGroup => continue,
         };
         let text = match item.primitive() {
             Render2dPrimitive::Fill { .. }
@@ -323,7 +325,58 @@ mod tests {
     }
 
     #[test]
-    fn empty_nested_shadow_group_reports_exact_unsupported_effect_path() {
+    fn f2_text_gate_defers_curved_ancestor_admission_to_f3f() {
+        let shadow =
+            Render2dDropShadow::new(1.0, 1.0, 0.0, 0.5, Render2dColorRgba8::WHITE).unwrap();
+        let shadow_only = Render2dEntry::group(Render2dGroup::new(
+            Vec::new(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![shadow],
+        ));
+        let outer = Render2dGroup::new(
+            vec![shadow_only],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![
+                Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+            ],
+        );
+        let tree = Render2dComposition::new(vec![Render2dEntry::group(outer)]).unwrap();
+        let plan = scene::analyze(&tree).unwrap();
+        assert!(
+            admit_runs(&plan).unwrap().is_empty(),
+            "the F2 text extractor must not invent a second curved-shadow authority"
+        );
+    }
+
+    #[test]
+    fn nested_positive_zero_blur_without_ancestor_caster_passes_f2_preflight() {
+        let disk = Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::WHITE).unwrap();
+        let inner = Render2dEntry::group(Render2dGroup::new(
+            Vec::new(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![disk],
+        ));
+        let outer = Render2dEntry::group(Render2dGroup::new(
+            vec![inner],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            Vec::new(),
+        ));
+        let tree = Render2dComposition::new(vec![outer]).unwrap();
+        let plan = scene::analyze(&tree).unwrap();
+        assert!(admit_runs(&plan).unwrap().is_empty());
+    }
+
+    #[test]
+    fn nested_zero_kernel_shadow_group_passes_f2_semantic_preflight() {
         let shadow =
             Render2dDropShadow::new(1.0, 1.0, 0.0, 0.0, Render2dColorRgba8::WHITE).unwrap();
         let shadow_only = Render2dEntry::group(Render2dGroup::new(
@@ -342,13 +395,10 @@ mod tests {
         );
         let tree = Render2dComposition::new(vec![Render2dEntry::group(outer)]).unwrap();
         let plan = scene::analyze(&tree).unwrap();
-        assert!(matches!(
-            admit_runs(&plan),
-            Err(Render2dExecutionError::UnsupportedEntry {
-                path,
-                kind: Render2dUnsupportedContent::Shadows { root_index: 0 },
-            }) if path == [0, 0]
-        ));
+        assert!(
+            admit_runs(&plan).unwrap().is_empty(),
+            "effect-only geometry does not fabricate any F2 shaped-text runs"
+        );
     }
 
     #[test]
