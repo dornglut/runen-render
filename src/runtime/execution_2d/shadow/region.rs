@@ -475,7 +475,7 @@ pub(super) struct NeutralRegionBuilder {
     retained_path_units: usize,
     retained_vertices: usize,
     /// One invocation-wide original reach AND stable neutral-union scan budget.
-    graph_work: usize,
+    pub(super) graph_work: usize,
     pub(super) clip_work: usize,
     erosion_work: usize,
     // Dense, fallibly allocated by monotonic node ID; no implicit per-entry
@@ -1737,7 +1737,8 @@ mod tests {
             "the actual root caster must be inspected before materialization"
         );
         let sources = result.expect("qualified C union disk must reach the ancestor");
-        let Some(shadow::NeutralCaster::RoundedRectangle(qualified)) = sources.get(&0) else {
+        let Some(shadow::NeutralCaster::RoundedRectangle(qualified)) = sources.casters.get(&0)
+        else {
             panic!("the root must carry one exact qualified rounded caster");
         };
         assert_eq!(qualified.radius, 1.0);

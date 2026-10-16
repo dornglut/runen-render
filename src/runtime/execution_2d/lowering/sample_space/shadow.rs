@@ -180,6 +180,25 @@ pub(super) fn admit_effect_count(plan: &scene::Plan<'_>) -> Result<usize, Render
     Ok(authored_effects)
 }
 
+/// Establish the immutable invocation policy from the COMPLETE caster
+/// inventory, retaining work already spent preparing those same sources.
+fn admit_source_work(
+    sources: &geometry_support::GroupChildSources<'_>,
+) -> Result<support::PreparationBudget, Render2dExecutionError> {
+    let has_symbolic = sources
+        .casters
+        .values()
+        .any(|source| matches!(source, geometry_support::NeutralCaster::Symbolic(_)));
+    let mut work = support::PreparationBudget::for_contribution(has_symbolic);
+    work.charge(
+        sources.graph_work,
+        usize::MAX,
+        &[],
+        "neutral source graph exceeds aggregate shadow work admission",
+    )?;
+    Ok(work)
+}
+
 /// Independent F1 shadows each derive from the same immutable pre-shadow C.
 /// This preflight runs before caller-target GPU work and retains exact authored
 /// event paths; it is never a reinterpreted public support ontology.
@@ -218,6 +237,8 @@ pub(super) fn prepare(
         target.max_buffer_bytes(),
         Some((target.canvas(), target.raster_scale())),
     )?;
+    let mut aggregate_coverage_work = admit_source_work(&sources)?;
+    let sources = sources.casters;
     let mut groups = ShadowGroups::default();
     groups
         .entries
@@ -230,12 +251,6 @@ pub(super) fn prepare(
         ));
     }
     let mut retained_coverage_bytes = metadata;
-    // Select policy from the complete immutable inventory before visiting any
-    // sibling. A later symbolic caster must constrain earlier legacy work too.
-    let has_symbolic = sources
-        .values()
-        .any(|source| matches!(source, geometry_support::NeutralCaster::Symbolic(_)));
-    let mut aggregate_coverage_work = support::PreparationBudget::for_contribution(has_symbolic);
     // This is ONLY paint reachability. Alpha-neutral structural support for
     // ancestors is independently prepared from every borrowed F1 group,
     // including transparent effects and zero-opacity children.
@@ -787,4 +802,180 @@ pub(super) fn upload_tile(
                 .map_err(|e| gpu("shadow mask view descriptor", e))?,
         )
         .map_err(|e| gpu("shadow mask view", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::composition_2d::*;
+    use crate::execution_2d::Render2dSampleSpaceError;
+
+    fn rectangle([x, y, width, height]: [f64; 4]) -> Render2dEntry {
+        Render2dEntry::item(Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(x, y, width, height).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        ))
+    }
+
+    fn legacy_group() -> Render2dEntry {
+        Render2dEntry::group(Render2dGroup::new(
+            vec![rectangle([1.0, 1.0, 1.0, 1.0])],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![
+                Render2dDropShadow::new(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    Render2dColorRgba8::new(0, 0, 255, 255),
+                )
+                .unwrap(),
+            ],
+        ))
+    }
+
+    fn symbolic_group() -> Render2dEntry {
+        let child = Render2dEntry::group(Render2dGroup::new(
+            [
+                [10.0, 10.0, 20.0, 8.0],
+                [10.0, 22.0, 20.0, 8.0],
+                [10.0, 18.0, 8.0, 4.0],
+                [22.0, 18.0, 8.0, 4.0],
+            ]
+            .into_iter()
+            .map(rectangle)
+            .collect::<Vec<_>>(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            vec![
+                Render2dDropShadow::new(8.0, 0.0, 0.03125, -1.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+            ],
+        ));
+        Render2dEntry::group(Render2dGroup::new(
+            vec![child],
+            Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![
+                Render2dDropShadow::new(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    Render2dColorRgba8::new(0, 0, 255, 255),
+                )
+                .unwrap(),
+            ],
+        ))
+    }
+
+    fn sources<'a>(plan: &scene::Plan<'a>) -> geometry_support::GroupChildSources<'a> {
+        geometry_support::group_child_sources(
+            plan,
+            &Render2dResourceBindings::default(),
+            &BTreeMap::new(),
+            geometry_support::NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            16 * 1024 * 1024,
+            Some(([64.0, 64.0], 1.0)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn mixed_graph_receipt_leaves_the_same_coverage_allowance_in_both_orders() {
+        for symbolic_first in [false, true] {
+            let entries = if symbolic_first {
+                vec![symbolic_group(), legacy_group()]
+            } else {
+                vec![legacy_group(), symbolic_group()]
+            };
+            let composition = Render2dComposition::new(entries).unwrap();
+            let plan = scene::analyze(&composition).unwrap();
+            let mut sources = sources(&plan);
+            assert!(
+                sources.graph_work > 0,
+                "actual graph/proof work must leave a receipt"
+            );
+            assert!(
+                sources
+                    .casters
+                    .values()
+                    .any(|s| matches!(s, geometry_support::NeutralCaster::Symbolic(_)))
+            );
+            assert_eq!(
+                admit_source_work(&sources).unwrap().used(),
+                sources.graph_work
+            );
+            // The graph stage already spent all but one unit. Coverage cannot
+            // receive a fresh 16M merely because the stage changed.
+            sources.graph_work = support::MAX_COMPOSITIONAL_SHADOW_WORK - 1;
+            let mut work = admit_source_work(&sources).unwrap();
+            assert_eq!(work.remaining(usize::MAX), 1);
+            let (&index, mesh) = sources
+                .casters
+                .iter()
+                .find_map(|(index, source)| match source {
+                    geometry_support::NeutralCaster::Mesh(mesh) => Some((index, mesh)),
+                    _ => None,
+                })
+                .unwrap();
+            let scene::Event::BeginGroup { path, .. } = &plan.events[index] else {
+                panic!("source owns a group");
+            };
+            let error = support::prepare_shadow_coverage_admitted(
+                mesh, 0.0, 0.0, 4.0, path, &mut work, 1_048_576,
+            )
+            .unwrap_err();
+            assert!(matches!(error, Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit, path: Some(owner), ..
+            } if owner == *path));
+            assert_eq!(
+                work.used(),
+                sources.graph_work,
+                "reject before coverage allocation/work"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_graph_receipt_is_paid_without_changing_legacy_policy() {
+        let composition = Render2dComposition::new(vec![legacy_group()]).unwrap();
+        let plan = scene::analyze(&composition).unwrap();
+        let mut sources = sources(&plan);
+        assert!(sources.graph_work > 0);
+        assert_eq!(
+            admit_source_work(&sources).unwrap().used(),
+            sources.graph_work
+        );
+        sources.graph_work = support::MAX_COMPOSITIONAL_SHADOW_WORK;
+        let mut work = admit_source_work(&sources).unwrap();
+        let geometry_support::NeutralCaster::Mesh(mesh) = sources.casters.get(&0).unwrap() else {
+            panic!("legacy source is polygonal");
+        };
+        let coverage = support::prepare_shadow_coverage_admitted(
+            mesh,
+            0.0,
+            0.0,
+            4.0,
+            &[0],
+            &mut work,
+            1_048_576,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(work.used() > sources.graph_work);
+        assert!((coverage.values.iter().sum::<f64>() - 16.0).abs() < 1.0e-12);
+    }
 }

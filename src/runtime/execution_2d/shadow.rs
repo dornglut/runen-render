@@ -449,6 +449,13 @@ fn materialized_or_symbolic<'a>(
     }
 }
 
+/// One immutable source-preparation result. Graph work has already been
+/// admitted and paid; its consuming coverage policy must retain that charge.
+pub(super) struct GroupChildSources<'a> {
+    pub(super) casters: BTreeMap<usize, NeutralCaster<'a>>,
+    pub(super) graph_work: usize,
+}
+
 pub(super) fn group_child_sources<'a>(
     plan: &scene::Plan<'a>,
     bindings: &Render2dResourceBindings,
@@ -456,7 +463,7 @@ pub(super) fn group_child_sources<'a>(
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
     root_canvas: Option<([f64; 2], f64)>,
-) -> Result<BTreeMap<usize, NeutralCaster<'a>>, Render2dExecutionError> {
+) -> Result<GroupChildSources<'a>, Render2dExecutionError> {
     group_child_sources_with_probe(
         plan,
         bindings,
@@ -480,7 +487,7 @@ fn group_child_sources_with_probe<'a>(
     max_buffer_bytes: u64,
     root_canvas: Option<([f64; 2], f64)>,
     mut inspect: impl FnMut(&Arc<region::NeutralRegion<'a>>, &[usize]),
-) -> Result<BTreeMap<usize, NeutralCaster<'a>>, Render2dExecutionError> {
+) -> Result<GroupChildSources<'a>, Render2dExecutionError> {
     let mut active = Vec::<SourceFrame<'a>>::new();
     let mut sources = BTreeMap::new();
     let mut graph = region::NeutralRegionBuilder::new(scales, max_buffer_bytes);
@@ -644,7 +651,10 @@ fn group_child_sources_with_probe<'a>(
         }
     }
     debug_assert!(active.is_empty());
-    Ok(sources)
+    Ok(GroupChildSources {
+        casters: sources,
+        graph_work: graph.graph_work,
+    })
 }
 
 /// A literal empty mesh never introduces a fake shadow caster.
@@ -1338,8 +1348,8 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(sources.len(), 1);
-        let NeutralCaster::Mesh(caster) = sources.get(&0).unwrap() else {
+        assert_eq!(sources.casters.len(), 1);
+        let NeutralCaster::Mesh(caster) = sources.casters.get(&0).unwrap() else {
             panic!("clipped caster must remain polygonal");
         };
         for (actual, expected) in caster.bounds.iter().zip([0.5, 0.0, 2.0, 1.0]) {
@@ -1416,7 +1426,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let NeutralCaster::Mesh(mesh) = sources.get(&0).unwrap() else {
+        let NeutralCaster::Mesh(mesh) = sources.casters.get(&0).unwrap() else {
             panic!("outlined glyph caster must remain polygonal");
         };
         assert!(!mesh.triangles.is_empty());
@@ -1557,12 +1567,12 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            sources.get(&0),
+            sources.casters.get(&0),
             Some(NeutralCaster::Symbolic(symbolic))
                 if symbolic.owner_path() == [0, 0]
         ));
         assert!(matches!(
-            sources.get(&1),
+            sources.casters.get(&1),
             Some(NeutralCaster::OriginalStraightPolygonUnion(_))
         ));
     }
