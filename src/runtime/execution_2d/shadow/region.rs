@@ -33,6 +33,9 @@ const RECTANGLE_VERTEX_WORK: usize = 48;
 // ID scan, stable retain/drop, depth/envelope scans and propagated flags.
 const UNION_CHILD_WORK: usize = 64;
 const UNION_FIXED_WORK: usize = 128;
+const SOURCE_VERTEX_WORK: usize = 16;
+const MATERIALIZATION_LOOKUP_WORK: usize = 16;
+const MATERIALIZATION_NODE_WORK: usize = 128;
 
 /// Fixed query inventory reserved by the physical consumer, excluding its
 /// separately admitted width-dependent rows and output/conversion buffers.
@@ -657,6 +660,13 @@ impl NeutralRegionBuilder {
                 "neutral-region mesh scale or topology is invalid",
             ));
         }
+        let scan_work = mesh
+            .triangles
+            .len()
+            .checked_mul(SOURCE_VERTEX_WORK)
+            .and_then(|cost| cost.checked_add(64))
+            .ok_or_else(|| resource(path, "neutral source scan work overflow"))?;
+        self.charge_graph_work(scan_work, path)?;
         let mut bounds = [
             f64::INFINITY,
             f64::INFINITY,
@@ -1304,10 +1314,61 @@ impl NeutralRegionBuilder {
         &mut self,
         region: &Arc<NeutralRegion<'a>>,
     ) -> Result<Arc<support::NeutralMesh>, Render2dExecutionError> {
+        let path = region.path.as_slice();
+        self.charge_graph_work(MATERIALIZATION_LOOKUP_WORK, path)?;
         if let Some(Some(existing)) = self.materialized.get(region.id) {
             return Ok(Arc::clone(existing));
         }
-        let path = region.path.as_slice();
+        // Reserve the bounded receipt before recursively materializing any
+        // geometry. A failed parent retains completed child receipts and all
+        // paid work; its own slot stays None until successful completion.
+        let needed = region
+            .id
+            .checked_add(1)
+            .ok_or_else(|| resource(path, "neutral materialization cache size overflow"))?;
+        let capacity_limit = usize::try_from(
+            (self.max_buffer_bytes
+                / std::mem::size_of::<Option<Arc<support::NeutralMesh>>>() as u64)
+                .min((MAX_REGION_NODES + 1) as u64),
+        )
+        .map_err(|_| resource(path, "neutral materialization capacity limit overflow"))?;
+        if needed > capacity_limit {
+            return Err(resource(
+                path,
+                "neutral materialization cache exceeds admission",
+            ));
+        }
+        let old_len = self.materialized.len();
+        let grows = needed > self.materialized.capacity();
+        let relocation = if grows { old_len } else { 0 };
+        let preparation = needed
+            .saturating_sub(old_len)
+            .checked_add(relocation)
+            .and_then(|slots| slots.checked_mul(2))
+            .and_then(|cost| cost.checked_add(MATERIALIZATION_NODE_WORK))
+            .ok_or_else(|| resource(path, "neutral materialization receipt work overflow"))?;
+        self.charge_graph_work(preparation, path)?;
+        if needed > old_len {
+            let desired = if grows {
+                self.materialized
+                    .capacity()
+                    .saturating_mul(2)
+                    .min(capacity_limit)
+                    .max(needed)
+            } else {
+                self.materialized.capacity()
+            };
+            self.materialized
+                .try_reserve_exact(desired - old_len)
+                .map_err(|_| resource(path, "neutral materialization cache allocation failed"))?;
+            if self.materialized.capacity() > desired {
+                return Err(resource(
+                    path,
+                    "neutral materialization capacity exceeds admission",
+                ));
+            }
+            self.materialized.resize_with(needed, || None);
+        }
         let mesh = match &region.kind {
             Kind::Source(mesh) => Arc::clone(mesh),
             Kind::Union(children) => {
@@ -1454,27 +1515,6 @@ impl NeutralRegionBuilder {
             if !empty {
                 return Err(unsupported(path));
             }
-        }
-        // Every node ID is monotonic and bounded by MAX_REGION_NODES.
-        // Geometric Vec growth amortizes allocation across node inserts;
-        // each growth uses fallible try_reserve BEFORE changing cache state.
-        // The maximum cache capacity is bounded by at most twice the
-        // admitted index range, with no infallible per-entry tree allocation.
-        let needed = region
-            .id
-            .checked_add(1)
-            .ok_or_else(|| resource(path, "neutral materialization cache size overflow"))?;
-        if needed > MAX_REGION_NODES + 1 {
-            return Err(resource(
-                path,
-                "neutral materialization cache exceeds node admission",
-            ));
-        }
-        if needed > self.materialized.len() {
-            self.materialized
-                .try_reserve(needed - self.materialized.len())
-                .map_err(|_| resource(path, "neutral materialization cache allocation failed"))?;
-            self.materialized.resize_with(needed, || None);
         }
         self.materialized[region.id] = Some(Arc::clone(&mesh));
         Ok(mesh)
@@ -2199,6 +2239,7 @@ mod tests {
 
         let mut repeated = Arc::clone(&first);
         let nodes = graph.nodes;
+        let before_repeated = graph.graph_work;
         for _ in 0..12 {
             repeated = graph
                 .union(vec![Arc::clone(&repeated), Arc::clone(&repeated)], &[4, 2])
@@ -2209,14 +2250,10 @@ mod tests {
             graph.nodes, nodes,
             "union idempotence must not mint fake nodes"
         );
-        // Four entries, three initialized stamp slots, then twelve duplicate
-        // scans. Idempotence avoids nodes, not the work of proving identity.
+        // Idempotence avoids nodes, not the work of proving identity.
         assert_eq!(
-            graph.graph_work,
-            UNION_FIXED_WORK
-                + 4 * UNION_CHILD_WORK
-                + 6
-                + 12 * (UNION_FIXED_WORK + 2 * UNION_CHILD_WORK)
+            graph.graph_work - before_repeated,
+            12 * (UNION_FIXED_WORK + 2 * UNION_CHILD_WORK)
         );
 
         // An admitted stamp scan is not an authored node commitment.
@@ -2294,6 +2331,67 @@ mod tests {
         assert_eq!(graph.union_seen.capacity(), capacity);
         assert_eq!(graph.union_epoch, 0);
         assert!(graph.union_seen.iter().all(|mark| *mark == 0));
+    }
+
+    #[test]
+    fn source_vertex_scan_rejects_before_unfunded_traversal() {
+        let mut graph = builder();
+        graph.graph_work = MAX_REGION_GRAPH_WORK - 64;
+        let before = graph.graph_work;
+        assert!(matches!(graph.source(triangle(), &[5, 2]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [5, 2]));
+        assert_eq!(graph.graph_work, before);
+        assert_eq!(graph.nodes, 0);
+        assert_eq!(graph.retained_vertices, 0);
+    }
+
+    #[test]
+    fn materialization_receipt_requires_fuel_before_cache_allocation() {
+        let mut graph = builder();
+        graph.nodes = 4_095;
+        let source = graph.source(triangle(), &[6, 2]).unwrap();
+        graph.graph_work = MAX_REGION_GRAPH_WORK - MATERIALIZATION_LOOKUP_WORK;
+        assert!(matches!(graph.materialize(&source),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [6, 2]));
+        assert_eq!(graph.graph_work, MAX_REGION_GRAPH_WORK);
+        assert_eq!(graph.materialized.len(), 0);
+        assert_eq!(graph.materialized.capacity(), 0);
+    }
+
+    #[test]
+    fn materialization_growth_pays_relocation_and_cached_queries_pay_lookup() {
+        let mut graph = builder();
+        graph.materialized = vec![None; 4_096];
+        let capacity = graph.materialized.capacity();
+        graph.nodes = capacity - 1;
+        let source = graph.source(triangle(), &[9, 2]).unwrap();
+        graph.graph_work = MAX_REGION_GRAPH_WORK - capacity;
+        assert!(matches!(graph.materialize(&source),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [9, 2]));
+        assert_eq!(graph.materialized.len(), 4_096);
+        assert_eq!(graph.materialized.capacity(), capacity);
+        assert_eq!(
+            graph.graph_work,
+            MAX_REGION_GRAPH_WORK - capacity + MATERIALIZATION_LOOKUP_WORK
+        );
+
+        graph.graph_work = 0;
+        let first = graph.materialize(&source).unwrap();
+        let paid = graph.graph_work;
+        assert!(Arc::ptr_eq(&first, &graph.materialize(&source).unwrap()));
+        assert_eq!(graph.graph_work, paid + MATERIALIZATION_LOOKUP_WORK);
+        graph.graph_work = MAX_REGION_GRAPH_WORK;
+        assert!(graph.materialize(&source).is_err());
+        assert!(graph.materialized[source.id].is_some());
     }
 
     #[test]
@@ -3185,9 +3283,10 @@ mod tests {
         // The artificial AABB corner (1,1) gives MAX+MAX = infinity.
         // None of the triangle's three REAL vertices has that coordinate.
         let affine = Render2dAffineTransform::new(f64::MAX, 0.0, f64::MAX, 1.0, 0.0, 0.0).unwrap();
+        let before_affine = builder.graph_work;
         let projected = builder.affine(leaf, affine, &[9, 1]).unwrap();
         assert_eq!(projected.envelope, Some([0.0, 0.0, f64::MAX, 1.0]));
-        assert_eq!(builder.graph_work, 3);
+        assert_eq!(builder.graph_work - before_affine, 3);
         let realized = builder.materialize(&projected).unwrap();
         assert_eq!(realized.bounds, [0.0, 0.0, f64::MAX, 1.0]);
         assert_eq!(realized.triangles.len(), 3);
