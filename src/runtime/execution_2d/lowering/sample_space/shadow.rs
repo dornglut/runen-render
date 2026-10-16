@@ -714,6 +714,12 @@ pub(super) fn upload_tile(
     let mut data = Vec::new();
     data.try_reserve_exact(bytes)
         .map_err(|_| shadow_resource(&shadow.path, "shadow upload allocation failed"))?;
+    if data.capacity() > bytes {
+        return Err(shadow_resource(
+            &shadow.path,
+            "shadow upload capacity exceeds admitted tile storage",
+        ));
+    }
     let base_x = i64::from(origin[0]) * i64::from(SAMPLES);
     let base_y = i64::from(origin[1]) * i64::from(SAMPLES);
     let canvas = target.canvas();
@@ -772,8 +778,13 @@ pub(super) fn upload_tile(
     }
     let name = format!("runen-render 4x shadow {}", shadow.path[0]);
     let label = GpuResourceLabel::new(&name).map_err(|e| gpu("shadow mask label", e))?;
+    // RunenGPU copies this Vec into a transfer Vec, then an immutable Arc.
+    // During conversion all three payloads coexist, alongside every prior
+    // tile's descriptor-retained upload and the retained floating coverage.
+    // The all-tile payload admission above therefore is not reusable scratch.
     let source = PreparedGpuData::<TransferData>::ordinary_pod_transfer(&name, &data)
         .map_err(|e| gpu("shadow float mask bytes", e))?;
+    drop(data);
     let extent = GpuTextureExtent::new(&label, GpuTextureDimension::D2, dimension, dimension, 1)
         .map_err(|e| gpu("shadow mask extent", e))?;
     let row_bytes = dimension
