@@ -957,19 +957,21 @@ impl ClipPolygon {
 /// approximation. Clipping against a polygon-union clip means retaining each
 /// triangle intersection's union (overlaps are resolved by area coverage).
 fn triangle_intersection(
-    source: [[f64; 2]; 3],
-    clip: [[f64; 2]; 3],
+    source: &[[f64; 2]; 3],
+    clip: &[[f64; 2]; 3],
     path: &[usize],
     work: &mut NeutralPreparationWork<'_>,
 ) -> Result<ClipPolygon, Render2dExecutionError> {
-    // Two orientations, fixed stack initialization, winding, and source copy.
-    work.charge(128, path)?;
+    // Borrow the triangles: no argument arrays are copied before admission.
+    // Two orientations, fixed stack initialization, winding, source insertion,
+    // and enclosing iterator/bookkeeping work fit this fixed setup bound.
+    work.charge(256, path)?;
     let winding = orient(clip[0], clip[1], clip[2]);
     if winding == 0.0 || orient(source[0], source[1], source[2]) == 0.0 {
         return Ok(ClipPolygon::empty());
     }
     let mut polygon = ClipPolygon::empty();
-    for point in source {
+    for &point in source {
         polygon.push(point, path)?;
     }
     for i in 0..3 {
@@ -1063,12 +1065,7 @@ pub(super) fn intersect_clips(
         charge_clip_work(work.clip_pairs, cost, path)?;
         for source in current.triangles.as_chunks::<3>().0 {
             for clipping in clip_local.triangles.as_chunks::<3>().0 {
-                let polygon = triangle_intersection(
-                    [source[0], source[1], source[2]],
-                    [clipping[0], clipping[1], clipping[2]],
-                    path,
-                    work,
-                )?;
+                let polygon = triangle_intersection(source, clipping, path, work)?;
                 if polygon.len() < 3 {
                     continue;
                 }
@@ -1795,8 +1792,8 @@ mod tests {
         let disjoint_corner = [[1.6, 1.6], [2.2, 1.6], [1.6, 2.2]];
         assert!(
             triangle_intersection(
-                disjoint_corner,
-                clip,
+                &disjoint_corner,
+                &clip,
                 &[1],
                 &mut NeutralPreparationWork {
                     graph: &mut 0,
@@ -1809,8 +1806,8 @@ mod tests {
         );
         let crossing = [[0.8, 0.8], [1.6, 0.8], [0.8, 1.6]];
         let clipped = triangle_intersection(
-            crossing,
-            clip,
+            &crossing,
+            &clip,
             &[1],
             &mut NeutralPreparationWork {
                 graph: &mut 0,
@@ -1850,9 +1847,9 @@ mod tests {
 
         // Only setup fits. The first clipping pass must fail before visiting
         // an edge, retaining the paid setup rather than refunding it.
-        let mut setup_only = MAX_COMPOSITIONAL_SHADOW_WORK - 128;
+        let mut setup_only = MAX_COMPOSITIONAL_SHADOW_WORK - 256;
         assert!(matches!(
-            triangle_intersection(triangle, triangle, &[2, 3],
+            triangle_intersection(&triangle, &triangle, &[2, 3],
                 &mut NeutralPreparationWork { graph: &mut setup_only, clip_pairs: &mut clip_pairs }),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
