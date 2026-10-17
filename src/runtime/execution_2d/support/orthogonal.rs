@@ -879,6 +879,18 @@ mod tests {
         assert!(fallback.bands.is_none());
 
         let mut local = 0;
+        let mut graph = 700;
+        {
+            let mut work = super::super::SharedPreparationWork::new(&mut local, &mut graph);
+            let fallback = OrthogonalExterior::new(&edges, &[3, 1], &mut work)
+                .unwrap()
+                .unwrap();
+            assert!(fallback.bands.is_none());
+        }
+        assert_eq!(local, attempted_work, "abandoned construction stays paid");
+        assert_eq!(graph, 700 + attempted_work);
+
+        let mut local = 0;
         let mut graph = MAX_GLOBAL_WORK - 256;
         let before = graph;
         {

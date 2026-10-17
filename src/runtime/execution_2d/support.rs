@@ -96,14 +96,12 @@ impl PreparationBudget {
 
 /// Borrow one existing evaluator counter and the already-paid graph receipt.
 /// Every accepted local debit also consumes graph fuel; neither counter resets.
-#[allow(dead_code, reason = "region integration follows independent review")]
 pub(super) struct SharedPreparationWork<'a> {
     local: &'a mut usize,
     graph: &'a mut usize,
     maximum: usize,
 }
 
-#[allow(dead_code, reason = "region integration follows independent review")]
 impl<'a> SharedPreparationWork<'a> {
     pub(super) fn new(local: &'a mut usize, graph: &'a mut usize) -> Self {
         let remaining = MAX_COMPOSITIONAL_SHADOW_WORK.saturating_sub(*graph);

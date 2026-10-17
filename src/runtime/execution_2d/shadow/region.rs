@@ -1492,6 +1492,15 @@ impl NeutralRegionBuilder {
                         return Err(unsupported(path));
                     }
                     let erased = if effect.spread() < 0.0 {
+                        // Erosion retains its evaluator-wide local ceiling,
+                        // but every executed preparation phase also spends
+                        // this invocation's graph fuel. Keep one live borrow
+                        // through qualification AND fallback: failed attempts
+                        // cannot refund work or start a fresh allowance.
+                        let mut erosion_work = support::SharedPreparationWork::new(
+                            &mut self.erosion_work,
+                            &mut self.graph_work,
+                        );
                         // Source-proven, strictly disconnected rectangles
                         // admit exact per-component disk erosion without
                         // spending the general O(triangles^2) arrangement.
@@ -1499,7 +1508,7 @@ impl NeutralRegionBuilder {
                             &mesh,
                             -effect.spread(),
                             path,
-                            &mut self.erosion_work,
+                            &mut erosion_work,
                         )?;
                         if let Some(separated) = separated {
                             separated
@@ -1511,7 +1520,7 @@ impl NeutralRegionBuilder {
                                 &mesh,
                                 -effect.spread(),
                                 path,
-                                &mut self.erosion_work,
+                                &mut erosion_work,
                             )?
                             .ok_or_else(|| unsupported(path))?
                         }
@@ -2683,6 +2692,191 @@ mod tests {
             ]
             .repeat(repeats),
             bounds: [0.0, 0.0, 2.0, 2.0],
+        }
+    }
+
+    #[test]
+    fn nested_erosion_requires_graph_fuel_before_local_geometry() {
+        let item = provenance_rectangle_item();
+        let mut graph = builder();
+        let source = graph
+            .source_from_item(provenance_rectangle_mesh(1), &item, &[7, 0])
+            .unwrap();
+        assert!(
+            graph
+                .proven_original_straight_polygon_union(&source)
+                .unwrap()
+        );
+        let original = graph.materialize(&source).unwrap();
+        let erosion = graph
+            .effect(
+                Arc::clone(&source),
+                Render2dDropShadow::new(0.0, 0.0, 0.0, -0.25, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+                &[7, 1],
+            )
+            .unwrap();
+        // Pre-existing receipt storage isolates the remaining numerical
+        // fuel: effect body, provenance lookup and child receipt lookup fit;
+        // the very first erosion geometry phase has only one unit left.
+        graph.materialized.resize_with(erosion.id + 1, || None);
+        let prefix =
+            MATERIALIZATION_NODE_WORK + 2 * MATERIALIZATION_LOOKUP_WORK + PROVENANCE_LOOKUP_WORK;
+        graph.graph_work = MAX_REGION_GRAPH_WORK - prefix - 1;
+        let vertices = graph.retained_vertices;
+        assert!(matches!(graph.materialize(&erosion),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [7, 1]));
+        assert_eq!(graph.graph_work, MAX_REGION_GRAPH_WORK - 1);
+        assert_eq!(
+            graph.erosion_work, 0,
+            "unadmitted geometry must not execute"
+        );
+        assert_eq!(graph.retained_vertices, vertices);
+        assert!(graph.materialized[erosion.id].is_none());
+        assert!(Arc::ptr_eq(
+            graph.materialized[source.id].as_ref().unwrap(),
+            &original
+        ));
+    }
+
+    #[test]
+    fn failed_erosion_candidate_and_convex_fallback_keep_the_same_graph_debits() {
+        let item = provenance_rectangle_item();
+        // Duplicate exact rectangle triangles qualify as original support,
+        // but are not disconnected components. Separation must fail after
+        // doing work, then the convex whole-union proof must run normally.
+        let mesh = provenance_rectangle_mesh(2);
+        let mut expected_local = 0;
+        assert!(
+            support::certified_separated_rectangles_erosion_mesh(
+                &mesh,
+                0.25,
+                &[8, 1],
+                &mut expected_local,
+            )
+            .unwrap()
+            .is_none()
+        );
+        let failed_candidate = expected_local;
+        assert!(failed_candidate > 0);
+        let expected =
+            support::certified_convex_erosion_mesh(&mesh, 0.25, &[8, 1], &mut expected_local)
+                .unwrap()
+                .unwrap();
+        assert!(expected_local > failed_candidate);
+        let append = shadow::append_work(&shadow::empty_mesh(), &expected, &[8, 1]).unwrap();
+
+        for reject_fallback in [false, true] {
+            let mut graph = builder();
+            let source = graph
+                .source_from_item(provenance_rectangle_mesh(2), &item, &[8, 0])
+                .unwrap();
+            assert!(
+                graph
+                    .proven_original_straight_polygon_union(&source)
+                    .unwrap()
+            );
+            graph.materialize(&source).unwrap();
+            let erosion = graph
+                .effect(
+                    source,
+                    Render2dDropShadow::new(0.0, 0.0, 0.0, -0.25, Render2dColorRgba8::TRANSPARENT)
+                        .unwrap(),
+                    &[8, 1],
+                )
+                .unwrap();
+            graph.materialized.resize_with(erosion.id + 1, || None);
+            let prefix = MATERIALIZATION_NODE_WORK
+                + 2 * MATERIALIZATION_LOOKUP_WORK
+                + PROVENANCE_LOOKUP_WORK;
+            if reject_fallback {
+                graph.graph_work = MAX_REGION_GRAPH_WORK - prefix - failed_candidate - 1;
+                assert!(matches!(graph.materialize(&erosion),
+                    Err(Render2dExecutionError::SampleSpace {
+                        kind: Render2dSampleSpaceError::ResourceLimit,
+                        path: Some(path), ..
+                    }) if path == [8, 1]));
+                assert_eq!(graph.erosion_work, failed_candidate);
+                assert_eq!(graph.graph_work, MAX_REGION_GRAPH_WORK - 1);
+                assert!(graph.materialized[erosion.id].is_none());
+            } else {
+                let before = graph.graph_work;
+                let actual = graph.materialize(&erosion).unwrap();
+                assert_eq!(actual.triangles, expected.triangles);
+                assert_eq!(actual.bounds, expected.bounds);
+                assert_eq!(graph.erosion_work, expected_local);
+                assert_eq!(graph.graph_work - before, prefix + expected_local + append);
+            }
+        }
+    }
+
+    #[test]
+    fn sibling_erosions_accumulate_graph_fuel_once_and_cached_meshes_pay_only_lookup() {
+        let item = provenance_rectangle_item();
+        let mut graph = builder();
+        let source = graph
+            .source_from_item(provenance_rectangle_mesh(1), &item, &[6, 0])
+            .unwrap();
+        assert!(
+            graph
+                .proven_original_straight_polygon_union(&source)
+                .unwrap()
+        );
+        let mesh = graph.materialize(&source).unwrap();
+        let mut siblings = Vec::new();
+        for (index, radius) in [(1, 0.25), (2, 0.5)] {
+            let erosion = graph
+                .effect(
+                    Arc::clone(&source),
+                    Render2dDropShadow::new(
+                        0.0,
+                        0.0,
+                        0.0,
+                        -radius,
+                        Render2dColorRgba8::TRANSPARENT,
+                    )
+                    .unwrap(),
+                    &[6, index],
+                )
+                .unwrap();
+            siblings.push((erosion, radius));
+        }
+        graph
+            .materialized
+            .resize_with(siblings.last().unwrap().0.id + 1, || None);
+        let before = graph.graph_work;
+        let prefix =
+            MATERIALIZATION_NODE_WORK + 2 * MATERIALIZATION_LOOKUP_WORK + PROVENANCE_LOOKUP_WORK;
+        let mut expected_local = 0;
+        let mut expected_graph = before;
+        for (erosion, radius) in siblings {
+            let paid = expected_local;
+            let expected = support::certified_convex_erosion_mesh(
+                &mesh,
+                radius,
+                &erosion.path,
+                &mut expected_local,
+            )
+            .unwrap()
+            .unwrap();
+            let append =
+                shadow::append_work(&shadow::empty_mesh(), &expected, &erosion.path).unwrap();
+            expected_graph += prefix + expected_local - paid + append;
+            let actual = graph.materialize(&erosion).unwrap();
+            assert_eq!(actual.triangles, expected.triangles);
+            assert_eq!(graph.erosion_work, expected_local);
+            assert_eq!(graph.graph_work, expected_graph);
+
+            assert!(Arc::ptr_eq(&actual, &graph.materialize(&erosion).unwrap()));
+            expected_graph += MATERIALIZATION_LOOKUP_WORK;
+            assert_eq!(graph.graph_work, expected_graph);
+            assert_eq!(
+                graph.erosion_work, expected_local,
+                "no erosion replay on a hit"
+            );
         }
     }
 
