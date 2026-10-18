@@ -923,6 +923,14 @@ impl NeutralRegionBuilder {
         to_parent: Render2dAffineTransform,
         path: &[usize],
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
+        // An identity map does not introduce a geometric frame change. Keep
+        // the original borrowed source and owner path instead of rescanning
+        // its controls/vertices and retaining a redundant support node.
+        // Group clips and effects are separate operators in the caller.
+        self.charge_graph_work(64, path)?;
+        if to_parent.components() == Render2dAffineTransform::IDENTITY.components() {
+            return Ok(source);
+        }
         let depth = source.depth + 1;
         self.node(Kind::Affine { source, to_parent }, path, depth, None)
     }
@@ -2521,6 +2529,25 @@ mod tests {
     }
 
     #[test]
+    fn identity_affine_preserves_source_owner_and_reuses_geometry_without_a_node() {
+        let mut graph = builder();
+        let source = graph.source(triangle(), &[5, 1]).unwrap();
+        let mesh = graph.materialize(&source).unwrap();
+        let nodes = graph.nodes;
+        let paths = graph.retained_path_units;
+        let before = graph.graph_work;
+        let projected = graph
+            .affine(Arc::clone(&source), Render2dAffineTransform::IDENTITY, &[5])
+            .unwrap();
+        assert!(Arc::ptr_eq(&source, &projected));
+        assert_eq!(projected.path, [5, 1]);
+        assert_eq!(graph.nodes, nodes);
+        assert_eq!(graph.retained_path_units, paths);
+        assert_eq!(graph.graph_work - before, 64);
+        assert!(Arc::ptr_eq(&mesh, &graph.materialize(&projected).unwrap()));
+    }
+
+    #[test]
     fn materialized_transform_rejects_before_unfunded_vertex_copy() {
         let mut graph = builder();
         let source = graph.source(triangle(), &[4, 0]).unwrap();
@@ -2528,7 +2555,7 @@ mod tests {
         let parent = graph
             .affine(
                 Arc::clone(&source),
-                Render2dAffineTransform::IDENTITY,
+                Render2dAffineTransform::translation(1.0, 0.0).unwrap(),
                 &[4, 1],
             )
             .unwrap();
@@ -2629,7 +2656,7 @@ mod tests {
                 kind: Render2dSampleSpaceError::PrecisionLimit,
                 path: Some(path), ..
             }) if path == [2, 3]));
-        assert_eq!(graph.graph_work, before + REGION_NODE_WORK + 4);
+        assert_eq!(graph.graph_work, before + 64 + REGION_NODE_WORK + 4);
         assert_eq!(graph.nodes, nodes);
         assert_eq!(graph.retained_path_units, paths);
     }
@@ -2777,10 +2804,18 @@ mod tests {
         assert_eq!(source.path, expected.path);
         // An ancestor's distinct control traversal still pays its own work.
         direct
-            .affine(expected, Render2dAffineTransform::IDENTITY, &[3])
+            .affine(
+                expected,
+                Render2dAffineTransform::translation(1.0, 0.0).unwrap(),
+                &[3],
+            )
             .unwrap();
         prepared
-            .affine(source, Render2dAffineTransform::IDENTITY, &[3])
+            .affine(
+                source,
+                Render2dAffineTransform::translation(1.0, 0.0).unwrap(),
+                &[3],
+            )
             .unwrap();
         assert_eq!(prepared.graph_work, direct.graph_work + 7);
     }
@@ -3628,7 +3663,7 @@ mod tests {
         let affine = builder
             .affine(
                 Arc::clone(&caster),
-                Render2dAffineTransform::IDENTITY,
+                Render2dAffineTransform::translation(1.0, 0.0).unwrap(),
                 &[2, 2],
             )
             .unwrap();
@@ -3792,7 +3827,7 @@ mod tests {
         assert_eq!(projected.envelope, Some([0.0, 0.0, f64::MAX, 1.0]));
         assert_eq!(
             builder.graph_work - before_affine,
-            REGION_NODE_WORK + 4 + 3 * AFFINE_REACH_VERTEX_WORK
+            64 + REGION_NODE_WORK + 4 + 3 * AFFINE_REACH_VERTEX_WORK
         );
         let realized = builder.materialize(&projected).unwrap();
         assert_eq!(realized.bounds, [0.0, 0.0, f64::MAX, 1.0]);
@@ -3841,7 +3876,7 @@ mod tests {
         for _ in 0..MAX_REGION_DEPTH {
             match builder.affine(
                 Arc::clone(&region),
-                Render2dAffineTransform::IDENTITY,
+                Render2dAffineTransform::translation(1.0, 0.0).unwrap(),
                 &[3, 5],
             ) {
                 Ok(next) => region = next,
