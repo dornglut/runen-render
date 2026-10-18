@@ -533,19 +533,17 @@ fn group_child_sources_with_probe<'a>(
                 if active.is_empty() {
                     continue;
                 }
-                if let Some(mesh) = neutral_item(
-                    item,
-                    path,
-                    bindings,
-                    field_sets,
-                    scales,
-                    max_buffer_bytes,
-                    &mut NeutralPreparationWork {
-                        graph: &mut graph.graph_work,
-                        clip_pairs: &mut graph.clip_work,
-                    },
-                )? {
-                    let leaf = graph.source_from_item(mesh, item, path)?;
+                if let Some(leaf) = graph.prepare_source_from_item(item, path, |work| {
+                    neutral_item(
+                        item,
+                        path,
+                        bindings,
+                        field_sets,
+                        scales,
+                        max_buffer_bytes,
+                        work,
+                    )
+                })? {
                     active
                         .last_mut()
                         .expect("active source group")
@@ -1100,6 +1098,63 @@ pub(super) fn intersect_clips(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unfunded_neutral_source_must_reject_before_physical_path_reconstruction() {
+        use crate::composition_2d::{
+            Render2dFillRule, Render2dPath, Render2dPathCommand, Render2dPoint, Render2dShape,
+        };
+        let mut commands = vec![Render2dPathCommand::MoveTo(
+            Render2dPoint::new(0.0, 0.0).unwrap(),
+        )];
+        for index in 0..3_000 {
+            commands.push(Render2dPathCommand::LineTo(
+                Render2dPoint::new(f64::from(index % 2), 1.0).unwrap(),
+            ));
+        }
+        // This legal finite F1 coordinate fails only when disposable physical
+        // path reconstruction reaches it. Exhausted invocation work must win
+        // before that reconstruction visits any of the preceding commands.
+        commands.push(Render2dPathCommand::LineTo(
+            Render2dPoint::new(1.0e20, 1.0).unwrap(),
+        ));
+        commands.push(Render2dPathCommand::Close);
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::path(
+                    Render2dPath::new(Render2dFillRule::NonZero, commands).unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let scales = NeutralPreparationScale {
+            field_raster_scale: 1.0,
+            geometry_sample_scale: 4.0,
+        };
+        let mut graph = region::NeutralRegionBuilder::new(scales, 16 * 1024 * 1024);
+        graph.graph_work = MAX_COMPOSITIONAL_SHADOW_WORK;
+        let result = graph.prepare_source_from_item(&item, &[4, 2], |work| {
+            neutral_item(
+                &item,
+                &[4, 2],
+                &Render2dResourceBindings::default(),
+                &BTreeMap::new(),
+                scales,
+                16 * 1024 * 1024,
+                work,
+            )
+        });
+        assert!(
+            matches!(&result, Err(Render2dExecutionError::SampleSpace {
+            kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+        }) if path == &[4, 2]),
+            "physical reconstruction ran before source admission"
+        );
+        assert_eq!(graph.graph_work, MAX_COMPOSITIONAL_SHADOW_WORK);
+    }
 
     #[test]
     fn original_group_clip_retains_positive_strip_when_tessellation_disappears() {

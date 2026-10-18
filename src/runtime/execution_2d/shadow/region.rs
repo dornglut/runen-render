@@ -540,6 +540,17 @@ impl NeutralRegionBuilder {
         depth: usize,
         semantic_item: Option<&'a Render2dItem>,
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
+        self.node_with_source_admission(kind, path, depth, semantic_item, false)
+    }
+
+    fn node_with_source_admission<'a>(
+        &mut self,
+        kind: Kind<'a>,
+        path: &[usize],
+        depth: usize,
+        semantic_item: Option<&'a Render2dItem>,
+        source_prepaid: bool,
+    ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
         let next = self
             .nodes
             .checked_add(1)
@@ -565,13 +576,17 @@ impl NeutralRegionBuilder {
             _ => 0,
         };
         let original_visits = match &kind {
-            Kind::Source(_) => semantic_item.map_or(0, source_envelope::control_visits),
+            Kind::Source(_) if !source_prepaid => {
+                semantic_item.map_or(0, source_envelope::control_visits)
+            }
             Kind::Affine { source, .. } => source
                 .semantic_item
                 .map_or(0, source_envelope::control_visits),
             _ => 0,
         };
-        let stroke = semantic_item
+        let stroke = (!source_prepaid)
+            .then_some(semantic_item)
+            .flatten()
             .or_else(|| match &kind {
                 Kind::Affine { source, .. } => source.semantic_item,
                 _ => None,
@@ -594,7 +609,7 @@ impl NeutralRegionBuilder {
                     .checked_mul(2)
                     .and_then(|copy| cost.checked_add(copy))
             })
-            .and_then(|cost| cost.checked_add(REGION_NODE_WORK))
+            .and_then(|cost| cost.checked_add(if source_prepaid { 0 } else { REGION_NODE_WORK }))
             .and_then(|cost| cost.checked_add(if stroke { SOURCE_REACH_STROKE_WORK } else { 0 }))
             .ok_or_else(|| resource(path, "original F1 source-reach work overflow"))?;
         let affine_work = self
@@ -670,18 +685,53 @@ impl NeutralRegionBuilder {
         mesh: support::NeutralMesh,
         path: &[usize],
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
-        self.source_impl(mesh, None, path)
+        self.source_impl(mesh, None, path, false)
     }
 
     /// Preserve the original borrowed F1 authoring item beside disposable
     /// tessellation without cloning it or constructing a second semantic tree.
+    #[cfg(test)]
     pub(super) fn source_from_item<'a>(
         &mut self,
         mesh: support::NeutralMesh,
         item: &'a Render2dItem,
         path: &[usize],
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
-        self.source_impl(mesh, Some(item), path)
+        self.source_impl(mesh, Some(item), path, false)
+    }
+
+    /// Admit the existing original-source reach and node allowance BEFORE
+    /// entering disposable physical reconstruction. Its amount and purpose
+    /// are unchanged: this is not a bound on Lyon's internal primitive work.
+    /// Keep prepayment, the live leaf counters and consumption inside this
+    /// builder call, so no receipt can be reused or moved to another budget.
+    pub(super) fn prepare_source_from_item<'a>(
+        &mut self,
+        item: &'a Render2dItem,
+        path: &[usize],
+        prepare: impl FnOnce(
+            &mut shadow::NeutralPreparationWork<'_>,
+        ) -> Result<Option<support::NeutralMesh>, Render2dExecutionError>,
+    ) -> Result<Option<Arc<NeutralRegion<'a>>>, Render2dExecutionError> {
+        let controls = source_envelope::control_visits(item);
+        let stroke = matches!(
+            item.primitive(),
+            crate::composition_2d::Render2dPrimitive::Stroke { .. }
+        );
+        let cost = controls
+            .checked_mul(SOURCE_REACH_CONTROL_WORK)
+            .and_then(|cost| cost.checked_add(if stroke { SOURCE_REACH_STROKE_WORK } else { 0 }))
+            .and_then(|cost| cost.checked_add(REGION_NODE_WORK))
+            .ok_or_else(|| resource(path, "neutral source preparation admission overflow"))?;
+        self.charge_graph_work(cost, path)?;
+        let mesh = prepare(&mut shadow::NeutralPreparationWork {
+            graph: &mut self.graph_work,
+            clip_pairs: &mut self.clip_work,
+        })?;
+        let Some(mesh) = mesh else {
+            return Ok(None);
+        };
+        self.source_impl(mesh, Some(item), path, true).map(Some)
     }
 
     fn source_impl<'a>(
@@ -689,6 +739,7 @@ impl NeutralRegionBuilder {
         mut mesh: support::NeutralMesh,
         semantic_item: Option<&'a Render2dItem>,
         path: &[usize],
+        source_prepaid: bool,
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
         // The cached tessellation AABB is disposable physical metadata, not
         // F1 semantic authority. Certify the support envelope from the
@@ -730,7 +781,13 @@ impl NeutralRegionBuilder {
         // A rejected graph node MUST NOT consume retained geometry budget.
         let mut retained = self.retained_vertices;
         shadow::charge_vertices(&mut retained, mesh.triangles.len(), path)?;
-        let node = self.node(Kind::Source(Arc::new(mesh)), path, 1, semantic_item)?;
+        let node = self.node_with_source_admission(
+            Kind::Source(Arc::new(mesh)),
+            path,
+            1,
+            semantic_item,
+            source_prepaid,
+        )?;
         self.retained_vertices = retained;
         Ok(node)
     }
@@ -2693,6 +2750,85 @@ mod tests {
             .repeat(repeats),
             bounds: [0.0, 0.0, 2.0, 2.0],
         }
+    }
+
+    #[test]
+    fn source_preparation_prepays_once_on_the_same_live_graph_counter() {
+        let item = provenance_rectangle_item();
+        let mut direct = builder();
+        let expected = direct
+            .source_from_item(provenance_rectangle_mesh(1), &item, &[3, 2])
+            .unwrap();
+        let mut prepared = builder();
+        let source = prepared
+            .prepare_source_from_item(&item, &[3, 2], |work| {
+                assert_eq!(
+                    *work.graph,
+                    REGION_NODE_WORK + 4 * SOURCE_REACH_CONTROL_WORK
+                );
+                work.charge(7, &[3, 2])?;
+                Ok(Some(provenance_rectangle_mesh(1)))
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(prepared.graph_work, direct.graph_work + 7);
+        assert_eq!(prepared.retained_vertices, direct.retained_vertices);
+        assert_eq!(source.envelope, expected.envelope);
+        assert_eq!(source.path, expected.path);
+        // An ancestor's distinct control traversal still pays its own work.
+        direct
+            .affine(expected, Render2dAffineTransform::IDENTITY, &[3])
+            .unwrap();
+        prepared
+            .affine(source, Render2dAffineTransform::IDENTITY, &[3])
+            .unwrap();
+        assert_eq!(prepared.graph_work, direct.graph_work + 7);
+    }
+
+    #[test]
+    fn source_preparation_rejects_before_callback_and_retains_failed_preparation_debits() {
+        let item = provenance_rectangle_item();
+        let cost = REGION_NODE_WORK + 4 * SOURCE_REACH_CONTROL_WORK;
+        let mut graph = builder();
+        graph.graph_work = MAX_REGION_GRAPH_WORK - cost + 1;
+        let initial = graph.graph_work;
+        let mut entered = false;
+        assert!(
+            matches!(graph.prepare_source_from_item(&item, &[8, 1], |_| {
+            entered = true;
+            Ok(None)
+        }), Err(Render2dExecutionError::SampleSpace {
+            kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+        }) if path == [8, 1])
+        );
+        assert!(!entered);
+        assert_eq!(graph.graph_work, initial);
+        assert_eq!(graph.nodes, 0);
+
+        let mut graph = builder();
+        assert!(
+            matches!(graph.prepare_source_from_item(&item, &[8, 2], |work| {
+            work.charge(13, &[8, 2])?;
+            Err(precision(&[8, 2], "test physical source failure"))
+        }), Err(Render2dExecutionError::SampleSpace {
+            kind: Render2dSampleSpaceError::PrecisionLimit, path: Some(path), ..
+        }) if path == [8, 2])
+        );
+        assert_eq!(graph.graph_work, cost + 13);
+        assert_eq!(graph.nodes, 0);
+        assert_eq!(graph.retained_vertices, 0);
+        assert!(
+            graph
+                .prepare_source_from_item(&item, &[8, 3], |_| Ok(None))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            graph.graph_work,
+            2 * cost + 13,
+            "a completed empty preparation cannot refund work"
+        );
+        assert_eq!(graph.nodes, 0);
     }
 
     #[test]
