@@ -5,6 +5,10 @@
 //! Effects remain fail-closed until their separately owned F3F delivery.
 //! Source colors share one correlated 4x4 plane and resolve only at the
 //! caller-owned target boundary.
+#[cfg(test)]
+mod gaussian;
+#[cfg(test)]
+pub(in crate::runtime::execution_2d) mod gaussian_gpu_proof;
 mod gpu;
 mod inspection;
 mod shadow;
@@ -176,7 +180,7 @@ pub(in crate::runtime::execution_2d) fn lower(
     bindings: &Render2dResourceBindings,
     glyphs_by_event: &BTreeMap<usize, Vec<super::GlyphOccurrence>>,
     fields: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
-) -> Result<Vec<GpuRenderOperation>, Render2dExecutionError> {
+) -> Result<Vec<GpuWorkOperation>, Render2dExecutionError> {
     // Do not realize even the visible paint tessellation of an invocation
     // whose authored shadow cardinality is already inadmissible.
     let admitted_effects = shadow::admit_effect_count(plan)?;

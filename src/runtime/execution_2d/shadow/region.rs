@@ -12,7 +12,7 @@ use crate::execution_2d::{
     Render2dExecutionError, Render2dSampleSpaceError, Render2dUnsupportedContent,
 };
 use crate::runtime::execution_2d::{shadow, support};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub(in crate::runtime::execution_2d) mod interval;
 mod source_envelope;
@@ -57,7 +57,7 @@ pub(in crate::runtime::execution_2d) enum AreaQueryError {
     Resource,
 }
 
-pub(super) struct NeutralRegion<'a> {
+pub(in crate::runtime::execution_2d) struct NeutralRegion<'a> {
     kind: Kind<'a>,
     // Borrow the original F1 item. A disposable source tessellation is NOT
     // a certificate of semantic curves, clips, strokes or affine geometry.
@@ -81,9 +81,27 @@ pub(super) struct NeutralRegion<'a> {
     pub(super) contains_positive_disk: bool,
 }
 
+/// An invocation-local optional physical realization, never source meaning.
+/// Once installed, every polygon consumer borrows this same immutable mesh.
+struct SourceGeometry(OnceLock<Arc<support::NeutralMesh>>);
+
+impl SourceGeometry {
+    fn deferred() -> Self {
+        Self(OnceLock::new())
+    }
+
+    fn prepared(mesh: Arc<support::NeutralMesh>) -> Self {
+        Self(OnceLock::from(mesh))
+    }
+
+    fn get(&self) -> Option<&Arc<support::NeutralMesh>> {
+        self.0.get()
+    }
+}
+
 enum Kind<'a> {
     Union(Vec<Arc<NeutralRegion<'a>>>),
-    Source(Arc<support::NeutralMesh>),
+    Source(SourceGeometry),
     Affine {
         source: Arc<NeutralRegion<'a>>,
         to_parent: Render2dAffineTransform,
@@ -290,9 +308,10 @@ fn region_envelope(
                 && let Some(authored) = source_envelope::bounds(item, None, path)?
             {
                 Some(authored)
-            } else if mesh.triangles.is_empty() {
-                None
-            } else {
+            } else if let Some(mesh) = mesh.get() {
+                if mesh.triangles.is_empty() {
+                    return Ok(None);
+                }
                 let scale = mesh.units_per_parent_logical_unit;
                 if !scale.is_finite() || scale <= 0.0 {
                     return Err(precision(
@@ -303,6 +322,8 @@ fn region_envelope(
                 // Missing authored reach remains a physical fallback; glyph
                 // provenance does not certify this as original support.
                 Some(mesh.bounds.map(|coordinate| coordinate / scale))
+            } else {
+                None
             }
         }
         Kind::Union(children) => {
@@ -329,7 +350,10 @@ fn region_envelope(
                 {
                     Some(authored)
                 } else {
-                    affine_leaf_envelope(mesh, *to_parent, path)?
+                    mesh.get()
+                        .map(|mesh| affine_leaf_envelope(mesh, *to_parent, path))
+                        .transpose()?
+                        .flatten()
                 }
             } else {
                 source
@@ -397,6 +421,14 @@ fn certified_complete_disk_erosion(bounds: Option<[f64; 4]>, spread: f64) -> boo
 }
 
 impl NeutralRegion<'_> {
+    pub(super) fn owner_path(&self) -> &[usize] {
+        &self.path
+    }
+
+    pub(super) fn is_negative_effect(&self) -> bool {
+        matches!(&self.kind, Kind::Effect { shadow, .. } if shadow.spread() < 0.0)
+    }
+
     pub(super) fn certified_logical_envelope(&self) -> Option<[f64; 4]> {
         self.certified_source_reach
             .then_some(self.envelope)
@@ -487,6 +519,7 @@ impl NeutralRegion<'_> {
 /// Memo keys are monotonic graph IDs, NEVER F1 semantic or cache IDs.
 pub(super) struct NeutralRegionBuilder {
     nodes: usize,
+    constructed_node_bytes: usize,
     retained_path_units: usize,
     retained_vertices: usize,
     /// One invocation-wide original reach AND stable neutral-union scan budget.
@@ -507,6 +540,33 @@ pub(super) struct NeutralRegionBuilder {
     max_buffer_bytes: u64,
 }
 
+/// One transient physical-consumer dependency set, indexed by invocation DAG
+/// IDs and registered caster positions. It carries no geometric authority.
+pub(super) struct PolygonDependencies<'scene> {
+    nodes: Vec<bool>,
+    consumers: Vec<bool>,
+    frames: Vec<(Arc<NeutralRegion<'scene>>, usize)>,
+    metadata_bytes: usize,
+}
+
+impl PolygonDependencies<'_> {
+    pub(super) fn metadata_bytes(&self) -> usize {
+        self.metadata_bytes
+    }
+
+    pub(super) fn select_consumer(&mut self, position: usize) {
+        self.consumers[position] = true;
+    }
+
+    pub(super) fn consumer(&self, position: usize) -> bool {
+        self.consumers[position]
+    }
+
+    pub(super) fn source(&self, source: &NeutralRegion<'_>) -> bool {
+        self.nodes[source.id]
+    }
+}
+
 /// Bounded private physical realization of one proven F1 rounded rectangle.
 /// The original child path remains authoritative for unsupported extensions.
 pub(in crate::runtime::execution_2d) struct CertifiedRoundedRectangle {
@@ -519,6 +579,7 @@ impl NeutralRegionBuilder {
     pub(super) fn new(scales: shadow::NeutralPreparationScale, max_buffer_bytes: u64) -> Self {
         Self {
             nodes: 0,
+            constructed_node_bytes: 0,
             retained_path_units: 0,
             retained_vertices: 0,
             graph_work: 0,
@@ -570,7 +631,7 @@ impl NeutralRegionBuilder {
         // traversal behind a cached semantic-looking rectangle.
         let mesh_visits = match &kind {
             Kind::Affine { source, .. } => match &source.kind {
-                Kind::Source(mesh) => mesh.triangles.len(),
+                Kind::Source(mesh) => mesh.get().map_or(0, |mesh| mesh.triangles.len()),
                 _ => 0,
             },
             _ => 0,
@@ -663,6 +724,25 @@ impl NeutralRegionBuilder {
             ));
         }
         owner_path.extend_from_slice(path);
+        self.constructed_node_bytes = self
+            .constructed_node_bytes
+            .checked_add(size_of::<NeutralRegion<'_>>() + 2 * size_of::<usize>())
+            .and_then(|bytes| {
+                bytes.checked_add(owner_path.capacity().checked_mul(size_of::<usize>())?)
+            })
+            .and_then(|bytes| match &kind {
+                Kind::Union(children) => bytes.checked_add(
+                    children
+                        .capacity()
+                        .checked_mul(size_of::<Arc<NeutralRegion<'_>>>())?,
+                ),
+                Kind::Source(source) => match source.get() {
+                    Some(mesh) => bytes.checked_add(Self::mesh_bytes(mesh)?),
+                    None => Some(bytes),
+                },
+                _ => Some(bytes),
+            })
+            .ok_or_else(|| resource(path, "neutral node storage extent overflow"))?;
         self.nodes = next;
         self.retained_path_units = paths;
         Ok(Arc::new(NeutralRegion {
@@ -675,6 +755,259 @@ impl NeutralRegionBuilder {
             certified_source_reach,
             contains_positive_disk,
         }))
+    }
+
+    pub(super) fn storage_limit(&self) -> u64 {
+        self.max_buffer_bytes
+    }
+
+    pub(super) fn charge_preparation(
+        &mut self,
+        cost: usize,
+        path: &[usize],
+    ) -> Result<(), Render2dExecutionError> {
+        self.charge_graph_work(cost, path)
+    }
+
+    /// Admit the complete source-selection phase before allocation. The
+    /// caller's retained/construction receipt already includes the existing
+    /// 512 * 128-byte traversal allowance; explicit DFS frames fit within it.
+    /// The tables and their headers are additional coexisting storage.
+    pub(super) fn polygon_dependencies<'scene>(
+        &mut self,
+        consumers: usize,
+        source_phase_bytes: usize,
+        max_host_bytes: u64,
+    ) -> Result<PolygonDependencies<'scene>, Render2dExecutionError> {
+        // Scalar overflow/admission checks are work even on a rejected call.
+        self.charge_graph_work(128, &[])?;
+        let slots = self
+            .nodes
+            .checked_add(1)
+            .ok_or_else(|| resource(&[], "polygon dependency index overflow"))?;
+        let entries = slots
+            .checked_add(consumers)
+            .ok_or_else(|| resource(&[], "polygon dependency extent overflow"))?;
+        let metadata_bytes = entries
+            .checked_add(size_of::<PolygonDependencies<'_>>())
+            .ok_or_else(|| resource(&[], "polygon dependency bytes overflow"))?;
+        let phase_bytes = source_phase_bytes
+            .checked_add(metadata_bytes)
+            .ok_or_else(|| resource(&[], "polygon dependency phase bytes overflow"))?;
+        if u64::try_from(phase_bytes)
+            .ok()
+            .is_none_or(|bytes| bytes > max_host_bytes.min(self.storage_limit()))
+        {
+            return Err(resource(
+                &[],
+                "polygon dependency source phase exceeds host admission",
+            ));
+        }
+        self.charge_graph_work(
+            entries
+                .checked_mul(8)
+                .ok_or_else(|| resource(&[], "polygon dependency initialization work overflow"))?,
+            &[],
+        )?;
+        fn table(count: usize) -> Result<Vec<bool>, Render2dExecutionError> {
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(count)
+                .map_err(|_| resource(&[], "polygon dependency allocation failed"))?;
+            if values.capacity() > count {
+                return Err(resource(
+                    &[],
+                    "polygon dependency capacity exceeds admission",
+                ));
+            }
+            values.resize(count, false);
+            Ok(values)
+        }
+        // No initialized frame array or compiler-dependent recursion stack.
+        // Arc + next-child index is at most 128 bytes on the supported host;
+        // at most MAX_REGION_DEPTH frames can coexist by the DAG invariant.
+        const { assert!(size_of::<(Arc<NeutralRegion<'_>>, usize)>() <= 128) };
+        let mut frames = Vec::new();
+        frames
+            .try_reserve_exact(MAX_REGION_DEPTH)
+            .map_err(|_| resource(&[], "polygon dependency frame allocation failed"))?;
+        if frames.capacity() > MAX_REGION_DEPTH {
+            return Err(resource(
+                &[],
+                "polygon dependency frame capacity exceeds admission",
+            ));
+        }
+        Ok(PolygonDependencies {
+            nodes: table(slots)?,
+            consumers: table(consumers)?,
+            frames,
+            metadata_bytes,
+        })
+    }
+
+    /// Mark physical dependencies with one bounded DFS frame vector reused by
+    /// every selected root. Each node visit (including cache hits) prepays its
+    /// flag, Arc/frame operations and the parent's next-child bookkeeping.
+    pub(super) fn require_polygon_dependencies<'scene>(
+        &mut self,
+        source: &Arc<NeutralRegion<'scene>>,
+        dependencies: &mut PolygonDependencies<'scene>,
+    ) -> Result<(), Render2dExecutionError> {
+        self.charge_graph_work(64, &source.path)?;
+        debug_assert!(dependencies.frames.is_empty());
+        dependencies.frames.push((Arc::clone(source), 0));
+        while let Some((node, next)) = dependencies.frames.last_mut() {
+            if *next == 0 {
+                let needed = dependencies.nodes.get_mut(node.id).ok_or_else(|| {
+                    precision(
+                        &node.path,
+                        "polygon dependency ID exceeds the invocation inventory",
+                    )
+                })?;
+                if *needed {
+                    dependencies.frames.pop();
+                    continue;
+                }
+                *needed = true;
+            }
+            let child = match &node.kind {
+                Kind::Source(_) => None,
+                Kind::Union(children) => children.get(*next),
+                Kind::Affine { source, .. }
+                | Kind::Clip { source, .. }
+                | Kind::Effect { source, .. } => (*next == 0).then_some(source),
+            };
+            if let Some(child) = child {
+                self.charge_graph_work(64, &child.path)?;
+                *next += 1;
+                let child = Arc::clone(child);
+                if dependencies.frames.len() == MAX_REGION_DEPTH {
+                    return Err(precision(
+                        &child.path,
+                        "polygon dependency depth exceeds inventory",
+                    ));
+                }
+                dependencies.frames.push((child, 0));
+            } else {
+                dependencies.frames.pop();
+            }
+        }
+        Ok(())
+    }
+
+    fn mesh_bytes(mesh: &support::NeutralMesh) -> Option<usize> {
+        mesh.triangles
+            .capacity()
+            .checked_mul(size_of::<[f64; 2]>())?
+            .checked_add(size_of::<support::NeutralMesh>() + 2 * size_of::<usize>())
+    }
+
+    /// Allocation-capacity inventory, not a membership or backend-memory claim.
+    /// IDs deduplicate shared DAG nodes. Cached mesh entries are counted
+    /// conservatively; a source seed shared with its own cache slot pays once.
+    pub(super) fn storage_bounds<'node, 'borrow>(
+        &mut self,
+        roots: impl IntoIterator<Item = &'borrow Arc<NeutralRegion<'node>>>,
+    ) -> Result<(usize, usize), Render2dExecutionError>
+    where
+        'node: 'borrow,
+    {
+        fn visit(
+            node: &NeutralRegion<'_>,
+            seen: &mut [bool],
+            cached: &[Option<Arc<support::NeutralMesh>>],
+            fuel: &mut usize,
+        ) -> Option<usize> {
+            *fuel = fuel.checked_sub(64)?;
+            if *seen.get(node.id)? {
+                return Some(0);
+            }
+            seen[node.id] = true;
+            let mut bytes = size_of::<NeutralRegion<'_>>() + 2 * size_of::<usize>();
+            bytes = bytes.checked_add(node.path.capacity().checked_mul(size_of::<usize>())?)?;
+            match &node.kind {
+                Kind::Source(source) => {
+                    if cached.get(node.id).is_none_or(Option::is_none)
+                        && let Some(mesh) = source.get()
+                    {
+                        bytes = bytes.checked_add(NeutralRegionBuilder::mesh_bytes(mesh)?)?;
+                    }
+                }
+                Kind::Union(children) => {
+                    bytes = bytes.checked_add(
+                        children
+                            .capacity()
+                            .checked_mul(size_of::<Arc<NeutralRegion<'_>>>())?,
+                    )?;
+                    for child in children {
+                        bytes = bytes.checked_add(visit(child, seen, cached, fuel)?)?;
+                    }
+                }
+                Kind::Affine { source, .. }
+                | Kind::Clip { source, .. }
+                | Kind::Effect { source, .. } => {
+                    bytes = bytes.checked_add(visit(source, seen, cached, fuel)?)?;
+                }
+            }
+            Some(bytes)
+        }
+        let slots = self
+            .nodes
+            .checked_add(1)
+            .ok_or_else(|| resource(&[], "source storage index overflow"))?;
+        self.charge_graph_work(
+            slots
+                .checked_mul(8)
+                .and_then(|v| v.checked_add(64))
+                .ok_or_else(|| resource(&[], "source storage work overflow"))?,
+            &[],
+        )?;
+        let mut seen = Vec::new();
+        seen.try_reserve_exact(slots)
+            .map_err(|_| resource(&[], "source storage index allocation failed"))?;
+        if seen.capacity() > slots {
+            return Err(resource(&[], "source storage index exceeds admission"));
+        }
+        seen.resize(slots, false);
+        let mut fuel = MAX_REGION_GRAPH_WORK - self.graph_work;
+        let result = (|| {
+            let mut bytes = size_of::<Self>()
+                .checked_add(
+                    self.materialized
+                        .capacity()
+                        .checked_mul(size_of::<Option<Arc<support::NeutralMesh>>>())?,
+                )?
+                .checked_add(self.union_seen.capacity().checked_mul(size_of::<usize>())?)?
+                .checked_add(
+                    self.polygonal_proofs
+                        .capacity()
+                        .checked_mul(size_of::<Option<bool>>())?,
+                )?;
+            let headers = bytes;
+            let mut cached_bytes = 0_usize;
+            for mesh in self.materialized.iter().flatten() {
+                fuel = fuel.checked_sub(32)?;
+                cached_bytes = cached_bytes.checked_add(Self::mesh_bytes(mesh)?)?;
+            }
+            bytes = bytes.checked_add(cached_bytes)?;
+            for root in roots {
+                bytes =
+                    bytes.checked_add(visit(root, &mut seen, &self.materialized, &mut fuel)?)?;
+            }
+            // Construction may retain nodes later discarded by normalization.
+            // The temporary seen table and bounded traversal frames coexist.
+            let construction = self
+                .constructed_node_bytes
+                // At most one table is relocating at a time. Twice the
+                // final capacities covers the old and new allocations.
+                .checked_add(headers.checked_mul(2)?)?
+                .checked_add(cached_bytes)?
+                .checked_add(seen.capacity())?
+                .checked_add(MAX_REGION_DEPTH * 128)?;
+            Some((bytes, construction))
+        })();
+        self.graph_work = MAX_REGION_GRAPH_WORK - fuel;
+        result.ok_or_else(|| resource(&[], "source storage inventory exceeds admission"))
     }
 
     /// Synthetic test fixtures have no original F1 item to borrow. They may
@@ -734,13 +1067,89 @@ impl NeutralRegionBuilder {
         self.source_impl(mesh, Some(item), path, true).map(Some)
     }
 
-    fn source_impl<'a>(
+    /// Register original F1 meaning without asking a polygon consumer to
+    /// reconstruct it. Absence is established only by original source facts.
+    pub(super) fn register_source<'a>(
         &mut self,
-        mut mesh: support::NeutralMesh,
-        semantic_item: Option<&'a Render2dItem>,
+        item: &'a Render2dItem,
         path: &[usize],
-        source_prepaid: bool,
-    ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
+    ) -> Result<Option<Arc<NeutralRegion<'a>>>, Render2dExecutionError> {
+        let controls = source_envelope::control_visits(item);
+        let stroke = matches!(
+            item.primitive(),
+            crate::composition_2d::Render2dPrimitive::Stroke { .. }
+        );
+        let cost = controls
+            .checked_mul(SOURCE_REACH_CONTROL_WORK)
+            .and_then(|v| v.checked_add(if stroke { SOURCE_REACH_STROKE_WORK } else { 0 }))
+            .and_then(|v| v.checked_add(REGION_NODE_WORK))
+            .ok_or_else(|| resource(path, "neutral source registration work overflow"))?;
+        self.charge_graph_work(cost, path)?;
+        if trivially_empty_original_source(item) {
+            return Ok(None);
+        }
+        self.node_with_source_admission(
+            Kind::Source(SourceGeometry::deferred()),
+            path,
+            1,
+            Some(item),
+            true,
+        )
+        .map(Some)
+    }
+
+    /// Explicit polygon demand. The factory is invocation-scoped, not retained
+    /// by a source leaf; failed reconstruction installs no physical receipt.
+    pub(super) fn prepare_registered_source(
+        &mut self,
+        region: &NeutralRegion<'_>,
+        prepare: impl FnOnce(
+            &Render2dItem,
+            &[usize],
+            &mut shadow::NeutralPreparationWork<'_>,
+        ) -> Result<Option<support::NeutralMesh>, Render2dExecutionError>,
+    ) -> Result<(), Render2dExecutionError> {
+        let Kind::Source(source) = &region.kind else {
+            return Err(unsupported(&region.path));
+        };
+        if source.get().is_some() {
+            self.charge_graph_work(MATERIALIZATION_LOOKUP_WORK, &region.path)?;
+            return Ok(());
+        }
+        let item = region
+            .semantic_item
+            .ok_or_else(|| unsupported(&region.path))?;
+        let mut mesh = prepare(
+            item,
+            &region.path,
+            &mut shadow::NeutralPreparationWork {
+                graph: &mut self.graph_work,
+                clip_pairs: &mut self.clip_work,
+            },
+        )?
+        .ok_or_else(|| {
+            precision(
+                &region.path,
+                "registered nonempty source lost its original support",
+            )
+        })?;
+        let retained = self.admit_source_mesh(&mut mesh, &region.path)?;
+        source
+            .0
+            .set(Arc::new(mesh))
+            .expect("one invocation owns source reconstruction");
+        self.retained_vertices = retained;
+        Ok(())
+    }
+
+    /// Shared physical admission for seeded and explicitly requested meshes.
+    /// Bounds are disposable metadata; retained counters commit only after the
+    /// owning node or once-only realization succeeds.
+    fn admit_source_mesh(
+        &mut self,
+        mesh: &mut support::NeutralMesh,
+        path: &[usize],
+    ) -> Result<usize, Render2dExecutionError> {
         // The cached tessellation AABB is disposable physical metadata, not
         // F1 semantic authority. Certify the support envelope from the
         // ACTUAL retained vertices once, and normalize only after ensuring
@@ -781,8 +1190,19 @@ impl NeutralRegionBuilder {
         // A rejected graph node MUST NOT consume retained geometry budget.
         let mut retained = self.retained_vertices;
         shadow::charge_vertices(&mut retained, mesh.triangles.len(), path)?;
+        Ok(retained)
+    }
+
+    fn source_impl<'a>(
+        &mut self,
+        mut mesh: support::NeutralMesh,
+        semantic_item: Option<&'a Render2dItem>,
+        path: &[usize],
+        source_prepaid: bool,
+    ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
+        let retained = self.admit_source_mesh(&mut mesh, path)?;
         let node = self.node_with_source_admission(
-            Kind::Source(Arc::new(mesh)),
+            Kind::Source(SourceGeometry::prepared(Arc::new(mesh))),
             path,
             1,
             semantic_item,
@@ -1180,9 +1600,12 @@ impl NeutralRegionBuilder {
 
     fn provenance_node_work(region: &NeutralRegion<'_>) -> Result<usize, Render2dExecutionError> {
         let extra = match &region.kind {
-            Kind::Source(mesh) if region.semantic_item.is_some() => {
-                Self::rectangle_scan_work(mesh, &region.path)?.checked_add(PROVENANCE_SOURCE_WORK)
-            }
+            Kind::Source(mesh) if region.semantic_item.is_some() => mesh
+                .get()
+                .map(|mesh| Self::rectangle_scan_work(mesh, &region.path))
+                .transpose()?
+                .unwrap_or(0)
+                .checked_add(PROVENANCE_SOURCE_WORK),
             // Pay the complete child-edge inventory BEFORE visiting it.
             // Child receipt lookups and uncached bodies pay separately.
             Kind::Union(children) => children.len().checked_mul(PROVENANCE_LOOKUP_WORK),
@@ -1214,10 +1637,15 @@ impl NeutralRegionBuilder {
         memo: &mut [Option<bool>],
     ) -> Result<bool, Render2dExecutionError> {
         let result = match &region.kind {
-            Kind::Source(mesh) => region.semantic_item.is_some_and(|item| {
-                Self::exact_original_rectangle_source(mesh, item)
-                    || Self::exact_original_triangle_source(mesh, item)
-            }),
+            Kind::Source(mesh) => {
+                // An unrequested physical realization is not a failed
+                // correspondence proof and must never cache a false receipt.
+                let mesh = mesh.get().ok_or_else(|| unsupported(&region.path))?;
+                region.semantic_item.is_some_and(|item| {
+                    Self::exact_original_rectangle_source(mesh, item)
+                        || Self::exact_original_triangle_source(mesh, item)
+                })
+            }
             Kind::Union(children) => {
                 let mut proven = true;
                 for child in children {
@@ -1479,7 +1907,7 @@ impl NeutralRegionBuilder {
             self.materialized.resize_with(needed, || None);
         }
         let mesh = match &region.kind {
-            Kind::Source(mesh) => Arc::clone(mesh),
+            Kind::Source(mesh) => Arc::clone(mesh.get().ok_or_else(|| unsupported(path))?),
             Kind::Union(children) => {
                 let mut output = shadow::empty_mesh();
                 for child in children {
@@ -1670,6 +2098,7 @@ impl NeutralRegion<'_> {
     fn rectangle(&self) -> Option<[f64; 4]> {
         match &self.kind {
             Kind::Source(mesh) => {
+                let mesh = mesh.get()?;
                 let rect = support::certified_axis_aligned_rectangle(&mesh.triangles)?;
                 let scale = mesh.units_per_parent_logical_unit;
                 (scale.is_finite() && scale > 0.0).then(|| rect.map(|v| v / scale))
@@ -1927,6 +2356,39 @@ mod tests {
         let composition = Render2dComposition::new(vec![Render2dEntry::group(root)]).unwrap();
         let plan = shadow::scene::analyze(&composition).unwrap();
         let bindings = Render2dResourceBindings::default();
+        // The same original source graph is a complete continuous-query
+        // input before any disposable vector geometry has been requested.
+        let fields = std::collections::BTreeMap::new();
+        let dag = shadow::build_group_sources(
+            &plan,
+            &bindings,
+            &fields,
+            shadow::NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            1_048_576,
+        )
+        .unwrap();
+        assert_eq!(dag.graph.retained_vertices, 0);
+        assert!(dag.graph.materialized.is_empty());
+        let raw = dag.source(0).unwrap();
+        let mut fuel = 1_000_000;
+        assert_eq!(
+            certified_cells::certified_area_enclosure(
+                &raw,
+                [15.0, 15.0, 16.0, 16.0],
+                None,
+                4,
+                &mut fuel,
+            ),
+            Some([1.0, 1.0]),
+        );
+        assert!(fuel < 1_000_000);
+        assert_eq!(dag.graph.retained_vertices, 0);
+        assert!(dag.storage().retained_bytes > 0);
+        assert!(dag.storage().construction_peak_bytes >= dag.storage().retained_bytes);
+        drop(dag);
         let mut inspected_root = false;
         let result = shadow::group_child_sources_with_probe(
             &plan,
@@ -2864,6 +3326,406 @@ mod tests {
             "a completed empty preparation cannot refund work"
         );
         assert_eq!(graph.nodes, 0);
+    }
+
+    #[test]
+    fn deferred_source_failures_do_not_poison_once_only_realization_or_correspondence() {
+        let item = provenance_rectangle_item();
+        let mut graph = builder();
+        let source = graph.register_source(&item, &[6, 2]).unwrap().unwrap();
+        let Kind::Source(geometry) = &source.kind else {
+            panic!("registered leaf must preserve original-source ownership");
+        };
+        assert!(geometry.get().is_none());
+        assert!(matches!(
+            graph.proven_original_straight_polygon_union(&source),
+            Err(Render2dExecutionError::UnsupportedEntry { .. })
+        ));
+        let before_failure = graph.graph_work;
+        assert!(matches!(
+            graph.prepare_registered_source(&source, |_, path, work| {
+                work.charge(13, path)?;
+                Err(precision(path, "test reconstruction failure"))
+            }),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit, path: Some(path), ..
+            }) if path == [6, 2]
+        ));
+        assert_eq!(graph.graph_work, before_failure + 13);
+        assert!(geometry.get().is_none());
+        assert_eq!(graph.retained_vertices, 0);
+        graph
+            .prepare_registered_source(&source, |borrowed, path, work| {
+                assert!(std::ptr::eq(borrowed, &item));
+                assert_eq!(path, &[6, 2]);
+                work.charge(7, path)?;
+                Ok(Some(provenance_rectangle_mesh(1)))
+            })
+            .unwrap();
+        let prepared_work = graph.graph_work;
+        graph
+            .prepare_registered_source(&source, |_, _, _| {
+                panic!("a completed source must never reconstruct twice")
+            })
+            .unwrap();
+        assert_eq!(
+            graph.graph_work,
+            prepared_work + MATERIALIZATION_LOOKUP_WORK
+        );
+        assert_eq!(graph.retained_vertices, 6);
+        assert!(
+            graph
+                .proven_original_straight_polygon_union(&source)
+                .unwrap()
+        );
+        let physical = graph.materialize(&source).unwrap();
+        assert!(Arc::ptr_eq(&physical, geometry.get().unwrap()));
+        assert!(Arc::ptr_eq(&physical, &graph.materialize(&source).unwrap()));
+    }
+
+    #[test]
+    fn source_inventory_counts_spare_mesh_capacity_and_discarded_nodes() {
+        let mut graph = builder();
+        let mut mesh = provenance_rectangle_mesh(1);
+        mesh.triangles.try_reserve_exact(256).unwrap();
+        let triangle_bytes = mesh.triangles.capacity() * size_of::<[f64; 2]>();
+        let source = graph.source(mesh, &[4, 3, 2]).unwrap();
+        let dropped = graph.source(triangle(), &[8, 7, 6, 5]).unwrap();
+        drop(dropped);
+        let work_before = graph.graph_work;
+        let (retained, construction) = graph.storage_bounds([&source]).unwrap();
+        assert!(retained > triangle_bytes);
+        assert!(construction > retained);
+        assert!(graph.graph_work > work_before);
+    }
+
+    fn consumer_group(
+        children: Vec<crate::composition_2d::Render2dEntry>,
+        effect: Render2dDropShadow,
+    ) -> crate::composition_2d::Render2dEntry {
+        use crate::composition_2d::{Render2dEntry, Render2dGroup, Render2dOpacity};
+        Render2dEntry::group(Render2dGroup::new(
+            children,
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            vec![effect],
+        ))
+    }
+
+    #[test]
+    fn selected_polygon_consumers_leave_unselected_sources_and_effects_unrealized() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dComposition, Render2dEntry, Render2dOpacity, Render2dPrimitive,
+            Render2dRect, Render2dResourceBindings, Render2dShape,
+        };
+        let zero = Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::WHITE).unwrap();
+        let ellipse = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::ellipse(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let composition = Render2dComposition::new(vec![
+            consumer_group(vec![Render2dEntry::item(provenance_rectangle_item())], zero),
+            consumer_group(
+                vec![consumer_group(vec![Render2dEntry::item(ellipse)], zero)],
+                zero,
+            ),
+        ])
+        .unwrap();
+        let plan = shadow::scene::analyze(&composition).unwrap();
+        let bindings = Render2dResourceBindings::default();
+        let fields = std::collections::BTreeMap::new();
+        let build = || {
+            shadow::build_group_sources(
+                &plan,
+                &bindings,
+                &fields,
+                shadow::NeutralPreparationScale {
+                    field_raster_scale: 1.0,
+                    geometry_sample_scale: 4.0,
+                },
+                1_048_576,
+            )
+            .unwrap()
+        };
+        // Each table fits this lease, but the retained source phase and
+        // tables coexist. Reject before the first physical source factory.
+        let mut dag = build();
+        let original = dag.source(0).unwrap();
+        let before = dag.graph_work();
+        let storage = dag.storage();
+        let source_phase = storage.plan_bytes + storage.construction_peak_bytes;
+        assert!(source_phase > 65_536);
+        assert!(matches!(
+            dag.selected_dependencies(&[0], source_phase as u64),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
+        assert_eq!(dag.graph_work(), before + 32 + 128);
+        assert_eq!(
+            dag.storage().construction_peak_bytes,
+            storage.construction_peak_bytes
+        );
+        let Kind::Source(geometry) = &original.kind else {
+            panic!("original leaf")
+        };
+        assert!(geometry.get().is_none());
+
+        // The exact combined lease admits both immutable tables. Their
+        // capacity is reported in addition to the existing traversal reserve.
+        let mut dag = build();
+        let metadata =
+            dag.graph.nodes + 1 + dag.sources.len() + size_of::<PolygonDependencies<'_>>();
+        let lease = (source_phase + metadata) as u64;
+        let dependencies = dag.selected_dependencies(&[0], lease).unwrap();
+        assert_eq!(dependencies.metadata_bytes(), metadata);
+        assert_eq!(dependencies.frames.capacity(), MAX_REGION_DEPTH);
+        assert!(dependencies.frames.is_empty());
+        assert_eq!(
+            dag.storage().construction_peak_bytes,
+            storage.construction_peak_bytes + metadata
+        );
+        assert_eq!(
+            dag.storage().plan_bytes + dag.storage().construction_peak_bytes,
+            lease as usize
+        );
+        drop(dependencies);
+
+        let dag = build();
+        let rectangle = dag.source(0).unwrap();
+        let ellipse = dag.source(4).unwrap();
+        assert!(
+            dag.demands
+                .iter()
+                .any(|d| matches!(d, shadow::SourceDemand::Effect(_)))
+        );
+        let prepared = dag
+            .prepare_polygonal_consumers(Some(&[0]), None, 1_048_576)
+            .unwrap();
+        assert_eq!(
+            prepared.casters.keys().copied().collect::<Vec<_>>(),
+            vec![0]
+        );
+        let Kind::Source(rectangle_geometry) = &rectangle.kind else {
+            panic!("rectangle leaf")
+        };
+        let Kind::Source(ellipse_geometry) = &ellipse.kind else {
+            panic!("ellipse leaf")
+        };
+        assert!(rectangle_geometry.get().is_some());
+        assert!(ellipse_geometry.get().is_none());
+        let mut fuel = 1_000_000;
+        assert_eq!(
+            certified_cells::certified_area_enclosure(
+                &ellipse,
+                [0.9, 0.9, 1.1, 1.1],
+                None,
+                4,
+                &mut fuel
+            ),
+            Some([1.0, 1.0]),
+        );
+
+        // An explicit original-only request is different from the default
+        // physical consumer. It must also skip descendant effect warmups.
+        let dag = build();
+        let original = dag.source(0).unwrap();
+        let before = dag.graph_work();
+        let prepared = dag
+            .prepare_polygonal_consumers(Some(&[]), None, 1_048_576)
+            .unwrap();
+        assert!(prepared.casters.is_empty());
+        assert!(
+            prepared.graph_work > before,
+            "dependency metadata is actual work"
+        );
+        let Kind::Source(geometry) = &original.kind else {
+            panic!("original leaf")
+        };
+        assert!(geometry.get().is_none());
+
+        // Validate ALL selection indices before realizing an earlier valid
+        // request. Invalid caller keys must not install a physical receipt.
+        let dag = build();
+        let original = dag.source(0).unwrap();
+        assert!(matches!(
+            dag.prepare_polygonal_consumers(Some(&[0, usize::MAX]), None, 1_048_576),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                ..
+            })
+        ));
+        let Kind::Source(geometry) = &original.kind else {
+            panic!("original leaf")
+        };
+        assert!(geometry.get().is_none());
+    }
+
+    #[test]
+    fn selected_ancestor_and_child_share_the_same_original_and_physical_source() {
+        use crate::composition_2d::{Render2dComposition, Render2dEntry, Render2dResourceBindings};
+        let zero = Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::WHITE).unwrap();
+        let eroded =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, -1.0, Render2dColorRgba8::WHITE).unwrap();
+        // The child erosion is a subset of C and is absorbed only for
+        // ancestor support. Its own signed physical consumer still exists.
+        let composition = Render2dComposition::new(vec![consumer_group(
+            vec![consumer_group(
+                vec![Render2dEntry::item(provenance_rectangle_item())],
+                eroded,
+            )],
+            zero,
+        )])
+        .unwrap();
+        let plan = shadow::scene::analyze(&composition).unwrap();
+        let bindings = Render2dResourceBindings::default();
+        let fields = std::collections::BTreeMap::new();
+        let dag = shadow::build_group_sources(
+            &plan,
+            &bindings,
+            &fields,
+            shadow::NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            1_048_576,
+        )
+        .unwrap();
+        let parent = dag.source(0).unwrap();
+        let child = dag.source(1).unwrap();
+        assert!(Arc::ptr_eq(&parent, &child));
+        // Unsorted/repeated indices describe the same set of consumers.
+        let prepared = dag
+            .prepare_polygonal_consumers(Some(&[1, 0, 1]), None, 1_048_576)
+            .unwrap();
+        assert_eq!(prepared.casters.len(), 2);
+        let shadow::NeutralCaster::Mesh(parent_mesh) = &prepared.casters[&0] else {
+            panic!("parent mesh")
+        };
+        let shadow::NeutralCaster::OriginalStraightPolygonUnion(child_mesh) = &prepared.casters[&1]
+        else {
+            panic!("original signed polygon proof")
+        };
+        let Kind::Source(geometry) = &parent.kind else {
+            panic!("shared original leaf")
+        };
+        assert!(Arc::ptr_eq(parent_mesh, child_mesh));
+        assert!(Arc::ptr_eq(parent_mesh, geometry.get().unwrap()));
+        assert_eq!(geometry.get().unwrap().triangles.len(), 6);
+        assert_eq!(parent.owner_path(), &[0, 0, 0]);
+    }
+
+    #[test]
+    fn polygon_dependency_metadata_and_each_visit_require_prepaid_admission() {
+        let item = provenance_rectangle_item();
+        let mut graph = builder();
+        let source = graph.register_source(&item, &[9, 2]).unwrap().unwrap();
+        graph.graph_work = MAX_REGION_GRAPH_WORK - 1;
+        assert!(matches!(
+            graph.polygon_dependencies(1, MAX_REGION_DEPTH * 128, u64::MAX),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
+        let Kind::Source(geometry) = &source.kind else {
+            panic!("source leaf")
+        };
+        assert!(geometry.get().is_none());
+        // Funding only the scalar preflight still cannot allocate/initialize
+        // the tables: the per-entry debit must succeed first.
+        graph.graph_work = MAX_REGION_GRAPH_WORK - 128;
+        assert!(
+            graph
+                .polygon_dependencies(1, MAX_REGION_DEPTH * 128, u64::MAX)
+                .is_err()
+        );
+        assert_eq!(graph.graph_work, MAX_REGION_GRAPH_WORK);
+        assert!(geometry.get().is_none());
+        let mut tiny = builder();
+        tiny.max_buffer_bytes = 1;
+        assert!(matches!(
+            tiny.polygon_dependencies(1, MAX_REGION_DEPTH * 128, u64::MAX),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
+        assert_eq!(tiny.graph_work, 128);
+        graph.graph_work = 0;
+        let mut dependencies = graph
+            .polygon_dependencies(1, MAX_REGION_DEPTH * 128, u64::MAX)
+            .unwrap();
+        graph.graph_work = MAX_REGION_GRAPH_WORK - 63;
+        assert!(
+            matches!(graph.require_polygon_dependencies(&source, &mut dependencies), Err(Render2dExecutionError::SampleSpace {
+            kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+        }) if path == [9, 2])
+        );
+        assert!(!dependencies.source(&source));
+        graph.graph_work = 0;
+        graph
+            .require_polygon_dependencies(&source, &mut dependencies)
+            .unwrap();
+        assert_eq!(graph.graph_work, 64);
+        assert!(dependencies.source(&source));
+        graph
+            .require_polygon_dependencies(&source, &mut dependencies)
+            .unwrap();
+        assert_eq!(graph.graph_work, 128, "shared dependency lookups still pay");
+        assert!(
+            geometry.get().is_none(),
+            "marking is never physical realization"
+        );
+    }
+
+    #[test]
+    fn polygon_dependency_frames_cover_maximum_admitted_depth_without_recursion() {
+        let item = provenance_rectangle_item();
+        let mut graph = builder();
+        let leaf = graph.register_source(&item, &[9, 2]).unwrap().unwrap();
+        let mut root = Arc::clone(&leaf);
+        for _ in 1..MAX_REGION_DEPTH {
+            root = graph
+                .affine(
+                    root,
+                    Render2dAffineTransform::translation(1.0, 0.0).unwrap(),
+                    &[9],
+                )
+                .unwrap();
+        }
+        assert_eq!(root.depth, MAX_REGION_DEPTH);
+        let mut dependencies = graph
+            .polygon_dependencies(1, MAX_REGION_DEPTH * 128, u64::MAX)
+            .unwrap();
+        let before = graph.graph_work;
+        graph
+            .require_polygon_dependencies(&root, &mut dependencies)
+            .unwrap();
+        assert_eq!(graph.graph_work - before, MAX_REGION_DEPTH * 64);
+        assert!(dependencies.source(&root));
+        assert!(dependencies.source(&leaf));
+        assert!(dependencies.frames.is_empty());
+        assert!(
+            dependencies.frames.capacity() * size_of::<(Arc<NeutralRegion<'_>>, usize)>()
+                <= MAX_REGION_DEPTH * 128
+        );
+        // The same frame capacity serves another selected, already-marked root.
+        graph
+            .require_polygon_dependencies(&leaf, &mut dependencies)
+            .unwrap();
+        assert_eq!(graph.graph_work - before, MAX_REGION_DEPTH * 64 + 64);
+        let Kind::Source(geometry) = &leaf.kind else {
+            panic!("leaf")
+        };
+        assert!(geometry.get().is_none());
     }
 
     #[test]

@@ -492,21 +492,375 @@ pub(super) fn group_child_sources<'a>(
     max_buffer_bytes: u64,
     root_canvas: Option<([f64; 2], f64)>,
 ) -> Result<GroupChildSources<'a>, Render2dExecutionError> {
-    group_child_sources_with_probe(
-        plan,
-        bindings,
-        field_sets,
-        scales,
-        max_buffer_bytes,
-        root_canvas,
-        |_, _| {},
-    )
+    build_group_sources(plan, bindings, field_sets, scales, max_buffer_bytes)?
+        .prepare_polygonal_consumers(None, root_canvas, max_buffer_bytes)
 }
 
-/// A read-only, transient observer for deterministic tests of the REAL
-/// borrowed-F1 graph construction. It never writes or replaces F1 authority,
-/// does not retain renderer-owned nodes, and cannot bypass materialization.
-/// The production path supplies a no-op observer.
+/// Source-owned capacity bounds. Caller-owned F1 values and immutable resource
+/// allocations are borrowed and must be inventoried by their owning caller.
+/// Construction covers graph/frontier allocation lifetimes. Physical source
+/// factory scratch (including Lyon) is a separate consumer-phase obligation.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SourceStorage {
+    /// Borrowed renderer-owned input plan, separate from borrowed F1 values.
+    /// A caller retaining that input must include it in its combined peak.
+    pub(super) plan_bytes: usize,
+    pub(super) retained_bytes: usize,
+    pub(super) construction_peak_bytes: usize,
+}
+
+fn push_source_value<T>(
+    values: &mut Vec<T>,
+    value: T,
+    graph: &mut region::NeutralRegionBuilder,
+    construction: &mut usize,
+    path: &[usize],
+) -> Result<(), Render2dExecutionError> {
+    let grows = values.len() == values.capacity();
+    let capacity = if grows {
+        values.capacity().saturating_mul(2).max(4)
+    } else {
+        values.capacity()
+    };
+    let bytes = capacity
+        .checked_mul(size_of::<T>())
+        .ok_or_else(|| resource(path, "source container bytes overflow"))?;
+    if u64::try_from(bytes)
+        .ok()
+        .is_none_or(|bytes| bytes > graph.storage_limit())
+    {
+        return Err(resource(path, "source container exceeds buffer capacity"));
+    }
+    let copies = if grows { values.len() } else { 0 };
+    let work = copies
+        .checked_add(1)
+        .and_then(|v| v.checked_mul(size_of::<T>()))
+        .and_then(|v| v.checked_mul(2))
+        .and_then(|v| v.checked_add(64))
+        .ok_or_else(|| resource(path, "source container work overflow"))?;
+    graph.charge_preparation(work, path)?;
+    if grows {
+        *construction = construction
+            .checked_add(bytes)
+            .ok_or_else(|| resource(path, "source container construction storage overflow"))?;
+        values
+            .try_reserve_exact(capacity - values.len())
+            .map_err(|_| resource(path, "source container allocation failed"))?;
+        if values.capacity() > capacity {
+            return Err(resource(
+                path,
+                "source container capacity exceeds admission",
+            ));
+        }
+    }
+    values.push(value);
+    Ok(())
+}
+
+fn copy_source_path(
+    path: &[usize],
+    graph: &mut region::NeutralRegionBuilder,
+    construction: &mut usize,
+) -> Result<Vec<usize>, Render2dExecutionError> {
+    let bytes = path
+        .len()
+        .checked_mul(size_of::<usize>())
+        .ok_or_else(|| resource(path, "source path storage overflow"))?;
+    graph.charge_preparation(
+        bytes
+            .checked_mul(2)
+            .and_then(|v| v.checked_add(64))
+            .ok_or_else(|| resource(path, "source path copy work overflow"))?,
+        path,
+    )?;
+    *construction = construction
+        .checked_add(bytes)
+        .ok_or_else(|| resource(path, "source path construction storage overflow"))?;
+    if u64::try_from(bytes)
+        .ok()
+        .is_none_or(|bytes| bytes > graph.storage_limit())
+    {
+        return Err(resource(path, "source path exceeds buffer capacity"));
+    }
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(path.len())
+        .map_err(|_| resource(path, "source path allocation failed"))?;
+    if result.capacity() > path.len() {
+        return Err(resource(path, "source path capacity exceeds admission"));
+    }
+    result.extend_from_slice(path);
+    Ok(result)
+}
+
+fn source_container_bytes(
+    sources: &Vec<(usize, Arc<region::NeutralRegion<'_>>)>,
+    demands: &Vec<SourceDemand<'_>>,
+) -> Result<usize, Render2dExecutionError> {
+    let mut bytes = sources
+        .capacity()
+        .checked_mul(size_of::<(usize, Arc<region::NeutralRegion<'_>>)>())
+        .and_then(|v| {
+            v.checked_add(
+                demands
+                    .capacity()
+                    .checked_mul(size_of::<SourceDemand<'_>>())?,
+            )
+        })
+        .ok_or_else(|| resource(&[], "source container storage overflow"))?;
+    for demand in demands {
+        if let SourceDemand::Caster { path, .. } = demand {
+            bytes = bytes
+                .checked_add(
+                    path.capacity()
+                        .checked_mul(size_of::<usize>())
+                        .ok_or_else(|| resource(path, "source demand path bytes overflow"))?,
+                )
+                .ok_or_else(|| resource(path, "source demand path storage overflow"))?;
+        }
+    }
+    Ok(bytes)
+}
+
+/// A complete borrowed-F1 source graph with optional physical realizations.
+/// Polygon preparation is an explicit consumer; original-region consumers can
+/// retain a source without constructing disposable Lyon geometry.
+pub(super) struct GroupSourceDag<'scene, 'resources> {
+    graph: region::NeutralRegionBuilder,
+    sources: Vec<(usize, Arc<region::NeutralRegion<'scene>>)>,
+    storage: SourceStorage,
+    demands: Vec<SourceDemand<'scene>>,
+    bindings: &'resources Render2dResourceBindings,
+    field_sets: &'resources BTreeMap<FieldSetKey, Arc<ResourceFields>>,
+    scales: NeutralPreparationScale,
+    max_buffer_bytes: u64,
+}
+
+enum SourceDemand<'a> {
+    Leaf(Arc<region::NeutralRegion<'a>>),
+    Caster {
+        index: usize,
+        group: &'a crate::composition_2d::Render2dGroup,
+        path: Vec<usize>,
+        nested: bool,
+    },
+    Effect(Arc<region::NeutralRegion<'a>>),
+}
+
+impl<'scene> GroupSourceDag<'scene, '_> {
+    /// A shadow-bearing group's pre-clip C in its immediate parent frame.
+    /// The key is the original balanced plan's BeginGroup event index.
+    pub(super) fn source(&self, begin_event: usize) -> Option<Arc<region::NeutralRegion<'scene>>> {
+        self.sources
+            .binary_search_by_key(&begin_event, |entry| entry.0)
+            .ok()
+            .map(|index| Arc::clone(&self.sources[index].1))
+    }
+
+    pub(super) fn graph_work(&self) -> usize {
+        self.graph.graph_work
+    }
+
+    pub(super) fn storage(&self) -> SourceStorage {
+        self.storage
+    }
+
+    /// Existing production consumer and eligibility remain unchanged. Keeping
+    /// these demands in authored event order preserves physical errors and
+    /// once-only cache/work ownership while original consumers need none.
+    /// None requests every recorded physical demand, as the existing default
+    /// consumer does. Some requests only the listed shadow-bearing BeginGroup
+    /// occurrences and their dependencies; an empty set requests no polygons.
+    /// Original consumers retain their source Arcs before consuming this DAG.
+    /// The host lease bounds the selected source phase (input plan, DAG and
+    /// dependency metadata), not subsequent physical factories or GPU work.
+    pub(super) fn prepare_polygonal_consumers(
+        self,
+        selected: Option<&[usize]>,
+        root_canvas: Option<([f64; 2], f64)>,
+        max_host_bytes: u64,
+    ) -> Result<GroupChildSources<'scene>, Render2dExecutionError> {
+        self.prepare_polygonal_with_probe(selected, root_canvas, max_host_bytes, |_, _| {})
+    }
+
+    fn selected_dependencies(
+        &mut self,
+        selected: &[usize],
+        max_host_bytes: u64,
+    ) -> Result<region::PolygonDependencies<'scene>, Render2dExecutionError> {
+        // Prepay scalar receipt arithmetic even if admission then fails.
+        self.graph.charge_preparation(32, &[])?;
+        let source_phase = self
+            .storage
+            .plan_bytes
+            .checked_add(self.storage.construction_peak_bytes)
+            .ok_or_else(|| resource(&[], "polygon source phase storage overflow"))?;
+        let mut dependencies =
+            self.graph
+                .polygon_dependencies(self.sources.len(), source_phase, max_host_bytes)?;
+        self.storage.construction_peak_bytes = self
+            .storage
+            .construction_peak_bytes
+            .checked_add(dependencies.metadata_bytes())
+            .ok_or_else(|| resource(&[], "polygon selection storage receipt overflow"))?;
+        let lookup_work = self.consumer_lookup_work();
+        // Validate the complete request before any physical callback. Repeated
+        // group indices are idempotent set membership, not repeated demands.
+        for &index in selected {
+            self.graph.charge_preparation(lookup_work, &[])?;
+            let position = self
+                .sources
+                .binary_search_by_key(&index, |entry| entry.0)
+                .map_err(|_| precision(&[], "polygon consumer is not a registered shadow group"))?;
+            dependencies.select_consumer(position);
+        }
+        for (position, (_, source)) in self.sources.iter().enumerate() {
+            self.graph.charge_preparation(16, &[])?;
+            if dependencies.consumer(position) {
+                self.graph
+                    .require_polygon_dependencies(source, &mut dependencies)?;
+            }
+        }
+        Ok(dependencies)
+    }
+
+    fn consumer_lookup_work(&self) -> usize {
+        // Bound two binary searches, Arc/flag bookkeeping and dispatch. The
+        // second search is the existing source() lookup during caster replay.
+        64 + 32 * (usize::BITS - self.sources.len().leading_zeros()) as usize
+    }
+
+    fn prepare_polygonal_with_probe(
+        mut self,
+        selected: Option<&[usize]>,
+        root_canvas: Option<([f64; 2], f64)>,
+        max_host_bytes: u64,
+        mut inspect: impl FnMut(&Arc<region::NeutralRegion<'scene>>, &[usize]),
+    ) -> Result<GroupChildSources<'scene>, Render2dExecutionError> {
+        let dependencies = selected
+            .map(|indices| self.selected_dependencies(indices, max_host_bytes))
+            .transpose()?;
+        let lookup_work = self.consumer_lookup_work();
+        let mut sources = BTreeMap::new();
+        for demand in std::mem::take(&mut self.demands) {
+            if let Some(dependencies) = &dependencies {
+                let needed = match &demand {
+                    SourceDemand::Leaf(source) | SourceDemand::Effect(source) => {
+                        self.graph.charge_preparation(16, source.owner_path())?;
+                        dependencies.source(source)
+                    }
+                    SourceDemand::Caster { index, path, .. } => {
+                        self.graph.charge_preparation(lookup_work, path)?;
+                        let position = self
+                            .sources
+                            .binary_search_by_key(index, |entry| entry.0)
+                            .expect("registered caster demand");
+                        dependencies.consumer(position)
+                    }
+                };
+                if !needed {
+                    continue;
+                }
+            }
+            match demand {
+                SourceDemand::Leaf(source) => {
+                    self.graph
+                        .prepare_registered_source(&source, |item, path, work| {
+                            neutral_item(
+                                item,
+                                path,
+                                self.bindings,
+                                self.field_sets,
+                                self.scales,
+                                self.max_buffer_bytes,
+                                work,
+                            )
+                        })?;
+                }
+                SourceDemand::Caster {
+                    index,
+                    group,
+                    path,
+                    nested,
+                } => {
+                    let in_parent = self.source(index).expect("registered group source");
+                    inspect(&in_parent, &path);
+                    // Resolve the proven curved DAG before asking for a
+                    // polygonal mesh: a disk cannot be made into triangles
+                    // and an expected rejection is not control flow.
+                    let offscreen = if !nested {
+                        if let Some((canvas, raster_scale)) = root_canvas {
+                            in_parent.all_root_shadows_provably_offscreen(
+                                group.shadows(),
+                                canvas,
+                                raster_scale,
+                            )?
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    let source = if !nested
+                        && (in_parent.all_root_shadows_provably_empty(group.shadows()) || offscreen)
+                    {
+                        // Certified-empty or fully offscreen root effects
+                        // cannot reach the requested target. Preserve all
+                        // original F3E child painting and nested support.
+                        NeutralCaster::Mesh(Arc::new(empty_mesh()))
+                    } else if !nested {
+                        match self.graph.qualified_rounded_rectangle(&in_parent)? {
+                            Some(qualified) => NeutralCaster::RoundedRectangle(qualified),
+                            None => {
+                                // Root shadow paint is not exempt from
+                                // original-F1 negative-erosion provenance.
+                                // A convex Lyon tessellation never proves a
+                                // curved F1 fill/stroke is polygonal support.
+                                let proven =
+                                    group.shadows().iter().any(|shadow| shadow.spread() < 0.0)
+                                        && self
+                                            .graph
+                                            .proven_original_straight_polygon_union(&in_parent)?;
+                                materialized_or_symbolic(&mut self.graph, &in_parent, proven)?
+                            }
+                        }
+                    } else {
+                        let exact_original_polygons =
+                            group.shadows().iter().any(|effect| effect.spread() < 0.0)
+                                && self
+                                    .graph
+                                    .proven_original_straight_polygon_union(&in_parent)?;
+                        materialized_or_symbolic(
+                            &mut self.graph,
+                            &in_parent,
+                            exact_original_polygons,
+                        )?
+                    };
+                    sources.insert(index, source);
+                }
+                SourceDemand::Effect(effect_region) => {
+                    let negative = effect_region.is_negative_effect();
+                    match self.graph.materialize(&effect_region) {
+                        Ok(_) => {}
+                        Err(Render2dExecutionError::UnsupportedEntry {
+                            kind: Render2dUnsupportedContent::Shadows { .. },
+                            ..
+                        }) if negative => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+        }
+        Ok(GroupChildSources {
+            casters: sources,
+            graph_work: self.graph_work(),
+        })
+    }
+}
+
+/// Observe the default consumer after leaf geometry is prepared, preserving
+/// the original test observer's physical-representation contract.
+#[cfg(test)]
 fn group_child_sources_with_probe<'a>(
     plan: &scene::Plan<'a>,
     bindings: &Render2dResourceBindings,
@@ -514,41 +868,90 @@ fn group_child_sources_with_probe<'a>(
     scales: NeutralPreparationScale,
     max_buffer_bytes: u64,
     root_canvas: Option<([f64; 2], f64)>,
-    mut inspect: impl FnMut(&Arc<region::NeutralRegion<'a>>, &[usize]),
+    inspect: impl FnMut(&Arc<region::NeutralRegion<'a>>, &[usize]),
 ) -> Result<GroupChildSources<'a>, Render2dExecutionError> {
-    let mut active = Vec::<SourceFrame<'a>>::new();
-    let mut sources = BTreeMap::new();
+    build_group_sources(plan, bindings, field_sets, scales, max_buffer_bytes)?
+        .prepare_polygonal_with_probe(None, root_canvas, max_buffer_bytes, inspect)
+}
+
+pub(super) fn build_group_sources<'scene, 'resources>(
+    plan: &scene::Plan<'scene>,
+    bindings: &'resources Render2dResourceBindings,
+    field_sets: &'resources BTreeMap<FieldSetKey, Arc<ResourceFields>>,
+    scales: NeutralPreparationScale,
+    max_buffer_bytes: u64,
+) -> Result<GroupSourceDag<'scene, 'resources>, Render2dExecutionError> {
+    let mut active = Vec::<SourceFrame<'scene>>::new();
+    let mut demands = Vec::new();
+    let mut sources = Vec::new();
+    let mut construction_bytes = 0_usize;
     let mut graph = region::NeutralRegionBuilder::new(scales, max_buffer_bytes);
     for (index, event) in plan.events.iter().enumerate() {
+        let event_path = match event {
+            scene::Event::BeginGroup { path, .. } | scene::Event::Item { path, .. } => path,
+            scene::Event::EndGroup => active.last().map_or(&[][..], |frame| &frame.path),
+        };
+        // The borrowed plan is input, but every dispatch/lookup is our work,
+        // including top-level items with no neutral-source consumer.
+        graph.charge_preparation(64, event_path)?;
         match event {
             scene::Event::BeginGroup { path, group, .. } => {
-                active.push(SourceFrame {
-                    begin_event: index,
-                    path: path.clone(),
-                    group,
-                    children: Vec::new(),
-                });
+                let frame_path = copy_source_path(path, &mut graph, &mut construction_bytes)?;
+                push_source_value(
+                    &mut active,
+                    SourceFrame {
+                        begin_event: index,
+                        path: frame_path,
+                        group,
+                        children: Vec::new(),
+                    },
+                    &mut graph,
+                    &mut construction_bytes,
+                    path,
+                )?;
             }
             scene::Event::Item { path, item, .. } => {
                 if active.is_empty() {
                     continue;
                 }
-                if let Some(leaf) = graph.prepare_source_from_item(item, path, |work| {
-                    neutral_item(
-                        item,
+                let leaf = if matches!(
+                    item.primitive(),
+                    Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. }
+                ) {
+                    let leaf = graph.register_source(item, path)?;
+                    if let Some(leaf) = &leaf {
+                        push_source_value(
+                            &mut demands,
+                            SourceDemand::Leaf(Arc::clone(leaf)),
+                            &mut graph,
+                            &mut construction_bytes,
+                            path,
+                        )?;
+                    }
+                    leaf
+                } else {
+                    // Retain existing image and immutable shaped-outline admission.
+                    // Text does not yet have a certified original-outline reach.
+                    graph.prepare_source_from_item(item, path, |work| {
+                        neutral_item(
+                            item,
+                            path,
+                            bindings,
+                            field_sets,
+                            scales,
+                            max_buffer_bytes,
+                            work,
+                        )
+                    })?
+                };
+                if let Some(leaf) = leaf {
+                    push_source_value(
+                        &mut active.last_mut().expect("active source group").children,
+                        leaf,
+                        &mut graph,
+                        &mut construction_bytes,
                         path,
-                        bindings,
-                        field_sets,
-                        scales,
-                        max_buffer_bytes,
-                        work,
-                    )
-                })? {
-                    active
-                        .last_mut()
-                        .expect("active source group")
-                        .children
-                        .push(leaf);
+                    )?;
                 }
             }
             scene::Event::EndGroup => {
@@ -561,58 +964,27 @@ fn group_child_sources_with_probe<'a>(
                     graph.affine(children, frame.group.local_to_parent(), &frame.path)?;
                 let nested = !active.is_empty();
                 if !frame.group.shadows().is_empty() {
-                    inspect(&in_parent, &frame.path);
-                    // Resolve the proven curved DAG before asking for a
-                    // polygonal mesh: a disk cannot be made into triangles
-                    // and an expected rejection is not control flow.
-                    let offscreen = if !nested {
-                        if let Some((canvas, raster_scale)) = root_canvas {
-                            in_parent.all_root_shadows_provably_offscreen(
-                                frame.group.shadows(),
-                                canvas,
-                                raster_scale,
-                            )?
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-                    let source = if !nested
-                        && (in_parent.all_root_shadows_provably_empty(frame.group.shadows())
-                            || offscreen)
-                    {
-                        // Certified-empty or fully offscreen root effects
-                        // cannot reach the requested target. Preserve all
-                        // original F3E child painting and nested support.
-                        NeutralCaster::Mesh(Arc::new(empty_mesh()))
-                    } else if !nested {
-                        match graph.qualified_rounded_rectangle(&in_parent)? {
-                            Some(qualified) => NeutralCaster::RoundedRectangle(qualified),
-                            None => {
-                                // Root shadow paint is not exempt from
-                                // original-F1 negative-erosion provenance.
-                                // A convex Lyon tessellation never proves a
-                                // curved F1 fill/stroke is polygonal support.
-                                let proven = frame
-                                    .group
-                                    .shadows()
-                                    .iter()
-                                    .any(|shadow| shadow.spread() < 0.0)
-                                    && graph.proven_original_straight_polygon_union(&in_parent)?;
-                                materialized_or_symbolic(&mut graph, &in_parent, proven)?
-                            }
-                        }
-                    } else {
-                        let exact_original_polygons = frame
-                            .group
-                            .shadows()
-                            .iter()
-                            .any(|effect| effect.spread() < 0.0)
-                            && graph.proven_original_straight_polygon_union(&in_parent)?;
-                        materialized_or_symbolic(&mut graph, &in_parent, exact_original_polygons)?
-                    };
-                    sources.insert(frame.begin_event, source);
+                    push_source_value(
+                        &mut sources,
+                        (frame.begin_event, Arc::clone(&in_parent)),
+                        &mut graph,
+                        &mut construction_bytes,
+                        &frame.path,
+                    )?;
+                    let demand_path =
+                        copy_source_path(&frame.path, &mut graph, &mut construction_bytes)?;
+                    push_source_value(
+                        &mut demands,
+                        SourceDemand::Caster {
+                            index: frame.begin_event,
+                            group: frame.group,
+                            path: demand_path,
+                            nested,
+                        },
+                        &mut graph,
+                        &mut construction_bytes,
+                        &frame.path,
+                    )?;
                     if !nested {
                         // A root group has no ancestor caster consumer. Its
                         // paint shadows are already owned by the same F3E
@@ -623,19 +995,24 @@ fn group_child_sources_with_probe<'a>(
                 if !nested {
                     continue;
                 }
-                let mut components = vec![Arc::clone(&in_parent)];
+                let mut components = Vec::new();
+                push_source_value(
+                    &mut components,
+                    Arc::clone(&in_parent),
+                    &mut graph,
+                    &mut construction_bytes,
+                    &frame.path,
+                )?;
                 if !frame.group.shadows().is_empty() {
                     // Do not reject a positive disk before its symbolic
                     // neutral support reaches the consuming ancestor's DAG.
                     // Polygonal materialization of that root still fails
                     // closed with the disk's exact original F1 owner path;
                     // no cached alpha, AABB or faceted substitute is admitted.
-                    components
-                        .try_reserve(frame.group.shadows().len())
-                        .map_err(|_| {
-                            resource(&frame.path, "neutral effect graph allocation failed")
-                        })?;
                     for &effect in frame.group.shadows() {
+                        // Pay containment arithmetic and loop bookkeeping even
+                        // when exact absorption omits the physical operator.
+                        graph.charge_preparation(256, &frame.path)?;
                         // Certified containment is valid even for a
                         // translated finite Gaussian over a truly holed,
                         // concave or curved original C: E(C,-r)+offset+
@@ -648,42 +1025,99 @@ fn group_child_sources_with_probe<'a>(
                         let effect_region =
                             graph.effect(Arc::clone(&in_parent), effect, &frame.path)?;
                         if effect.spread() <= 0.0 {
-                            // Existing fully polygonal cases still materialize
-                            // eagerly and account for real geometry/work.
-                            // An unmaterializable SIGNED disk stays symbolic
-                            // through the ancestor F1 DAG instead of being
-                            // silently approximated or rejected before F3E
-                            // can inspect the complete authored expression.
-                            // A missing proof is NOT a resource/precision
-                            // exception; those errors still fail immediately.
-                            match graph.materialize(&effect_region) {
-                                Ok(_) => {}
-                                Err(Render2dExecutionError::UnsupportedEntry {
-                                    kind: Render2dUnsupportedContent::Shadows { .. },
-                                    ..
-                                }) if effect.spread() < 0.0 => {}
-                                Err(error) => return Err(error),
-                            }
+                            // This is a compatibility demand, not graph meaning.
+                            // Its existing typed failure authority runs only in
+                            // the selected polygon/default preparation phase.
+                            push_source_value(
+                                &mut demands,
+                                SourceDemand::Effect(Arc::clone(&effect_region)),
+                                &mut graph,
+                                &mut construction_bytes,
+                                &frame.path,
+                            )?;
                         }
                         // Positive disks remain symbolic until a certified
                         // ancestor region query is independently qualified;
                         // their own continuous paint path remains unchanged.
-                        components.push(effect_region);
+                        push_source_value(
+                            &mut components,
+                            effect_region,
+                            &mut graph,
+                            &mut construction_bytes,
+                            &frame.path,
+                        )?;
                     }
                 }
                 let completed = graph.union(components, &frame.path)?;
                 let clipped = graph.clip(completed, frame.group.clips(), &frame.path)?;
                 if let Some(parent) = active.last_mut() {
-                    parent.children.push(clipped);
+                    push_source_value(
+                        &mut parent.children,
+                        clipped,
+                        &mut graph,
+                        &mut construction_bytes,
+                        &frame.path,
+                    )?;
                 }
             }
         }
     }
     debug_assert!(active.is_empty());
-    Ok(GroupChildSources {
-        casters: sources,
-        graph_work: graph.graph_work,
-    })
+    let sort_work = sources
+        .len()
+        .checked_mul(sources.len())
+        .and_then(|v| v.checked_mul(8))
+        .ok_or_else(|| resource(&[], "source lookup sort work overflow"))?;
+    graph.charge_preparation(sort_work, &[])?;
+    sources.sort_unstable_by_key(|entry| entry.0);
+    let roots = sources
+        .iter()
+        .map(|entry| &entry.1)
+        .chain(demands.iter().filter_map(|demand| match demand {
+            SourceDemand::Leaf(source) | SourceDemand::Effect(source) => Some(source),
+            SourceDemand::Caster { .. } => None,
+        }));
+    let (node_bytes, construction) = graph.storage_bounds(roots)?;
+    graph.charge_preparation(
+        demands
+            .len()
+            .checked_mul(32)
+            .and_then(|v| v.checked_add(plan.events.len().checked_mul(32)?))
+            .and_then(|v| v.checked_add(64))
+            .ok_or_else(|| resource(&[], "source metadata scan work overflow"))?,
+        &[],
+    )?;
+    let containers = source_container_bytes(&sources, &demands)?;
+    let storage = SourceStorage {
+        plan_bytes: plan
+            .retained_bytes()
+            .ok_or_else(|| resource(&[], "source input plan storage overflow"))?,
+        retained_bytes: node_bytes
+            .checked_add(containers)
+            .and_then(|v| v.checked_add(size_of::<GroupSourceDag<'_, '_>>()))
+            .ok_or_else(|| resource(&[], "source retained storage overflow"))?,
+        construction_peak_bytes: construction
+            .checked_add(construction_bytes)
+            .and_then(|v| v.checked_add(size_of::<GroupSourceDag<'_, '_>>()))
+            .ok_or_else(|| resource(&[], "source construction storage overflow"))?,
+    };
+    let result = GroupSourceDag {
+        graph,
+        sources,
+        storage,
+        demands,
+        bindings,
+        field_sets,
+        scales,
+        max_buffer_bytes,
+    };
+    if result.storage().retained_bytes > result.storage().construction_peak_bytes {
+        return Err(resource(
+            &[],
+            "source construction bound does not cover retained storage",
+        ));
+    }
+    Ok(result)
 }
 
 /// A literal empty mesh never introduces a fake shadow caster.

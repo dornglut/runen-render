@@ -1469,6 +1469,9 @@ impl NeutralRegion<'_> {
                 if let Some(item) = self.semantic_item {
                     return certify_authored_item(item, cell, visits);
                 }
+                let Some(mesh) = mesh.get() else {
+                    return CellCertificate::Unknown;
+                };
                 // Synthetic private fixture only. Real renderable F1 leaves
                 // always borrow their original item through source_from_item.
                 if mesh.triangles.is_empty() {
@@ -4058,3 +4061,6 @@ fn bounded_cell_query_never_treats_unknown_curve_or_exhaustion_as_empty() {
         CellCertificate::Unknown,
     );
 }
+
+#[cfg(test)]
+mod gaussian_kernel;

@@ -15,8 +15,8 @@ mod symbolic;
 
 // Retained floating neutral support is separate from per-tile source-backed
 // GPU uploads; both are aggregate limits across one immutable contribution.
-const MAX_SHADOW_COVERAGE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_SHADOW_MASK_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
+pub(super) const MAX_SHADOW_COVERAGE_BYTES: u64 = 64 * 1024 * 1024;
+pub(super) const MAX_SHADOW_MASK_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_AUTHORED_SHADOWS: usize = 256;
 const FORMAT: GpuTextureFormat = GpuTextureFormat::R32Float;
 

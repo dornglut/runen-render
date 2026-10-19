@@ -6,9 +6,9 @@ use crate::composition_2d::{
 use crate::runtime::execution_2d::Render2dExecutionState;
 use core::{error::Error, fmt};
 use runen_gpu::{
-    GpuContext, GpuExportKey, GpuRenderOperation, GpuSubmission, GpuSubmissionFailureKind,
-    GpuSubmissionId, GpuSubmissionStatus, GpuTextureFormat, GpuTextureViewHandle,
-    GpuWorkAuthoringError, GpuWorkFragment, GpuWorkFragmentBuilder, GpuWorkNodeId,
+    GpuContext, GpuExportKey, GpuSubmission, GpuSubmissionFailureKind, GpuSubmissionId,
+    GpuSubmissionStatus, GpuTextureFormat, GpuTextureViewHandle, GpuWorkAuthoringError,
+    GpuWorkFragment, GpuWorkFragmentBuilder, GpuWorkNodeId, GpuWorkOperation,
 };
 
 /// Caller-owned RunenGPU target-content relationships for one 2D contribution.
@@ -643,19 +643,19 @@ impl Render2dExecutor {
 /// content produces no node, output, or execution token.
 #[derive(Debug)]
 pub struct Render2dPreparedContribution {
-    render: Vec<GpuRenderOperation>,
+    operations: Vec<GpuWorkOperation>,
     target: GpuTextureViewHandle,
 }
 
 impl Render2dPreparedContribution {
-    pub(crate) fn new(render: Vec<GpuRenderOperation>, target: GpuTextureViewHandle) -> Self {
-        Self { render, target }
+    pub(crate) fn new(operations: Vec<GpuWorkOperation>, target: GpuTextureViewHandle) -> Self {
+        Self { operations, target }
     }
 
     /// Returns whether this contribution contains actual RunenRender-authored render work.
     #[must_use]
     pub const fn has_render_work(&self) -> bool {
-        !self.render.is_empty()
+        !self.operations.is_empty()
     }
 
     /// Appends the exact renderer-authored operations to a caller-owned fragment.
@@ -667,9 +667,9 @@ impl Render2dPreparedContribution {
         self,
         builder: &mut GpuWorkFragmentBuilder,
     ) -> Result<Option<Render2dContributionToken>, GpuWorkAuthoringError> {
-        let mut nodes = Vec::with_capacity(self.render.len());
-        for render in self.render {
-            nodes.push(builder.operation("render admitted 2D composition", render)?);
+        let mut nodes = Vec::with_capacity(self.operations.len());
+        for operation in self.operations {
+            nodes.push(builder.operation("render admitted 2D composition", operation)?);
         }
         Ok((!nodes.is_empty()).then_some(Render2dContributionToken { nodes }))
     }

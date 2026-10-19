@@ -164,6 +164,9 @@ pub(super) struct ScanPlan {
     curves: Vec<Curve>,
     next_frame: usize,
     crossings: Vec<Crossings>,
+    // Curve count and completeness are published only after every unordered
+    // pair is constructed. Diagonal entries are implicitly complete-empty.
+    crossing_completeness: Option<(usize, bool)>,
     extra_y_events: Vec<Interval>,
 }
 
@@ -363,7 +366,7 @@ impl ScanPlan {
         charge(fuel, events.len()).ok_or(AreaQueryError::Resource)?;
         query.semantic_cuts.extend_from_slice(&events);
         for crossing in &self.crossings {
-            charge(fuel, 1).ok_or(AreaQueryError::Resource)?;
+            charge(fuel, 64).ok_or(AreaQueryError::Resource)?;
             for root in crossing.roots.into_iter().flatten() {
                 add(&mut events, root.lo)?;
                 add(&mut events, root.hi)?;
@@ -419,13 +422,14 @@ impl ScanPlan {
         // adjacent candidate branches is connected and has constant original
         // membership. Raster rows/vertical grid edges only subdivide routing.
         // An incomplete crossing inventory cannot license this query reuse.
-        if self.crossings.iter().all(|crossing| crossing.complete) {
+        if self.complete_crossings(fuel)? {
             let count = self.curves.len();
             query.curve_cuts = bounded_vector(count).ok_or(AreaQueryError::Resource)?;
             for id in 0..count {
                 let mut cuts = bounded_vector(4 * count).ok_or(AreaQueryError::Resource)?;
-                for crossing in &self.crossings[id * count..(id + 1) * count] {
+                for other in 0..count {
                     charge(fuel, 64).ok_or(AreaQueryError::Resource)?;
+                    let crossing = self.crossing(id, other).ok_or(AreaQueryError::Precision)?;
                     for root in crossing.roots.into_iter().flatten() {
                         if root.hi > y0 && root.lo < y1 {
                             cuts.extend([root.lo, root.hi]);
@@ -669,7 +673,7 @@ impl ScanPlan {
                 return Err(AreaQueryError::Precision);
             }
             let crossing = if lid < self.curves.len() && rid < self.curves.len() {
-                self.crossings[lid * self.curves.len() + rid]
+                self.crossing(lid, rid).ok_or(AreaQueryError::Precision)?
             } else {
                 charge(fuel, Self::crossing_work(l, r)).ok_or(AreaQueryError::Resource)?;
                 Self::crossings(l, r).ok_or(AreaQueryError::Precision)?
@@ -808,6 +812,7 @@ impl ScanPlan {
             curves: bounded_vector(MAX_CURVES).ok_or(AreaQueryError::Resource)?,
             next_frame: 1,
             crossings: Vec::new(),
+            crossing_completeness: None,
             extra_y_events: bounded_vector(MAX_BANDS).ok_or(AreaQueryError::Resource)?,
         };
         let affine = match forward {
@@ -819,48 +824,94 @@ impl ScanPlan {
             None => Affine::identity(),
         };
         result.region(region, affine, prepared, fuel)?;
-        let count = result
-            .curves
-            .len()
-            .checked_mul(result.curves.len())
-            .ok_or(AreaQueryError::Resource)?;
-        if count > 65_536 {
+        result.prepare_crossings(fuel)?;
+        Ok(result)
+    }
+
+    /// Store each unordered pair once, in upper-triangular row order. No
+    /// default-filled square table or duplicate symmetric writes are needed.
+    /// Failed construction never publishes a completeness receipt.
+    fn prepare_crossings(&mut self, fuel: &mut usize) -> Result<(), AreaQueryError> {
+        self.crossing_completeness = None;
+        charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
+        let curves = self.curves.len();
+        // Keep the existing square-inventory admission limit unchanged even
+        // though the new storage uses fewer entries.
+        if curves.checked_mul(curves).ok_or(AreaQueryError::Resource)? > 65_536 {
             return Err(AreaQueryError::Resource);
         }
-        result.crossings = bounded_vector(count).ok_or(AreaQueryError::Resource)?;
-        charge(fuel, count).ok_or(AreaQueryError::Resource)?;
-        result.crossings.resize(
-            count,
-            Crossings {
-                complete: true,
-                roots: [None, None],
-            },
-        );
-        for left in 0..result.curves.len() {
-            for right in left + 1..result.curves.len() {
-                let l = &result.curves[left];
-                let r = &result.curves[right];
+        let count = curves * curves.saturating_sub(1) / 2;
+        self.crossings = bounded_vector(count).ok_or(AreaQueryError::Resource)?;
+        let mut complete = true;
+        for left in 0..curves {
+            for right in left + 1..curves {
+                let l = &self.curves[left];
+                let r = &self.curves[right];
                 // Complete conservative branch domains/reach prove absence of
                 // a common point. No approximate curve identity is needed.
                 charge(fuel, 128).ok_or(AreaQueryError::Resource)?;
-                if l.reach.hi < r.reach.lo
+                let disjoint = l.reach.hi < r.reach.lo
                     || r.reach.hi < l.reach.lo
                     || l.end.hi < r.start.lo
-                    || r.end.hi < l.start.lo
-                {
-                    continue;
-                }
-                charge(fuel, Self::crossing_work(l, r)).ok_or(AreaQueryError::Resource)?;
-                let crossing = Self::crossings(l, r).unwrap_or(Crossings {
-                    complete: false,
-                    roots: [None, None],
-                });
-
-                result.crossings[left * result.curves.len() + right] = crossing;
-                result.crossings[right * result.curves.len() + left] = crossing;
+                    || r.end.hi < l.start.lo;
+                let crossing = if disjoint {
+                    Crossings {
+                        complete: true,
+                        roots: [None, None],
+                    }
+                } else {
+                    charge(fuel, Self::crossing_work(l, r)).ok_or(AreaQueryError::Resource)?;
+                    Self::crossings(l, r).unwrap_or(Crossings {
+                        complete: false,
+                        roots: [None, None],
+                    })
+                };
+                // Prepay the record's words, capacity/length update and
+                // completeness update, including proved-empty pairs.
+                charge(fuel, 16).ok_or(AreaQueryError::Resource)?;
+                complete &= crossing.complete;
+                self.crossings.push(crossing);
             }
         }
-        Ok(result)
+        self.crossing_completeness = Some((curves, complete));
+        Ok(())
+    }
+
+    /// Constant-time lookup of the constructor-owned completeness receipt.
+    /// Dimension checks also reject failed, partial or changed inventories.
+    /// No consumer repeats an O(n^2) completeness scan.
+    fn complete_crossings(&self, fuel: &mut usize) -> Result<bool, AreaQueryError> {
+        charge(fuel, 16).ok_or(AreaQueryError::Resource)?;
+        let (count, complete) = self
+            .crossing_completeness
+            .ok_or(AreaQueryError::Precision)?;
+        if self.curves.len() != count || self.crossings.len() != count * count.saturating_sub(1) / 2
+        {
+            return Err(AreaQueryError::Precision);
+        }
+        Ok(complete)
+    }
+
+    /// Symmetric lookup in the packed immutable table. Callers prepay the
+    /// bounded indexing arithmetic along with their per-pair query work.
+    fn crossing(&self, left: usize, right: usize) -> Option<Crossings> {
+        let (count, _) = self.crossing_completeness?;
+        if count != self.curves.len() || left >= count || right >= count {
+            return None;
+        }
+        if left == right {
+            return Some(Crossings {
+                complete: true,
+                roots: [None, None],
+            });
+        }
+        let (left, right) = if left < right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        let offset = left * (2 * count - left - 1) / 2 + right - left - 1;
+        self.crossings.get(offset).copied()
     }
 
     fn push(&mut self, mut curve: Curve, fuel: &mut usize) -> Result<(), AreaQueryError> {
@@ -1622,7 +1673,7 @@ impl ScanPlan {
         }
         // Global curve intersections were prepared once for the whole grid.
         for crossing in &self.crossings {
-            charge(fuel, 1)?;
+            charge(fuel, 64)?;
             for root in crossing.roots.into_iter().flatten() {
                 add_cut(root.lo)?;
                 add_cut(root.hi)?;
@@ -1739,7 +1790,7 @@ impl ScanPlan {
                 return None;
             }
             let crossing = if lid < self.curves.len() && rid < self.curves.len() {
-                self.crossings[lid * self.curves.len() + rid]
+                self.crossing(lid, rid)?
             } else {
                 charge(fuel, Self::crossing_work(left, right))?;
                 Self::crossings(left, right)?
@@ -1853,8 +1904,103 @@ mod tests {
             curves: Vec::new(),
             next_frame: 1,
             crossings: Vec::new(),
+            crossing_completeness: None,
             extra_y_events: Vec::new(),
         }
+    }
+
+    #[test]
+    fn packed_crossings_are_symmetric_with_implicit_empty_diagonal() {
+        for count in 0_usize..17 {
+            let mut plan = empty_plan();
+            for id in 0..count {
+                plan.curves
+                    .push(ScanPlan::constant_curve(id as f64, 0.0, 1.0).unwrap());
+            }
+            let mut fuel = 1_000_000;
+            plan.prepare_crossings(&mut fuel).unwrap();
+            assert!(plan.complete_crossings(&mut fuel).unwrap());
+            assert_eq!(plan.crossings.len(), count * count.saturating_sub(1) / 2);
+            // Give every unordered pair a distinct test-only root, then
+            // independently enumerate rows to check every packed index.
+            for (id, crossing) in plan.crossings.iter_mut().enumerate() {
+                crossing.roots[0] = Some(Interval::scalar(id as f64).unwrap());
+            }
+            let mut id = 0;
+            for left in 0..count {
+                assert!(
+                    plan.crossing(left, left)
+                        .unwrap()
+                        .roots
+                        .iter()
+                        .all(Option::is_none)
+                );
+                for right in left + 1..count {
+                    for (a, b) in [(left, right), (right, left)] {
+                        let root = plan.crossing(a, b).unwrap().roots[0].unwrap();
+                        assert_eq!([root.lo, root.hi], [id as f64; 2]);
+                    }
+                    id += 1;
+                }
+            }
+            assert!(plan.crossing(count, 0).is_none());
+            // In particular, zero and one curves both have zero stored pairs;
+            // table length alone cannot distinguish their dimensions.
+            plan.curves
+                .push(ScanPlan::constant_curve(100.0, 0.0, 1.0).unwrap());
+            assert!(matches!(
+                plan.complete_crossings(&mut fuel),
+                Err(AreaQueryError::Precision)
+            ));
+            assert!(plan.crossing(0, 0).is_none());
+        }
+    }
+
+    #[test]
+    fn crossing_construction_prepays_even_empty_records_and_rejects_partial_table() {
+        let mut plan = empty_plan();
+        for x in 0..3 {
+            plan.curves
+                .push(ScanPlan::constant_curve(x as f64, 0.0, 1.0).unwrap());
+        }
+        // Three disjoint pairs cost 32 + 3*(128 + 16). Fail immediately
+        // before the last record, after the first two have been stored.
+        let mut fuel = 463;
+        assert!(matches!(
+            plan.prepare_crossings(&mut fuel),
+            Err(AreaQueryError::Resource)
+        ));
+        assert_eq!(plan.crossings.len(), 2);
+        assert!(plan.crossing(0, 1).is_none());
+        let mut query_fuel = 16;
+        assert!(matches!(
+            plan.complete_crossings(&mut query_fuel),
+            Err(AreaQueryError::Precision)
+        ));
+        assert_eq!(query_fuel, 0);
+        let mut fuel = 464;
+        plan.prepare_crossings(&mut fuel).unwrap();
+        assert_eq!(fuel, 0);
+        let mut query_fuel = 15;
+        assert!(matches!(
+            plan.complete_crossings(&mut query_fuel),
+            Err(AreaQueryError::Resource)
+        ));
+        let mut query_fuel = 16;
+        assert!(plan.complete_crossings(&mut query_fuel).unwrap());
+    }
+
+    #[test]
+    fn incomplete_pair_cannot_license_shared_membership() {
+        use finite_square_geometry::CoordinateOrigin::HaloShift;
+        let mut plan = empty_plan();
+        plan.curves
+            .push(enclosed_circle(HaloShift(0.0, -1.0), -1.0));
+        plan.curves.push(enclosed_circle(HaloShift(0.0, 1.0), 1.0));
+        let mut fuel = 1_000_000;
+        plan.prepare_crossings(&mut fuel).unwrap();
+        assert!(!plan.complete_crossings(&mut fuel).unwrap());
+        assert!(!plan.crossing(0, 1).unwrap().complete);
     }
 
     #[test]
@@ -2040,3 +2186,6 @@ mod tests {
         assert_eq!(areas[52 * 64 + 28], [0.0, 0.0]);
     }
 }
+
+#[cfg(test)]
+mod gaussian;

@@ -76,6 +76,24 @@ pub(super) struct Plan<'a> {
     pub(super) events: Vec<Event<'a>>,
 }
 
+impl Plan<'_> {
+    /// Renderer-owned retained occurrence storage. Original F1 payloads are
+    /// borrowed; spare event/path capacities still belong to this plan.
+    pub(super) fn retained_bytes(&self) -> Option<usize> {
+        let mut bytes = self
+            .events
+            .capacity()
+            .checked_mul(size_of::<Event<'_>>())?
+            .checked_add(size_of::<Self>())?;
+        for event in &self.events {
+            if let Event::Item { path, .. } | Event::BeginGroup { path, .. } = event {
+                bytes = bytes.checked_add(path.capacity().checked_mul(size_of::<usize>())?)?;
+            }
+        }
+        Some(bytes)
+    }
+}
+
 enum Pending<'a> {
     Visit {
         entry: &'a Render2dEntry,

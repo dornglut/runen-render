@@ -99,6 +99,11 @@ jobs:
           # validation and MUST run here against the proved Lavapipe adapter.
           cargo +stable test -p runen-render             --lib sample_space_gpu_proof             --locked -- --ignored --nocapture --test-threads=1
 
+          # F3F numerical qualification requires actual arithmetic, complete-field
+          # compositor readback and device-admission proofs. These private tests
+          # are ignored by the GPU-independent canonical baseline.
+          cargo +stable test -p runen-render --lib on_vulkan --locked -- --ignored --nocapture --test-threads=1
+
           cargo +stable test -p runen-render             --test ordinary_public_api             --locked -- --nocapture --test-threads=1
 
           cargo +stable test -p runen-render             --test execution_2d_public_api             --locked -- --nocapture --test-threads=1
