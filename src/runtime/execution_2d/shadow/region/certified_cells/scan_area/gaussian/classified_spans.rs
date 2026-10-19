@@ -42,6 +42,7 @@ pub(super) fn visit(
         root: [x0, y0, x1, y1],
         scale,
         sigma,
+        offset: translation,
     } = lattice;
     let width = x1.checked_sub(x0).ok_or(AreaQueryError::Precision)? as usize;
     let height = y1.checked_sub(y0).ok_or(AreaQueryError::Precision)? as usize;
@@ -78,22 +79,30 @@ pub(super) fn visit(
     }
     for x in x0..x1 {
         debit(fuel, 64)?;
-        xs.push(
-            exact_div(
-                exact_add(f64::from(x), 0.5).ok_or(AreaQueryError::Precision)?,
-                scale,
-            )
-            .ok_or(AreaQueryError::Precision)?,
-        );
+        let cx = exact_div(
+            exact_add(f64::from(x), 0.5).ok_or(AreaQueryError::Precision)?,
+            scale,
+        )
+        .ok_or(AreaQueryError::Precision)?;
+        xs.push(if translation[0] == 0.0 {
+            cx
+        } else {
+            debit(fuel, 32)?;
+            exact_add(cx, -translation[0]).ok_or(AreaQueryError::Precision)?
+        });
     }
     let horizontal = checked(Interval::new(-halo, halo))?;
     for y in y0..y1 {
         debit(fuel, 128)?;
-        let cy = exact_div(
+        let mut cy = exact_div(
             exact_add(f64::from(y), 0.5).ok_or(AreaQueryError::Precision)?,
             scale,
         )
         .ok_or(AreaQueryError::Precision)?;
+        if translation[1] != 0.0 {
+            debit(fuel, 32)?;
+            cy = exact_add(cy, -translation[1]).ok_or(AreaQueryError::Precision)?;
+        }
         let ys = checked(iv(cy).add(horizontal))?;
         let offset = (y - y0) as usize * width;
         bands.clear();

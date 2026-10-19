@@ -12,6 +12,7 @@ enum Variant {
     Sheared,
     Reflected,
     Clipped,
+    Offset,
 }
 
 fn prepare_fixture(variant: Variant) -> super::plane::PreparedPlane {
@@ -53,15 +54,28 @@ fn prepare_fixture(variant: Variant) -> super::plane::PreparedPlane {
         Render2dOpacity::OPAQUE,
         Vec::new(),
     );
+    let consuming_effect = Render2dDropShadow::new(
+        if matches!(variant, Variant::Offset) {
+            4.0
+        } else {
+            0.0
+        },
+        if matches!(variant, Variant::Offset) {
+            -2.0
+        } else {
+            0.0
+        },
+        0.1,
+        0.0,
+        Render2dColorRgba8::new(255, 0, 0, 255),
+    )
+    .unwrap();
     let parent = Render2dGroup::new(
         [Render2dEntry::group(wrapper)],
         Render2dAffineTransform::IDENTITY,
         Vec::new(),
         Render2dOpacity::OPAQUE,
-        vec![
-            Render2dDropShadow::new(0.0, 0.0, 0.1, 0.0, Render2dColorRgba8::new(255, 0, 0, 255))
-                .unwrap(),
-        ],
+        vec![consuming_effect],
     );
     let composition = Render2dComposition::new([Render2dEntry::group(parent)]).unwrap();
     // This qualification owns exactly three groups and one item. Prepay the
@@ -121,23 +135,18 @@ fn prepare_fixture(variant: Variant) -> super::plane::PreparedPlane {
     println!(
         "CURRENT_SOURCE_HOST construction_bound={construction} combined_numeric_phase_bound={query_peak}"
     );
-    let prepared = PreparedBoundaries::prepare(&root, &mut fuel).unwrap();
-    let plan = ScanPlan::prepare(&root, None, &prepared, &mut fuel).unwrap();
-    let strips =
-        Strips::prepare(&plan, &root, &prepared, [-1.0, -1.0, 65.0, 65.0], &mut fuel).unwrap();
-    let field = super::plane::prepare(
-        &strips,
-        &plan,
-        &prepared,
-        &root,
-        Lattice {
-            root: [0, 0, 256, 256],
-            scale: 4.0,
-            sigma: 0.1,
-        },
-        &mut fuel,
-    )
-    .unwrap();
+    let field = root
+        .prepare_gaussian_plane(
+            [0, 0, 256, 256],
+            4.0,
+            0.1,
+            [consuming_effect.offset_x(), consuming_effect.offset_y()],
+            &mut fuel,
+            MAX_BYTES
+                .checked_sub(storage.retained_bytes + ambient)
+                .unwrap(),
+        )
+        .unwrap();
     // Returning an owned plane enforces release of ALL original-source and
     // numeric preparation, including the borrowed ScenePlan and composition.
     // Its type cannot retain a hidden F1 source lifetime through GPU execution.
@@ -185,4 +194,15 @@ fn clipped_complete_plane_pays_current_original_source_preparation() {
 #[ignore = "requires Vulkan: original source clip and independent finite-Gaussian cutoff pixels"]
 fn clipped_source_complete_plane_matches_independent_references_on_vulkan() {
     run(Variant::Clipped, true);
+}
+
+#[test]
+fn offset_complete_plane_pays_current_original_source_preparation() {
+    run(Variant::Offset, false);
+}
+
+#[test]
+#[ignore = "requires Vulkan: consuming parent offset before finite Gaussian in its own frame"]
+fn offset_source_complete_plane_matches_independent_references_on_vulkan() {
+    run(Variant::Offset, true);
 }

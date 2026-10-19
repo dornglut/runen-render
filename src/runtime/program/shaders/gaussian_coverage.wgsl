@@ -65,10 +65,14 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
     return vec4<f32>(vertices[index],0.0,1.0);
 }
 @fragment fn field_fragment(@builtin(position) position: vec4<f32>) -> @location(0) f32 {
-    let x=u32(position.x);
-    let y=u32(position.y);
-    if x>=field_extent.x || y>=field_extent.y { return 0.0; }
-    let value=field_samples[y*field_extent.x+x];
+    // CPU admission proves local+offset is in the signed i32 domain.
+    // Crop before converting to u32, preserving negative tile/map origins.
+    let offset=bitcast<vec2<i32>>(field_extent.zw);
+    let sample=vec2<i32>(position.xy)+offset;
+    if any(sample<vec2<i32>(0)) { return 0.0; }
+    let point=vec2<u32>(sample);
+    if point.x>=field_extent.x || point.y>=field_extent.y { return 0.0; }
+    let value=field_samples[point.y*field_extent.x+point.x];
     if (value & 2147483648u)!=0u { return bitcast<f32>(field_queries[value & 2147483647u].z); }
     return f32(value)*(1.0/16777216.0);
 }

@@ -79,6 +79,9 @@ impl Batch {
             .bytes
             .len()
             .checked_add(samples.checked_mul(4).ok_or(AreaQueryError::Resource)?)
+            // A literal-only field retains one initialized 16-byte binding,
+            // rather than inventing a numerical query or compute operation.
+            .and_then(|v| v.checked_add(if self.payload.count == 0 { 16 } else { 0 }))
             .and_then(|v| v.checked_mul(2))
             .and_then(|v| v.checked_add(4096 + 1024 + 768 + 32))
             .ok_or(AreaQueryError::Resource)
@@ -97,8 +100,27 @@ impl Batch {
         max_bytes: usize,
     ) -> Result<Self, AreaQueryError> {
         Arithmetic { fuel }.charge(512)?;
-        if queries.is_empty()
-            || queries.len() > MAX_CASES
+        if queries.is_empty() {
+            if !nodes.is_empty() || !runs.is_empty() {
+                return Err(AreaQueryError::Precision);
+            }
+            let required = size_of::<Self>() + 4 * OUTPUT_BYTES;
+            if required > max_bytes {
+                return Err(AreaQueryError::Resource);
+            }
+            return Ok(Self {
+                payload: Payload {
+                    bytes: Vec::new(),
+                    count: 0,
+                    output_bytes: 0,
+                    conservative_data_bytes: required,
+                },
+                errors: Vec::new(),
+                nodes: 0,
+                gpu_node_visits: 0,
+            });
+        }
+        if queries.len() > MAX_CASES
             || runs.is_empty()
             || runs.len() > MAX_CASES
             || nodes.len() > MAX_NODES
@@ -288,6 +310,9 @@ impl Batch {
         })
     }
     pub(in super::super::super) fn execute_proof(&self) -> Vec<f32> {
+        if self.payload.count == 0 {
+            return Vec::new();
+        }
         println!(
             "GAUSSIAN_DISPATCH queries={} workgroups={} unique_nodes={} GPU_node_visits={} Q48_products_upper={} u32_limb_products_upper={}",
             self.errors.len(),
@@ -328,6 +353,51 @@ fn oracle_kernel(fixed: &FixedKernel, z: i64, density: bool) -> i64 {
         value = HALF + if z < 0 { -value } else { value };
     }
     value.clamp(0, ONE)
+}
+
+#[test]
+fn literal_only_gaussian_batch_has_no_query_payload_or_orphaned_runs() {
+    let mut fuel = super::super::MAX_WORK;
+    let fixed = FixedKernel::compiled(&mut fuel, usize::MAX).unwrap();
+    let before = fuel;
+    let batch = Batch::new(&fixed, &[], &[], &[], &mut fuel, usize::MAX).unwrap();
+    assert_eq!(before - fuel, 512);
+    assert_eq!(batch.field_data(), (&[][..], 0));
+    assert!(batch.errors.is_empty());
+    assert!(batch.execute_proof().is_empty());
+    // No allocation or partial retention can precede the caller's host lease
+    // or CPU work admission, including the otherwise allocation-free case.
+    assert!(matches!(
+        Batch::new(&fixed, &[], &[], &[], &mut fuel, 0),
+        Err(AreaQueryError::Resource)
+    ));
+    let mut short = 511;
+    assert!(matches!(
+        Batch::new(&fixed, &[], &[], &[], &mut short, usize::MAX),
+        Err(AreaQueryError::Resource)
+    ));
+    let orphan_run = 0..0;
+    assert!(matches!(
+        Batch::new(
+            &fixed,
+            &[],
+            std::slice::from_ref(&orphan_run),
+            &[],
+            &mut fuel,
+            usize::MAX
+        ),
+        Err(AreaQueryError::Precision)
+    ));
+    let orphan = Node {
+        z: [0.0; 2],
+        z_error: [0.0; 2],
+        weight: 0.0,
+        weight_error: 0.0,
+    };
+    assert!(matches!(
+        Batch::new(&fixed, &[orphan], &[], &[], &mut fuel, usize::MAX),
+        Err(AreaQueryError::Precision)
+    ));
 }
 
 #[test]

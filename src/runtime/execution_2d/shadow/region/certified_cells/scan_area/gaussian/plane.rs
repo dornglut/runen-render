@@ -31,12 +31,13 @@ struct Assembly {
 
 /// Disposable physical output. No source/DAG, classifier, numerical compiler,
 /// kernel cache or preparation frontier is retained through GPU execution.
-pub(super) struct PreparedPlane {
+pub(in crate::runtime::execution_2d) struct PreparedPlane {
     samples: Vec<u32>,
     batch: batch::Batch,
     extent: [u32; 2],
     root: [u32; 4],
     scale: f64,
+    offset: [f64; 2],
     literal_radius: f64,
 }
 
@@ -398,6 +399,7 @@ pub(super) fn prepare(
     let root = lattice.root;
     let sigma = lattice.sigma;
     let scale = lattice.scale;
+    let offset = lattice.offset;
     let width = root[2]
         .checked_sub(root[0])
         .ok_or(AreaQueryError::Precision)? as usize;
@@ -454,12 +456,24 @@ pub(super) fn prepare(
     if fixed_query > MAX_AREA_QUERY_FIXED_BYTES as usize || traversal_peak > MAX_BYTES {
         return Err(AreaQueryError::Resource);
     }
-    let mut compiler = Compiler::new(
-        &kernel,
-        sigma,
-        [f64::from(root[2]) / scale, f64::from(root[3]) / scale],
-        fuel,
-    )?;
+    let mut center_bound = [f64::from(root[2]) / scale, f64::from(root[3]) / scale];
+    if offset != [0.0; 2] {
+        debit(fuel, 256)?;
+        for axis in 0..2 {
+            let range = checked(
+                checked(
+                    checked(Interval::new(
+                        f64::from(root[axis]),
+                        f64::from(root[axis + 2]),
+                    ))?
+                    .div(iv(scale)),
+                )?
+                .sub(iv(offset[axis])),
+            )?;
+            center_bound[axis] = range.lo.abs().max(range.hi.abs());
+        }
+    }
+    let mut compiler = Compiler::new(&kernel, sigma, center_bound, fuel)?;
     let mut assembly = Assembly::new(cells, strips.unknown.len(), fuel)?;
     let traversal = classified_spans::visit(strips, plan, region, lattice, fuel, |span, fuel| {
         debit(fuel, 64)?;
@@ -556,6 +570,7 @@ pub(super) fn prepare(
         extent: [width as u32, height as u32],
         root,
         scale,
+        offset,
         literal_radius: assembly.literal_radius,
     })
 }
@@ -568,10 +583,15 @@ impl PreparedPlane {
             extent,
             root,
             scale,
+            offset,
             literal_radius,
         } = self;
         let [width, height] = extent.map(|v| v as usize);
         let scale = *scale;
+        // Pixel-reference translation is used only by the integer-offset
+        // fixture. The sample/query compiler itself admits exact fractional
+        // translations; those require references at their own sample phase.
+        assert!(offset.iter().all(|v| v.fract() == 0.0 && v.abs() < 1024.0));
         // Reflection x -> 64-x preserves Euclidean disks, the finite 3-sigma
         // square, the normalized Gaussian and the globally phased lattice.
         // Apply it to the independently integrated references, never to the
@@ -603,8 +623,8 @@ impl PreparedPlane {
             // For the clipped fixture these points are farther from y=15
             // than child erosion + finite child/parent halos. Thus the new
             // clip cannot affect their original independent values.
-            let x = (logical_x(point[0]) * scale - 0.5) as usize - root[0] as usize;
-            let y = (point[1] * scale - 0.5) as usize - root[1] as usize;
+            let x = ((logical_x(point[0]) + offset[0]) * scale - 0.5) as usize - root[0] as usize;
+            let y = ((point[1] + offset[1]) * scale - 0.5) as usize - root[1] as usize;
             let (value, radius) = decoded(y * width + x);
             assert!(
                 (value - truth).abs() <= radius,
@@ -645,7 +665,8 @@ impl PreparedPlane {
         // existing correlated resolve/color law numerically; it is not a
         // substitute for the still-required renderer texture readback.
         for ([px, py], expected) in expected_pixels.into_iter().take(pixel_references) {
-            let px = pixel_x(px);
+            let px = (pixel_x(px) as i64 + offset[0] as i64) as usize;
+            let py = (py as i64 + offset[1] as i64) as usize;
             let mut total = 0.0;
             for dy in 0..4 {
                 for dx in 0..4 {
@@ -671,9 +692,10 @@ impl PreparedPlane {
             reference::SAMPLES.len() + if clipped { 32 } else { 0 }
         );
         for ([px, py], expected) in expected_pixels.into_iter().take(pixel_references) {
-            let px = pixel_x(px);
-            let offset = (py * (width / 4) + px) * 4;
-            let actual = &pixels[offset..offset + 4];
+            let px = (pixel_x(px) as i64 + offset[0] as i64) as usize;
+            let py = (py as i64 + offset[1] as i64) as usize;
+            let pixel_offset = (py * (width / 4) + px) * 4;
+            let actual = &pixels[pixel_offset..pixel_offset + 4];
             assert!(
                 actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
                 "independent final compositor pixel {px},{py}: {actual:?}, expected {expected:?}"
@@ -683,4 +705,110 @@ impl PreparedPlane {
             "COMPLETE_PLANE actual_F3E_final_color_readback_PASS independent_pixels={pixel_references} all_six_work_nodes_completed"
         );
     }
+}
+
+#[test]
+fn original_constant_regions_prepare_without_numerical_queries() {
+    use crate::runtime::execution_2d::shadow::region::NeutralRegionBuilder;
+    let item = super::tests::original_ring();
+    let mut graph = NeutralRegionBuilder::new(
+        shadow::NeutralPreparationScale {
+            field_raster_scale: 1.0,
+            geometry_sample_scale: 4.0,
+        },
+        MAX_BYTES as u64,
+    );
+    let source = graph.register_source(&item, &[0, 0]).unwrap().unwrap();
+    // Windows are strictly separated from the original ring boundaries by
+    // more than 3 sigma. The first is empty, the second fully covered. The
+    // original F1 classifier, not these bounds, decides membership.
+    let mut fuel = 16_777_216 - graph.graph_work;
+    for (root, expected) in [([0, 0, 8, 8], 0), ([44, 44, 52, 52], 1 << 24)] {
+        let before = fuel;
+        let plane = source
+            .prepare_gaussian_plane(root, 4.0, 0.1, [0.0; 2], &mut fuel, MAX_BYTES)
+            .unwrap();
+        assert!(fuel < before);
+        assert_eq!(plane.samples, vec![expected; 64]);
+        assert_eq!(plane.batch.field_data(), (&[][..], 0));
+        assert!(plane.batch.errors.is_empty());
+        assert!(plane.literal_radius * 2.0 < WIDTH);
+    }
+}
+
+#[test]
+fn gaussian_plane_entry_rejects_before_allocating_and_preserves_shared_fuel() {
+    use crate::runtime::execution_2d::shadow::region::NeutralRegionBuilder;
+    let item = super::tests::original_ring();
+    let mut graph = NeutralRegionBuilder::new(
+        shadow::NeutralPreparationScale {
+            field_raster_scale: 1.0,
+            geometry_sample_scale: 4.0,
+        },
+        MAX_BYTES as u64,
+    );
+    let source = graph.register_source(&item, &[0, 0]).unwrap().unwrap();
+    let root = [44, 44, 52, 52];
+    let mut fuel = 16_777_216 - graph.graph_work;
+    let before = fuel;
+    // Fixed query storage alone omits the output map and row. The caller's
+    // lease must cover the complete phase, even for an all-constant result.
+    assert!(matches!(
+        source.prepare_gaussian_plane(
+            root,
+            4.0,
+            0.1,
+            [0.0; 2],
+            &mut fuel,
+            MAX_AREA_QUERY_FIXED_BYTES as usize
+        ),
+        Err(AreaQueryError::Resource)
+    ));
+    assert_eq!(
+        before - fuel,
+        1024,
+        "reject before source/numerical reconstruction"
+    );
+    let after_rejection = fuel;
+    source
+        .prepare_gaussian_plane(root, 4.0, 0.1, [0.0; 2], &mut fuel, MAX_BYTES)
+        .unwrap();
+    assert!(
+        fuel < after_rejection,
+        "a second consumer inherits the debit"
+    );
+    let mut short = 1023;
+    assert!(matches!(
+        source.prepare_gaussian_plane(root, 4.0, 0.1, [0.0; 2], &mut short, MAX_BYTES),
+        Err(AreaQueryError::Resource)
+    ));
+    assert_eq!(short, 0);
+    for (root, scale, sigma) in [
+        ([0, 0, 0, 8], 4.0, 0.1),
+        ([8, 0, 0, 8], 4.0, 0.1),
+        ([0, 0, 8, 8], 0.0, 0.1),
+        ([0, 0, 8, 8], 4.0, f64::NAN),
+        ([0, 0, 8, 8], 4.0, 0.0),
+    ] {
+        assert!(matches!(
+            source.prepare_gaussian_plane(root, scale, sigma, [0.0; 2], &mut fuel, MAX_BYTES),
+            Err(AreaQueryError::Precision)
+        ));
+    }
+    assert!(matches!(
+        source.prepare_gaussian_plane(root, 4.0, 0.1, [f64::NAN, 0.0], &mut fuel, MAX_BYTES),
+        Err(AreaQueryError::Precision)
+    ));
+    // Never round a parent offset into a different source or query center.
+    assert!(matches!(
+        source.prepare_gaussian_plane(
+            root,
+            4.0,
+            0.1,
+            [f64::EPSILON / 1024.0, 0.0],
+            &mut fuel,
+            MAX_BYTES
+        ),
+        Err(AreaQueryError::Precision)
+    ));
 }

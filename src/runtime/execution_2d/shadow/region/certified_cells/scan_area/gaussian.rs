@@ -1378,6 +1378,101 @@ struct Lattice {
     root: [u32; 4],
     scale: f64,
     sigma: f64,
+    offset: [f64; 2],
+}
+
+impl NeutralRegion<'_> {
+    /// Prepare one disposable field in this source's owning logical frame.
+    /// The caller supplies the existing global sample window, shared remaining
+    /// CPU fuel and a host lease AFTER all other live invocation storage.
+    /// Translation shifts query centers in this same logical frame. This
+    /// entry point does not apply an ancestor affine or spread, select a
+    /// physical consumer, or reset its budget.
+    pub(in crate::runtime::execution_2d) fn prepare_gaussian_plane(
+        &self,
+        root: [u32; 4],
+        scale: f64,
+        sigma: f64,
+        offset: [f64; 2],
+        fuel: &mut usize,
+        host_lease: usize,
+    ) -> Result<plane::PreparedPlane, AreaQueryError> {
+        // Capacity/extent arithmetic, finite guards, interval bounds and
+        // scalar phase selection precede the first numerical allocation.
+        debit(fuel, 1024)?;
+        let width = root[2]
+            .checked_sub(root[0])
+            .ok_or(AreaQueryError::Precision)? as usize;
+        let height = root[3]
+            .checked_sub(root[1])
+            .ok_or(AreaQueryError::Precision)? as usize;
+        let cells = width.checked_mul(height).ok_or(AreaQueryError::Resource)?;
+        if cells == 0
+            || cells > 1_048_576
+            || !scale.is_finite()
+            || scale <= 0.0
+            || !sigma.is_finite()
+            || sigma <= 0.0
+            || !offset.into_iter().all(f64::is_finite)
+        {
+            return Err(AreaQueryError::Precision);
+        }
+        let fixed = MAX_AREA_QUERY_FIXED_BYTES as usize;
+        let peak = fixed
+            .checked_add(
+                cells
+                    .checked_mul(size_of::<u32>())
+                    .ok_or(AreaQueryError::Resource)?,
+            )
+            .and_then(|v| v.checked_add(width.checked_mul(size_of::<f64>())?))
+            .ok_or(AreaQueryError::Resource)?;
+        // Boundary construction, scan events and later numeric packing are
+        // distinct phases. Each fits the SAME fixed reservation; width-sized
+        // map/rows coexist only in the subsequent complete-field phase.
+        if PreparedBoundaries::fixed_scratch_bytes().is_none_or(|bytes| bytes > fixed)
+            || peak > host_lease.min(MAX_BYTES)
+        {
+            return Err(AreaQueryError::Resource);
+        }
+        let halo = checked(iv(sigma).mul(iv(3.0)))?;
+        let axis = |lo: u32, hi: u32, shift: f64| -> Result<[f64; 2], AreaQueryError> {
+            let lower = checked(
+                checked(checked(iv(f64::from(lo)).div(iv(scale)))?.sub(iv(shift)))?.sub(halo),
+            )?
+            .lo
+            .floor();
+            let upper = checked(
+                checked(checked(iv(f64::from(hi)).div(iv(scale)))?.sub(iv(shift)))?.add(halo),
+            )?
+            .hi
+            .ceil();
+            // Integer numerical-domain planes avoid manufacturing a rounded
+            // geometric transform. They only enclose the complete kernel
+            // windows; original source membership still selects occupancy.
+            if lower.abs().max(upper.abs()) > 4_503_599_627_370_496.0 || lower >= upper {
+                return Err(AreaQueryError::Precision);
+            }
+            Ok([lower, upper])
+        };
+        let [left, right] = axis(root[0], root[2], offset[0])?;
+        let [top, bottom] = axis(root[1], root[3], offset[1])?;
+        let prepared = PreparedBoundaries::prepare(self, fuel)?;
+        let plan = ScanPlan::prepare(self, None, &prepared, fuel)?;
+        let strips = Strips::prepare(&plan, self, &prepared, [left, top, right, bottom], fuel)?;
+        plane::prepare(
+            &strips,
+            &plan,
+            &prepared,
+            self,
+            Lattice {
+                root,
+                scale,
+                sigma,
+                offset,
+            },
+            fuel,
+        )
+    }
 }
 
 fn line_range(

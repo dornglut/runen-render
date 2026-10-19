@@ -39,7 +39,7 @@ const GAUSSIAN_MODULE_ID: u64 = 7;
 #[cfg(test)]
 const GAUSSIAN_SOURCE_UNIT_ID: u64 = 7;
 #[cfg(test)]
-const GAUSSIAN_COVERAGE_REVISION: u64 = 1;
+const GAUSSIAN_COVERAGE_REVISION: u64 = 2;
 #[cfg(test)]
 pub(crate) const GAUSSIAN_ARITHMETIC_WGSL: &str = include_str!("shaders/gaussian_arithmetic.wgsl");
 #[cfg(test)]

@@ -14,30 +14,52 @@ struct FieldStorage {
     resident: u64,
     readback: u64,
     prepared_host: u64,
+    readbacks: u64,
 }
 
 impl FieldStorage {
     fn new(extent: [u32; 2], queries: [u64; 2]) -> Result<Self, Render2dExecutionError> {
+        Self::for_tiles(extent, extent, queries, 1)
+    }
+
+    fn for_tiles(
+        map_extent: [u32; 2],
+        extent: [u32; 2],
+        queries: [u64; 2],
+        tiles: u64,
+    ) -> Result<Self, Render2dExecutionError> {
         let resource = || failure("Gaussian field data extent exceeds bounded storage");
-        if extent.contains(&0) || extent.iter().any(|v| v % SAMPLES != 0) {
+        if tiles == 0
+            || tiles > MAX_OPERATIONS as u64 / 4
+            || map_extent.contains(&0)
+            || extent.contains(&0)
+            || extent.iter().any(|v| v % SAMPLES != 0)
+        {
             return Err(resource());
         }
         let cells = u64::from(extent[0])
             .checked_mul(u64::from(extent[1]))
             .ok_or_else(resource)?;
-        let map = cells.checked_mul(4).ok_or_else(resource)?;
+        let map = u64::from(map_extent[0])
+            .checked_mul(u64::from(map_extent[1]))
+            .and_then(|v| v.checked_mul(4))
+            .ok_or_else(resource)?;
         let vertices = 2 * 6 * VERTEX_STRIDE;
         let upload = queries[0]
             .checked_add(map)
-            .and_then(|v| v.checked_add(16 + vertices))
+            .and_then(|v| v.checked_add(tiles.checked_mul(16)?))
+            .and_then(|v| v.checked_add(vertices))
             .ok_or_else(resource)?;
         let scratch = cells.checked_mul(12).ok_or_else(resource)?;
         let output_row = u64::from(extent[0] / SAMPLES) * 4;
-        // The ordinary copy/readback carrier pads GPU rows to 256 bytes.
+        // The ordinary copy footprint pads between rows to 256 bytes;
+        // the final row retains only its logical bytes.
         let readback = output_row
             .checked_add(255)
             .map(|v| v & !255)
-            .and_then(|v| v.checked_mul(u64::from(extent[1] / SAMPLES)))
+            .and_then(|v| v.checked_mul(u64::from(extent[1] / SAMPLES - 1)))
+            .and_then(|v| v.checked_add(output_row))
+            .and_then(|v| v.checked_mul(tiles))
             .ok_or_else(resource)?;
         let output = cells / u64::from(SAMPLES * SAMPLES) * 4;
         let resident = upload
@@ -53,7 +75,7 @@ impl FieldStorage {
             .and_then(|v| v.checked_add(queries[1])) // radii <= query output
             .and_then(|v| v.checked_add(upload))
             .and_then(|v| v.checked_add(map.max(queries[0]).max(vertices).max(16)))
-            .and_then(|v| v.checked_add(3 * readback))
+            .and_then(|v| v.checked_add(readback.checked_mul(3)?))
             .and_then(|v| v.checked_add(output))
             .ok_or_else(resource)?;
         Ok(Self {
@@ -63,6 +85,7 @@ impl FieldStorage {
             resident,
             readback,
             prepared_host,
+            readbacks: tiles,
         })
     }
 
@@ -72,7 +95,7 @@ impl FieldStorage {
             || self.scratch > MAX_PRIVATE_SCRATCH_BYTES
             || self.upload > policy.max_upload_bytes_in_flight()
             || self.readback > policy.max_readback_bytes_in_flight()
-            || policy.max_pending_readbacks() < 1
+            || (policy.max_pending_readbacks() as u64) < self.readbacks
         {
             return Err(failure(
                 "Gaussian field data exceeds host, scratch or transfer admission",
@@ -88,26 +111,59 @@ pub(in crate::runtime::execution_2d) fn execute(
     query_input: &[u8],
     query_count: u32,
 ) -> Vec<u8> {
-    assert_eq!(extent[0], extent[1], "this qualification fixture is square");
+    execute_tiles(samples, extent, query_input, query_count, extent, &[[0, 0]])
+        .pop()
+        .unwrap()
+}
+
+fn execute_tiles(
+    samples: &[u32],
+    map_extent: [u32; 2],
+    query_input: &[u8],
+    query_count: u32,
+    extent: [u32; 2],
+    offsets: &[[i32; 2]],
+) -> Vec<Vec<u8>> {
+    assert_eq!(
+        extent[0], extent[1],
+        "this compositor proof uses square scratch"
+    );
     assert_eq!(extent[0] % SAMPLES, 0);
-    assert_eq!(samples.len(), extent[0] as usize * extent[1] as usize);
-    let storage = FieldStorage::new(
+    assert_eq!(
+        samples.len(),
+        map_extent[0] as usize * map_extent[1] as usize
+    );
+    let storage = FieldStorage::for_tiles(
+        map_extent,
         extent,
-        [query_input.len() as u64, u64::from(query_count) * 16],
+        if query_count == 0 {
+            [16, 0]
+        } else {
+            [query_input.len() as u64, u64::from(query_count) * 16]
+        },
+        offsets.len() as u64,
     )
     .unwrap();
     let policy = GpuExecutionPolicy::default();
     storage.admit(policy).unwrap();
     let mut requirements = GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements();
-    requirements
-        .insert(GpuCapabilityRequirement::Required(
-            GpuCapabilityFeature::Compute,
-        ))
-        .unwrap();
+    if query_count > 0 {
+        requirements
+            .insert(GpuCapabilityRequirement::Required(
+                GpuCapabilityFeature::Compute,
+            ))
+            .unwrap();
+    }
     let mut descriptor = GpuContextDescriptor::new(requirements)
         .with_allowed_backends([GpuBackendFamily::Vulkan])
         .with_fallback_policy(GpuSoftwareFallbackPolicy::Require)
-        .with_label("F3F complete Gaussian to maintained F3E compositor proof");
+        .with_label("F3F Gaussian tiled maintained F3E compositor proof");
+    if offsets.len() > 1 {
+        // The buffer map is wider than this texture ceiling. Only the
+        // reusable tile must fit the admitted (not merely native) texture.
+        descriptor =
+            descriptor.permit_limit(GpuLimitKind::MaxTextureDimension2d, u64::from(extent[0]));
+    }
     for (format, role) in [
         (GpuTextureFormat::R32Float, GpuFormatRole::ColorAttachment),
         (GpuTextureFormat::R32Float, GpuFormatRole::Sampled),
@@ -133,96 +189,52 @@ pub(in crate::runtime::execution_2d) fn execute(
     ))
     .expect("required real Vulkan Gaussian/compositor adapter");
     let facts = context.device_facts();
-    let native = facts.device_limits().values();
-    let limits = facts.workload_budget().limits();
-    assert!(
-        storage.map
-            <= native
-                .max_storage_buffer_binding_size()
-                .min(limits.max_storage_buffer_binding_size())
+    assert_eq!(
+        facts.is_enabled(GpuCapabilityFeature::Compute),
+        query_count > 0
     );
-    assert!(storage.map <= native.max_buffer_size().min(limits.max_buffer_size()));
-    assert!(extent.into_iter().all(|v| {
-        v <= native
-            .max_texture_dimension_2d()
-            .min(limits.max_texture_dimension_2d())
-    }));
     let mut resources = GpuResourceScope::new();
-    let (mut operations, queries, field_pipeline) =
-        super::gaussian::prepare_queries(query_input, query_count, &[0], &context, &mut resources)
-            .expect("qualified Gaussian query lowering must succeed");
-    operations.try_reserve_exact(4).unwrap();
-    assert_eq!(operations.capacity(), 6);
-    let mapping = resources
-        .buffer(
-            GpuBufferDescriptor::ordinary_owned(
-                "F3F encoded field samples",
-                GpuResourceLifetime::Transient,
-                GpuReconstruction::SourceBacked,
-                std::mem::size_of_val(samples) as u64,
-                [GpuBufferUsage::Storage, GpuBufferUsage::CopyDestination],
-                GpuBufferInitialization::Prepared(
-                    PreparedGpuData::<TransferData>::ordinary_pod_transfer(
-                        "F3F encoded field samples",
-                        samples,
-                    )
-                    .unwrap(),
-                ),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    let dimensions = [extent[0], extent[1], 0, 0];
-    let dimensions = resources
-        .buffer(
-            GpuBufferDescriptor::ordinary_owned(
-                "F3F field dimensions",
-                GpuResourceLifetime::Transient,
-                GpuReconstruction::SourceBacked,
-                16,
-                [GpuBufferUsage::Uniform, GpuBufferUsage::CopyDestination],
-                GpuBufferInitialization::Prepared(
-                    PreparedGpuData::<TransferData>::ordinary_pod_transfer(
-                        "F3F field dimensions",
-                        &dimensions,
-                    )
-                    .unwrap(),
-                ),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    let mask = scratch(
+    let mut field = super::gaussian::prepare_field(
+        super::gaussian::FieldData {
+            samples,
+            extent: map_extent,
+            query_input,
+            query_count,
+        },
+        &[0],
+        &context,
         &mut resources,
-        "F3F Gaussian sample mask",
-        extent[0],
-        GpuTextureFormat::R32Float,
     )
     .unwrap();
-    let field_bindings = field_pipeline
-        .runtime_bindings([
-            GpuRuntimeBindingValue::whole_buffer(0, 2, &mapping),
-            GpuRuntimeBindingValue::whole_buffer(0, 3, &queries),
-            GpuRuntimeBindingValue::whole_buffer(0, 4, &dimensions),
-        ])
+    let query_operations = if query_count == 0 { 0 } else { 2 };
+    assert_eq!(field.operations.len(), query_operations);
+    let tile = field
+        .tile(extent, MAX_PRIVATE_SCRATCH_BYTES, &[0], &mut resources)
         .unwrap();
-    let field_draw = GpuRenderDraw::new(
-        field_pipeline,
-        field_bindings,
-        [],
-        None,
-        GpuDrawIntent::direct(
-            GpuDrawRange::new(0, 3).unwrap(),
-            GpuDrawRange::new(0, 1).unwrap(),
-        ),
-        GpuViewport::new(0.0, 0.0, extent[0] as f32, extent[1] as f32, 0.0, 1.0).unwrap(),
-        GpuScissorRect::new(0, 0, extent[0], extent[1]).unwrap(),
-        GpuBlendConstant::new(0.0, 0.0, 0.0, 0.0).unwrap(),
-        0,
-    )
-    .unwrap();
-    operations.push(operation(&mask, true, vec![field_draw]).unwrap().into());
-
+    assert_eq!(
+        tile.scratch_bytes,
+        u64::from(extent[0]) * u64::from(extent[1]) * 4
+    );
+    if offsets.len() > 1 {
+        // Reject before creating a per-tile uniform, then reuse these SAME
+        // admitted field/scratch/resource owners for the valid lookup sequence.
+        assert!(
+            matches!(field.tile(extent, tile.scratch_bytes - 1, &[2, 1], &mut resources),
+            Err(Render2dExecutionError::SampleSpace { kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(owner), .. }) if owner == [2, 1])
+        );
+        assert!(
+            matches!(field.tile([extent[0] + 1, extent[1]], MAX_PRIVATE_SCRATCH_BYTES,
+            &[2, 1], &mut resources), Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit, path: Some(owner), ..
+            }) if owner == [2, 1])
+        );
+        assert!(
+            matches!(tile.lookup(&field, [i32::MAX, 0], &[2, 1], &mut resources),
+            Err(Render2dExecutionError::SampleSpace { kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(owner), .. }) if owner == [2, 1])
+        );
+    }
     // These are the existing production F3E program, geometry draw builder,
     // scalar-mask fill and once-only correlated resolve, with no copied WGSL.
     let colors = scratch(
@@ -251,7 +263,7 @@ pub(in crate::runtime::execution_2d) fn execute(
     );
     let fill_draw = draw(
         &fill,
-        Some((0, &mask)),
+        Some((0, &tile.view)),
         None,
         None,
         &vertices,
@@ -259,7 +271,6 @@ pub(in crate::runtime::execution_2d) fn execute(
         &mut resources,
     )
     .unwrap();
-    operations.push(operation(&colors, true, vec![fill_draw]).unwrap().into());
     let output_extent = [extent[0] / SAMPLES, extent[1] / SAMPLES];
     let output = resources
         .texture(
@@ -313,40 +324,67 @@ pub(in crate::runtime::execution_2d) fn execute(
         &mut resources,
     )
     .unwrap();
-    operations.push(operation(&view, true, vec![resolve_draw]).unwrap().into());
-    let readback = GpuReadbackOperation::ordinary(
-        GpuTextureCopyRegion::whole_base_mip(&output)
-            .unwrap()
-            .into(),
-    )
-    .unwrap();
-    let readback_id = readback.id();
-    assert_eq!(operations.len(), 5);
-    // Exercise the ordinary contribution authoring/evidence boundary with
-    // the initialization, compute, field and compositor nodes together.
-    // Diagnostic readback remains caller-owned work outside that token.
-    let contribution = crate::execution_2d::Render2dPreparedContribution::new(operations, view);
-    assert!(contribution.has_render_work());
-    let mut token = None;
-    let fragment = GpuWorkFragment::build("F3F query-field-compositor sequence", |work| {
-        token = contribution.append_to(work)?;
-        work.operation("F3F caller final color readback", readback)?;
+    // Draw payloads and the map/query buffers upload ONCE. Only each small
+    // origin uniform differs. One scratch/color/output allocation is reused by
+    // ordered tile lookup -> F3E fill -> resolve -> caller readback operations.
+    let mut sequences = Vec::new();
+    sequences.try_reserve_exact(offsets.len()).unwrap();
+    for &offset in offsets {
+        let mut operations = std::mem::take(&mut field.operations);
+        operations.try_reserve_exact(3).unwrap();
+        operations.push(
+            tile.lookup(&field, offset, &[0], &mut resources)
+                .unwrap()
+                .into(),
+        );
+        operations.push(
+            operation(&colors, true, vec![fill_draw.clone()])
+                .unwrap()
+                .into(),
+        );
+        operations.push(
+            operation(&view, true, vec![resolve_draw.clone()])
+                .unwrap()
+                .into(),
+        );
+        let readback = GpuReadbackOperation::ordinary(
+            GpuTextureCopyRegion::whole_base_mip(&output)
+                .unwrap()
+                .into(),
+        )
+        .unwrap();
+        sequences.push((
+            crate::execution_2d::Render2dPreparedContribution::new(operations, view.clone()),
+            readback,
+        ));
+    }
+    let mut tokens = Vec::new();
+    let mut readbacks = Vec::new();
+    let fragment = GpuWorkFragment::build("F3F ordered Gaussian tile consumers", |work| {
+        for (contribution, readback) in sequences {
+            let token = contribution
+                .append_to(work)?
+                .expect("tile has three render consumers");
+            readbacks.push(readback.id());
+            work.operation("F3F caller tile color readback", readback)?;
+            tokens.push(token);
+        }
         Ok(())
     })
     .unwrap();
-    let token = token.expect("the complete field has authored work");
-    assert_eq!(token.authored_nodes().len(), 5);
-    assert_eq!(fragment.nodes().len(), 6);
+    assert_eq!(tokens[0].authored_nodes().len(), query_operations + 3);
+    for token in &tokens[1..] {
+        assert_eq!(token.authored_nodes().len(), 3);
+    }
+    assert_eq!(fragment.nodes().len(), query_operations + 4 * offsets.len());
     let graph = GpuPreparedWorkGraph::prepare(
-        GpuResourceLabel::new("F3F exact Gaussian final color").unwrap(),
+        GpuResourceLabel::new("F3F exact Gaussian tile sequence").unwrap(),
         [fragment],
     )
     .unwrap();
     let prepared = pollster::block_on(context.prepare_submission(graph)).unwrap();
     let stats = context.execution_stats();
     assert_eq!(stats.prepared_submissions(), 1);
-    // Source-backed conditional initial content is charged by RunenGPU at
-    // ordered submission acceptance, not while merely preparing a graph.
     assert_eq!(stats.upload_bytes_in_flight(), 0);
     let submission = context.submit_prepared(prepared).unwrap();
     let stats = context.execution_stats();
@@ -357,37 +395,74 @@ pub(in crate::runtime::execution_2d) fn execute(
     let deadline = Instant::now() + Duration::from_secs(45);
     loop {
         context.progress();
-        match submission.readback(readback_id).unwrap().status() {
-            GpuReadbackStatus::Ready(bytes)
-                if submission.status() == GpuSubmissionStatus::Completed =>
-            {
+        if submission.status() == GpuSubmissionStatus::Completed {
+            for token in tokens.drain(..) {
                 token.completed_by(&submission).unwrap();
-                let stats = context.execution_stats();
-                assert_eq!(stats.in_flight_submissions(), 0);
-                assert_eq!(stats.upload_bytes_in_flight(), 0);
-                assert_eq!(stats.readback_bytes_in_flight(), 0);
-                println!(
-                    "GAUSSIAN_FIELD_DATA resident={} upload={} readback={} conservative_host={} completed_transfer_reservations_released=true",
-                    storage.resident, storage.upload, storage.readback, storage.prepared_host
-                );
-                return bytes.as_bytes().to_vec();
             }
-            GpuReadbackStatus::Failed(error) => {
-                panic!("Gaussian maintained compositor readback: {error:?}")
-            }
-            _ => {
-                assert!(
-                    Instant::now() < deadline,
-                    "Gaussian/compositor Vulkan timeout"
-                );
-                std::thread::yield_now();
+            let pixels = readbacks
+                .iter()
+                .map(|&id| match submission.readback(id).unwrap().status() {
+                    GpuReadbackStatus::Ready(bytes) => bytes.as_bytes().to_vec(),
+                    other => panic!("completed Gaussian tile readback: {other:?}"),
+                })
+                .collect();
+            let stats = context.execution_stats();
+            assert_eq!(stats.in_flight_submissions(), 0);
+            assert_eq!(stats.upload_bytes_in_flight(), 0);
+            assert_eq!(stats.readback_bytes_in_flight(), 0);
+            println!(
+                "GAUSSIAN_FIELD_DATA resident={} upload={} readback={} conservative_host={} tiles={} completed_transfer_reservations_released=true",
+                storage.resident,
+                storage.upload,
+                storage.readback,
+                storage.prepared_host,
+                offsets.len()
+            );
+            return pixels;
+        }
+        for &id in &readbacks {
+            if let GpuReadbackStatus::Failed(error) = submission.readback(id).unwrap().status() {
+                panic!("Gaussian tile final color readback failed: {error:?}");
             }
         }
+        assert!(
+            Instant::now() < deadline,
+            "Gaussian tile compositor Vulkan timeout"
+        );
+        std::thread::yield_now();
     }
 }
 
 #[test]
+#[ignore = "requires Vulkan: literal-only scalar fields without compute admission"]
+fn gaussian_literal_fields_use_only_graphics_and_complete_all_nodes_on_vulkan() {
+    // Each pixel resolves sixteen identical values. Independent sRGB reference:
+    // round(255*(1.055*(1/2)^(1/2.4)-0.055))=188, alpha round(255/2)=128.
+    // Include the exact cutoff endpoints and a mixed field in one submission.
+    let mut samples = [0_u32; 8 * 8];
+    for y in 0..8 {
+        for x in 0..8 {
+            samples[y * 8 + x] = match (x / 4, y / 4) {
+                (0, 0) => 0,
+                (1, 0) => 1 << 23,
+                _ => 1 << 24,
+            };
+        }
+    }
+    let pixels = execute(&samples, [8; 2], &[], 0);
+    assert_eq!(&pixels[..4], &[0, 0, 0, 0]);
+    // Use the existing complete-plane two-code sRGB target tolerance. Q24
+    // half coverage and its alpha stay exact; color conversion belongs to
+    // the same maintained F3E compositor as every numerical field.
+    assert!(pixels[4].abs_diff(188) <= 2);
+    assert_eq!(&pixels[5..8], &[0, 0, 128]);
+    assert_eq!(&pixels[8..], &[255, 0, 0, 255, 255, 0, 0, 255]);
+}
+
+#[test]
 fn gaussian_field_data_admission_rejects_overflow_and_inflight_pressure() {
+    assert_eq!(FieldStorage::new([8; 2], [16, 0]).unwrap().readback, 264);
+    assert_eq!(FieldStorage::new([4; 2], [16, 0]).unwrap().readback, 4);
     assert!(FieldStorage::new([u32::MAX - 3; 2], [143_768, 2_976]).is_err());
     assert!(FieldStorage::new([0, 256], [143_768, 2_976]).is_err());
     let storage = FieldStorage::new([256; 2], [143_768, 2_976]).unwrap();
@@ -425,4 +500,114 @@ fn gaussian_field_data_admission_rejects_overflow_and_inflight_pressure() {
             .admit(policy)
             .is_err()
     );
+}
+
+#[test]
+fn gaussian_tiles_inventory_one_map_and_scratch_with_all_uniforms_and_readbacks() {
+    let storage = FieldStorage::for_tiles([16, 8], [8; 2], [16, 0], 5).unwrap();
+    assert_eq!(storage.map, 512);
+    assert_eq!(storage.scratch, 768);
+    assert_eq!(storage.upload, 16 + 512 + 5 * 16 + 2 * 6 * VERTEX_STRIDE);
+    assert_eq!(storage.readback, 5 * 264);
+    let policy = GpuExecutionPolicy::default();
+    storage.admit(policy).unwrap();
+    assert!(
+        storage
+            .admit(GpuExecutionPolicy::new(
+                policy.max_prepared_submissions(),
+                policy.max_in_flight_submissions(),
+                policy.max_upload_bytes_in_flight(),
+                policy.max_readback_bytes_in_flight(),
+                4
+            ))
+            .is_err()
+    );
+    assert!(FieldStorage::for_tiles([16, 8], [8; 2], [16, 0], 0).is_err());
+}
+
+#[test]
+#[ignore = "requires Vulkan: signed tile crop/seams and shared field/query/scratch ownership"]
+fn gaussian_tile_offsets_and_seams_share_one_map_through_f3e_on_vulkan() {
+    // Each map pixel is sixteen equal samples. The five adjacent/cropped
+    // tiles cover negative origins, the internal x seam and both upper edges.
+    // Zero-node queries exercise the physical query-result path independently
+    // of kernel/quadrature correctness; literal values exercise no-Compute.
+    let offsets = [[-1, -1], [7, -1], [-1, 7], [7, 7], [15, 7]];
+    for queried in [false, true] {
+        let mut samples = [0_u32; 16 * 8];
+        for y in 0..8 {
+            for x in 0..16 {
+                samples[y * 16 + x] = match (x / 4, queried) {
+                    (0..=2, true) => (1 << 31) | (x / 4) as u32,
+                    (0, false) => 1 << 24,
+                    (1, false) => 1 << 23,
+                    (2, false) => 1 << 22,
+                    _ => 0,
+                };
+            }
+        }
+        let mut words = vec![0_u32; 836 + 3 * 5];
+        words[0] = 3;
+        for (index, value) in [1_u64 << 48, 1 << 47, 1 << 46].into_iter().enumerate() {
+            words[836 + 5 * index + 2] = value as u32;
+            words[836 + 5 * index + 3] = (value >> 32) as u32;
+        }
+        let bytes = words
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect::<Vec<_>>();
+        let results = execute_tiles(
+            &samples,
+            [16, 8],
+            if queried { &bytes } else { &[] },
+            if queried { 3 } else { 0 },
+            [8; 2],
+            &offsets,
+        );
+        assert_eq!(results.len(), offsets.len());
+        for (pixels, offset) in results.iter().zip(offsets) {
+            for py in 0..2 {
+                for px in 0..2 {
+                    // Independent per-sample palette sum. Origins are NOT
+                    // pixel aligned, so each resolved pixel can straddle the
+                    // map cutoff or a phase boundary, including tile seams.
+                    let mut total = 0.0;
+                    for dy in 0..4 {
+                        for dx in 0..4 {
+                            let x = offset[0] + px * 4 + dx;
+                            let y = offset[1] + py * 4 + dy;
+                            if (0..16).contains(&x) && (0..8).contains(&y) {
+                                total += [1.0_f64, 0.5, 0.25, 0.0][(x / 4) as usize];
+                            }
+                        }
+                    }
+                    let alpha = total / 16.0;
+                    let red = if alpha <= 0.003_130_8 {
+                        alpha * 12.92
+                    } else {
+                        1.055 * alpha.powf(1.0 / 2.4) - 0.055
+                    };
+                    let expected = [
+                        (red * 255.0).round() as u8,
+                        0,
+                        0,
+                        (alpha * 255.0).round() as u8,
+                    ];
+                    let actual = &pixels[((py * 2 + px) * 4) as usize..][..4];
+                    assert_eq!(
+                        &actual[1..],
+                        &expected[1..],
+                        "crop/alpha at {offset:?},{px},{py}"
+                    );
+                    assert!(
+                        actual[0].abs_diff(expected[0]) <= 2,
+                        "independent sRGB at {offset:?},{px},{py}: {actual:?}"
+                    );
+                    if expected[3] == 0 || expected[3] == 255 {
+                        assert_eq!(actual, &expected, "exact cutoff endpoint");
+                    }
+                }
+            }
+        }
+    }
 }
