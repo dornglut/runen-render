@@ -12,8 +12,8 @@ use super::{
     vector,
 };
 use crate::composition_2d::{
-    Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dColorRgba8, Render2dDropShadow,
-    Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dResourceBindings,
+    Render2dAffineTransform, Render2dBrush, Render2dClip, Render2dColorRgba8, Render2dComposition,
+    Render2dDropShadow, Render2dItem, Render2dOpacity, Render2dPrimitive, Render2dResourceBindings,
     Render2dResourceValue,
 };
 use crate::execution_2d::{
@@ -492,8 +492,15 @@ pub(super) fn group_child_sources<'a>(
     max_buffer_bytes: u64,
     root_canvas: Option<([f64; 2], f64)>,
 ) -> Result<GroupChildSources<'a>, Render2dExecutionError> {
-    build_group_sources(plan, bindings, field_sets, scales, max_buffer_bytes)?
-        .prepare_polygonal_consumers(None, root_canvas, max_buffer_bytes)
+    build_group_sources(
+        plan.composition(),
+        plan.retained_bytes(),
+        bindings,
+        field_sets,
+        scales,
+        max_buffer_bytes,
+    )?
+    .prepare_polygonal_consumers(None, root_canvas, max_buffer_bytes)
 }
 
 /// Source-owned capacity bounds. Caller-owned F1 values and immutable resource
@@ -502,9 +509,10 @@ pub(super) fn group_child_sources<'a>(
 /// factory scratch (including Lyon) is a separate consumer-phase obligation.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct SourceStorage {
-    /// Borrowed renderer-owned input plan, separate from borrowed F1 values.
-    /// A caller retaining that input must include it in its combined peak.
-    pub(super) plan_bytes: usize,
+    /// Caller-owned renderer input retained during this source phase. Current
+    /// plan consumers pass their exact plan capacity; a caller preparing from
+    /// borrowed F1 before planning passes zero. F1/resource payloads are separate.
+    pub(super) input_bytes: usize,
     pub(super) retained_bytes: usize,
     pub(super) construction_peak_bytes: usize,
 }
@@ -692,7 +700,7 @@ impl<'scene> GroupSourceDag<'scene, '_> {
         self.graph.charge_preparation(32, &[])?;
         let source_phase = self
             .storage
-            .plan_bytes
+            .input_bytes
             .checked_add(self.storage.construction_peak_bytes)
             .ok_or_else(|| resource(&[], "polygon source phase storage overflow"))?;
         let mut dependencies =
@@ -870,12 +878,20 @@ fn group_child_sources_with_probe<'a>(
     root_canvas: Option<([f64; 2], f64)>,
     inspect: impl FnMut(&Arc<region::NeutralRegion<'a>>, &[usize]),
 ) -> Result<GroupChildSources<'a>, Render2dExecutionError> {
-    build_group_sources(plan, bindings, field_sets, scales, max_buffer_bytes)?
-        .prepare_polygonal_with_probe(None, root_canvas, max_buffer_bytes, inspect)
+    build_group_sources(
+        plan.composition(),
+        plan.retained_bytes(),
+        bindings,
+        field_sets,
+        scales,
+        max_buffer_bytes,
+    )?
+    .prepare_polygonal_with_probe(None, root_canvas, max_buffer_bytes, inspect)
 }
 
 pub(super) fn build_group_sources<'scene, 'resources>(
-    plan: &scene::Plan<'scene>,
+    composition: &'scene Render2dComposition,
+    input_bytes: usize,
     bindings: &'resources Render2dResourceBindings,
     field_sets: &'resources BTreeMap<FieldSetKey, Arc<ResourceFields>>,
     scales: NeutralPreparationScale,
@@ -884,18 +900,34 @@ pub(super) fn build_group_sources<'scene, 'resources>(
     let mut active = Vec::<SourceFrame<'scene>>::new();
     let mut demands = Vec::new();
     let mut sources = Vec::new();
-    let mut construction_bytes = 0_usize;
     let mut graph = region::NeutralRegionBuilder::new(scales, max_buffer_bytes);
-    for (index, event) in plan.events.iter().enumerate() {
-        let event_path = match event {
-            scene::Event::BeginGroup { path, .. } | scene::Event::Item { path, .. } => path,
-            scene::Event::EndGroup => active.last().map_or(&[][..], |frame| &frame.path),
+    // This fixed host-only cursor is never uploaded to a native GPU buffer.
+    // Include its exact bounded capacities in the construction inventory;
+    // device buffer limits continue to govern the existing graph containers.
+    // Whole-invocation host admission belongs to the caller's combined peak.
+    graph.charge_preparation(32, &[])?;
+    let cursor_bytes = scene::OccurrenceCursor::storage_bytes();
+    let mut construction_bytes = cursor_bytes;
+    let mut cursor = scene::OccurrenceCursor::new(composition, &mut |cost, path| {
+        graph.charge_preparation(cost, path)
+    })?;
+    let mut event_count = 0_usize;
+    while let Some(event) = cursor.next(&mut |cost, path| graph.charge_preparation(cost, path))? {
+        let index = event_count;
+        event_count = event_count
+            .checked_add(1)
+            .ok_or_else(|| resource(&[], "source event count overflow"))?;
+        let event_path = match &event {
+            scene::Occurrence::BeginGroup { path, .. } | scene::Occurrence::Item { path, .. } => {
+                *path
+            }
+            scene::Occurrence::EndGroup => active.last().map_or(&[][..], |frame| &frame.path),
         };
-        // The borrowed plan is input, but every dispatch/lookup is our work,
-        // including top-level items with no neutral-source consumer.
+        // Lexical cursor stepping and builder dispatch are separate work.
+        // Include top-level items with no neutral-source consumer in both.
         graph.charge_preparation(64, event_path)?;
         match event {
-            scene::Event::BeginGroup { path, group, .. } => {
+            scene::Occurrence::BeginGroup { path, group } => {
                 let frame_path = copy_source_path(path, &mut graph, &mut construction_bytes)?;
                 push_source_value(
                     &mut active,
@@ -910,7 +942,7 @@ pub(super) fn build_group_sources<'scene, 'resources>(
                     path,
                 )?;
             }
-            scene::Event::Item { path, item, .. } => {
+            scene::Occurrence::Item { path, item } => {
                 if active.is_empty() {
                     continue;
                 }
@@ -954,8 +986,8 @@ pub(super) fn build_group_sources<'scene, 'resources>(
                     )?;
                 }
             }
-            scene::Event::EndGroup => {
-                let frame = active.pop().expect("F1 balanced group plan");
+            scene::Occurrence::EndGroup => {
+                let frame = active.pop().expect("F1 balanced occurrence cursor");
                 let children = graph.union(frame.children, &frame.path)?;
                 // A group first maps its entire local C into its immediate
                 // parent frame. Only THEN do its Euclidean disk, offset and
@@ -1082,16 +1114,14 @@ pub(super) fn build_group_sources<'scene, 'resources>(
         demands
             .len()
             .checked_mul(32)
-            .and_then(|v| v.checked_add(plan.events.len().checked_mul(32)?))
+            .and_then(|v| v.checked_add(event_count.checked_mul(32)?))
             .and_then(|v| v.checked_add(64))
             .ok_or_else(|| resource(&[], "source metadata scan work overflow"))?,
         &[],
     )?;
     let containers = source_container_bytes(&sources, &demands)?;
     let storage = SourceStorage {
-        plan_bytes: plan
-            .retained_bytes()
-            .ok_or_else(|| resource(&[], "source input plan storage overflow"))?,
+        input_bytes,
         retained_bytes: node_bytes
             .checked_add(containers)
             .and_then(|v| v.checked_add(size_of::<GroupSourceDag<'_, '_>>()))
@@ -2041,6 +2071,25 @@ mod tests {
             vec![shadow],
         );
         let composition = Render2dComposition::new(vec![Render2dEntry::group(group)]).unwrap();
+        // Original lexical preparation does not need the affine plan. Text
+        // still runs its admitted outline factory eagerly: missing mesh reach
+        // must not become a cached empty source in any containing node.
+        let original = build_group_sources(
+            &composition,
+            0,
+            &bindings,
+            &cached,
+            NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            1_048_576,
+        )
+        .unwrap();
+        assert_eq!(original.storage().input_bytes, 0);
+        let original = original
+            .prepare_polygonal_consumers(None, None, 1_048_576)
+            .unwrap();
         let plan = scene::analyze(&composition).unwrap();
         let sources = group_child_sources(
             &plan,
@@ -2059,6 +2108,11 @@ mod tests {
         };
         assert!(!mesh.triangles.is_empty());
         assert!(mesh.bounds[0].is_finite() && mesh.bounds[2] > mesh.bounds[0]);
+        let NeutralCaster::Mesh(original_mesh) = original.casters.get(&0).unwrap() else {
+            panic!("pre-plan outlined glyph caster must remain polygonal");
+        };
+        assert_eq!(original_mesh.triangles, mesh.triangles);
+        assert_eq!(original_mesh.bounds, mesh.bounds);
     }
 
     #[test]

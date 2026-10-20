@@ -89,7 +89,8 @@ fn prepare_fixture(variant: Variant) -> super::plane::PreparedPlane {
     let bindings = Render2dResourceBindings::default();
     let fields = BTreeMap::new();
     let sources = shadow::build_group_sources(
-        &plan,
+        plan.composition(),
+        plan.retained_bytes(),
         &bindings,
         &fields,
         shadow::NeutralPreparationScale {
@@ -113,7 +114,7 @@ fn prepare_fixture(variant: Variant) -> super::plane::PreparedPlane {
         .expect("actual consuming parent original F1 support");
     let storage = sources.storage();
     let ambient = storage
-        .plan_bytes
+        .input_bytes
         .checked_add(size_of::<Render2dResourceBindings>() + size_of_val(&fields))
         .unwrap();
     let construction = storage

@@ -21,6 +21,8 @@ mod diagnostic;
 use diagnostic::{Diagnostics, Integrator, MassCertificate};
 
 mod classified_spans;
+#[cfg(test)]
+mod image_qualification;
 mod numeric_index;
 mod plane;
 mod query_compiler;

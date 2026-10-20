@@ -2360,7 +2360,8 @@ mod tests {
         // input before any disposable vector geometry has been requested.
         let fields = std::collections::BTreeMap::new();
         let dag = shadow::build_group_sources(
-            &plan,
+            plan.composition(),
+            plan.retained_bytes(),
             &bindings,
             &fields,
             shadow::NeutralPreparationScale {
@@ -3442,7 +3443,8 @@ mod tests {
         let fields = std::collections::BTreeMap::new();
         let build = || {
             shadow::build_group_sources(
-                &plan,
+                plan.composition(),
+                plan.retained_bytes(),
                 &bindings,
                 &fields,
                 shadow::NeutralPreparationScale {
@@ -3459,7 +3461,7 @@ mod tests {
         let original = dag.source(0).unwrap();
         let before = dag.graph_work();
         let storage = dag.storage();
-        let source_phase = storage.plan_bytes + storage.construction_peak_bytes;
+        let source_phase = storage.input_bytes + storage.construction_peak_bytes;
         assert!(source_phase > 65_536);
         assert!(matches!(
             dag.selected_dependencies(&[0], source_phase as u64),
@@ -3493,7 +3495,7 @@ mod tests {
             storage.construction_peak_bytes + metadata
         );
         assert_eq!(
-            dag.storage().plan_bytes + dag.storage().construction_peak_bytes,
+            dag.storage().input_bytes + dag.storage().construction_peak_bytes,
             lease as usize
         );
         drop(dependencies);
@@ -3569,6 +3571,158 @@ mod tests {
     }
 
     #[test]
+    fn lexical_sources_preserve_active_plan_indices_and_explicit_live_input() {
+        use crate::composition_2d::{Render2dComposition, Render2dEntry, Render2dResourceBindings};
+        let zero = Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::WHITE).unwrap();
+        let inert = crate::composition_2d::Render2dGroup::new(
+            Vec::<Render2dEntry>::new(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            crate::composition_2d::Render2dOpacity::TRANSPARENT,
+            Vec::new(),
+        );
+        let child = consumer_group(vec![Render2dEntry::item(provenance_rectangle_item())], zero);
+        let composition = Render2dComposition::new(vec![
+            Render2dEntry::group(inert.clone()),
+            consumer_group(
+                vec![Render2dEntry::group(inert), child.clone(), child],
+                zero,
+            ),
+        ])
+        .unwrap();
+        let bindings = Render2dResourceBindings::default();
+        let fields = std::collections::BTreeMap::new();
+        let build = |input_bytes| {
+            shadow::build_group_sources(
+                &composition,
+                input_bytes,
+                &bindings,
+                &fields,
+                shadow::NeutralPreparationScale {
+                    field_raster_scale: 1.0,
+                    geometry_sample_scale: 4.0,
+                },
+                1_048_576,
+            )
+            .unwrap()
+        };
+        // There is no Plan or cumulative affine dependency at this point.
+        let original = build(0);
+        assert_eq!(original.storage().input_bytes, 0);
+        let plan = shadow::scene::analyze(&composition).unwrap();
+        let planned = build(plan.retained_bytes());
+        assert_eq!(planned.storage().input_bytes, plan.retained_bytes());
+        assert_eq!(original.graph_work(), planned.graph_work());
+        assert_eq!(
+            original.storage().retained_bytes,
+            planned.storage().retained_bytes
+        );
+        let mut owners = Vec::new();
+        for (index, event) in plan.events.iter().enumerate() {
+            if let shadow::scene::Event::BeginGroup { group, path, .. } = event
+                && !group.shadows().is_empty()
+            {
+                owners.push(index);
+                let source = original.source(index).unwrap();
+                assert_eq!(source.envelope, planned.source(index).unwrap().envelope);
+                assert_eq!(
+                    source.owner_path(),
+                    planned.source(index).unwrap().owner_path()
+                );
+                assert_eq!(path[0], 1);
+            }
+        }
+        assert_eq!(owners, [0, 1, 4]);
+        assert_eq!(
+            original
+                .sources
+                .iter()
+                .map(|entry| entry.0)
+                .collect::<Vec<_>>(),
+            owners
+        );
+        assert!(original.graph.materialized.is_empty());
+        assert_eq!(original.graph.retained_vertices, 0);
+    }
+
+    #[test]
+    fn host_only_source_cursor_does_not_require_native_buffer_capacity() {
+        use crate::composition_2d::{Render2dComposition, Render2dEntry, Render2dResourceBindings};
+        let composition = Render2dComposition::new(Vec::<Render2dEntry>::new()).unwrap();
+        let bindings = Render2dResourceBindings::default();
+        let fields = std::collections::BTreeMap::new();
+        // No scene Plan, source node, upload or GPU buffer is needed. The
+        // cursor's fixed host storage must not inherit a device buffer limit.
+        let dag = shadow::build_group_sources(
+            &composition,
+            0,
+            &bindings,
+            &fields,
+            shadow::NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            32,
+        )
+        .unwrap();
+        assert!(dag.sources.is_empty());
+        assert!(dag.demands.is_empty());
+        assert_eq!(dag.graph.nodes, 0);
+        assert_eq!(dag.storage().input_bytes, 0);
+        assert!(
+            dag.storage().construction_peak_bytes
+                >= shadow::scene::OccurrenceCursor::storage_bytes()
+        );
+        assert_eq!(dag.graph.storage_limit(), 32);
+    }
+
+    #[test]
+    fn lexical_source_work_includes_inert_occurrences_before_any_plan() {
+        use crate::composition_2d::{
+            Render2dComposition, Render2dEntry, Render2dGroup, Render2dOpacity,
+            Render2dResourceBindings,
+        };
+        let inert = Render2dEntry::group(Render2dGroup::new(
+            Vec::<Render2dEntry>::new(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            Vec::new(),
+        ));
+        let composition = Render2dComposition::new(vec![inert; 140_000]).unwrap();
+        let bindings = Render2dResourceBindings::default();
+        let fields = std::collections::BTreeMap::new();
+        let result = shadow::build_group_sources(
+            &composition,
+            0,
+            &bindings,
+            &fields,
+            shadow::NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            1_048_576,
+        );
+        // Builder bookkeeping, cursor setup and the initial next call pay
+        // first. Each inert root then needs a visit and a closing-frame step.
+        // Rejection pays no closing pop, so its known owner is that leaf.
+        let owner = (MAX_REGION_GRAPH_WORK - 32 - 128 - 32) / (2 * 64);
+        assert!(matches!(result, Err(Render2dExecutionError::SampleSpace {
+            kind: Render2dSampleSpaceError::ResourceLimit,
+            path: Some(path),
+            ..
+        }) if path == [owner]));
+        // The ordinary non-shadow scene policy still permits this bounded
+        // authored tree, whose active affine plan is genuinely empty.
+        assert!(
+            shadow::scene::analyze(&composition)
+                .unwrap()
+                .events
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn selected_ancestor_and_child_share_the_same_original_and_physical_source() {
         use crate::composition_2d::{Render2dComposition, Render2dEntry, Render2dResourceBindings};
         let zero = Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::WHITE).unwrap();
@@ -3588,7 +3742,8 @@ mod tests {
         let bindings = Render2dResourceBindings::default();
         let fields = std::collections::BTreeMap::new();
         let dag = shadow::build_group_sources(
-            &plan,
+            plan.composition(),
+            plan.retained_bytes(),
             &bindings,
             &fields,
             shadow::NeutralPreparationScale {

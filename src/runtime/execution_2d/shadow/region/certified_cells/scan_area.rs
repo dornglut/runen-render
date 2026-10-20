@@ -1167,18 +1167,7 @@ impl ScanPlan {
         fuel: &mut usize,
     ) -> Result<(), AreaQueryError> {
         if let Some(rect) = shape.as_rect() {
-            charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
-            let x1 = exact_add(rect.x(), rect.width()).ok_or(AreaQueryError::Precision)?;
-            let y1 = exact_add(rect.y(), rect.height()).ok_or(AreaQueryError::Precision)?;
-            for (p, q) in [
-                ([rect.x(), rect.y()], [x1, rect.y()]),
-                ([x1, rect.y()], [x1, y1]),
-                ([x1, y1], [rect.x(), y1]),
-                ([rect.x(), y1], [rect.x(), rect.y()]),
-            ] {
-                self.line(p, q, affine, fuel)?;
-            }
-            return Ok(());
+            return self.rectangle(rect, affine, fuel);
         }
         let path = shape.as_path().ok_or(AreaQueryError::Unsupported)?;
         let mut first = None;
@@ -1232,6 +1221,26 @@ impl ScanPlan {
         Ok(())
     }
 
+    fn rectangle(
+        &mut self,
+        rect: Render2dRect,
+        affine: Affine,
+        fuel: &mut usize,
+    ) -> Result<(), AreaQueryError> {
+        charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
+        let x1 = exact_add(rect.x(), rect.width()).ok_or(AreaQueryError::Precision)?;
+        let y1 = exact_add(rect.y(), rect.height()).ok_or(AreaQueryError::Precision)?;
+        for (p, q) in [
+            ([rect.x(), rect.y()], [x1, rect.y()]),
+            ([x1, rect.y()], [x1, y1]),
+            ([x1, y1], [rect.x(), y1]),
+            ([rect.x(), y1], [rect.x(), rect.y()]),
+        ] {
+            self.line(p, q, affine, fuel)?;
+        }
+        Ok(())
+    }
+
     fn clips(
         &mut self,
         clips: &[Render2dClip],
@@ -1257,12 +1266,27 @@ impl ScanPlan {
         match &region.kind {
             Kind::Source(_) => {
                 let item = region.semantic_item.ok_or(AreaQueryError::Unsupported)?;
-                let Render2dPrimitive::Fill { shape, .. } = item.primitive() else {
+                if !matches!(
+                    item.primitive(),
+                    Render2dPrimitive::Fill { .. } | Render2dPrimitive::Image(_)
+                ) {
                     return Err(AreaQueryError::Unsupported);
-                };
+                }
                 let frame = self.frame().ok_or(AreaQueryError::Resource)?;
                 let local = affine.after(item.local_to_parent(), frame, fuel)?;
-                self.shape(shape, local, fuel)?;
+                match item.primitive() {
+                    Render2dPrimitive::Fill { shape, .. } => self.shape(shape, local, fuel)?,
+                    Render2dPrimitive::Image(image) => {
+                        for patch in image.patches() {
+                            charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
+                            let rect = patch.destination();
+                            if !rect.is_empty() {
+                                self.rectangle(rect, local, fuel)?;
+                            }
+                        }
+                    }
+                    _ => return Err(AreaQueryError::Unsupported),
+                }
                 self.clips(item.clips(), affine, fuel)
             }
             Kind::Union(children) => {

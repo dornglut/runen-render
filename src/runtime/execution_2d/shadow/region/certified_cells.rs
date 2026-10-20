@@ -390,6 +390,26 @@ fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCert
     }
 }
 
+/// Caller prepays rectangle arithmetic and classification before inspection.
+fn certify_rectangle(rect: Render2dRect, cell: Cell) -> CellCertificate {
+    if rect.is_empty() {
+        return CellCertificate::Outside;
+    }
+    let Some(x0) = Interval::scalar(rect.x()) else {
+        return CellCertificate::Unknown;
+    };
+    let Some(y0) = Interval::scalar(rect.y()) else {
+        return CellCertificate::Unknown;
+    };
+    let Some(x1) = x0.add(Interval::scalar(rect.width()).expect("valid finite width")) else {
+        return CellCertificate::Unknown;
+    };
+    let Some(y1) = y0.add(Interval::scalar(rect.height()).expect("valid finite height")) else {
+        return CellCertificate::Unknown;
+    };
+    cell.classify_rectangle([x0, y0, x1, y1])
+}
+
 fn certify_shape(shape: &Render2dShape, cell: Cell, visits: &mut usize) -> CellCertificate {
     let cost = if shape.as_ellipse().is_some() {
         192
@@ -400,22 +420,7 @@ fn certify_shape(shape: &Render2dShape, cell: Cell, visits: &mut usize) -> CellC
         return CellCertificate::Unknown;
     }
     if let Some(rect) = shape.as_rect() {
-        if rect.is_empty() {
-            return CellCertificate::Outside;
-        }
-        let Some(x0) = Interval::scalar(rect.x()) else {
-            return CellCertificate::Unknown;
-        };
-        let Some(y0) = Interval::scalar(rect.y()) else {
-            return CellCertificate::Unknown;
-        };
-        let Some(x1) = x0.add(Interval::scalar(rect.width()).expect("valid finite width")) else {
-            return CellCertificate::Unknown;
-        };
-        let Some(y1) = y0.add(Interval::scalar(rect.height()).expect("valid finite height")) else {
-            return CellCertificate::Unknown;
-        };
-        cell.classify_rectangle([x0, y0, x1, y1])
+        certify_rectangle(rect, cell)
     } else if let Some(ellipse) = shape.as_ellipse() {
         cell.classify_ellipse(ellipse)
     } else if let Some(path) = shape.as_path() {
@@ -1921,18 +1926,46 @@ pub(super) fn certified_grid_area_enclosures(
     Some(result)
 }
 
-/// Certify original F1 fill geometry first; apply item clips independently
+/// Certify original F1 source geometry first; apply item clips independently
 /// in their declared immediate-parent space. Painter color/opacity are ignored.
 fn certify_authored_item(item: &Render2dItem, cell: Cell, visits: &mut usize) -> CellCertificate {
-    let Render2dPrimitive::Fill { shape, .. } = item.primitive() else {
+    if !matches!(
+        item.primitive(),
+        Render2dPrimitive::Fill { .. } | Render2dPrimitive::Image(_)
+    ) {
         return CellCertificate::Unknown;
-    };
+    }
     if !admit_query_work(visits, preimage_work(item.local_to_parent())) {
         return CellCertificate::Unknown;
     }
     let source = cell
         .preimage(item.local_to_parent())
-        .map(|local| certify_shape(shape, local, visits))
+        .map(|local| match item.primitive() {
+            Render2dPrimitive::Fill { shape, .. } => certify_shape(shape, local, visits),
+            Render2dPrimitive::Image(image) => {
+                let mut unknown = false;
+                for patch in image.patches() {
+                    // The same rectangle classifier as Fill, plus patch read,
+                    // union control and loop work. Even empty destinations pay.
+                    if !admit_query_work(visits, 96) {
+                        return CellCertificate::Unknown;
+                    }
+                    // Resolved destination geometry alone owns neutral support.
+                    // Source crop and immutable texel alpha never enter it.
+                    match certify_rectangle(patch.destination(), local) {
+                        CellCertificate::Inside => return CellCertificate::Inside,
+                        CellCertificate::Unknown => unknown = true,
+                        CellCertificate::Outside => {}
+                    }
+                }
+                if unknown {
+                    CellCertificate::Unknown
+                } else {
+                    CellCertificate::Outside
+                }
+            }
+            _ => CellCertificate::Unknown,
+        })
         .unwrap_or(CellCertificate::Unknown);
     certify_clipped(source, cell, item.clips(), visits)
 }

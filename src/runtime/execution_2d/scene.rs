@@ -74,23 +74,19 @@ pub(super) enum Event<'a> {
 #[derive(Debug)]
 pub(super) struct Plan<'a> {
     pub(super) events: Vec<Event<'a>>,
+    composition: &'a Render2dComposition,
+    retained_bytes: usize,
 }
 
-impl Plan<'_> {
+impl<'a> Plan<'a> {
+    pub(super) fn composition(&self) -> &'a Render2dComposition {
+        self.composition
+    }
+
     /// Renderer-owned retained occurrence storage. Original F1 payloads are
     /// borrowed; spare event/path capacities still belong to this plan.
-    pub(super) fn retained_bytes(&self) -> Option<usize> {
-        let mut bytes = self
-            .events
-            .capacity()
-            .checked_mul(size_of::<Event<'_>>())?
-            .checked_add(size_of::<Self>())?;
-        for event in &self.events {
-            if let Event::Item { path, .. } | Event::BeginGroup { path, .. } = event {
-                bytes = bytes.checked_add(path.capacity().checked_mul(size_of::<usize>())?)?;
-            }
-        }
-        Some(bytes)
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.retained_bytes
     }
 }
 
@@ -148,9 +144,19 @@ pub(super) struct OccurrenceCursor<'a> {
 }
 
 impl<'a> OccurrenceCursor<'a> {
+    /// Fixed frontier/path capacities coexist only while the cursor is alive.
+    pub(super) const fn storage_bytes() -> usize {
+        size_of::<Self>() + (MAX_DEPTH + 1) * (size_of::<CursorFrame<'a>>() + size_of::<usize>())
+    }
+
     pub(super) fn new(
         composition: &'a Render2dComposition,
+        admit: &mut impl FnMut(usize, &[usize]) -> Result<(), Render2dExecutionError>,
     ) -> Result<Self, Render2dExecutionError> {
+        // Two empty buffer reservations/capacity checks, the root-frame store,
+        // scalar/header initialization and return bookkeeping. There is no
+        // width-dependent initialization or copy in either empty allocation.
+        admit(128, &[])?;
         // One root frame plus at most MAX_DEPTH group frames. The extra path
         // slot retains the exact first over-depth owner without growing.
         let mut frontier = buffer(MAX_DEPTH + 1, &[], "scene cursor allocation failed")?;
@@ -169,15 +175,35 @@ impl<'a> OccurrenceCursor<'a> {
         })
     }
 
-    pub(super) fn next(&mut self) -> Result<Option<Occurrence<'a, '_>>, Render2dExecutionError> {
+    pub(super) fn next(
+        &mut self,
+        admit: &mut impl FnMut(usize, &[usize]) -> Result<(), Render2dExecutionError>,
+    ) -> Result<Option<Occurrence<'a, '_>>, Render2dExecutionError> {
         if self.failed {
             return Ok(None);
+        }
+        // Invocation/terminal checks and optional previous-item path pop.
+        // Rejection is terminal and changes no unpaid traversal state.
+        if let Err(error) = admit(32, &self.path) {
+            self.failed = true;
+            return Err(error);
         }
         if self.pop_item {
             self.path.pop();
             self.pop_item = false;
         }
         loop {
+            // Bound the frame lookup/exhaustion checks; either closing-frame
+            // and path pops/activity dispatch, or child index/load/increment,
+            // path push, visit/depth checks and one item/group dispatch plus
+            // a fixed-size frame store. Pay EACH iteration: next() can skip
+            // many inert authored entries without yielding an occurrence.
+            // Its owner is the current containing lexical path, before the
+            // next child's authored data or index has been inspected.
+            if let Err(error) = admit(64, &self.path) {
+                self.failed = true;
+                return Err(error);
+            }
             let Some(frame) = self.frontier.last_mut() else {
                 return Ok(None);
             };
@@ -266,9 +292,11 @@ pub(super) fn analyze(
     composition: &Render2dComposition,
 ) -> Result<Plan<'_>, Render2dExecutionError> {
     let event_count = {
-        let mut cursor = OccurrenceCursor::new(composition)?;
+        // Ordinary no-shadow scenes retain their existing entry/depth policy;
+        // this traversal does not impose the F3F numerical work ceiling.
+        let mut cursor = OccurrenceCursor::new(composition, &mut |_, _| Ok(()))?;
         let mut count = 0_usize;
-        while cursor.next()?.is_some() {
+        while cursor.next(&mut |_, _| Ok(()))?.is_some() {
             count = count
                 .checked_add(1)
                 .ok_or_else(|| limit(&[], "scene event count overflow"))?;
@@ -276,18 +304,27 @@ pub(super) fn analyze(
         count
     };
     let mut events = buffer(event_count, &[], "scene event allocation failed")?;
+    let mut retained_bytes = events
+        .capacity()
+        .checked_mul(size_of::<Event<'_>>())
+        .and_then(|bytes| bytes.checked_add(size_of::<Plan<'_>>()))
+        .ok_or_else(|| limit(&[], "scene retained storage overflow"))?;
     let mut frames = buffer(MAX_DEPTH + 1, &[], "scene affine frame allocation failed")?;
     frames.push(Affine::IDENTITY);
-    let mut cursor = OccurrenceCursor::new(composition)?;
-    while let Some(event) = cursor.next()? {
+    let mut cursor = OccurrenceCursor::new(composition, &mut |_, _| Ok(()))?;
+    while let Some(event) = cursor.next(&mut |_, _| Ok(()))? {
         match event {
             Occurrence::Item { path, item } => {
                 let parent_to_root = *frames.last().expect("root affine frame");
                 validate_clips(item.clips(), parent_to_root, path)?;
                 let to_root =
                     parent_to_root.compose(Affine::from_source(item.local_to_parent()), path)?;
+                let owned_path = copy_path(path)?;
+                retained_bytes = retained_bytes
+                    .checked_add(owned_path.capacity() * size_of::<usize>())
+                    .ok_or_else(|| limit(path, "scene retained storage overflow"))?;
                 events.push(Event::Item {
-                    path: copy_path(path)?,
+                    path: owned_path,
                     item,
                     parent_to_root,
                     to_root,
@@ -298,8 +335,12 @@ pub(super) fn analyze(
                 validate_clips(group.clips(), parent_to_root, path)?;
                 let to_root =
                     parent_to_root.compose(Affine::from_source(group.local_to_parent()), path)?;
+                let owned_path = copy_path(path)?;
+                retained_bytes = retained_bytes
+                    .checked_add(owned_path.capacity() * size_of::<usize>())
+                    .ok_or_else(|| limit(path, "scene retained storage overflow"))?;
                 events.push(Event::BeginGroup {
-                    path: copy_path(path)?,
+                    path: owned_path,
                     group,
                     parent_to_root,
                 });
@@ -313,7 +354,11 @@ pub(super) fn analyze(
     }
     debug_assert_eq!(frames.len(), 1);
     debug_assert_eq!(events.len(), event_count);
-    Ok(Plan { events })
+    Ok(Plan {
+        events,
+        composition,
+        retained_bytes,
+    })
 }
 
 #[cfg(test)]
@@ -564,19 +609,22 @@ mod tests {
             Vec::new(),
         );
         let tree = Render2dComposition::new(vec![shared.clone(), shared]).unwrap();
-        let mut cursor = OccurrenceCursor::new(&tree).unwrap();
+        let mut cursor = OccurrenceCursor::new(&tree, &mut |_, _| Ok(())).unwrap();
         for root in 0..2 {
             assert!(matches!(
-                cursor.next().unwrap(),
+                cursor.next(&mut |_, _| Ok(())).unwrap(),
                 Some(Occurrence::BeginGroup { path, .. }) if path == [root]
             ));
             assert!(matches!(
-                cursor.next().unwrap(),
+                cursor.next(&mut |_, _| Ok(())).unwrap(),
                 Some(Occurrence::Item { path, .. }) if path == [root, 0]
             ));
-            assert!(matches!(cursor.next().unwrap(), Some(Occurrence::EndGroup)));
+            assert!(matches!(
+                cursor.next(&mut |_, _| Ok(())).unwrap(),
+                Some(Occurrence::EndGroup)
+            ));
         }
-        assert!(cursor.next().unwrap().is_none());
+        assert!(cursor.next(&mut |_, _| Ok(())).unwrap().is_none());
         assert_eq!(cursor.visited, 4);
         let plan = analyze(&tree).unwrap();
         assert_eq!(plan.events.len(), 6);
@@ -600,14 +648,99 @@ mod tests {
         // Each of 1024 occurrences visits one branch plus 1023 inert leaves:
         // exactly the existing 1,048,576-entry ceiling with shared source data.
         let tree = Render2dComposition::new(vec![branch; 1024]).unwrap();
-        let mut cursor = OccurrenceCursor::new(&tree).unwrap();
-        assert!(cursor.next().unwrap().is_none());
+        let mut cursor = OccurrenceCursor::new(&tree, &mut |_, _| Ok(())).unwrap();
+        assert!(cursor.next(&mut |_, _| Ok(())).unwrap().is_none());
         assert_eq!(cursor.visited, MAX_VISITED_ENTRIES);
         assert_eq!(cursor.frontier.capacity(), MAX_DEPTH + 1);
         assert_eq!(cursor.path.capacity(), MAX_DEPTH + 1);
         let plan = analyze(&tree).unwrap();
         assert!(plan.events.is_empty());
         assert_eq!(plan.events.capacity(), 0);
+    }
+
+    #[test]
+    fn cursor_prepays_each_inert_step_and_rejection_cannot_resume() {
+        let leaf = group(Vec::new(), Render2dAffineTransform::IDENTITY, Vec::new());
+        let branch = group(
+            vec![leaf; 1000],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+        );
+        let tree = Render2dComposition::new(vec![branch]).unwrap();
+        // Setup, next-call bookkeeping, then exactly three scheduler steps:
+        // root group, first inert child, that child's closing frame.
+        let mut fuel = 128_usize + 32 + 3 * 64;
+        let mut admit = |cost, path: &[usize]| {
+            fuel = fuel
+                .checked_sub(cost)
+                .ok_or_else(|| limit(path, "test cursor work exhausted"))?;
+            Ok(())
+        };
+        let mut cursor = OccurrenceCursor::new(&tree, &mut admit).unwrap();
+        assert!(matches!(
+            cursor.next(&mut admit),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [0]
+        ));
+        assert_eq!(fuel, 0);
+        assert_eq!(cursor.visited, 2);
+        assert_eq!(cursor.path, [0]);
+        assert_eq!(cursor.frontier.last().unwrap().next, 1);
+        // Even a different admission callback cannot revive this rejected
+        // cursor or silently give its partially consumed work a fresh budget.
+        assert!(cursor.next(&mut |_, _| Ok(())).unwrap().is_none());
+        assert_eq!(cursor.visited, 2);
+        let mut fresh = OccurrenceCursor::new(&tree, &mut |_, _| Ok(())).unwrap();
+        assert!(fresh.next(&mut |_, _| Ok(())).unwrap().is_none());
+        assert_eq!(fresh.visited, 1001);
+    }
+
+    #[test]
+    fn cursor_setup_rejects_before_frontier_allocation() {
+        let tree = Render2dComposition::new(Vec::<Render2dEntry>::new()).unwrap();
+        let mut calls = 0;
+        assert!(matches!(
+            OccurrenceCursor::new(&tree, &mut |cost, path| {
+                calls += 1;
+                assert_eq!(cost, 128);
+                Err(limit(path, "test setup rejected"))
+            }),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path.is_empty()
+        ));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn plan_caches_exact_live_capacity_and_original_composition() {
+        let tree = Render2dComposition::new(vec![group(
+            vec![item(Render2dAffineTransform::IDENTITY)],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+        )])
+        .unwrap();
+        let plan = analyze(&tree).unwrap();
+        let path_bytes = plan
+            .events
+            .iter()
+            .map(|event| match event {
+                Event::Item { path, .. } | Event::BeginGroup { path, .. } => {
+                    path.capacity() * size_of::<usize>()
+                }
+                Event::EndGroup => 0,
+            })
+            .sum::<usize>();
+        assert_eq!(
+            plan.retained_bytes(),
+            size_of_val(&plan) + plan.events.capacity() * size_of::<Event<'_>>() + path_bytes
+        );
+        assert!(std::ptr::eq(plan.composition(), &tree));
     }
 
     #[test]
@@ -621,9 +754,9 @@ mod tests {
         let mut roots = vec![branch; 1024];
         roots.push(leaf);
         let tree = Render2dComposition::new(roots).unwrap();
-        let mut cursor = OccurrenceCursor::new(&tree).unwrap();
+        let mut cursor = OccurrenceCursor::new(&tree, &mut |_, _| Ok(())).unwrap();
         assert!(matches!(
-            cursor.next(),
+            cursor.next(&mut |_, _| Ok(())),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path),
@@ -632,7 +765,7 @@ mod tests {
         ));
         assert_eq!(cursor.visited, MAX_VISITED_ENTRIES + 1);
         // A failed traversal cannot resume into unadmitted authored entries.
-        assert!(cursor.next().unwrap().is_none());
+        assert!(cursor.next(&mut |_, _| Ok(())).unwrap().is_none());
     }
 
     #[test]

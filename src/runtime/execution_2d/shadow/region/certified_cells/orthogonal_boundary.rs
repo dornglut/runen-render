@@ -1,4 +1,4 @@
-//! Source-derived exposed boundaries for orthogonal F1 fill arrangements.
+//! Source-derived exposed boundaries for orthogonal F1 source arrangements.
 //!
 //! Event coordinates come only from authored geometry. Original F1 membership
 //! determines each open arrangement cell; adjacent unequal cells expose the
@@ -76,12 +76,7 @@ impl Events {
         fuel: &mut usize,
     ) -> Result<(), AreaQueryError> {
         if let Some(rect) = shape.as_rect() {
-            charge(fuel, 64).ok_or(AreaQueryError::Resource)?;
-            let x1 = exact_add(rect.x(), rect.width()).ok_or(AreaQueryError::Precision)?;
-            let y1 = exact_add(rect.y(), rect.height()).ok_or(AreaQueryError::Precision)?;
-            self.point([rect.x(), rect.y()], transforms, fuel)?;
-            self.point([x1, y1], transforms, fuel)?;
-            return Ok(());
+            return self.rectangle(rect, transforms, fuel);
         }
         let path = shape.as_path().ok_or(AreaQueryError::Unsupported)?;
         charge(
@@ -136,6 +131,20 @@ impl Events {
         Ok(())
     }
 
+    fn rectangle(
+        &mut self,
+        rect: Render2dRect,
+        transforms: &[Render2dAffineTransform],
+        fuel: &mut usize,
+    ) -> Result<(), AreaQueryError> {
+        charge(fuel, 64).ok_or(AreaQueryError::Resource)?;
+        let x1 = exact_add(rect.x(), rect.width()).ok_or(AreaQueryError::Precision)?;
+        let y1 = exact_add(rect.y(), rect.height()).ok_or(AreaQueryError::Precision)?;
+        self.point([rect.x(), rect.y()], transforms, fuel)?;
+        self.point([x1, y1], transforms, fuel)?;
+        Ok(())
+    }
+
     fn clips(
         &mut self,
         clips: &[Render2dClip],
@@ -163,14 +172,31 @@ impl Events {
         match &region.kind {
             Kind::Source(_) => {
                 let item = region.semantic_item.ok_or(AreaQueryError::Unsupported)?;
-                let Render2dPrimitive::Fill { shape, .. } = item.primitive() else {
+                if !matches!(
+                    item.primitive(),
+                    Render2dPrimitive::Fill { .. } | Render2dPrimitive::Image(_)
+                ) {
                     return Err(AreaQueryError::Unsupported);
-                };
+                }
                 if transforms.len() == transforms.capacity() {
                     return Err(AreaQueryError::Resource);
                 }
                 transforms.push(item.local_to_parent());
-                self.shape(shape, transforms, fuel)?;
+                match item.primitive() {
+                    Render2dPrimitive::Fill { shape, .. } => self.shape(shape, transforms, fuel)?,
+                    Render2dPrimitive::Image(image) => {
+                        for patch in image.patches() {
+                            charge(fuel, 32).ok_or(AreaQueryError::Resource)?;
+                            // F1 neutral geometry is the resolved destination,
+                            // including a positive destination with empty crop.
+                            let rect = patch.destination();
+                            if !rect.is_empty() {
+                                self.rectangle(rect, transforms, fuel)?;
+                            }
+                        }
+                    }
+                    _ => return Err(AreaQueryError::Unsupported),
+                }
                 transforms.pop();
                 self.clips(item.clips(), transforms, fuel)
             }
