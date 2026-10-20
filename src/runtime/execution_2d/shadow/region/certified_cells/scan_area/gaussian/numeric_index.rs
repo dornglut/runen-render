@@ -76,6 +76,7 @@ impl<const N: usize> Index<N> {
         Err(AreaQueryError::Resource)
     }
 
+    #[cfg(test)]
     pub(super) fn bytes(&self) -> usize {
         self.slots.capacity() * size_of::<usize>() + self.keys.capacity() * size_of::<[u64; N]>()
     }

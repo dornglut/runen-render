@@ -156,6 +156,7 @@ pub(super) fn visit(
                 y: local,
                 first,
                 count: runs.len() - first,
+                #[cfg(test)]
                 mass: None,
             });
         }

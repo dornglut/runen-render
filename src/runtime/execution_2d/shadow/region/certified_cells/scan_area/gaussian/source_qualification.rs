@@ -147,6 +147,14 @@ fn prepare_fixture(variant: Variant) -> super::plane::PreparedPlane {
                 .unwrap(),
         )
         .unwrap();
+    // Reporting belongs to this explicit conformance caller, never preparation.
+    let node_visits = field.query_node_visits();
+    let products = node_visits.checked_mul(26).unwrap();
+    let limb_products = products.checked_mul(16).unwrap();
+    println!(
+        "CURRENT_SOURCE_COMPLETE remaining={fuel} retained_field_bytes={} GPU_node_visits={node_visits} Q48_products_upper={products} u32_limb_products_upper={limb_products}",
+        field.retained_bytes().unwrap()
+    );
     // Returning an owned plane enforces release of ALL original-source and
     // numeric preparation, including the borrowed ScenePlan and composition.
     // Its type cannot retain a hidden F1 source lifetime through GPU execution.

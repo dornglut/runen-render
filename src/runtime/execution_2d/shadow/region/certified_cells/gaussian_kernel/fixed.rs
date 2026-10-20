@@ -8,17 +8,22 @@
 //! the remaining integer <=2^24 exactly and scale by exact 2^-24. Its one-sided
 //! conversion error is [0,2^-24), not an assumed WGSL rounding mode.
 
-use super::{AreaQueryError, Arithmetic, DEGREE, GaussianKernel, HALF_WIDTH, Interval, PATCHES};
+use super::{AreaQueryError, Arithmetic, DEGREE, PATCHES};
+#[cfg(test)]
+use super::{GaussianKernel, HALF_WIDTH, Interval};
 
 pub(in super::super) mod batch;
+#[cfg(test)]
 mod gpu;
 mod precomputed;
 
 const SCALE: f64 = 281_474_976_710_656.0;
 const EPSILON: f64 = 1.0 / SCALE;
 const ONE: i64 = 1_i64 << 48;
+#[cfg(test)]
 const HALF: i64 = ONE / 2;
 const MAX_CASES: usize = 4096;
+#[cfg(test)]
 const INPUT_BYTES: usize = 128;
 const OUTPUT_BYTES: usize = 16;
 
@@ -27,6 +32,7 @@ struct FixedPolynomial {
     coefficients: [i64; DEGREE + 1],
     error: f64,
 }
+#[cfg(test)]
 const ZERO_POLYNOMIAL: FixedPolynomial = FixedPolynomial {
     coefficients: [0; DEGREE + 1],
     error: 0.0,
@@ -59,6 +65,7 @@ fn emit_precomputed_fixed_kernel() {
     println!("];\nEND_FIXED_DATA");
 }
 
+#[cfg(test)]
 fn quantize(value: f64, arithmetic: &mut Arithmetic<'_>) -> Result<i64, AreaQueryError> {
     // Guard, exact binary scaling, nearest integer, exact guarded conversion,
     // indexing/bookkeeping. Rounded result has magnitude <=2^52, so both the
@@ -86,6 +93,7 @@ impl FixedKernel {
             polynomials: precomputed::DATA,
         })
     }
+    #[cfg(test)]
     pub(in super::super) fn new(
         kernel: &GaussianKernel,
         fuel: &mut usize,
@@ -142,6 +150,7 @@ impl FixedKernel {
         Ok(result)
     }
 
+    #[cfg(test)]
     fn point(
         &self,
         z: f64,
@@ -240,6 +249,7 @@ fn compiled_fixed_kernel_is_bit_identical_to_complete_interval_construction() {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(test)]
 struct Case {
     // 0: exact wide multiply/truncate, 1: Horner, 2/3: positive/negative CDF,
     // 4: integer reduction of base plus thirteen signed Q48 terms.
@@ -248,12 +258,14 @@ struct Case {
     b: i64,
     coefficients: [i64; DEGREE + 1],
 }
+#[cfg(test)]
 fn wide_product(a: i64, b: i64) -> i64 {
     // Signed division truncates toward zero, matching GPU magnitude-product
     // truncation followed by sign application. No Rust limb implementation is
     // reused by the GPU comparison oracle.
     i64::try_from((i128::from(a) * i128::from(b)) / i128::from(ONE)).unwrap()
 }
+#[cfg(test)]
 impl Case {
     fn validate(&self, fuel: &mut usize) -> Result<(), AreaQueryError> {
         let mut arithmetic = Arithmetic { fuel };
@@ -324,18 +336,21 @@ impl Case {
         result
     }
 }
+#[cfg(test)]
 fn q24_bits(value: i64) -> u32 {
     let value = value.clamp(0, ONE) as u64;
     let integer = (value >> 24) as u32;
     (integer as f32 * (1.0_f32 / 16_777_216.0)).to_bits()
 }
 
+#[cfg(test)]
 struct Payload {
     bytes: Vec<u8>,
     count: u32,
     output_bytes: usize,
     conservative_data_bytes: usize,
 }
+#[cfg(test)]
 impl Payload {
     fn new(cases: &[Case], fuel: &mut usize, max_bytes: usize) -> Result<Self, AreaQueryError> {
         let mut arithmetic = Arithmetic { fuel };

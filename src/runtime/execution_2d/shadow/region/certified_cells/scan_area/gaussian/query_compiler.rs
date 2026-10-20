@@ -40,7 +40,9 @@ pub(super) struct Compiler<'a> {
     pub(super) nodes: Vec<batch::Node>,
     cuts: Vec<f64>,
     pending: Vec<Interval>,
+    #[cfg(test)]
     pub(super) quadrature: usize,
+    #[cfg(test)]
     pub(super) slivers: usize,
 }
 
@@ -117,7 +119,9 @@ impl<'a> Compiler<'a> {
             nodes,
             cuts,
             pending,
+            #[cfg(test)]
             quadrature: 0,
+            #[cfg(test)]
             slivers: 0,
         })
     }
@@ -270,7 +274,10 @@ impl<'a> Compiler<'a> {
                 });
             }
         }
-        self.quadrature += 1;
+        #[cfg(test)]
+        {
+            self.quadrature += 1;
+        }
         Ok(())
     }
 
@@ -383,7 +390,10 @@ impl<'a> Compiler<'a> {
                 let width = checked(checked(iv(y.hi).sub(iv(y.lo)))?.div(iv(self.sigma)))?.hi;
                 let uncertain = checked(Interval::new(0.0, width))?;
                 known = checked(known.add(checked(uncertain.mul(iv(demand.sign)))?))?;
-                self.slivers += 1;
+                #[cfg(test)]
+                {
+                    self.slivers += 1;
+                }
                 continue;
             }
             // A root-free connected panel remains in the same branch as its

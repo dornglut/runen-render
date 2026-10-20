@@ -204,6 +204,7 @@ impl<'a> QueryPanel<'a> {
         self.normalization
     }
 
+    #[cfg(test)]
     pub(in super::super) fn node(
         &self,
         node: f64,
@@ -243,6 +244,7 @@ impl<'a> QueryPanel<'a> {
         })
     }
 
+    #[cfg(test)]
     pub(in super::super) fn normalize_node(
         &self,
         raw: RawCoordinates,

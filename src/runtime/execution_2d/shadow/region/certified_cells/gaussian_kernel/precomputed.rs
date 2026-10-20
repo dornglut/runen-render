@@ -4,6 +4,7 @@ pub(super) const NORMALIZATION: Interval = Interval {
     lo: f64::from_bits(4612811605085194079),
     hi: f64::from_bits(4612811605085194881),
 };
+#[cfg(test)]
 pub(super) const REMAINDER: f64 = f64::from_bits(4421083568775373667);
 pub(super) const DATA: [Patch; 16] = [
     Patch {
@@ -26,6 +27,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421108567470893246),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4607142923227243077),
@@ -120,6 +122,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421132135887214256),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4606833129887792440),
@@ -214,6 +217,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421153164131307129),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4606245279354160934),
@@ -308,6 +312,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421174850720834894),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4605437487303959852),
@@ -402,6 +407,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421196433460689957),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4604484787116632796),
@@ -496,6 +502,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421219432939974401),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4603467693979861516),
@@ -590,6 +597,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421235737692456974),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4602243572741733983),
@@ -684,6 +692,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421262139868719899),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4600373592002533906),
@@ -778,6 +787,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421292627869795294),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4598730533858807947),
@@ -872,6 +882,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421320424046711680),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4596541522229231218),
@@ -966,6 +977,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421351735292739895),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4594355926846065760),
@@ -1060,6 +1072,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421454995539214738),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4591712524950108080),
@@ -1154,6 +1167,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421524168050972389),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4589286680303653554),
@@ -1248,6 +1262,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421613790318396098),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4586014085980452750),
@@ -1342,6 +1357,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4421823154370964746),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4582813279591732700),
@@ -1436,6 +1452,7 @@ pub(super) const DATA: [Patch; 16] = [
             ],
             error: f64::from_bits(4422705506392029377),
         },
+        #[cfg(test)]
         density: Polynomial {
             coefficients: [
                 f64::from_bits(4579600211082108176),

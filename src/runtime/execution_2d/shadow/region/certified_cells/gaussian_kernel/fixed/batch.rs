@@ -1,4 +1,4 @@
-//! Test-only complete signed reductions over a shared certified kernel table.
+//! Complete signed reductions over a shared certified kernel table.
 //! No geometry/cutoff partition, quadrature error or source membership lives here.
 use super::*;
 
@@ -26,10 +26,12 @@ struct RunCertificate {
     error: f64,
 }
 pub(in super::super::super) struct Batch {
-    payload: Payload,
+    data: EncodedQueries,
     pub(in super::super::super) errors: Vec<f64>,
+    #[cfg(test)]
     nodes: usize,
-    gpu_node_visits: usize,
+    #[cfg(test)]
+    conservative_data_bytes: usize,
 }
 
 fn pack_scalar(value: f64, fuel: &mut usize) -> Result<i64, AreaQueryError> {
@@ -75,20 +77,20 @@ impl Batch {
         // Also reserve bounded descriptors/handles, two six-vertex F3E draws
         // and the four-word extent uniform. Compiler/backend work has its
         // existing separate sibling authority.
-        self.payload
+        self.data
             .bytes
             .len()
             .checked_add(samples.checked_mul(4).ok_or(AreaQueryError::Resource)?)
             // A literal-only field retains one initialized 16-byte binding,
             // rather than inventing a numerical query or compute operation.
-            .and_then(|v| v.checked_add(if self.payload.count == 0 { 16 } else { 0 }))
+            .and_then(|v| v.checked_add(if self.data.count == 0 { 16 } else { 0 }))
             .and_then(|v| v.checked_mul(2))
             .and_then(|v| v.checked_add(4096 + 1024 + 768 + 32))
             .ok_or(AreaQueryError::Resource)
     }
 
-    pub(in super::super::super) fn field_data(&self) -> (&[u8], u32) {
-        (&self.payload.bytes, self.payload.count)
+    pub(in super::super::super) fn into_parts(self) -> (EncodedQueries, Vec<f64>) {
+        (self.data, self.errors)
     }
 
     pub(in super::super::super) fn new(
@@ -109,15 +111,16 @@ impl Batch {
                 return Err(AreaQueryError::Resource);
             }
             return Ok(Self {
-                payload: Payload {
+                data: EncodedQueries {
                     bytes: Vec::new(),
                     count: 0,
-                    output_bytes: 0,
-                    conservative_data_bytes: required,
+                    node_visits: 0,
                 },
                 errors: Vec::new(),
+                #[cfg(test)]
                 nodes: 0,
-                gpu_node_visits: 0,
+                #[cfg(test)]
+                conservative_data_bytes: required,
             });
         }
         if queries.len() > MAX_CASES
@@ -298,31 +301,49 @@ impl Batch {
             return Err(AreaQueryError::Precision);
         }
         Ok(Self {
-            payload: Payload {
+            data: EncodedQueries {
                 bytes,
                 count: queries.len() as u32,
-                output_bytes: output,
-                conservative_data_bytes: required,
+                node_visits: gpu_node_visits,
             },
             errors,
+            #[cfg(test)]
             nodes: nodes.len(),
-            gpu_node_visits,
+            #[cfg(test)]
+            conservative_data_bytes: required,
         })
     }
+}
+
+/// Owned numerical query words and their checked expanded execution extent.
+/// No source, certificates, GPU handles or arithmetic-oracle input survives.
+pub(in super::super::super) struct EncodedQueries {
+    bytes: Vec<u8>,
+    count: u32,
+    // Sum of each referencing query's run length. Sharing uploaded nodes does
+    // not share shader evaluation; this count belongs to execution admission.
+    node_visits: usize,
+}
+
+impl EncodedQueries {
+    pub(in super::super::super) fn field_data(&self) -> (&[u8], u32) {
+        (&self.bytes, self.count)
+    }
+
+    pub(in super::super::super) fn node_visits(&self) -> usize {
+        self.node_visits
+    }
+
+    pub(in super::super::super) fn retained_bytes(&self) -> usize {
+        self.bytes.capacity()
+    }
+
+    #[cfg(test)]
     pub(in super::super::super) fn execute_proof(&self) -> Vec<f32> {
-        if self.payload.count == 0 {
+        if self.count == 0 {
             return Vec::new();
         }
-        println!(
-            "GAUSSIAN_DISPATCH queries={} workgroups={} unique_nodes={} GPU_node_visits={} Q48_products_upper={} u32_limb_products_upper={}",
-            self.errors.len(),
-            self.errors.len().div_ceil(32),
-            self.nodes,
-            self.gpu_node_visits,
-            self.gpu_node_visits as u64 * 26,
-            self.gpu_node_visits as u64 * 26 * 16,
-        );
-        gpu::execute(&self.payload, source())
+        gpu::execute(&self.bytes, self.count, source())
             .as_chunks::<16>()
             .0
             .iter()
@@ -331,11 +352,13 @@ impl Batch {
     }
 }
 
+#[cfg(test)]
 fn source() -> runen_gpu::GpuAdmittedProgramSource {
     crate::runtime::program::retained_gaussian_coverage_source()
         .expect("qualified Gaussian program must compile through the maintained artifact bridge")
 }
 
+#[cfg(test)]
 fn oracle_kernel(fixed: &FixedKernel, z: i64, density: bool) -> i64 {
     let magnitude = z.unsigned_abs();
     if magnitude >= (3 * ONE) as u64 {
@@ -362,9 +385,10 @@ fn literal_only_gaussian_batch_has_no_query_payload_or_orphaned_runs() {
     let before = fuel;
     let batch = Batch::new(&fixed, &[], &[], &[], &mut fuel, usize::MAX).unwrap();
     assert_eq!(before - fuel, 512);
-    assert_eq!(batch.field_data(), (&[][..], 0));
+    assert_eq!(batch.data.field_data(), (&[][..], 0));
+    assert_eq!(batch.data.node_visits(), 0);
     assert!(batch.errors.is_empty());
-    assert!(batch.execute_proof().is_empty());
+    assert!(batch.data.execute_proof().is_empty());
     // No allocation or partial retention can precede the caller's host lease
     // or CPU work admission, including the otherwise allocation-free case.
     assert!(matches!(
@@ -401,6 +425,39 @@ fn literal_only_gaussian_batch_has_no_query_payload_or_orphaned_runs() {
 }
 
 #[test]
+fn encoded_query_execution_extent_counts_repeated_and_empty_runs() {
+    let mut fuel = super::super::MAX_WORK;
+    let fixed = FixedKernel::compiled(&mut fuel, usize::MAX).unwrap();
+    let nodes: Vec<_> = (0..3)
+        .map(|index| Node {
+            z: [f64::from(index) * 0.125, 0.5],
+            z_error: [0.0; 2],
+            weight: 0.125,
+            weight_error: 0.0,
+        })
+        .collect();
+    let runs = [0..2, 2..3, 3..3];
+    let queries: Vec<_> = [(0, false), (1, false), (0, true), (2, false), (0, false)]
+        .into_iter()
+        .map(|(run, negate)| Query {
+            base: 0.0,
+            base_error: 0.0,
+            run,
+            negate,
+        })
+        .collect();
+    let batch = Batch::new(&fixed, &nodes, &runs, &queries, &mut fuel, 4 * 1024 * 1024).unwrap();
+    let (data, errors) = batch.into_parts();
+    // Three two-node evaluations plus one one-node evaluation; the empty run
+    // contributes none. Negation changes no work, and reuse creates no copy.
+    assert_eq!(data.field_data().1, 5);
+    assert_eq!(errors.len(), 5);
+    assert_eq!(data.node_visits(), 7);
+    assert!(data.node_visits() > nodes.len());
+    assert!(data.node_visits() > queries.len());
+}
+
+#[test]
 fn shared_gaussian_batch_shader_and_admission_guards() {
     let mut fuel = super::super::MAX_WORK;
     let kernel = GaussianKernel::new(&mut fuel, super::super::MAX_BYTES).unwrap();
@@ -430,6 +487,17 @@ fn shared_gaussian_batch_shader_and_admission_guards() {
     .unwrap();
     assert_eq!(batch.nodes, 1);
     assert!(batch.errors[0] < 6e-8);
+    // Consuming the certificate owner preserves the admitted allocation; the
+    // physical data owns only words/count while errors remain independent.
+    let pointer = batch.data.bytes.as_ptr();
+    let byte_count = batch.data.bytes.len();
+    let (data, errors) = batch.into_parts();
+    assert_eq!(data.field_data().1, 1);
+    assert_eq!(data.field_data().0.as_ptr(), pointer);
+    assert_eq!(data.field_data().0.len(), byte_count);
+    assert_eq!(data.retained_bytes(), byte_count);
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0] < 6e-8);
     let unrelated = Query {
         base: 0.0,
         base_error: 0.0,
@@ -624,7 +692,7 @@ fn shared_gaussian_batch_matches_independent_i128_queries_on_vulkan() {
     let runs = [0..nodes.len(), nodes.len()..nodes.len()];
     let batch = Batch::new(&fixed, &nodes, &runs, &queries, &mut fuel, 4 * 1024 * 1024).unwrap();
     let work = before - fuel;
-    let bytes = gpu::execute(&batch.payload, source());
+    let bytes = gpu::execute(&batch.data.bytes, batch.data.count, source());
     for (query, result) in queries.iter().zip(bytes.as_chunks::<16>().0) {
         let mut sum = 0_i64;
         for node in &nodes[runs[query.run].clone()] {
@@ -646,11 +714,12 @@ fn shared_gaussian_batch_matches_independent_i128_queries_on_vulkan() {
         );
     }
     let evaluated_nodes: usize = queries.iter().map(|query| runs[query.run].len()).sum();
+    assert_eq!(batch.data.node_visits(), evaluated_nodes);
     println!(
         "ACTUAL VULKAN shared Gaussian queries={} nodes={} preparation_work={work} conservative_data_bytes={} maximum_error={} all_Q48_and_completed_Q24_bits_exact; GPU_upper_Q48_products={} u32_limb_products={}; no geometry/quadrature/scene claim",
         queries.len(),
         batch.nodes,
-        batch.payload.conservative_data_bytes,
+        batch.conservative_data_bytes,
         batch.errors.iter().copied().fold(0.0, f64::max),
         26 * evaluated_nodes,
         416 * evaluated_nodes

@@ -370,6 +370,7 @@ impl ScalarMap {
         Ok(result)
     }
 
+    #[cfg(test)]
     fn evaluate(
         &self,
         input: UnitInput,
@@ -406,6 +407,7 @@ impl ScalarMap {
         self.evaluate_raw(panel.node(node, fuel)?, Components::All, fuel)
     }
 
+    #[cfg(test)]
     pub(super) fn at_node(
         &self,
         panel: Panel,
@@ -414,6 +416,7 @@ impl ScalarMap {
     ) -> Result<Coordinates, AreaQueryError> {
         self.evaluate(panel.node(node, fuel)?, Components::All, fuel)
     }
+    #[cfg(test)]
     pub(super) fn at_exact(
         &self,
         u: f64,

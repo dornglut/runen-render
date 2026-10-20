@@ -361,6 +361,8 @@ pub struct Render2dGroup {
     clips: Arc<[Render2dClip]>,
     opacity: Render2dOpacity,
     shadows: Arc<[Render2dDropShadow]>,
+    // Immutable authored structure only, never paint visibility or geometry.
+    structurally_active: bool,
 }
 
 impl Render2dGroup {
@@ -376,13 +378,25 @@ impl Render2dGroup {
         let entries: Vec<Render2dEntry> = entries.into();
         let clips: Vec<Render2dClip> = clips.into();
         let shadows: Vec<Render2dDropShadow> = shadows.into();
+        let structurally_active = !shadows.is_empty()
+            || entries.iter().any(|entry| match entry {
+                Render2dEntry::Item(_) => true,
+                Render2dEntry::Group(group) => group.is_structurally_active(),
+            });
         Self {
             entries: entries.into(),
             local_to_parent,
             clips: clips.into(),
             opacity,
             shadows: shadows.into(),
+            structurally_active,
         }
+    }
+
+    /// Whether this immutable subtree contains an authored item or effect.
+    /// Empty geometry and transparent colors/opacities do not alter this fact.
+    pub(crate) const fn is_structurally_active(&self) -> bool {
+        self.structurally_active
     }
 
     /// Returns child entries in exact painter order.

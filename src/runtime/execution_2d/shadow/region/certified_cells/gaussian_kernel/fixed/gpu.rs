@@ -1,4 +1,5 @@
-//! Actual RunenShader -> public RunenGPU arithmetic test, not a coverage renderer.
+//! Actual RunenShader -> public RunenGPU arithmetic conformance.
+#![cfg(test)]
 use super::*;
 use runen_gpu::*;
 use runen_shader::*;
@@ -135,7 +136,7 @@ fn cases(fixed: &FixedKernel, fuel: &mut usize) -> Vec<Case> {
     cases
 }
 
-pub(super) fn execute(payload: &Payload, program: GpuAdmittedProgramSource) -> Vec<u8> {
+pub(super) fn execute(bytes: &[u8], count: u32, program: GpuAdmittedProgramSource) -> Vec<u8> {
     let mut requirements = GpuCapabilityRequirements::new();
     for feature in [GpuCapabilityFeature::Compute, GpuCapabilityFeature::Copy] {
         requirements
@@ -149,7 +150,7 @@ pub(super) fn execute(payload: &Payload, program: GpuAdmittedProgramSource) -> V
     let context = pollster::block_on(GpuContext::request(descriptor))
         .expect("real Vulkan software adapter required");
     let mut resources = GpuResourceScope::new();
-    let (output, operations) = prepare(payload, program, &context, &mut resources);
+    let (output, operations) = prepare(bytes, count, program, &context, &mut resources);
     let readback =
         GpuReadbackOperation::ordinary(GpuBufferRegion::whole(&output).unwrap().into()).unwrap();
     let readback_id = readback.id();
@@ -203,7 +204,7 @@ fn fixed_gaussian_q48_matches_exact_integer_oracle_on_vulkan() {
     let before = fuel;
     let payload = Payload::new(&cases, &mut fuel, 4 * 1024 * 1024).unwrap();
     let payload_work = before - fuel;
-    let bytes = execute(&payload, source());
+    let bytes = execute(&payload.bytes, payload.count, source());
     assert_eq!(bytes.len(), payload.output_bytes);
     for (index, (case, result)) in cases
         .iter()
@@ -245,15 +246,17 @@ fn fixed_gaussian_q48_matches_exact_integer_oracle_on_vulkan() {
 }
 
 pub(super) fn prepare(
-    payload: &Payload,
+    bytes: &[u8],
+    count: u32,
     program: GpuAdmittedProgramSource,
     context: &GpuContext,
     resources: &mut GpuResourceScope,
 ) -> (GpuBufferHandle, Vec<GpuWorkOperation>) {
+    let output_bytes = count as usize * OUTPUT_BYTES;
     let device = context.device_facts();
     let limits = device.workload_budget().limits();
     let native = device.device_limits().values();
-    for bytes in [payload.bytes.len(), payload.output_bytes] {
+    for bytes in [bytes.len(), output_bytes] {
         assert!((bytes as u64) <= limits.max_buffer_size().min(native.max_buffer_size()));
         assert!(
             (bytes as u64)
@@ -262,7 +265,7 @@ pub(super) fn prepare(
                     .min(native.max_storage_buffer_binding_size())
         );
     }
-    let groups = payload.count.div_ceil(32);
+    let groups = count.div_ceil(32);
     assert!(
         groups
             <= limits
@@ -271,18 +274,16 @@ pub(super) fn prepare(
     );
     let pipeline = GpuComputePipelineDescriptor::ordinary(program, "main").unwrap();
 
-    let prepared = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
-        "fixed arithmetic input",
-        &payload.bytes,
-    )
-    .unwrap();
+    let prepared =
+        PreparedGpuData::<TransferData>::ordinary_pod_transfer("fixed arithmetic input", bytes)
+            .unwrap();
     let input = resources
         .buffer(
             GpuBufferDescriptor::ordinary_owned(
                 "fixed arithmetic input",
                 GpuResourceLifetime::Transient,
                 GpuReconstruction::SourceBacked,
-                payload.bytes.len() as u64,
+                bytes.len() as u64,
                 [GpuBufferUsage::Storage, GpuBufferUsage::CopyDestination],
                 GpuBufferInitialization::Prepared(prepared),
             )
@@ -295,7 +296,7 @@ pub(super) fn prepare(
                 "fixed arithmetic output",
                 GpuResourceLifetime::Transient,
                 GpuReconstruction::SourceBacked,
-                payload.output_bytes as u64,
+                output_bytes as u64,
                 [
                     GpuBufferUsage::Storage,
                     GpuBufferUsage::CopySource,

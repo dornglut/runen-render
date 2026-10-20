@@ -25,13 +25,18 @@ use super::{AreaQueryError, Interval};
 
 const PATCHES: usize = 16;
 const DEGREE: usize = 12;
+#[cfg(test)]
 const SERIES_TERMS: usize = 41;
 const HALF_WIDTH: f64 = 3.0 / 32.0;
+#[cfg(test)]
 const PATCH_WIDTH: f64 = 3.0 / 16.0;
 const MAX_WORK: usize = 16_777_216;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(test)]
 const UNIT_ROUNDOFF: f64 = f64::from_bits((1023_u64 - 53) << 52);
+#[cfg(test)]
 const DELTA_ROUNDOFF: f64 = f64::from_bits((1023_u64 - 56) << 52);
+#[cfg(test)]
 const UNDERFLOW_ALLOWANCE: f64 = f64::from_bits(32);
 // A range bound, not a caller quality allowance: the added normalized
 // uncertainty is at most 2^-30/Z < 4e-10. Final integration must still
@@ -76,6 +81,7 @@ impl Arithmetic<'_> {
         a.sub(b).ok_or(AreaQueryError::Precision)
     }
 
+    #[cfg(test)]
     fn mul(&mut self, a: Interval, b: Interval) -> Result<Interval, AreaQueryError> {
         self.charge(96)?;
         a.mul(b).ok_or(AreaQueryError::Precision)
@@ -91,6 +97,7 @@ impl Arithmetic<'_> {
 struct Patch {
     center: f64,
     cdf: Polynomial,
+    #[cfg(test)]
     density: Polynomial,
     // Retained only for the private, separately evaluated interval test
     // oracle. Actual admission/retained_bytes includes this storage too.
@@ -117,6 +124,7 @@ impl Polynomial {
     /// 32*2^-1074 allowance is therefore conservative even at cancellation.
     /// Coefficients are guarded by |c_i|<=16; Horner intermediates stay
     /// below 16/(1-h)<18 (up to the bounded rounding), excluding overflow.
+    #[cfg(test)]
     fn compile(
         original: [Interval; DEGREE + 1],
         gamma: Interval,
@@ -203,7 +211,7 @@ fn emit_precomputed_gaussian_kernel() {
         kernel.normalization.hi.to_bits()
     );
     println!(
-        "pub(super) const REMAINDER: f64 = f64::from_bits({});",
+        "#[cfg(test)] pub(super) const REMAINDER: f64 = f64::from_bits({});",
         kernel.remainder.to_bits()
     );
     println!("pub(super) const DATA: [Patch; 16] = [");
@@ -213,6 +221,9 @@ fn emit_precomputed_gaussian_kernel() {
             patch.center.to_bits()
         );
         for (name, polynomial) in [("cdf", patch.cdf), ("density", patch.density)] {
+            if name == "density" {
+                println!("#[cfg(test)]");
+            }
             println!("{name}: Polynomial {{ coefficients: [");
             for c in polynomial.coefficients {
                 println!("f64::from_bits({}),", c.to_bits());
@@ -239,6 +250,7 @@ fn emit_precomputed_gaussian_kernel() {
 /// z*z/2 <= 9/2. Truncation after n=40 is therefore enclosed by term 41.
 /// For G the additional factor is z/(2*41+1), bounded by 3/83. The exact
 /// series are evaluated independently of the patch recurrence.
+#[cfg(test)]
 fn series(
     z: f64,
     exp_tail: f64,
@@ -325,6 +337,7 @@ impl GaussianKernel {
         arithmetic.div(width, self.normalization).map(Some)
     }
 
+    #[cfg(test)]
     pub(super) fn new(fuel: &mut usize, max_bytes: usize) -> Result<Self, AreaQueryError> {
         if *fuel > MAX_WORK || max_bytes > MAX_BYTES {
             return Err(AreaQueryError::Resource);
@@ -517,6 +530,7 @@ impl GaussianKernel {
         arithmetic.bounds(cdf.lo.max(0.0), cdf.hi.min(1.0))
     }
 
+    #[cfg(test)]
     fn density_point(
         &self,
         z: f64,
@@ -555,6 +569,7 @@ impl GaussianKernel {
     /// representative; no continuity at either finite cutoff is claimed.
     /// Interval ranges crossing a cutoff retain both zero and interior
     /// density. Monotonicity in |z| handles intervals crossing zero too.
+    #[cfg(test)]
     pub(super) fn density(
         &self,
         z: Interval,

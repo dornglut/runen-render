@@ -94,21 +94,15 @@ impl Plan<'_> {
     }
 }
 
-enum Pending<'a> {
-    Visit {
-        entry: &'a Render2dEntry,
-        path: Vec<usize>,
-    },
-    EndGroup,
-}
-
-enum RawEvent<'a> {
+/// A borrowed lexical occurrence, before any cumulative physical affine.
+/// Paths borrow the cursor and are valid until its next advance.
+pub(super) enum Occurrence<'a, 'path> {
     Item {
-        path: Vec<usize>,
+        path: &'path [usize],
         item: &'a Render2dItem,
     },
     BeginGroup {
-        path: Vec<usize>,
+        path: &'path [usize],
         group: &'a Render2dGroup,
     },
     EndGroup,
@@ -120,6 +114,135 @@ fn limit(path: &[usize], problem: &'static str) -> Render2dExecutionError {
         path: Some(path.to_vec()),
         detail: problem.to_owned(),
     }
+}
+
+fn buffer<T>(
+    capacity: usize,
+    path: &[usize],
+    problem: &'static str,
+) -> Result<Vec<T>, Render2dExecutionError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| limit(path, problem))?;
+    if values.capacity() > capacity {
+        return Err(limit(path, problem));
+    }
+    Ok(values)
+}
+
+struct CursorFrame<'a> {
+    entries: &'a [Render2dEntry],
+    next: usize,
+    closing: Option<&'a Render2dGroup>,
+}
+
+/// One child is scheduled at a time; neither width nor cloned subtree sharing
+/// increases the frontier. Inert descendants are still visited and admitted.
+pub(super) struct OccurrenceCursor<'a> {
+    frontier: Vec<CursorFrame<'a>>,
+    path: Vec<usize>,
+    pop_item: bool,
+    visited: usize,
+    failed: bool,
+}
+
+impl<'a> OccurrenceCursor<'a> {
+    pub(super) fn new(
+        composition: &'a Render2dComposition,
+    ) -> Result<Self, Render2dExecutionError> {
+        // One root frame plus at most MAX_DEPTH group frames. The extra path
+        // slot retains the exact first over-depth owner without growing.
+        let mut frontier = buffer(MAX_DEPTH + 1, &[], "scene cursor allocation failed")?;
+        let path = buffer(MAX_DEPTH + 1, &[], "scene cursor path allocation failed")?;
+        frontier.push(CursorFrame {
+            entries: composition.root_entries(),
+            next: 0,
+            closing: None,
+        });
+        Ok(Self {
+            frontier,
+            path,
+            pop_item: false,
+            visited: 0,
+            failed: false,
+        })
+    }
+
+    pub(super) fn next(&mut self) -> Result<Option<Occurrence<'a, '_>>, Render2dExecutionError> {
+        if self.failed {
+            return Ok(None);
+        }
+        if self.pop_item {
+            self.path.pop();
+            self.pop_item = false;
+        }
+        loop {
+            let Some(frame) = self.frontier.last_mut() else {
+                return Ok(None);
+            };
+            if frame.next == frame.entries.len() {
+                let closing = frame.closing;
+                self.frontier.pop();
+                if let Some(group) = closing {
+                    self.path.pop();
+                    if group.is_structurally_active() {
+                        return Ok(Some(Occurrence::EndGroup));
+                    }
+                }
+                continue;
+            }
+            let index = frame.next;
+            let entry = &frame.entries[index];
+            frame.next += 1;
+            self.path.push(index);
+            // A failed cursor is terminal, so the previous count is at most
+            // MAX_VISITED_ENTRIES and this increment cannot overflow.
+            self.visited += 1;
+            if self.visited > MAX_VISITED_ENTRIES {
+                self.failed = true;
+                return Err(limit(
+                    &self.path,
+                    "semantic entry count exceeds compiler budget",
+                ));
+            }
+            if self.path.len() > MAX_DEPTH {
+                self.failed = true;
+                return Err(limit(
+                    &self.path,
+                    "nested group depth exceeds compiler budget",
+                ));
+            }
+            match entry {
+                Render2dEntry::Item(item) => {
+                    self.pop_item = true;
+                    return Ok(Some(Occurrence::Item {
+                        path: &self.path,
+                        item,
+                    }));
+                }
+                Render2dEntry::Group(group) => {
+                    self.frontier.push(CursorFrame {
+                        entries: group.entries(),
+                        next: 0,
+                        closing: Some(group),
+                    });
+                    if group.is_structurally_active() {
+                        return Ok(Some(Occurrence::BeginGroup {
+                            path: &self.path,
+                            group,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn copy_path(path: &[usize]) -> Result<Vec<usize>, Render2dExecutionError> {
+    let mut owned = buffer(path.len(), path, "scene occurrence path allocation failed")?;
+    owned.extend_from_slice(path);
+    Ok(owned)
 }
 
 fn validate_clips(
@@ -135,137 +258,61 @@ fn validate_clips(
     Ok(())
 }
 
-/// Builds each authored occurrence exactly once, then marks contributing
-/// groups in reverse lexical order. This replaces repeated subtree searches
-/// with a linear postorder pass and charges even transparent/empty children
-/// against explicit depth and work budgets before any GPU preparation.
-///
-/// Physical affine admission is a separate forward pass so genuinely inert
-/// subtrees cannot spuriously reject unrepresentable, unused transforms.
+/// Validate every authored occurrence before physical affine admission. A second
+/// pass over the SAME borrowed cursor emits the active lexical stream, keeping
+/// structural-limit errors ahead of affine errors without retaining a raw IR.
+/// Neither pass copies paths or allocates a width-sized scheduling queue.
 pub(super) fn analyze(
     composition: &Render2dComposition,
 ) -> Result<Plan<'_>, Render2dExecutionError> {
-    let mut pending = Vec::new();
-    for (index, entry) in composition.root_entries().iter().enumerate().rev() {
-        pending.push(Pending::Visit {
-            entry,
-            path: vec![index],
-        });
-    }
-    let mut raw = Vec::new();
-    let mut visited = 0_usize;
-    while let Some(next) = pending.pop() {
-        match next {
-            Pending::EndGroup => raw.push(RawEvent::EndGroup),
-            Pending::Visit { entry, path } => {
-                visited = visited
-                    .checked_add(1)
-                    .ok_or_else(|| limit(&path, "visit count overflow"))?;
-                if visited > MAX_VISITED_ENTRIES {
-                    return Err(limit(&path, "semantic entry count exceeds compiler budget"));
-                }
-                if path.len() > MAX_DEPTH {
-                    return Err(limit(&path, "nested group depth exceeds compiler budget"));
-                }
-                match entry {
-                    Render2dEntry::Item(item) => raw.push(RawEvent::Item { path, item }),
-                    Render2dEntry::Group(group) => {
-                        raw.push(RawEvent::BeginGroup {
-                            path: path.clone(),
-                            group,
-                        });
-                        pending.push(Pending::EndGroup);
-                        for (index, child) in group.entries().iter().enumerate().rev() {
-                            let mut child_path = path.clone();
-                            child_path.push(index);
-                            pending.push(Pending::Visit {
-                                entry: child,
-                                path: child_path,
-                            });
-                        }
-                    }
-                }
-            }
+    let event_count = {
+        let mut cursor = OccurrenceCursor::new(composition)?;
+        let mut count = 0_usize;
+        while cursor.next()?.is_some() {
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| limit(&[], "scene event count overflow"))?;
         }
-    }
-
-    // Reverse walking a balanced group stream yields a group-activity stack.
-    // An authored item is always significant for source identity even when it
-    // has zero opacity or emits no pixels. An authored shadow is an effect,
-    // currently unsupported, and MUST NOT silently be treated as transparent.
-    let mut active = vec![false; raw.len()];
-    let mut group_activity = Vec::<bool>::new();
-    for (index, event) in raw.iter().enumerate().rev() {
+        count
+    };
+    let mut events = buffer(event_count, &[], "scene event allocation failed")?;
+    let mut frames = buffer(MAX_DEPTH + 1, &[], "scene affine frame allocation failed")?;
+    frames.push(Affine::IDENTITY);
+    let mut cursor = OccurrenceCursor::new(composition)?;
+    while let Some(event) = cursor.next()? {
         match event {
-            RawEvent::EndGroup => group_activity.push(false),
-            RawEvent::Item { .. } => {
-                if let Some(parent) = group_activity.last_mut() {
-                    *parent = true;
-                }
-            }
-            RawEvent::BeginGroup { group, .. } => {
-                let descendants = group_activity
-                    .pop()
-                    .expect("balanced group events emitted by one compiler");
-                let contributes = descendants || !group.shadows().is_empty();
-                active[index] = contributes;
-                if contributes && let Some(parent) = group_activity.last_mut() {
-                    *parent = true;
-                }
-            }
-        }
-    }
-    debug_assert!(group_activity.is_empty());
-
-    // Only active groups need transform/clip admission. The group frames are
-    // derived from one F1 tree and are never stored as another semantic model.
-    let mut events = Vec::new();
-    let mut frames = vec![Affine::IDENTITY];
-    let mut group_is_active = Vec::new();
-    for (index, event) in raw.into_iter().enumerate() {
-        match event {
-            RawEvent::Item { path, item } => {
+            Occurrence::Item { path, item } => {
                 let parent_to_root = *frames.last().expect("root affine frame");
-                validate_clips(item.clips(), parent_to_root, &path)?;
+                validate_clips(item.clips(), parent_to_root, path)?;
                 let to_root =
-                    parent_to_root.compose(Affine::from_source(item.local_to_parent()), &path)?;
+                    parent_to_root.compose(Affine::from_source(item.local_to_parent()), path)?;
                 events.push(Event::Item {
-                    path,
+                    path: copy_path(path)?,
                     item,
                     parent_to_root,
                     to_root,
                 });
             }
-            RawEvent::BeginGroup { path, group } => {
+            Occurrence::BeginGroup { path, group } => {
                 let parent_to_root = *frames.last().expect("root affine frame");
-                let contributes = active[index];
-                group_is_active.push(contributes);
-                if contributes {
-                    validate_clips(group.clips(), parent_to_root, &path)?;
-                    let to_root = parent_to_root
-                        .compose(Affine::from_source(group.local_to_parent()), &path)?;
-                    events.push(Event::BeginGroup {
-                        path,
-                        group,
-                        parent_to_root,
-                    });
-                    frames.push(to_root);
-                } else {
-                    // Its children contain no items/effects. Keep balanced
-                    // frames without evaluating unused physical transforms.
-                    frames.push(parent_to_root);
-                }
+                validate_clips(group.clips(), parent_to_root, path)?;
+                let to_root =
+                    parent_to_root.compose(Affine::from_source(group.local_to_parent()), path)?;
+                events.push(Event::BeginGroup {
+                    path: copy_path(path)?,
+                    group,
+                    parent_to_root,
+                });
+                frames.push(to_root);
             }
-            RawEvent::EndGroup => {
+            Occurrence::EndGroup => {
                 frames.pop().expect("balanced affine group frames");
-                if group_is_active.pop().expect("balanced group state") {
-                    events.push(Event::EndGroup);
-                }
+                events.push(Event::EndGroup);
             }
         }
     }
     debug_assert_eq!(frames.len(), 1);
-    debug_assert!(group_is_active.is_empty());
+    debug_assert_eq!(events.len(), event_count);
     Ok(Plan { events })
 }
 
@@ -273,8 +320,8 @@ pub(super) fn analyze(
 mod tests {
     use super::*;
     use crate::composition_2d::{
-        Render2dBrush, Render2dClip, Render2dColorRgba8, Render2dGroup, Render2dOpacity,
-        Render2dPrimitive, Render2dRect, Render2dShape,
+        Render2dBrush, Render2dClip, Render2dColorRgba8, Render2dDropShadow, Render2dGroup,
+        Render2dOpacity, Render2dPrimitive, Render2dRect, Render2dShape,
     };
 
     fn affine(values: [f64; 6]) -> Render2dAffineTransform {
@@ -437,6 +484,40 @@ mod tests {
     }
 
     #[test]
+    fn last_admitted_item_depth_has_balanced_bounded_frames() {
+        let mut subtree = item(Render2dAffineTransform::IDENTITY);
+        for _ in 1..MAX_DEPTH {
+            subtree = group(vec![subtree], Render2dAffineTransform::IDENTITY, Vec::new());
+        }
+        let tree = Render2dComposition::new(vec![subtree]).unwrap();
+        let plan = analyze(&tree).unwrap();
+        assert_eq!(plan.events.len(), MAX_DEPTH * 2 - 1);
+        assert!(matches!(
+            &plan.events[MAX_DEPTH - 1],
+            Event::Item { path, .. }
+                if path.len() == MAX_DEPTH && path.iter().all(|index| *index == 0)
+        ));
+    }
+
+    #[test]
+    fn physical_clip_admission_uses_parent_before_owner_transform() {
+        let huge = affine([1.0e308, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        let clip = Render2dClip::new(
+            Render2dShape::rect(Render2dRect::new(0.0, 0.0, 1.0, 1.0).unwrap()),
+            huge,
+        );
+        // Both owner and own clip are finite in their shared parent frame.
+        // Incorrectly multiplying them together would overflow the x scale.
+        let tree = Render2dComposition::new(vec![group(
+            vec![item(Render2dAffineTransform::IDENTITY)],
+            huge,
+            vec![clip],
+        )])
+        .unwrap();
+        assert_eq!(analyze(&tree).unwrap().events.len(), 3);
+    }
+
+    #[test]
     fn active_group_keeps_its_f1_opacity_clips_and_parent_affine() {
         let transform = affine([2.0, 0.0, 0.0, 1.0, 4.0, 0.0]);
         let child = item(Render2dAffineTransform::IDENTITY);
@@ -472,6 +553,145 @@ mod tests {
         assert!(matches!(
             plan.events.as_slice(),
             [Event::Item { path, .. }] if path == &[1]
+        ));
+    }
+
+    #[test]
+    fn cursor_replays_shared_subtrees_in_authored_occurrence_order() {
+        let shared = group(
+            vec![item(Render2dAffineTransform::IDENTITY)],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+        );
+        let tree = Render2dComposition::new(vec![shared.clone(), shared]).unwrap();
+        let mut cursor = OccurrenceCursor::new(&tree).unwrap();
+        for root in 0..2 {
+            assert!(matches!(
+                cursor.next().unwrap(),
+                Some(Occurrence::BeginGroup { path, .. }) if path == [root]
+            ));
+            assert!(matches!(
+                cursor.next().unwrap(),
+                Some(Occurrence::Item { path, .. }) if path == [root, 0]
+            ));
+            assert!(matches!(cursor.next().unwrap(), Some(Occurrence::EndGroup)));
+        }
+        assert!(cursor.next().unwrap().is_none());
+        assert_eq!(cursor.visited, 4);
+        let plan = analyze(&tree).unwrap();
+        assert_eq!(plan.events.len(), 6);
+        // Source payload sharing never merges two painter occurrences.
+        let (Event::Item { item: first, .. }, Event::Item { item: second, .. }) =
+            (&plan.events[1], &plan.events[4])
+        else {
+            panic!("expected repeated item occurrences");
+        };
+        assert!(std::ptr::eq(*first, *second));
+    }
+
+    #[test]
+    fn wide_inert_subtrees_use_only_the_bounded_cursor_frontier() {
+        let leaf = group(Vec::new(), Render2dAffineTransform::IDENTITY, Vec::new());
+        let branch = group(
+            vec![leaf; 1023],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+        );
+        // Each of 1024 occurrences visits one branch plus 1023 inert leaves:
+        // exactly the existing 1,048,576-entry ceiling with shared source data.
+        let tree = Render2dComposition::new(vec![branch; 1024]).unwrap();
+        let mut cursor = OccurrenceCursor::new(&tree).unwrap();
+        assert!(cursor.next().unwrap().is_none());
+        assert_eq!(cursor.visited, MAX_VISITED_ENTRIES);
+        assert_eq!(cursor.frontier.capacity(), MAX_DEPTH + 1);
+        assert_eq!(cursor.path.capacity(), MAX_DEPTH + 1);
+        let plan = analyze(&tree).unwrap();
+        assert!(plan.events.is_empty());
+        assert_eq!(plan.events.capacity(), 0);
+    }
+
+    #[test]
+    fn inert_authored_entries_cannot_hide_the_visit_limit() {
+        let leaf = group(Vec::new(), Render2dAffineTransform::IDENTITY, Vec::new());
+        let branch = group(
+            vec![leaf.clone(); 1023],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+        );
+        let mut roots = vec![branch; 1024];
+        roots.push(leaf);
+        let tree = Render2dComposition::new(roots).unwrap();
+        let mut cursor = OccurrenceCursor::new(&tree).unwrap();
+        assert!(matches!(
+            cursor.next(),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [1024]
+        ));
+        assert_eq!(cursor.visited, MAX_VISITED_ENTRIES + 1);
+        // A failed traversal cannot resume into unadmitted authored entries.
+        assert!(cursor.next().unwrap().is_none());
+    }
+
+    #[test]
+    fn transparent_effects_and_items_keep_structural_ancestors_active() {
+        let effect =
+            Render2dDropShadow::new(0.0, 0.0, 0.1, 0.0, Render2dColorRgba8::new(255, 0, 0, 0))
+                .unwrap();
+        let effects = Render2dEntry::group(Render2dGroup::new(
+            Vec::new(),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::new(0.0).unwrap(),
+            vec![effect],
+        ));
+        let transparent_item = Render2dEntry::item(Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 0.0, 0.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::new(0, 0, 0, 0)),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::new(0.0).unwrap(),
+        ));
+        let tree = Render2dComposition::new(vec![group(
+            vec![effects, transparent_item],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+        )])
+        .unwrap();
+        let plan = analyze(&tree).unwrap();
+        assert!(matches!(
+            plan.events.as_slice(),
+            [
+                Event::BeginGroup { path: outer, .. },
+                Event::BeginGroup { path: inner, group, .. },
+                Event::EndGroup,
+                Event::Item { path: item, .. },
+                Event::EndGroup,
+            ] if outer == &[0] && inner == &[0, 0] && item == &[0, 1]
+                && group.shadows().len() == 1
+        ));
+    }
+
+    #[test]
+    fn structural_limit_errors_precede_earlier_physical_affine_errors() {
+        let huge = affine([1.0e308, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        let mut inert = group(Vec::new(), Render2dAffineTransform::IDENTITY, Vec::new());
+        for _ in 0..MAX_DEPTH {
+            inert = group(vec![inert], Render2dAffineTransform::IDENTITY, Vec::new());
+        }
+        let tree = Render2dComposition::new(vec![group(vec![item(huge)], huge, Vec::new()), inert])
+            .unwrap();
+        assert!(matches!(
+            analyze(&tree),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path.len() == MAX_DEPTH + 1 && path[0] == 1
         ));
     }
 }

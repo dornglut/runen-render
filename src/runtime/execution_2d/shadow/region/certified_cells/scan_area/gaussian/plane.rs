@@ -33,9 +33,18 @@ struct Assembly {
 /// kernel cache or preparation frontier is retained through GPU execution.
 pub(in crate::runtime::execution_2d) struct PreparedPlane {
     samples: Vec<u32>,
-    batch: batch::Batch,
+    queries: batch::EncodedQueries,
     extent: [u32; 2],
     root: [u32; 4],
+    #[cfg(test)]
+    certificates: PlaneCertificates,
+}
+
+/// Independent comparisons retain these certificates only in conformance.
+/// They are never part of the numerical words borrowed by physical execution.
+#[cfg(test)]
+struct PlaneCertificates {
+    errors: Vec<f64>,
     scale: f64,
     offset: [f64; 2],
     literal_radius: f64,
@@ -395,7 +404,6 @@ pub(super) fn prepare(
     lattice: Lattice,
     fuel: &mut usize,
 ) -> Result<PreparedPlane, AreaQueryError> {
-    let before = *fuel;
     let root = lattice.root;
     let sigma = lattice.sigma;
     let scale = lattice.scale;
@@ -506,23 +514,7 @@ pub(super) fn prepare(
             Class::General => assembly.general(plan, &span, &mut compiler, fuel),
         }
     });
-    if let Err(error) = traversal {
-        eprintln!(
-            "COMPLETE_PLANE traversal rejected {error:?}, samples={} queries={} nodes={} remaining={fuel}",
-            assembly.samples.len(),
-            assembly.queries.len(),
-            compiler.nodes.len()
-        );
-        return Err(error);
-    }
-    let scratch = traversal?;
-    println!(
-        "COMPLETE_PLANE before_batch samples={} queries={} runs={} nodes={} remaining={fuel}",
-        assembly.samples.len(),
-        assembly.queries.len(),
-        assembly.runs.len(),
-        compiler.nodes.len()
-    );
+    traversal?;
     if assembly.samples.len() != cells {
         return Err(AreaQueryError::Precision);
     }
@@ -552,40 +544,79 @@ pub(super) fn prepare(
         }
     }
     debit(fuel, batch.field_preparation_work(cells)?)?;
-    println!(
-        "COMPLETE_PLANE samples={cells} queries={} runs={} nodes={} work={} remaining={} classifier_heap={} maximum_query_width={} numeric_fixed_bytes={fixed_query} numeric_traversal_peak={traversal_peak} caller_source_liveness_and_GPU_data_are_separate_admissions",
-        assembly.queries.len(),
-        assembly.runs.len(),
-        compiler.nodes.len(),
-        before - *fuel,
-        *fuel,
-        scratch,
-        2.0 * batch.errors.iter().copied().fold(0.0, f64::max)
-    );
+    let (queries, errors) = batch.into_parts();
+    #[cfg(not(test))]
+    drop(errors);
     // Moving only these fields drops the compiler, Assembly caches and kernels
     // on return, before any GPU descriptor exists.
     Ok(PreparedPlane {
         samples: assembly.samples,
-        batch,
+        queries,
         extent: [width as u32, height as u32],
         root,
-        scale,
-        offset,
-        literal_radius: assembly.literal_radius,
+        #[cfg(test)]
+        certificates: PlaneCertificates {
+            errors,
+            scale,
+            offset,
+            literal_radius: assembly.literal_radius,
+        },
     })
 }
 
 impl PreparedPlane {
+    pub(in crate::runtime::execution_2d) fn samples(&self) -> &[u32] {
+        &self.samples
+    }
+
+    pub(in crate::runtime::execution_2d) fn root(&self) -> [u32; 4] {
+        self.root
+    }
+
+    pub(in crate::runtime::execution_2d) fn extent(&self) -> [u32; 2] {
+        self.extent
+    }
+
+    pub(in crate::runtime::execution_2d) fn query_data(&self) -> (&[u8], u32) {
+        self.queries.field_data()
+    }
+
+    /// Expanded kernel-node evaluations across every encoded query, including
+    /// repeated references to shared runs. Query count alone cannot bound it.
+    pub(in crate::runtime::execution_2d) fn query_node_visits(&self) -> usize {
+        self.queries.node_visits()
+    }
+
+    /// Complete owned numerical retention. Source/DAG and later physical
+    /// resources have distinct liveness and remain caller admission concerns.
+    pub(in crate::runtime::execution_2d) fn retained_bytes(&self) -> Option<usize> {
+        let bytes = self
+            .samples
+            .capacity()
+            .checked_mul(size_of::<u32>())?
+            .checked_add(self.queries.retained_bytes())?
+            .checked_add(size_of::<Self>())?;
+        #[cfg(test)]
+        let bytes = bytes.checked_add(
+            self.certificates
+                .errors
+                .capacity()
+                .checked_mul(size_of::<f64>())?,
+        )?;
+        Some(bytes)
+    }
+
+    #[cfg(test)]
     pub(super) fn execute_proof(&self, reflected: bool, clipped: bool) {
-        let Self {
-            samples,
-            batch,
-            extent,
-            root,
+        let samples = self.samples();
+        let extent = self.extent();
+        let root = self.root();
+        let PlaneCertificates {
+            errors,
             scale,
             offset,
             literal_radius,
-        } = self;
+        } = &self.certificates;
         let [width, height] = extent.map(|v| v as usize);
         let scale = *scale;
         // Pixel-reference translation is used only by the integer-offset
@@ -601,7 +632,7 @@ impl PreparedPlane {
         // Final rendering is prepared and submitted before the separate
         // query-value conformance readback. No query readback can be an
         // input to this field or the maintained compositor.
-        let (query_input, query_count) = batch.field_data();
+        let (query_input, query_count) = self.query_data();
         let pixels =
             crate::runtime::execution_2d::lowering::sample_space::gaussian_gpu_proof::execute(
                 samples,
@@ -609,12 +640,12 @@ impl PreparedPlane {
                 query_input,
                 query_count,
             );
-        let values = batch.execute_proof();
+        let values = self.queries.execute_proof();
         let decoded = |index: usize| {
             let word = samples[index];
             if word & QUERY != 0 {
                 let i = (word & !QUERY) as usize;
-                (f64::from(values[i]), batch.errors[i])
+                (f64::from(values[i]), errors[i])
             } else {
                 (f64::from(word) / Q24, *literal_radius)
             }
@@ -730,9 +761,20 @@ fn original_constant_regions_prepare_without_numerical_queries() {
             .unwrap();
         assert!(fuel < before);
         assert_eq!(plane.samples, vec![expected; 64]);
-        assert_eq!(plane.batch.field_data(), (&[][..], 0));
-        assert!(plane.batch.errors.is_empty());
-        assert!(plane.literal_radius * 2.0 < WIDTH);
+        assert_eq!(plane.query_data(), (&[][..], 0));
+        assert_eq!(plane.query_node_visits(), 0);
+        assert_eq!(plane.root(), root);
+        assert_eq!(plane.extent(), [root[2] - root[0], root[3] - root[1]]);
+        assert_eq!(
+            plane.samples().len(),
+            plane.extent().into_iter().map(|n| n as usize).product()
+        );
+        assert!(
+            plane.retained_bytes().unwrap()
+                >= size_of_val(plane.samples()) + size_of::<PreparedPlane>()
+        );
+        assert!(plane.certificates.errors.is_empty());
+        assert!(plane.certificates.literal_radius * 2.0 < WIDTH);
     }
 }
 
