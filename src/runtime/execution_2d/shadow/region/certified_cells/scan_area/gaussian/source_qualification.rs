@@ -4,7 +4,6 @@ use crate::composition_2d::Render2dResourceBindings;
 use crate::composition_2d::{
     Render2dColorRgba8, Render2dComposition, Render2dEntry, Render2dGroup, Render2dOpacity,
 };
-use crate::runtime::execution_2d::scene;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]
@@ -78,28 +77,21 @@ fn prepare_fixture(variant: Variant) -> super::plane::PreparedPlane {
         vec![consuming_effect],
     );
     let composition = Render2dComposition::new([Render2dEntry::group(parent)]).unwrap();
-    // This qualification owns exactly three groups and one item. Prepay the
-    // borrowed-plan traversal, path copies, affine composition, activity and
-    // frame passes BEFORE analysis. Its temporary vectors fit the separate
-    // 64 KiB construction reserve below; no general scene-cost claim follows.
-    let mut fuel = 16_777_216;
-    debit(&mut fuel, 4096).unwrap();
-    let plan = scene::analyze(&composition).unwrap();
-    assert_eq!(plan.events.len(), 7);
+    // Qualify the original-source/numerical phase directly. Production Plan
+    // admission is tested by its owning state, not a discarded fixture Plan.
+    let mut fuel = 16_777_216_usize;
     let bindings = Render2dResourceBindings::default();
     let fields = BTreeMap::new();
-    let sources = shadow::build_group_sources(
-        plan.composition(),
-        plan.retained_bytes(),
-        &bindings,
-        &fields,
+    let mut preparation = shadow::SourcePreparation::new(
         shadow::NeutralPreparationScale {
             field_raster_scale: 1.0,
             geometry_sample_scale: 4.0,
         },
-        64 * 1024 * 1024,
-    )
-    .unwrap();
+        MAX_BYTES as u64,
+    );
+    assert_eq!(preparation.admit_effects(&composition).unwrap(), 2);
+    let sources =
+        shadow::build_group_sources(&composition, 0, &bindings, &fields, preparation).unwrap();
     println!(
         "CURRENT_SOURCE_PREPARATION graph_work={} storage={:?} original_F1_no_polygon_demand",
         sources.graph_work(),
@@ -121,10 +113,10 @@ fn prepare_fixture(variant: Variant) -> super::plane::PreparedPlane {
         .construction_peak_bytes
         .checked_add(ambient)
         .unwrap()
-        // Plan-construction temporaries are gone before DAG construction.
+        // Retain the existing bounded scalar/construction reserve.
         .max(65_536);
     // Every numeric construction/packing phase checks the existing fixed
-    // reserve. Width-dependent map/row data is separate; DAG + input plan
+    // reserve. Width-dependent map/row data is separate; original DAG facts
     // remain live during those phases and are released on function return.
     let query_peak = storage
         .retained_bytes
@@ -138,10 +130,13 @@ fn prepare_fixture(variant: Variant) -> super::plane::PreparedPlane {
     );
     let field = root
         .prepare_gaussian_plane(
-            [0, 0, 256, 256],
-            4.0,
-            0.1,
-            [consuming_effect.offset_x(), consuming_effect.offset_y()],
+            GaussianPlaneRequest {
+                root: [0, 0, 256, 256],
+                scale: 4.0,
+                sigma: 0.1,
+                offset: [consuming_effect.offset_x(), consuming_effect.offset_y()],
+                parent_to_root: Render2dAffineTransform::IDENTITY,
+            },
             &mut fuel,
             MAX_BYTES
                 .checked_sub(storage.retained_bytes + ambient)

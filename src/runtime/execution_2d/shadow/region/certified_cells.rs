@@ -386,7 +386,12 @@ fn certify_path(path: &Render2dPath, cell: Cell, visits: &mut usize) -> CellCert
     if cell.x.hi < x0 || cell.x.lo > x1 || cell.y.hi < y0 || cell.y.lo > y1 {
         CellCertificate::Outside
     } else {
-        bezier_winding::certify_curved_path(path, cell, visits)
+        bezier_winding::certify_command_winding(
+            path.commands().iter().copied().map(Ok),
+            path.fill_rule(),
+            cell,
+            visits,
+        )
     }
 }
 

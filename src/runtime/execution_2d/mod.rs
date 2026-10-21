@@ -50,11 +50,6 @@ impl Render2dExecutionState {
         target: &Render2dTarget,
     ) -> Result<Render2dPreparedContribution, Render2dExecutionError> {
         composition.validate_bindings(bindings)?;
-        let plan = scene::analyze(composition)?;
-        // One F1 semantic contribution has one correlated physical law.
-        // Missing sample-plane roles are rejected explicitly by that compiler.
-        let runs = admit_runs(&plan)?;
-        let admitted_target = lowering::admit_target(context, target, !runs.is_empty())?;
         // The immutable F1 composition is the complete resource authority,
         // including resources nested below groups. Do not infer observation
         // only from currently emitted root painter operations.
@@ -70,6 +65,27 @@ impl Render2dExecutionState {
                 }
             }
         }
+
+        // Immutable constructor metadata selects the ordinary path without a
+        // speculative scan that could hide a late authored effect. Shadow
+        // cardinality admission precedes every font/source/paint factory.
+        let (ordinary, admitted_target, source_preparation) = if composition.has_shadows() {
+            let target = lowering::admit_target(context, target, !unique_resources.is_empty())?;
+            let mut preparation = shadow::SourcePreparation::new(
+                shadow::NeutralPreparationScale {
+                    field_raster_scale: target.raster_scale(),
+                    geometry_sample_scale: target.raster_scale() * 4.0,
+                },
+                target.max_buffer_bytes(),
+            );
+            let effects = preparation.admit_effects(composition)?;
+            (None, target, Some((preparation, effects)))
+        } else {
+            let plan = scene::analyze(composition, &mut ())?;
+            let runs = admit_runs(&plan)?;
+            let target = lowering::admit_target(context, target, !runs.is_empty())?;
+            (Some((plan, runs)), target, None)
+        };
 
         let mut observed_updates = Vec::new();
         let mut field_budget = field::FieldBudget::default();
@@ -131,6 +147,26 @@ impl Render2dExecutionState {
                 observed_updates.push((resource_id, value.clone()));
             }
         }
+
+        let (plan, runs, prepared_sources) =
+            if let Some((preparation, effects)) = source_preparation {
+                let prepared = lowering::sample_space::shadow::prepare_sources(
+                    composition,
+                    bindings,
+                    &resolved_fields,
+                    &admitted_target,
+                    preparation,
+                    effects,
+                )?;
+                // The complete real caster inventory has already selected one
+                // contribution policy. Planning consumes its remaining allowance.
+                let (plan, prepared) = prepared.plan()?;
+                let runs = admit_runs(&plan)?;
+                (plan, runs, Some(prepared))
+            } else {
+                let (plan, runs) = ordinary.expect("ordinary planning completed before field work");
+                (plan, runs, None)
+            };
 
         let mut occurrences = BTreeMap::<usize, Vec<GlyphOccurrence>>::new();
         for run in &runs {
@@ -199,7 +235,7 @@ impl Render2dExecutionState {
             &plan,
             bindings,
             &occurrences,
-            &resolved_fields,
+            prepared_sources,
         )?;
         for (resource_id, value) in observed_updates {
             let previous = self.observed.insert(resource_id, value);
@@ -346,7 +382,7 @@ mod tests {
             ],
         );
         let tree = Render2dComposition::new(vec![Render2dEntry::group(outer)]).unwrap();
-        let plan = scene::analyze(&tree).unwrap();
+        let plan = scene::analyze(&tree, &mut ()).unwrap();
         assert!(
             admit_runs(&plan).unwrap().is_empty(),
             "the F2 text extractor must not invent a second curved-shadow authority"
@@ -371,7 +407,7 @@ mod tests {
             Vec::new(),
         ));
         let tree = Render2dComposition::new(vec![outer]).unwrap();
-        let plan = scene::analyze(&tree).unwrap();
+        let plan = scene::analyze(&tree, &mut ()).unwrap();
         assert!(admit_runs(&plan).unwrap().is_empty());
     }
 
@@ -394,7 +430,7 @@ mod tests {
             Vec::new(),
         );
         let tree = Render2dComposition::new(vec![Render2dEntry::group(outer)]).unwrap();
-        let plan = scene::analyze(&tree).unwrap();
+        let plan = scene::analyze(&tree, &mut ()).unwrap();
         assert!(
             admit_runs(&plan).unwrap().is_empty(),
             "effect-only geometry does not fabricate any F2 shaped-text runs"
@@ -417,7 +453,7 @@ mod tests {
         };
         let nested = Render2dComposition::new(vec![wrap(wrap(child))]).unwrap();
         nested.validate_bindings(&bindings).unwrap();
-        let plan = scene::analyze(&nested).unwrap();
+        let plan = scene::analyze(&nested, &mut ()).unwrap();
         assert!(matches!(
             admit_runs(&plan),
             Err(Render2dExecutionError::UnsupportedEntry {
@@ -432,7 +468,7 @@ mod tests {
         let (composition, _) = shaped_composition(
             Render2dAffineTransform::translation(4.0, -2.0).expect("translation"),
         );
-        let runs = admit_runs(&scene::analyze(&composition).expect("finite source tree"))
+        let runs = admit_runs(&scene::analyze(&composition, &mut ()).expect("finite source tree"))
             .expect("translation is inside F2");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].translate_x, 4.0);
@@ -442,7 +478,7 @@ mod tests {
             Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0).expect("finite transform"),
         );
         assert!(matches!(
-            admit_runs(&scene::analyze(&composition).expect("finite source tree")),
+            admit_runs(&scene::analyze(&composition, &mut ()).expect("finite source tree")),
             Err(Render2dExecutionError::UnsupportedContent(
                 Render2dUnsupportedContent::Transform { root_index: 0 }
             ))

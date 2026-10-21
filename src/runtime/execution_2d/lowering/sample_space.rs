@@ -11,7 +11,7 @@ mod gaussian;
 pub(in crate::runtime::execution_2d) mod gaussian_gpu_proof;
 mod gpu;
 mod inspection;
-mod shadow;
+pub(in crate::runtime::execution_2d) mod shadow;
 
 use self::gpu::*;
 use self::inspection::*;
@@ -22,12 +22,10 @@ use crate::composition_2d::{
 };
 use crate::execution_2d::{Render2dSampleSpaceError, Render2dTargetAdmissionError};
 use crate::runtime::execution_2d::{
-    clip as clip_geometry,
-    field::{FieldSetKey, ResourceFields},
-    image as image_semantics, scene, vector as geometry,
+    clip as clip_geometry, image as image_semantics, scene, vector as geometry,
 };
 use crate::runtime::program::retained_vector_source;
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 // At RGBA16F each 4x4 sample tile occupies 128 bytes per logical pixel/layer.
 // The 4x4 union mask consumes a further 64 bytes/logical pixel. The common
@@ -179,11 +177,8 @@ pub(in crate::runtime::execution_2d) fn lower(
     plan: &scene::Plan<'_>,
     bindings: &Render2dResourceBindings,
     glyphs_by_event: &BTreeMap<usize, Vec<super::GlyphOccurrence>>,
-    fields: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
+    prepared_sources: Option<shadow::PreparedSources<'_>>,
 ) -> Result<Vec<GpuWorkOperation>, Render2dExecutionError> {
-    // Do not realize even the visible paint tessellation of an invocation
-    // whose authored shadow cardinality is already inadmissible.
-    let admitted_effects = shadow::admit_effect_count(plan)?;
     let Inspected {
         items,
         mut group_bounds,
@@ -192,7 +187,10 @@ pub(in crate::runtime::execution_2d) fn lower(
     } = inspect(plan, target, bindings, glyphs_by_event)?;
     // This work comes from the SAME borrowed F1 painter tree as the visible
     // F3E items, but never from their clipped/colorized physical footprints.
-    let shadow_groups = shadow::prepare(plan, bindings, fields, target, admitted_effects)?;
+    let shadow_groups = match prepared_sources {
+        Some(prepared) => shadow::prepare(plan, target, prepared)?,
+        None => shadow::ShadowGroups::default(),
+    };
     // Immutable borrowed paths index just the authored group nodes. Each
     // visible shadow can widen at most its 64 semantic ancestors, rather
     // than scanning a potentially million-entry F1 plan per effect.

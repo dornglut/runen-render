@@ -505,6 +505,7 @@ impl Render2dResourceRequirement {
 pub struct Render2dComposition {
     root_entries: Arc<[Render2dEntry]>,
     resource_requirements: Arc<[Render2dResourceRequirement]>,
+    has_shadows: bool,
 }
 
 impl Render2dComposition {
@@ -521,6 +522,7 @@ impl Render2dComposition {
     ) -> Result<Self, Render2dCompositionError> {
         let root_entries = root_entries.into();
         let mut requirements = BTreeMap::new();
+        let mut has_shadows = false;
         let mut pending = root_entries.iter().rev().collect::<Vec<_>>();
 
         while let Some(entry) = pending.pop() {
@@ -546,6 +548,7 @@ impl Render2dComposition {
                     Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => {}
                 },
                 Render2dEntry::Group(group) => {
+                    has_shadows |= !group.shadows().is_empty();
                     pending.extend(group.entries().iter().rev());
                 }
             }
@@ -555,6 +558,7 @@ impl Render2dComposition {
         Ok(Self {
             root_entries: root_entries.into(),
             resource_requirements: resource_requirements.into(),
+            has_shadows,
         })
     }
 
@@ -568,6 +572,10 @@ impl Render2dComposition {
     #[must_use]
     pub fn resource_requirements(&self) -> &[Render2dResourceRequirement] {
         &self.resource_requirements
+    }
+
+    pub(crate) const fn has_shadows(&self) -> bool {
+        self.has_shadows
     }
 
     /// Validates one immutable invocation resource set against this composition.

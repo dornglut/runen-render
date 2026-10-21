@@ -4,10 +4,80 @@
 //! remain separate: `Outside` alone never proves the complete source empty.
 use super::*;
 
+/// Native painter-column order, with a shared exact row displacement. Bulk
+/// constant spans need only their endpoints; no per-site affine replay occurs.
+#[derive(Clone, Copy)]
+pub(super) struct RowXs<'a> {
+    base: &'a [f64],
+    shift: f64,
+}
+
+impl RowXs<'_> {
+    pub(super) fn len(self) -> usize {
+        self.base.len()
+    }
+
+    pub(super) fn at(self, index: usize, fuel: &mut usize) -> Result<f64, AreaQueryError> {
+        let value = self.base[index];
+        if self.shift == 0.0 {
+            return Ok(value);
+        }
+        debit(fuel, 32)?;
+        exact_add(value, self.shift).ok_or(AreaQueryError::Precision)
+    }
+
+    pub(super) fn increasing(self) -> bool {
+        self.base[0] <= self.base[self.len() - 1]
+    }
+
+    fn window(self, halo: Interval, fuel: &mut usize) -> Result<Interval, AreaQueryError> {
+        let a = self.at(0, fuel)?;
+        let b = self.at(self.len() - 1, fuel)?;
+        checked(checked(Interval::new(a.min(b), a.max(b)))?.add(halo))
+    }
+
+    pub(super) fn partition(
+        self,
+        threshold: f64,
+        inclusive: bool,
+        fuel: &mut usize,
+    ) -> Result<usize, AreaQueryError> {
+        let increasing = self.increasing();
+        let mut low = 0;
+        let mut high = self.len();
+        while low < high {
+            // The line caller prepays fixed search setup/orientation. Pay
+            // every midpoint, index/load, predicate, bound update and loop
+            // step here, including a zero-shift chart. Exact displacement
+            // arithmetic has its separate allowance in at().
+            debit(fuel, 32)?;
+            let middle = low + (high - low) / 2;
+            let x = self.at(middle, fuel)?;
+            let before = if increasing {
+                if inclusive {
+                    x <= threshold
+                } else {
+                    x < threshold
+                }
+            } else if inclusive {
+                x >= threshold
+            } else {
+                x > threshold
+            };
+            if before {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        Ok(low)
+    }
+}
+
 pub(super) struct Span<'a> {
     pub(super) y: u32,
     pub(super) offset: usize,
-    pub(super) xs: &'a [f64],
+    pub(super) xs: RowXs<'a>,
     pub(super) cy: f64,
     pub(super) ys: Interval,
     pub(super) window: Interval,
@@ -43,6 +113,7 @@ pub(super) fn visit(
         scale,
         sigma,
         offset: translation,
+        chart,
     } = lattice;
     let width = x1.checked_sub(x0).ok_or(AreaQueryError::Precision)? as usize;
     let height = y1.checked_sub(y0).ok_or(AreaQueryError::Precision)? as usize;
@@ -84,6 +155,12 @@ pub(super) fn visit(
             scale,
         )
         .ok_or(AreaQueryError::Precision)?;
+        let cx = if chart.inverse[0] == 1.0 {
+            cx
+        } else {
+            debit(fuel, 64)?;
+            exact_mul(chart.inverse[0], cx).ok_or(AreaQueryError::Precision)?
+        };
         xs.push(if translation[0] == 0.0 {
             cx
         } else {
@@ -94,11 +171,22 @@ pub(super) fn visit(
     let horizontal = checked(Interval::new(-halo, halo))?;
     for y in y0..y1 {
         debit(fuel, 128)?;
-        let mut cy = exact_div(
+        let root_y = exact_div(
             exact_add(f64::from(y), 0.5).ok_or(AreaQueryError::Precision)?,
             scale,
         )
         .ok_or(AreaQueryError::Precision)?;
+        let (mut cy, row_shift) = if chart.identity() {
+            (root_y, 0.0)
+        } else {
+            debit(fuel, 256)?;
+            let [_, _, c, d, tx, ty] = chart.inverse;
+            let cy = exact_add(exact_mul(d, root_y).ok_or(AreaQueryError::Precision)?, ty)
+                .ok_or(AreaQueryError::Precision)?;
+            let shift = exact_add(exact_mul(c, root_y).ok_or(AreaQueryError::Precision)?, tx)
+                .ok_or(AreaQueryError::Precision)?;
+            (cy, shift)
+        };
         if translation[1] != 0.0 {
             debit(fuel, 32)?;
             cy = exact_add(cy, -translation[1]).ok_or(AreaQueryError::Precision)?;
@@ -109,12 +197,16 @@ pub(super) fn visit(
         runs.clear();
         pieces.clear();
         if ys.hi <= reach[1] || ys.lo >= reach[3] {
-            let window = checked(checked(Interval::new(xs[0], xs[width - 1]))?.add(horizontal))?;
+            let row = RowXs {
+                base: &xs,
+                shift: row_shift,
+            };
+            let window = row.window(horizontal, fuel)?;
             visitor(
                 Span {
                     y,
                     offset,
-                    xs: &xs,
+                    xs: row,
                     cy,
                     ys,
                     window,
@@ -163,7 +255,11 @@ pub(super) fn visit(
         pending.push((0, width));
         while let Some((first, end)) = pending.pop() {
             debit(fuel, 128)?;
-            let window = checked(checked(Interval::new(xs[first], xs[end - 1]))?.add(horizontal))?;
+            let row = RowXs {
+                base: &xs[first..end],
+                shift: row_shift,
+            };
+            let window = row.window(horizontal, fuel)?;
             let outside_reach = window.hi <= reach[0] || window.lo >= reach[2];
             pieces.clear();
             let class = if outside_reach {
@@ -188,7 +284,7 @@ pub(super) fn visit(
                 Span {
                     y,
                     offset: offset + first,
-                    xs: &xs[first..end],
+                    xs: row,
                     cy,
                     ys,
                     window,

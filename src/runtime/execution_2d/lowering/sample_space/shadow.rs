@@ -8,6 +8,7 @@ use crate::runtime::execution_2d::{
     shadow as geometry_support,
     support::{self, NeutralCoverage},
 };
+use geometry_support::MAX_AUTHORED_SHADOWS;
 use std::sync::Arc;
 use support::PreparationWork;
 
@@ -17,7 +18,6 @@ mod symbolic;
 // GPU uploads; both are aggregate limits across one immutable contribution.
 pub(super) const MAX_SHADOW_COVERAGE_BYTES: u64 = 64 * 1024 * 1024;
 pub(super) const MAX_SHADOW_MASK_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_AUTHORED_SHADOWS: usize = 256;
 const FORMAT: GpuTextureFormat = GpuTextureFormat::R32Float;
 
 pub(super) struct PreparedShadow {
@@ -154,49 +154,120 @@ fn output_bounds(
     Ok((bounds[0] < bounds[2] && bounds[1] < bounds[3]).then_some(bounds))
 }
 
-/// Validate the complete borrowed F1 plan's authored effects BEFORE paint
-/// inspection, tessellation and source-neutral morphology can allocate.
-/// The first over-budget owner keeps its exact F1 path.
-pub(super) fn admit_effect_count(plan: &scene::Plan<'_>) -> Result<usize, Render2dExecutionError> {
-    // Admit the total authored effect cardinality before materializing any
-    // source-neutral geometry or running any morphology/convolution. Checking
-    // group-by-group during preparation permits an inadmissible later sibling
-    // to consume up to 256 expensive masks before the budget rejects it.
-    let mut authored_effects = 0_usize;
-    for event in &plan.events {
-        let scene::Event::BeginGroup { group, path, .. } = event else {
-            continue;
-        };
-        authored_effects = authored_effects
-            .checked_add(group.shadows().len())
-            .ok_or_else(|| shadow_resource(path, "shadow effect count overflow"))?;
-        if authored_effects > MAX_AUTHORED_SHADOWS {
-            return Err(shadow_resource(
-                path,
-                "authored shadows exceed bounded effect admission",
-            ));
-        }
-    }
-    Ok(authored_effects)
+/// Prepared once before affine planning. This owning state transports the
+/// complete caster inventory, its selected non-copyable work policy and the
+/// concurrently live source/Plan host lease into coverage lowering.
+pub(in crate::runtime::execution_2d) struct PreparedSources<'a> {
+    composition: &'a crate::composition_2d::Render2dComposition,
+    sources: geometry_support::GroupChildSources<'a>,
+    effects: usize,
+    live_bytes: usize,
 }
 
-/// Establish the immutable invocation policy from the COMPLETE caster
-/// inventory, retaining work already spent preparing those same sources.
-fn admit_source_work(
-    sources: &geometry_support::GroupChildSources<'_>,
-) -> Result<support::PreparationBudget, Render2dExecutionError> {
-    let has_symbolic = sources
-        .casters
-        .values()
-        .any(|source| matches!(source, geometry_support::NeutralCaster::Symbolic(_)));
-    let mut work = support::PreparationBudget::for_contribution(has_symbolic);
-    work.charge(
-        sources.graph_work,
-        usize::MAX,
-        &[],
-        "neutral source graph exceeds aggregate shadow work admission",
-    )?;
-    Ok(work)
+impl<'a> PreparedSources<'a> {
+    fn new(
+        composition: &'a crate::composition_2d::Render2dComposition,
+        sources: geometry_support::GroupChildSources<'a>,
+        effects: usize,
+    ) -> Result<Self, Render2dExecutionError> {
+        let live_bytes = sources
+            .retained_bytes
+            .checked_add(size_of::<Self>() - size_of::<geometry_support::GroupChildSources<'_>>())
+            .ok_or_else(|| shadow_resource(&[], "source owner storage overflow"))?;
+        if live_bytes > MAX_SHADOW_COVERAGE_BYTES as usize {
+            return Err(shadow_resource(
+                &[],
+                "retained shadow sources exceed host storage",
+            ));
+        }
+        Ok(Self {
+            composition,
+            sources,
+            effects,
+            live_bytes,
+        })
+    }
+
+    /// Failure consumes and abandons the complete owner, including any
+    /// partially reserved storage. A caller cannot retry it with a reset lease.
+    pub(in crate::runtime::execution_2d) fn plan(
+        mut self,
+    ) -> Result<(scene::Plan<'a>, Self), Render2dExecutionError> {
+        let plan = scene::analyze(self.composition, &mut self)?;
+        self.finish_planning(&plan)?;
+        Ok((plan, self))
+    }
+
+    fn finish_planning(&mut self, plan: &scene::Plan<'_>) -> Result<(), Render2dExecutionError> {
+        self.sources.work.charge(
+            64,
+            usize::MAX,
+            &[],
+            "shadow plan receipt exceeds invocation work",
+        )?;
+        let expected = self
+            .sources
+            .retained_bytes
+            .checked_add(size_of::<Self>() - size_of::<geometry_support::GroupChildSources<'_>>())
+            .and_then(|bytes| bytes.checked_add(plan.retained_bytes()))
+            .ok_or_else(|| shadow_resource(&[], "shadow plan receipt storage overflow"))?;
+        if expected != self.live_bytes {
+            return Err(shadow_precision(
+                &[],
+                "shadow planner retained storage does not match lease",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl scene::PlanningAdmission for PreparedSources<'_> {
+    fn charge(&mut self, work: usize, path: &[usize]) -> Result<(), Render2dExecutionError> {
+        self.sources.work.charge(
+            work,
+            usize::MAX,
+            path,
+            "shadow scene planning exceeds invocation work",
+        )
+    }
+    fn reserve(&mut self, bytes: usize, path: &[usize]) -> Result<(), Render2dExecutionError> {
+        let total = self
+            .live_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| shadow_resource(path, "shadow planning host storage overflow"))?;
+        if total > MAX_SHADOW_COVERAGE_BYTES as usize {
+            return Err(shadow_resource(
+                path,
+                "shadow planning exceeds remaining host storage",
+            ));
+        }
+        self.live_bytes = total;
+        Ok(())
+    }
+    fn release(&mut self, bytes: usize) {
+        self.live_bytes = self
+            .live_bytes
+            .checked_sub(bytes)
+            .expect("owned planning lease");
+    }
+}
+
+pub(in crate::runtime::execution_2d) fn prepare_sources<'scene>(
+    composition: &'scene crate::composition_2d::Render2dComposition,
+    bindings: &Render2dResourceBindings,
+    field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
+    target: &AdmittedTarget,
+    preparation: geometry_support::SourcePreparation,
+    effects: usize,
+) -> Result<PreparedSources<'scene>, Render2dExecutionError> {
+    let sources =
+        geometry_support::build_group_sources(composition, 0, bindings, field_sets, preparation)?
+            .prepare_polygonal_consumers(
+            None,
+            Some((target.canvas(), target.raster_scale())),
+            MAX_SHADOW_COVERAGE_BYTES,
+        )?;
+    PreparedSources::new(composition, sources, effects)
 }
 
 /// Independent F1 shadows each derive from the same immutable pre-shadow C.
@@ -204,14 +275,15 @@ fn admit_source_work(
 /// event paths; it is never a reinterpreted public support ontology.
 pub(super) fn prepare(
     plan: &scene::Plan<'_>,
-    bindings: &Render2dResourceBindings,
-    field_sets: &BTreeMap<FieldSetKey, Arc<ResourceFields>>,
     target: &AdmittedTarget,
-    admitted_effects: usize,
+    prepared: PreparedSources<'_>,
 ) -> Result<ShadowGroups, Render2dExecutionError> {
-    if admitted_effects == 0 {
-        return Ok(ShadowGroups::default());
-    }
+    let PreparedSources {
+        sources,
+        effects: admitted_effects,
+        live_bytes,
+        ..
+    } = prepared;
     let sample_scale = target.raster_scale() * f64::from(SAMPLES);
     if !sample_scale.is_finite() || sample_scale <= 0.0 {
         return Err(shadow_precision(
@@ -220,25 +292,20 @@ pub(super) fn prepare(
         ));
     }
     let metadata = occurrence_metadata(plan, admitted_effects)?;
-    if metadata > MAX_SHADOW_COVERAGE_BYTES {
+    let mut retained_coverage_bytes = (live_bytes as u64)
+        .checked_add(metadata)
+        .ok_or_else(|| shadow_resource(&[], "shadow metadata host storage overflow"))?;
+    if retained_coverage_bytes > MAX_SHADOW_COVERAGE_BYTES {
         return Err(shadow_resource(
             &[],
-            "shadow occurrence metadata exceeds bounded host storage",
+            "shadow metadata exceeds remaining host storage",
         ));
     }
-    let sources = geometry_support::group_child_sources(
-        plan,
-        bindings,
-        field_sets,
-        geometry_support::NeutralPreparationScale {
-            field_raster_scale: target.raster_scale(),
-            geometry_sample_scale: sample_scale,
-        },
-        target.max_buffer_bytes(),
-        Some((target.canvas(), target.raster_scale())),
-    )?;
-    let mut aggregate_coverage_work = admit_source_work(&sources)?;
-    let sources = sources.casters;
+    let geometry_support::GroupChildSources {
+        casters: sources,
+        work: mut aggregate_coverage_work,
+        ..
+    } = sources;
     let mut groups = ShadowGroups::default();
     groups
         .entries
@@ -250,7 +317,6 @@ pub(super) fn prepare(
             "shadow group inventory capacity exceeds admission",
         ));
     }
-    let mut retained_coverage_bytes = metadata;
     // This is ONLY paint reachability. Alpha-neutral structural support for
     // ancestors is independently prepared from every borrowed F1 group,
     // including transparent effects and zero-opacity children.
@@ -275,7 +341,9 @@ pub(super) fn prepare(
             continue;
         }
         let source = sources
-            .get(&index)
+            .binary_search_by_key(&index, |entry| entry.0)
+            .ok()
+            .map(|position| &sources[position].1)
             .expect("the neutral F1 traversal records each shadow-bearing group");
         if let geometry_support::NeutralCaster::Symbolic(source) = source {
             let [a, b, c, d, tx, ty] = parent_to_root.coefficients();
@@ -916,6 +984,86 @@ mod tests {
         .unwrap()
     }
 
+    fn before_plan(composition: &Render2dComposition) -> PreparedSources<'_> {
+        let mut preparation = geometry_support::SourcePreparation::new(
+            geometry_support::NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            16 * 1024 * 1024,
+        );
+        let effects = preparation.admit_effects(composition).unwrap();
+        let sources = geometry_support::build_group_sources(
+            composition,
+            0,
+            &Render2dResourceBindings::default(),
+            &BTreeMap::new(),
+            preparation,
+        )
+        .unwrap()
+        .prepare_polygonal_consumers(None, Some(([64.0, 64.0], 1.0)), MAX_SHADOW_COVERAGE_BYTES)
+        .unwrap();
+        PreparedSources::new(composition, sources, effects).unwrap()
+    }
+
+    #[test]
+    fn paid_sources_survive_planning_once_with_the_selected_policy_and_host_lease() {
+        let composition = Render2dComposition::new(vec![legacy_group()]).unwrap();
+        let prepared = before_plan(&composition);
+        let geometry_support::NeutralCaster::Mesh(mesh) = prepared.sources.caster(0).unwrap()
+        else {
+            panic!("polygonal source")
+        };
+        let original = Arc::as_ptr(mesh);
+        let paid = prepared.sources.work.used();
+        let source_bytes = prepared.live_bytes;
+        assert!(paid > 0);
+        assert!(prepared.sources.work.maximum() > support::MAX_COMPOSITIONAL_SHADOW_WORK);
+        let (plan, prepared) = prepared.plan().unwrap();
+        assert!(prepared.sources.work.used() > paid);
+        assert_eq!(prepared.live_bytes, source_bytes + plan.retained_bytes());
+        let geometry_support::NeutralCaster::Mesh(mesh) = prepared.sources.caster(0).unwrap()
+        else {
+            panic!("same polygonal source")
+        };
+        assert_eq!(Arc::as_ptr(mesh), original);
+        assert_eq!(plan.events.len(), 3);
+    }
+
+    #[test]
+    fn mixed_policy_and_host_failures_precede_affine_plan_allocation() {
+        let composition = Render2dComposition::new(vec![legacy_group(), symbolic_group()]).unwrap();
+        let mut prepared = before_plan(&composition);
+        assert_eq!(
+            prepared.sources.work.maximum(),
+            support::MAX_COMPOSITIONAL_SHADOW_WORK
+        );
+        prepared
+            .sources
+            .work
+            .record(support::MAX_COMPOSITIONAL_SHADOW_WORK - 1);
+        assert!(matches!(
+            prepared.plan(),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
+        // A fresh owning invocation is independent; the failed one was moved
+        // and dropped, so its partial lease/counter cannot be reused.
+        let mut fresh = before_plan(&composition);
+        fresh.live_bytes = MAX_SHADOW_COVERAGE_BYTES as usize;
+        assert!(matches!(
+            fresh.plan(),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
+        let (_, fresh) = before_plan(&composition).plan().unwrap();
+        assert!(fresh.sources.work.used() < support::MAX_COMPOSITIONAL_SHADOW_WORK);
+    }
+
     #[test]
     fn mixed_graph_receipt_leaves_the_same_coverage_allowance_in_both_orders() {
         for symbolic_first in [false, true] {
@@ -925,67 +1073,62 @@ mod tests {
                 vec![legacy_group(), symbolic_group()]
             };
             let composition = Render2dComposition::new(entries).unwrap();
-            let plan = scene::analyze(&composition).unwrap();
+            let plan = scene::analyze(&composition, &mut ()).unwrap();
             let mut sources = sources(&plan);
+            assert!(sources.work.used() > 0);
             assert!(
-                sources.graph_work > 0,
-                "actual graph/proof work must leave a receipt"
-            );
-            assert!(
-                sources
-                    .casters
-                    .values()
-                    .any(|s| matches!(s, geometry_support::NeutralCaster::Symbolic(_)))
+                sources.casters.iter().any(|(_, source)| matches!(
+                    source,
+                    geometry_support::NeutralCaster::Symbolic(_)
+                ))
             );
             assert_eq!(
-                admit_source_work(&sources).unwrap().used(),
-                sources.graph_work
+                sources.work.maximum(),
+                support::MAX_COMPOSITIONAL_SHADOW_WORK
             );
-            // The graph stage already spent all but one unit. Coverage cannot
-            // receive a fresh 16M merely because the stage changed.
-            sources.graph_work = support::MAX_COMPOSITIONAL_SHADOW_WORK - 1;
-            let mut work = admit_source_work(&sources).unwrap();
-            assert_eq!(work.remaining(usize::MAX), 1);
-            let (&index, mesh) = sources
+            sources
+                .work
+                .record(support::MAX_COMPOSITIONAL_SHADOW_WORK - 1);
+            let paid = sources.work.used();
+            let (index, mesh) = sources
                 .casters
                 .iter()
                 .find_map(|(index, source)| match source {
-                    geometry_support::NeutralCaster::Mesh(mesh) => Some((index, mesh)),
+                    geometry_support::NeutralCaster::Mesh(mesh) => Some((*index, mesh)),
                     _ => None,
                 })
                 .unwrap();
             let scene::Event::BeginGroup { path, .. } = &plan.events[index] else {
-                panic!("source owns a group");
+                panic!("source owns a group")
             };
             let error = support::prepare_shadow_coverage_admitted(
-                mesh, 0.0, 0.0, 4.0, path, &mut work, 1_048_576,
+                mesh,
+                0.0,
+                0.0,
+                4.0,
+                path,
+                &mut sources.work,
+                1_048_576,
             )
             .unwrap_err();
             assert!(matches!(error, Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit, path: Some(owner), ..
             } if owner == *path));
-            assert_eq!(
-                work.used(),
-                sources.graph_work,
-                "reject before coverage allocation/work"
-            );
+            assert_eq!(sources.work.used(), paid);
         }
     }
 
     #[test]
     fn legacy_graph_receipt_is_paid_without_changing_legacy_policy() {
         let composition = Render2dComposition::new(vec![legacy_group()]).unwrap();
-        let plan = scene::analyze(&composition).unwrap();
+        let plan = scene::analyze(&composition, &mut ()).unwrap();
         let mut sources = sources(&plan);
-        assert!(sources.graph_work > 0);
-        assert_eq!(
-            admit_source_work(&sources).unwrap().used(),
-            sources.graph_work
-        );
-        sources.graph_work = support::MAX_COMPOSITIONAL_SHADOW_WORK;
-        let mut work = admit_source_work(&sources).unwrap();
-        let geometry_support::NeutralCaster::Mesh(mesh) = sources.casters.get(&0).unwrap() else {
-            panic!("legacy source is polygonal");
+        assert!(sources.work.used() > 0);
+        assert!(sources.work.maximum() > support::MAX_COMPOSITIONAL_SHADOW_WORK);
+        sources.work.record(support::MAX_COMPOSITIONAL_SHADOW_WORK);
+        let paid = sources.work.used();
+        let (_, geometry_support::NeutralCaster::Mesh(mesh)) = &sources.casters[0] else {
+            panic!("legacy source is polygonal")
         };
         let coverage = support::prepare_shadow_coverage_admitted(
             mesh,
@@ -993,12 +1136,12 @@ mod tests {
             0.0,
             4.0,
             &[0],
-            &mut work,
+            &mut sources.work,
             1_048_576,
         )
         .unwrap()
         .unwrap();
-        assert!(work.used() > sources.graph_work);
+        assert!(sources.work.used() > paid);
         assert!((coverage.values.iter().sum::<f64>() - 16.0).abs() < 1.0e-12);
     }
 }

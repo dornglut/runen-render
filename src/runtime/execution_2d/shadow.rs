@@ -480,10 +480,93 @@ fn materialized_or_symbolic<'a>(
 /// One immutable source-preparation result. Graph work has already been
 /// admitted and paid; its consuming coverage policy must retain that charge.
 pub(super) struct GroupChildSources<'a> {
-    pub(super) casters: BTreeMap<usize, NeutralCaster<'a>>,
-    pub(super) graph_work: usize,
+    pub(super) casters: Vec<(usize, NeutralCaster<'a>)>,
+    pub(super) work: super::support::PreparationBudget,
+    pub(super) retained_bytes: usize,
 }
 
+pub(super) const MAX_AUTHORED_SHADOWS: usize = 256;
+
+/// Actual comparisons and record moves are charged before each operation.
+/// Explicit insertion uses no allocator or implementation-dependent sort bound.
+fn order_sources<T>(
+    entries: &mut [(usize, T)],
+    graph: &mut region::NeutralRegionBuilder,
+) -> Result<(), Render2dExecutionError> {
+    for first in 1..entries.len() {
+        let mut position = first;
+        while position > 0 {
+            graph.charge_preparation(32, &[])?;
+            if entries[position - 1].0 <= entries[position].0 {
+                break;
+            }
+            graph.charge_preparation(3 * size_of::<(usize, T)>() + 32, &[])?;
+            entries.swap(position - 1, position);
+            position -= 1;
+        }
+    }
+    Ok(())
+}
+
+impl<'a> GroupChildSources<'a> {
+    pub(super) fn caster(&self, index: usize) -> Option<&NeutralCaster<'a>> {
+        self.casters
+            .binary_search_by_key(&index, |entry| entry.0)
+            .ok()
+            .map(|position| &self.casters[position].1)
+    }
+}
+
+/// Linear owner of the original-source phase, including admission performed
+/// before fields exist. Moving this into graph construction preserves every
+/// paid debit; neither preparation nor failure can manufacture a fresh counter.
+pub(super) struct SourcePreparation {
+    graph: region::NeutralRegionBuilder,
+    scales: NeutralPreparationScale,
+    max_buffer_bytes: u64,
+}
+
+impl SourcePreparation {
+    pub(super) fn new(scales: NeutralPreparationScale, max_buffer_bytes: u64) -> Self {
+        Self {
+            graph: region::NeutralRegionBuilder::new(scales, max_buffer_bytes),
+            scales,
+            max_buffer_bytes,
+        }
+    }
+
+    /// Complete authored cardinality admission precedes every font or source
+    /// factory. This is the canonical lexical cursor, with the same source
+    /// phase's 16M counter, including each skipped inert occurrence.
+    pub(super) fn admit_effects(
+        &mut self,
+        composition: &Render2dComposition,
+    ) -> Result<usize, Render2dExecutionError> {
+        let mut cursor = scene::OccurrenceCursor::new(composition, &mut |cost, path| {
+            self.graph.charge_preparation(cost, path)
+        })?;
+        let mut effects = 0_usize;
+        while let Some(event) =
+            cursor.next(&mut |cost, path| self.graph.charge_preparation(cost, path))?
+        {
+            if let scene::Occurrence::BeginGroup { group, path } = event {
+                self.graph.charge_preparation(64, path)?;
+                effects = effects
+                    .checked_add(group.shadows().len())
+                    .ok_or_else(|| resource(path, "shadow effect count overflow"))?;
+                if effects > MAX_AUTHORED_SHADOWS {
+                    return Err(resource(
+                        path,
+                        "authored shadows exceed bounded effect admission",
+                    ));
+                }
+            }
+        }
+        Ok(effects)
+    }
+}
+
+#[cfg(test)]
 pub(super) fn group_child_sources<'a>(
     plan: &scene::Plan<'a>,
     bindings: &Render2dResourceBindings,
@@ -497,8 +580,7 @@ pub(super) fn group_child_sources<'a>(
         plan.retained_bytes(),
         bindings,
         field_sets,
-        scales,
-        max_buffer_bytes,
+        SourcePreparation::new(scales, max_buffer_bytes),
     )?
     .prepare_polygonal_consumers(None, root_canvas, max_buffer_bytes)
 }
@@ -749,7 +831,16 @@ impl<'scene> GroupSourceDag<'scene, '_> {
             .map(|indices| self.selected_dependencies(indices, max_host_bytes))
             .transpose()?;
         let lookup_work = self.consumer_lookup_work();
-        let mut sources = BTreeMap::new();
+        // A fallibly reserved inventory exposes actual retained capacity;
+        // no opaque allocator-owned tree nodes survive into Plan admission.
+        self.graph.charge_preparation(128, &[])?;
+        let mut sources = Vec::new();
+        sources
+            .try_reserve_exact(self.sources.len())
+            .map_err(|_| resource(&[], "caster inventory allocation failed"))?;
+        if sources.capacity() > self.sources.len() {
+            return Err(resource(&[], "caster inventory exceeds admitted capacity"));
+        }
         for demand in std::mem::take(&mut self.demands) {
             if let Some(dependencies) = &dependencies {
                 let needed = match &demand {
@@ -844,7 +935,11 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                             exact_original_polygons,
                         )?
                     };
-                    sources.insert(index, source);
+                    self.graph.charge_preparation(
+                        64 + 2 * size_of::<(usize, NeutralCaster<'_>)>(),
+                        &path,
+                    )?;
+                    sources.push((index, source));
                 }
                 SourceDemand::Effect(effect_region) => {
                     let negative = effect_region.is_negative_effect();
@@ -859,9 +954,54 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                 }
             }
         }
+        order_sources(&mut sources, &mut self.graph)?;
+        let (mut retained_bytes, _) = self
+            .graph
+            .storage_bounds(self.sources.iter().map(|entry| &entry.1))?;
+        retained_bytes = retained_bytes
+            .checked_add(sources.capacity() * size_of::<(usize, NeutralCaster<'_>)>())
+            .and_then(|v| v.checked_add(size_of::<GroupChildSources<'_>>()))
+            .ok_or_else(|| resource(&[], "retained caster storage overflow"))?;
+        let mut has_symbolic = false;
+        for (_, source) in &sources {
+            self.graph.charge_preparation(64, &[])?;
+            has_symbolic |= matches!(source, NeutralCaster::Symbolic(_));
+            let (mesh, path_capacity) = match source {
+                NeutralCaster::Mesh(mesh) | NeutralCaster::OriginalStraightPolygonUnion(mesh) => {
+                    (Some(mesh), 0)
+                }
+                NeutralCaster::RoundedRectangle(rounded) => {
+                    (Some(&rounded.rectangle), rounded.curved_owner.capacity())
+                }
+                NeutralCaster::Symbolic(symbolic) => {
+                    (None, symbolic.first_unqualified_owner.capacity())
+                }
+            };
+            let mesh_bytes = mesh
+                .map_or(Some(0), |mesh| {
+                    mesh.triangles
+                        .capacity()
+                        .checked_mul(size_of::<[f64; 2]>())
+                        .and_then(|v| {
+                            v.checked_add(size_of::<NeutralMesh>() + 2 * size_of::<usize>())
+                        })
+                })
+                .ok_or_else(|| resource(&[], "caster mesh storage overflow"))?;
+            // Cache/source sharing may count the same mesh twice. This is a
+            // conservative live-capacity upper bound, never an undercount.
+            retained_bytes = retained_bytes
+                .checked_add(mesh_bytes)
+                .and_then(|v| v.checked_add(path_capacity.checked_mul(size_of::<usize>())?))
+                .ok_or_else(|| resource(&[], "caster storage total overflow"))?;
+        }
+        let work = super::support::PreparationBudget::from_prepared_sources(
+            has_symbolic,
+            self.graph_work(),
+        );
         Ok(GroupChildSources {
             casters: sources,
-            graph_work: self.graph_work(),
+            work,
+            retained_bytes,
         })
     }
 }
@@ -883,8 +1023,7 @@ fn group_child_sources_with_probe<'a>(
         plan.retained_bytes(),
         bindings,
         field_sets,
-        scales,
-        max_buffer_bytes,
+        SourcePreparation::new(scales, max_buffer_bytes),
     )?
     .prepare_polygonal_with_probe(None, root_canvas, max_buffer_bytes, inspect)
 }
@@ -894,13 +1033,16 @@ pub(super) fn build_group_sources<'scene, 'resources>(
     input_bytes: usize,
     bindings: &'resources Render2dResourceBindings,
     field_sets: &'resources BTreeMap<FieldSetKey, Arc<ResourceFields>>,
-    scales: NeutralPreparationScale,
-    max_buffer_bytes: u64,
+    preparation: SourcePreparation,
 ) -> Result<GroupSourceDag<'scene, 'resources>, Render2dExecutionError> {
     let mut active = Vec::<SourceFrame<'scene>>::new();
     let mut demands = Vec::new();
     let mut sources = Vec::new();
-    let mut graph = region::NeutralRegionBuilder::new(scales, max_buffer_bytes);
+    let SourcePreparation {
+        mut graph,
+        scales,
+        max_buffer_bytes,
+    } = preparation;
     // This fixed host-only cursor is never uploaded to a native GPU buffer.
     // Include its exact bounded capacities in the construction inventory;
     // device buffer limits continue to govern the existing graph containers.
@@ -1095,13 +1237,7 @@ pub(super) fn build_group_sources<'scene, 'resources>(
         }
     }
     debug_assert!(active.is_empty());
-    let sort_work = sources
-        .len()
-        .checked_mul(sources.len())
-        .and_then(|v| v.checked_mul(8))
-        .ok_or_else(|| resource(&[], "source lookup sort work overflow"))?;
-    graph.charge_preparation(sort_work, &[])?;
-    sources.sort_unstable_by_key(|entry| entry.0);
+    order_sources(&mut sources, &mut graph)?;
     let roots = sources
         .iter()
         .map(|entry| &entry.1)
@@ -1564,6 +1700,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn effect_admission_has_exact_late_owner_and_preserves_failed_debits() {
+        use crate::composition_2d::{Render2dEntry, Render2dGroup};
+        let effect =
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT).unwrap();
+        let group = |effects| {
+            Render2dEntry::group(Render2dGroup::new(
+                Vec::<Render2dEntry>::new(),
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::TRANSPARENT,
+                vec![effect; effects],
+            ))
+        };
+        let composition = Render2dComposition::new(vec![group(256), group(1)]).unwrap();
+        assert!(composition.has_shadows());
+        let scales = NeutralPreparationScale {
+            field_raster_scale: 1.0,
+            geometry_sample_scale: 4.0,
+        };
+        let mut preparation = SourcePreparation::new(scales, 1_048_576);
+        assert!(
+            matches!(preparation.admit_effects(&composition), Err(Render2dExecutionError::SampleSpace {
+            kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
+        }) if path == [1])
+        );
+        assert!(preparation.graph.graph_work > 0);
+        let empty = Render2dComposition::new(Vec::<Render2dEntry>::new()).unwrap();
+        let mut preparation = SourcePreparation::new(scales, 1_048_576);
+        let before = MAX_COMPOSITIONAL_SHADOW_WORK - 200;
+        preparation.graph.graph_work = before;
+        assert!(preparation.admit_effects(&empty).is_err());
+        let paid = preparation.graph.graph_work;
+        assert!(paid > before && paid <= MAX_COMPOSITIONAL_SHADOW_WORK);
+        assert!(preparation.admit_effects(&empty).is_err());
+        assert_eq!(preparation.graph.graph_work, paid);
+    }
+
+    #[test]
+    fn source_ordering_pays_full_records_before_movement() {
+        let scales = NeutralPreparationScale {
+            field_raster_scale: 1.0,
+            geometry_sample_scale: 4.0,
+        };
+        let mut graph = region::NeutralRegionBuilder::new(scales, 1_048_576);
+        let mut entries = [(2, [0_u8; 128]), (1, [1_u8; 128])];
+        graph.graph_work = MAX_COMPOSITIONAL_SHADOW_WORK - 32;
+        assert!(order_sources(&mut entries, &mut graph).is_err());
+        assert_eq!(entries[0].0, 2);
+        assert_eq!(graph.graph_work, MAX_COMPOSITIONAL_SHADOW_WORK);
+        let mut graph = region::NeutralRegionBuilder::new(scales, 1_048_576);
+        order_sources(&mut entries, &mut graph).unwrap();
+        assert_eq!(entries[0], (1, [1_u8; 128]));
+        assert!(graph.graph_work >= 3 * size_of_val(&entries[0]));
+    }
+
+    #[test]
     fn unfunded_neutral_source_must_reject_before_physical_path_reconstruction() {
         use crate::composition_2d::{
             Render2dFillRule, Render2dPath, Render2dPathCommand, Render2dPoint, Render2dShape,
@@ -1974,7 +2166,7 @@ mod tests {
             vec![effect],
         );
         let composition = Render2dComposition::new(vec![Render2dEntry::group(root)]).unwrap();
-        let plan = scene::analyze(&composition).unwrap();
+        let plan = scene::analyze(&composition, &mut ()).unwrap();
         let empty = Render2dResourceBindings::new(Vec::new()).unwrap();
         let sources = group_child_sources(
             &plan,
@@ -1989,7 +2181,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sources.casters.len(), 1);
-        let NeutralCaster::Mesh(caster) = sources.casters.get(&0).unwrap() else {
+        let NeutralCaster::Mesh(caster) = sources.caster(0).unwrap() else {
             panic!("clipped caster must remain polygonal");
         };
         for (actual, expected) in caster.bounds.iter().zip([0.5, 0.0, 2.0, 1.0]) {
@@ -2079,18 +2271,20 @@ mod tests {
             0,
             &bindings,
             &cached,
-            NeutralPreparationScale {
-                field_raster_scale: 1.0,
-                geometry_sample_scale: 4.0,
-            },
-            1_048_576,
+            SourcePreparation::new(
+                NeutralPreparationScale {
+                    field_raster_scale: 1.0,
+                    geometry_sample_scale: 4.0,
+                },
+                1_048_576,
+            ),
         )
         .unwrap();
         assert_eq!(original.storage().input_bytes, 0);
         let original = original
             .prepare_polygonal_consumers(None, None, 1_048_576)
             .unwrap();
-        let plan = scene::analyze(&composition).unwrap();
+        let plan = scene::analyze(&composition, &mut ()).unwrap();
         let sources = group_child_sources(
             &plan,
             &bindings,
@@ -2103,12 +2297,12 @@ mod tests {
             None,
         )
         .unwrap();
-        let NeutralCaster::Mesh(mesh) = sources.casters.get(&0).unwrap() else {
+        let NeutralCaster::Mesh(mesh) = sources.caster(0).unwrap() else {
             panic!("outlined glyph caster must remain polygonal");
         };
         assert!(!mesh.triangles.is_empty());
         assert!(mesh.bounds[0].is_finite() && mesh.bounds[2] > mesh.bounds[0]);
-        let NeutralCaster::Mesh(original_mesh) = original.casters.get(&0).unwrap() else {
+        let NeutralCaster::Mesh(original_mesh) = original.caster(0).unwrap() else {
             panic!("pre-plan outlined glyph caster must remain polygonal");
         };
         assert_eq!(original_mesh.triangles, mesh.triangles);
@@ -2162,7 +2356,7 @@ mod tests {
             vec![effect],
         );
         let composition = Render2dComposition::new(vec![Render2dEntry::group(parent)]).unwrap();
-        let plan = scene::analyze(&composition).unwrap();
+        let plan = scene::analyze(&composition, &mut ()).unwrap();
         assert!(matches!(
             group_child_sources(
                 &plan,
@@ -2235,7 +2429,7 @@ mod tests {
             ],
         );
         let scene = Render2dComposition::new(vec![Render2dEntry::group(outer)]).unwrap();
-        let plan = scene::analyze(&scene).unwrap();
+        let plan = scene::analyze(&scene, &mut ()).unwrap();
         let sources = group_child_sources(
             &plan,
             &Render2dResourceBindings::default(),
@@ -2249,12 +2443,12 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            sources.casters.get(&0),
+            sources.caster(0),
             Some(NeutralCaster::Symbolic(symbolic))
                 if symbolic.owner_path() == [0, 0]
         ));
         assert!(matches!(
-            sources.casters.get(&1),
+            sources.caster(1),
             Some(NeutralCaster::OriginalStraightPolygonUnion(_))
         ));
     }

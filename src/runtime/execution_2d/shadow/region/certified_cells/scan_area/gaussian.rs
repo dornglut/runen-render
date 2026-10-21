@@ -753,29 +753,113 @@ enum Class {
     General,
 }
 
+/// Physical sampling facts for one disposable Gaussian plane. Source geometry
+/// still belongs to the borrowed original-region DAG.
+pub(in crate::runtime::execution_2d) struct GaussianPlaneRequest {
+    pub(in crate::runtime::execution_2d) root: [u32; 4],
+    pub(in crate::runtime::execution_2d) scale: f64,
+    pub(in crate::runtime::execution_2d) sigma: f64,
+    pub(in crate::runtime::execution_2d) offset: [f64; 2],
+    pub(in crate::runtime::execution_2d) parent_to_root: Render2dAffineTransform,
+}
+
+/// Exact row-preserving root-to-consuming-parent coordinate chart. Geometry,
+/// signed morphology and the finite square kernel stay in the parent frame.
+#[derive(Clone, Copy)]
+struct ParentChart {
+    inverse: [f64; 6],
+}
+
+impl ParentChart {
+    fn new(
+        parent_to_root: Render2dAffineTransform,
+        fuel: &mut usize,
+    ) -> Result<Self, AreaQueryError> {
+        let raw = parent_to_root.components();
+        if raw == Render2dAffineTransform::IDENTITY.components() {
+            return Ok(Self { inverse: raw });
+        }
+        // One exact triangular inverse, scalar checks and returned record.
+        // Dense charts need a separately qualified query-sharing traversal.
+        debit(fuel, 512)?;
+        let [a, b, c, d, tx, ty] = raw;
+        if b != 0.0 || a == 0.0 || d == 0.0 {
+            return Err(AreaQueryError::Unsupported);
+        }
+        let calculate = || {
+            let ia = exact_div(1.0, a)?;
+            let id = exact_div(1.0, d)?;
+            let ic = exact_mul(exact_mul(-c, ia)?, id)?;
+            let ix = exact_add(-exact_mul(ia, tx)?, -exact_mul(ic, ty)?)?;
+            let iy = -exact_mul(id, ty)?;
+            Some([ia, 0.0, ic, id, ix, iy])
+        };
+        Ok(Self {
+            inverse: calculate().ok_or(AreaQueryError::Precision)?,
+        })
+    }
+
+    fn identity(self) -> bool {
+        self.inverse == Render2dAffineTransform::IDENTITY.components()
+    }
+
+    fn centers(
+        self,
+        root: [u32; 4],
+        scale: f64,
+        offset: [f64; 2],
+        fuel: &mut usize,
+    ) -> Result<Cell, AreaQueryError> {
+        // Two interval coordinate ranges, affine image and offset. This is
+        // only an enclosing numerical domain, never source membership.
+        debit(fuel, 768)?;
+        let x = checked(
+            checked(Interval::new(f64::from(root[0]), f64::from(root[2])))?.div(iv(scale)),
+        )?;
+        let y = checked(
+            checked(Interval::new(f64::from(root[1]), f64::from(root[3])))?.div(iv(scale)),
+        )?;
+        let [a, _, c, d, tx, ty] = self.inverse.map(iv);
+        Ok(Cell {
+            x: checked(checked(checked(a.mul(x))?.add(checked(c.mul(y))?))?.add(tx))?
+                .sub(iv(offset[0]))
+                .ok_or(AreaQueryError::Precision)?,
+            y: checked(checked(d.mul(y))?.add(ty))?
+                .sub(iv(offset[1]))
+                .ok_or(AreaQueryError::Precision)?,
+        })
+    }
+}
+
 struct Lattice {
     root: [u32; 4],
     scale: f64,
     sigma: f64,
     offset: [f64; 2],
+    chart: ParentChart,
 }
 
 impl NeutralRegion<'_> {
     /// Prepare one disposable field in this source's owning logical frame.
     /// The caller supplies the existing global sample window, shared remaining
     /// CPU fuel and a host lease AFTER all other live invocation storage.
-    /// Translation shifts query centers in this same logical frame. This
-    /// entry point does not apply an ancestor affine or spread, select a
-    /// physical consumer, or reset its budget.
+    /// The exact row-preserving consuming-parent-to-root chart maps global
+    /// sample centers back before the parent-frame effect offset. Neither
+    /// source geometry nor the separable finite-square kernel is transformed.
+    /// This does not apply spread, select a physical consumer or reset fuel.
     pub(in crate::runtime::execution_2d) fn prepare_gaussian_plane(
         &self,
-        root: [u32; 4],
-        scale: f64,
-        sigma: f64,
-        offset: [f64; 2],
+        request: GaussianPlaneRequest,
         fuel: &mut usize,
         host_lease: usize,
     ) -> Result<plane::PreparedPlane, AreaQueryError> {
+        let GaussianPlaneRequest {
+            root,
+            scale,
+            sigma,
+            offset,
+            parent_to_root,
+        } = request;
         // Capacity/extent arithmetic, finite guards, interval bounds and
         // scalar phase selection precede the first numerical allocation.
         debit(fuel, 1024)?;
@@ -796,6 +880,7 @@ impl NeutralRegion<'_> {
         {
             return Err(AreaQueryError::Precision);
         }
+        let chart = ParentChart::new(parent_to_root, fuel)?;
         let fixed = MAX_AREA_QUERY_FIXED_BYTES as usize;
         let peak = fixed
             .checked_add(
@@ -833,8 +918,24 @@ impl NeutralRegion<'_> {
             }
             Ok([lower, upper])
         };
-        let [left, right] = axis(root[0], root[2], offset[0])?;
-        let [top, bottom] = axis(root[1], root[3], offset[1])?;
+        let ([left, right], [top, bottom]) = if chart.identity() {
+            (
+                axis(root[0], root[2], offset[0])?,
+                axis(root[1], root[3], offset[1])?,
+            )
+        } else {
+            let centers = chart.centers(root, scale, offset, fuel)?;
+            let expand = |coordinate: Interval| -> Result<[f64; 2], AreaQueryError> {
+                let range = checked(coordinate.add(checked(Interval::new(-halo.hi, halo.hi))?))?;
+                let lo = range.lo.floor();
+                let hi = range.hi.ceil();
+                if lo.abs().max(hi.abs()) > 4_503_599_627_370_496.0 || lo >= hi {
+                    return Err(AreaQueryError::Precision);
+                }
+                Ok([lo, hi])
+            };
+            (expand(centers.x)?, expand(centers.y)?)
+        };
         let prepared = PreparedBoundaries::prepare(self, fuel)?;
         let plan = ScanPlan::prepare(self, None, &prepared, fuel)?;
         let strips = Strips::prepare(&plan, self, &prepared, [left, top, right, bottom], fuel)?;
@@ -848,6 +949,7 @@ impl NeutralRegion<'_> {
                 scale,
                 sigma,
                 offset,
+                chart,
             },
             fuel,
         )

@@ -10,7 +10,7 @@
 //! Undecidable boundary contacts, tangencies, interval overflow, depth and
 //! aggregate-work exhaustion return Unknown, not fabricated coverage.
 use super::{Cell, CellCertificate, Interval, certified_line_crossing};
-use crate::composition_2d::{Render2dFillRule, Render2dPath, Render2dPathCommand, Render2dPoint};
+use crate::composition_2d::{Render2dFillRule, Render2dPathCommand, Render2dPoint};
 
 const MAX_SUBDIVISION_DEPTH: usize = 12;
 pub(super) const WORK_PER_CURVE_NODE: usize = 128;
@@ -204,8 +204,9 @@ fn scalar_point(p: Render2dPoint) -> [f64; 2] {
 /// Called only after the parent has preadmitted the complete authored
 /// command-class and contour traversal work. Every adaptive curve node
 /// additionally spends from the SAME invocation-level query fuel.
-pub(super) fn certify_curved_path(
-    path: &Render2dPath,
+pub(super) fn certify_command_winding(
+    commands: impl IntoIterator<Item = Result<Render2dPathCommand, ()>>,
+    fill_rule: Render2dFillRule,
     cell: Cell,
     visits: &mut usize,
 ) -> CellCertificate {
@@ -217,8 +218,11 @@ pub(super) fn certify_curved_path(
         winding = winding.checked_add(crossing?)?;
         Some(())
     };
-    for command in path.commands() {
-        match *command {
+    for command in commands {
+        let Ok(command) = command else {
+            return CellCertificate::Unknown;
+        };
+        match command {
             Render2dPathCommand::MoveTo(p) => {
                 if has_segment {
                     let (Some(a), Some(b)) = (previous, first) else {
@@ -302,7 +306,7 @@ pub(super) fn certify_curved_path(
             return CellCertificate::Unknown;
         }
     }
-    let inside = match path.fill_rule() {
+    let inside = match fill_rule {
         Render2dFillRule::EvenOdd => winding % 2 != 0,
         Render2dFillRule::NonZero => winding != 0,
     };
@@ -316,7 +320,7 @@ pub(super) fn certify_curved_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::composition_2d::Render2dPoint;
+    use crate::composition_2d::{Render2dPath, Render2dPoint};
 
     fn p(x: f64, y: f64) -> Render2dPoint {
         Render2dPoint::new(x, y).unwrap()

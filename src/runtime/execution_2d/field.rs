@@ -177,6 +177,35 @@ impl GlyphField {
         &self.rgba8
     }
 
+    /// Borrow the original unhinted outline as F1 commands without allocating
+    /// a path or consulting the field bitmap. Placement and font size remain
+    /// separate source facts; query arithmetic must enclose their transforms.
+    pub(super) fn outline_commands(
+        &self,
+    ) -> impl ExactSizeIterator<Item = Result<Render2dPathCommand, ()>> + Clone + '_ {
+        self.outline.iter().copied().map(|verb| {
+            let point = |p: OutlinePoint| Render2dPoint::new(p.x, p.y).map_err(|_| ());
+            Ok(match verb {
+                OutlineVerb::MoveTo(to) => Render2dPathCommand::MoveTo(point(to)?),
+                OutlineVerb::LineTo(to) => Render2dPathCommand::LineTo(point(to)?),
+                OutlineVerb::QuadraticTo { control, to } => Render2dPathCommand::QuadraticTo {
+                    control: point(control)?,
+                    to: point(to)?,
+                },
+                OutlineVerb::CubicTo {
+                    control1,
+                    control2,
+                    to,
+                } => Render2dPathCommand::CubicTo {
+                    control1: point(control1)?,
+                    control2: point(control2)?,
+                    to: point(to)?,
+                },
+                OutlineVerb::Close => Render2dPathCommand::Close,
+            })
+        })
+    }
+
     /// Reuses the exact F2 retained outline authority for F3F neutral path
     /// tessellation. Coordinates are normalized em units; glyph placement and
     /// font-size/parent transforms belong to the receiving F1 item.
@@ -196,26 +225,8 @@ impl GlyphField {
         commands
             .try_reserve_exact(self.outline.len())
             .map_err(|_| invalid())?;
-        let point = |p: OutlinePoint| Render2dPoint::new(p.x, p.y).map_err(|_| invalid());
-        for verb in self.outline.iter().copied() {
-            commands.push(match verb {
-                OutlineVerb::MoveTo(to) => Render2dPathCommand::MoveTo(point(to)?),
-                OutlineVerb::LineTo(to) => Render2dPathCommand::LineTo(point(to)?),
-                OutlineVerb::QuadraticTo { control, to } => Render2dPathCommand::QuadraticTo {
-                    control: point(control)?,
-                    to: point(to)?,
-                },
-                OutlineVerb::CubicTo {
-                    control1,
-                    control2,
-                    to,
-                } => Render2dPathCommand::CubicTo {
-                    control1: point(control1)?,
-                    control2: point(control2)?,
-                    to: point(to)?,
-                },
-                OutlineVerb::Close => Render2dPathCommand::Close,
-            });
+        for command in self.outline_commands() {
+            commands.push(command.map_err(|()| invalid())?);
         }
         let path = Render2dPath::new(Render2dFillRule::NonZero, commands).map_err(|_| invalid())?;
         Ok(Render2dShape::path(path))

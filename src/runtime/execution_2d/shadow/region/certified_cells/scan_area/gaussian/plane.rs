@@ -4,6 +4,9 @@ use super::super::super::gaussian_kernel::fixed::{FixedKernel, batch};
 use super::*;
 use query_compiler::{BoundaryRequest, Compiler, IntegralRequest};
 
+#[cfg(test)]
+mod chart_qualification;
+
 const WIDTH: f64 = 1.0 / 524_288.0;
 const Q24: f64 = 16_777_216.0;
 const QUERY: u32 = 1 << 31;
@@ -266,7 +269,10 @@ impl Assembly {
         fuel: &mut usize,
     ) -> Result<(), AreaQueryError> {
         let (id, inside_left) = boundary;
-        debit(fuel, 384 + 64 * (span.xs.len() + 1).ilog2() as usize)?;
+        // Fixed line/threshold work and setup for both monotone searches.
+        // RowXs::partition now prepays its actual iterations locally; no
+        // width-dependent work depends on an aggregate logarithmic estimate.
+        debit(fuel, 384)?;
         let CurveKey::ExactLine(intercept, slope) = plan.curves[id].key else {
             return Err(AreaQueryError::Precision);
         };
@@ -279,10 +285,16 @@ impl Assembly {
         let threshold = checked(halo.mul(checked(iv(1.0).add(iv(slope.abs())))?))?.hi;
         let low = checked(iv(b).sub(iv(threshold)))?.lo;
         let high = checked(iv(b).add(iv(threshold)))?.hi;
-        let first = span.xs.partition_point(|&x| x < low);
-        let end = span.xs.partition_point(|&x| x <= high);
-        self.constants(inside_left, first, fuel)?;
-        for &x in &span.xs[first..end] {
+        let increasing = span.xs.increasing();
+        let first = span
+            .xs
+            .partition(if increasing { low } else { high }, false, fuel)?;
+        let end = span
+            .xs
+            .partition(if increasing { high } else { low }, true, fuel)?;
+        self.constants(inside_left == increasing, first, fuel)?;
+        for index in first..end {
+            let x = span.xs.at(index, fuel)?;
             debit(fuel, 256)?;
             let distance = exact_add(b, -x).ok_or(AreaQueryError::Precision)?;
             let (profile_id, profile) =
@@ -338,7 +350,7 @@ impl Assembly {
             }
             self.query(known, profile.error, profile.run, negate, fuel)?;
         }
-        self.constants(!inside_left, span.xs.len() - end, fuel)
+        self.constants(inside_left != increasing, span.xs.len() - end, fuel)
     }
 
     fn general(
@@ -351,7 +363,7 @@ impl Assembly {
         if span.xs.len() != 1 {
             return Err(AreaQueryError::Precision);
         }
-        let center = [span.xs[0], span.cy];
+        let center = [span.xs.at(0, fuel)?, span.cy];
         let mut terms = 0;
         for band in span.bands {
             for run in &span.runs[band.first..band.first + band.count] {
@@ -465,7 +477,10 @@ pub(super) fn prepare(
         return Err(AreaQueryError::Resource);
     }
     let mut center_bound = [f64::from(root[2]) / scale, f64::from(root[3]) / scale];
-    if offset != [0.0; 2] {
+    if !lattice.chart.identity() {
+        let centers = lattice.chart.centers(root, scale, offset, fuel)?;
+        center_bound = [centers.x, centers.y].map(|range| range.lo.abs().max(range.hi.abs()));
+    } else if offset != [0.0; 2] {
         debit(fuel, 256)?;
         for axis in 0..2 {
             let range = checked(
@@ -757,7 +772,17 @@ fn original_constant_regions_prepare_without_numerical_queries() {
     for (root, expected) in [([0, 0, 8, 8], 0), ([44, 44, 52, 52], 1 << 24)] {
         let before = fuel;
         let plane = source
-            .prepare_gaussian_plane(root, 4.0, 0.1, [0.0; 2], &mut fuel, MAX_BYTES)
+            .prepare_gaussian_plane(
+                GaussianPlaneRequest {
+                    root,
+                    scale: 4.0,
+                    sigma: 0.1,
+                    offset: [0.0; 2],
+                    parent_to_root: Render2dAffineTransform::IDENTITY,
+                },
+                &mut fuel,
+                MAX_BYTES,
+            )
             .unwrap();
         assert!(fuel < before);
         assert_eq!(plane.samples, vec![expected; 64]);
@@ -797,10 +822,13 @@ fn gaussian_plane_entry_rejects_before_allocating_and_preserves_shared_fuel() {
     // lease must cover the complete phase, even for an all-constant result.
     assert!(matches!(
         source.prepare_gaussian_plane(
-            root,
-            4.0,
-            0.1,
-            [0.0; 2],
+            GaussianPlaneRequest {
+                root,
+                scale: 4.0,
+                sigma: 0.1,
+                offset: [0.0; 2],
+                parent_to_root: Render2dAffineTransform::IDENTITY
+            },
             &mut fuel,
             MAX_AREA_QUERY_FIXED_BYTES as usize
         ),
@@ -813,7 +841,17 @@ fn gaussian_plane_entry_rejects_before_allocating_and_preserves_shared_fuel() {
     );
     let after_rejection = fuel;
     source
-        .prepare_gaussian_plane(root, 4.0, 0.1, [0.0; 2], &mut fuel, MAX_BYTES)
+        .prepare_gaussian_plane(
+            GaussianPlaneRequest {
+                root,
+                scale: 4.0,
+                sigma: 0.1,
+                offset: [0.0; 2],
+                parent_to_root: Render2dAffineTransform::IDENTITY,
+            },
+            &mut fuel,
+            MAX_BYTES,
+        )
         .unwrap();
     assert!(
         fuel < after_rejection,
@@ -821,7 +859,17 @@ fn gaussian_plane_entry_rejects_before_allocating_and_preserves_shared_fuel() {
     );
     let mut short = 1023;
     assert!(matches!(
-        source.prepare_gaussian_plane(root, 4.0, 0.1, [0.0; 2], &mut short, MAX_BYTES),
+        source.prepare_gaussian_plane(
+            GaussianPlaneRequest {
+                root,
+                scale: 4.0,
+                sigma: 0.1,
+                offset: [0.0; 2],
+                parent_to_root: Render2dAffineTransform::IDENTITY
+            },
+            &mut short,
+            MAX_BYTES
+        ),
         Err(AreaQueryError::Resource)
     ));
     assert_eq!(short, 0);
@@ -833,21 +881,44 @@ fn gaussian_plane_entry_rejects_before_allocating_and_preserves_shared_fuel() {
         ([0, 0, 8, 8], 4.0, 0.0),
     ] {
         assert!(matches!(
-            source.prepare_gaussian_plane(root, scale, sigma, [0.0; 2], &mut fuel, MAX_BYTES),
+            source.prepare_gaussian_plane(
+                GaussianPlaneRequest {
+                    root,
+                    scale,
+                    sigma,
+                    offset: [0.0; 2],
+                    parent_to_root: Render2dAffineTransform::IDENTITY
+                },
+                &mut fuel,
+                MAX_BYTES
+            ),
             Err(AreaQueryError::Precision)
         ));
     }
     assert!(matches!(
-        source.prepare_gaussian_plane(root, 4.0, 0.1, [f64::NAN, 0.0], &mut fuel, MAX_BYTES),
+        source.prepare_gaussian_plane(
+            GaussianPlaneRequest {
+                root,
+                scale: 4.0,
+                sigma: 0.1,
+                offset: [f64::NAN, 0.0],
+                parent_to_root: Render2dAffineTransform::IDENTITY
+            },
+            &mut fuel,
+            MAX_BYTES
+        ),
         Err(AreaQueryError::Precision)
     ));
     // Never round a parent offset into a different source or query center.
     assert!(matches!(
         source.prepare_gaussian_plane(
-            root,
-            4.0,
-            0.1,
-            [f64::EPSILON / 1024.0, 0.0],
+            GaussianPlaneRequest {
+                root,
+                scale: 4.0,
+                sigma: 0.1,
+                offset: [f64::EPSILON / 1024.0, 0.0],
+                parent_to_root: Render2dAffineTransform::IDENTITY
+            },
             &mut fuel,
             MAX_BYTES
         ),

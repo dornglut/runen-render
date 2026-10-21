@@ -75,7 +75,6 @@ impl PreparationWork for usize {
     }
 }
 
-#[derive(Clone, Copy)]
 pub(super) struct PreparationBudget {
     used: usize,
     maximum: usize,
@@ -91,6 +90,16 @@ impl PreparationBudget {
                 MAX_AGGREGATE_SHADOW_PREPARATION_WORK
             },
         }
+    }
+
+    /// The completed source owner selects its policy exactly once. The paid
+    /// counter becomes the initial counter, rather than charging it again to
+    /// a temporary budget that could later be replaced.
+    pub(super) fn from_prepared_sources(has_symbolic: bool, used: usize) -> Self {
+        let mut budget = Self::for_contribution(has_symbolic);
+        assert!(used <= MAX_COMPOSITIONAL_SHADOW_WORK);
+        budget.used = used;
+        budget
     }
 }
 

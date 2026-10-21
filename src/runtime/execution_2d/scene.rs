@@ -74,11 +74,13 @@ pub(super) enum Event<'a> {
 #[derive(Debug)]
 pub(super) struct Plan<'a> {
     pub(super) events: Vec<Event<'a>>,
+    #[cfg(test)]
     composition: &'a Render2dComposition,
     retained_bytes: usize,
 }
 
 impl<'a> Plan<'a> {
+    #[cfg(test)]
     pub(super) fn composition(&self) -> &'a Render2dComposition {
         self.composition
     }
@@ -271,12 +273,33 @@ fn copy_path(path: &[usize]) -> Result<Vec<usize>, Render2dExecutionError> {
     Ok(owned)
 }
 
+/// One caller owns both actual planner work and concurrently live storage.
+/// Ordinary scenes retain their pre-existing structural policy through `()`;
+/// shadow-bearing scenes supply the already-selected contribution owner.
+pub(super) trait PlanningAdmission {
+    fn charge(&mut self, work: usize, path: &[usize]) -> Result<(), Render2dExecutionError>;
+    fn reserve(&mut self, bytes: usize, path: &[usize]) -> Result<(), Render2dExecutionError>;
+    fn release(&mut self, bytes: usize);
+}
+
+impl PlanningAdmission for () {
+    fn charge(&mut self, _: usize, _: &[usize]) -> Result<(), Render2dExecutionError> {
+        Ok(())
+    }
+    fn reserve(&mut self, _: usize, _: &[usize]) -> Result<(), Render2dExecutionError> {
+        Ok(())
+    }
+    fn release(&mut self, _: usize) {}
+}
+
 fn validate_clips(
     owner_clips: &[crate::composition_2d::Render2dClip],
     parent_to_root: Affine,
     path: &[usize],
+    admission: &mut impl PlanningAdmission,
 ) -> Result<(), Render2dExecutionError> {
     for clip in owner_clips {
+        admission.charge(192, path)?;
         // The clip is in the owner's immediate parent space: NEVER multiply
         // the owner's own local-to-parent transform into its own clip.
         parent_to_root.compose(Affine::from_source(clip.clip_to_parent()), path)?;
@@ -288,21 +311,44 @@ fn validate_clips(
 /// pass over the SAME borrowed cursor emits the active lexical stream, keeping
 /// structural-limit errors ahead of affine errors without retaining a raw IR.
 /// Neither pass copies paths or allocates a width-sized scheduling queue.
-pub(super) fn analyze(
-    composition: &Render2dComposition,
-) -> Result<Plan<'_>, Render2dExecutionError> {
-    let event_count = {
-        // Ordinary no-shadow scenes retain their existing entry/depth policy;
-        // this traversal does not impose the F3F numerical work ceiling.
-        let mut cursor = OccurrenceCursor::new(composition, &mut |_, _| Ok(()))?;
+pub(super) fn analyze<'a>(
+    composition: &'a Render2dComposition,
+    admission: &mut impl PlanningAdmission,
+) -> Result<Plan<'a>, Render2dExecutionError> {
+    admission.reserve(OccurrenceCursor::storage_bytes(), &[])?;
+    let (event_count, path_bytes) = {
+        let mut cursor =
+            OccurrenceCursor::new(composition, &mut |work, path| admission.charge(work, path))?;
         let mut count = 0_usize;
-        while cursor.next(&mut |_, _| Ok(()))?.is_some() {
+        let mut paths = 0_usize;
+        while let Some(event) = cursor.next(&mut |work, path| admission.charge(work, path))? {
+            admission.charge(64, &[])?;
             count = count
                 .checked_add(1)
                 .ok_or_else(|| limit(&[], "scene event count overflow"))?;
+            if let Occurrence::Item { path, .. } | Occurrence::BeginGroup { path, .. } = event {
+                paths = paths
+                    .checked_add(size_of_val(path))
+                    .ok_or_else(|| limit(path, "scene path storage overflow"))?;
+            }
         }
-        count
+        (count, paths)
     };
+    admission.release(OccurrenceCursor::storage_bytes());
+    let planned_bytes = event_count
+        .checked_mul(size_of::<Event<'_>>())
+        .and_then(|v| v.checked_add(size_of::<Plan<'_>>()))
+        .and_then(|v| v.checked_add(path_bytes))
+        .ok_or_else(|| limit(&[], "scene retained storage overflow"))?;
+    let transient_bytes = (MAX_DEPTH + 1) * size_of::<Affine>() + OccurrenceCursor::storage_bytes();
+    // No event/path/frame backing storage may precede this combined lease.
+    admission.reserve(
+        planned_bytes
+            .checked_add(transient_bytes)
+            .ok_or_else(|| limit(&[], "scene planning storage overflow"))?,
+        &[],
+    )?;
+    admission.charge(256, &[])?;
     let mut events = buffer(event_count, &[], "scene event allocation failed")?;
     let mut retained_bytes = events
         .capacity()
@@ -311,12 +357,17 @@ pub(super) fn analyze(
         .ok_or_else(|| limit(&[], "scene retained storage overflow"))?;
     let mut frames = buffer(MAX_DEPTH + 1, &[], "scene affine frame allocation failed")?;
     frames.push(Affine::IDENTITY);
-    let mut cursor = OccurrenceCursor::new(composition, &mut |_, _| Ok(()))?;
-    while let Some(event) = cursor.next(&mut |_, _| Ok(()))? {
+    let mut cursor =
+        OccurrenceCursor::new(composition, &mut |work, path| admission.charge(work, path))?;
+    while let Some(event) = cursor.next(&mut |work, path| admission.charge(work, path))? {
         match event {
             Occurrence::Item { path, item } => {
+                admission.charge(
+                    192 + 64 + 2 * path.len() * size_of::<usize>() + 2 * size_of::<Event<'_>>(),
+                    path,
+                )?;
                 let parent_to_root = *frames.last().expect("root affine frame");
-                validate_clips(item.clips(), parent_to_root, path)?;
+                validate_clips(item.clips(), parent_to_root, path, admission)?;
                 let to_root =
                     parent_to_root.compose(Affine::from_source(item.local_to_parent()), path)?;
                 let owned_path = copy_path(path)?;
@@ -331,8 +382,16 @@ pub(super) fn analyze(
                 });
             }
             Occurrence::BeginGroup { path, group } => {
+                admission.charge(
+                    192 + 64
+                        + 2 * path.len() * size_of::<usize>()
+                        + 2 * size_of::<Event<'_>>()
+                        + 64
+                        + 2 * size_of::<Affine>(),
+                    path,
+                )?;
                 let parent_to_root = *frames.last().expect("root affine frame");
-                validate_clips(group.clips(), parent_to_root, path)?;
+                validate_clips(group.clips(), parent_to_root, path, admission)?;
                 let to_root =
                     parent_to_root.compose(Affine::from_source(group.local_to_parent()), path)?;
                 let owned_path = copy_path(path)?;
@@ -347,6 +406,7 @@ pub(super) fn analyze(
                 frames.push(to_root);
             }
             Occurrence::EndGroup => {
+                admission.charge(64 + 2 * size_of::<Event<'_>>(), &[])?;
                 frames.pop().expect("balanced affine group frames");
                 events.push(Event::EndGroup);
             }
@@ -354,8 +414,11 @@ pub(super) fn analyze(
     }
     debug_assert_eq!(frames.len(), 1);
     debug_assert_eq!(events.len(), event_count);
+    debug_assert_eq!(retained_bytes, planned_bytes);
+    admission.release(transient_bytes);
     Ok(Plan {
         events,
+        #[cfg(test)]
         composition,
         retained_bytes,
     })
@@ -441,7 +504,7 @@ mod tests {
             ),
         ])
         .unwrap();
-        let plan = analyze(&tree).unwrap();
+        let plan = analyze(&tree, &mut ()).unwrap();
         assert_eq!(plan.events.len(), 7);
         let paths = plan
             .events
@@ -481,7 +544,7 @@ mod tests {
             vec![clip],
         )])
         .unwrap();
-        assert_eq!(analyze(&tree).unwrap().events.len(), 3);
+        assert_eq!(analyze(&tree, &mut ()).unwrap().events.len(), 3);
     }
 
     #[test]
@@ -490,7 +553,7 @@ mod tests {
         let tree =
             Render2dComposition::new(vec![group(vec![item(huge)], huge, Vec::new())]).unwrap();
         assert!(matches!(
-            analyze(&tree),
+            analyze(&tree, &mut ()),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::PrecisionLimit,
                 path: Some(path),
@@ -508,7 +571,7 @@ mod tests {
             Vec::new(),
         )])
         .unwrap();
-        assert!(analyze(&tree).unwrap().events.is_empty());
+        assert!(analyze(&tree, &mut ()).unwrap().events.is_empty());
     }
 
     #[test]
@@ -519,7 +582,7 @@ mod tests {
         }
         let tree = Render2dComposition::new(vec![subtree]).unwrap();
         assert!(matches!(
-            analyze(&tree),
+            analyze(&tree, &mut ()),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path),
@@ -535,7 +598,7 @@ mod tests {
             subtree = group(vec![subtree], Render2dAffineTransform::IDENTITY, Vec::new());
         }
         let tree = Render2dComposition::new(vec![subtree]).unwrap();
-        let plan = analyze(&tree).unwrap();
+        let plan = analyze(&tree, &mut ()).unwrap();
         assert_eq!(plan.events.len(), MAX_DEPTH * 2 - 1);
         assert!(matches!(
             &plan.events[MAX_DEPTH - 1],
@@ -559,7 +622,7 @@ mod tests {
             vec![clip],
         )])
         .unwrap();
-        assert_eq!(analyze(&tree).unwrap().events.len(), 3);
+        assert_eq!(analyze(&tree, &mut ()).unwrap().events.len(), 3);
     }
 
     #[test]
@@ -568,7 +631,7 @@ mod tests {
         let child = item(Render2dAffineTransform::IDENTITY);
         let tree =
             Render2dComposition::new(vec![group(vec![child], transform, Vec::new())]).unwrap();
-        let plan = analyze(&tree).unwrap();
+        let plan = analyze(&tree, &mut ()).unwrap();
         assert!(matches!(
             plan.events.as_slice(),
             [
@@ -594,7 +657,7 @@ mod tests {
         );
         let painted = item(Render2dAffineTransform::IDENTITY);
         let tree = Render2dComposition::new(vec![empty, painted]).unwrap();
-        let plan = analyze(&tree).unwrap();
+        let plan = analyze(&tree, &mut ()).unwrap();
         assert!(matches!(
             plan.events.as_slice(),
             [Event::Item { path, .. }] if path == &[1]
@@ -626,7 +689,7 @@ mod tests {
         }
         assert!(cursor.next(&mut |_, _| Ok(())).unwrap().is_none());
         assert_eq!(cursor.visited, 4);
-        let plan = analyze(&tree).unwrap();
+        let plan = analyze(&tree, &mut ()).unwrap();
         assert_eq!(plan.events.len(), 6);
         // Source payload sharing never merges two painter occurrences.
         let (Event::Item { item: first, .. }, Event::Item { item: second, .. }) =
@@ -653,7 +716,7 @@ mod tests {
         assert_eq!(cursor.visited, MAX_VISITED_ENTRIES);
         assert_eq!(cursor.frontier.capacity(), MAX_DEPTH + 1);
         assert_eq!(cursor.path.capacity(), MAX_DEPTH + 1);
-        let plan = analyze(&tree).unwrap();
+        let plan = analyze(&tree, &mut ()).unwrap();
         assert!(plan.events.is_empty());
         assert_eq!(plan.events.capacity(), 0);
     }
@@ -725,7 +788,7 @@ mod tests {
             Vec::new(),
         )])
         .unwrap();
-        let plan = analyze(&tree).unwrap();
+        let plan = analyze(&tree, &mut ()).unwrap();
         let path_bytes = plan
             .events
             .iter()
@@ -795,7 +858,7 @@ mod tests {
             Vec::new(),
         )])
         .unwrap();
-        let plan = analyze(&tree).unwrap();
+        let plan = analyze(&tree, &mut ()).unwrap();
         assert!(matches!(
             plan.events.as_slice(),
             [
@@ -819,7 +882,7 @@ mod tests {
         let tree = Render2dComposition::new(vec![group(vec![item(huge)], huge, Vec::new()), inert])
             .unwrap();
         assert!(matches!(
-            analyze(&tree),
+            analyze(&tree, &mut ()),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path),

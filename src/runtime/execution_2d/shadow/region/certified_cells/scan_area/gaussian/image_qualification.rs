@@ -7,7 +7,6 @@ use crate::composition_2d::{
     Render2dPixelExtent, Render2dResourceBinding, Render2dResourceBindings, Render2dResourceId,
     Render2dResourceValue,
 };
-use crate::runtime::execution_2d::scene;
 use std::collections::BTreeMap;
 
 fn ring_image() -> Render2dImagePrimitive {
@@ -86,32 +85,28 @@ fn prepare_fixture() -> super::plane::PreparedPlane {
         ),
     )])
     .unwrap();
-    // Exactly three groups, one item, one binding. Prepay the bounded
-    // validation/plan passes before invoking them, as in source qualification.
+    // Exactly three groups, one item and one binding: prepay immutable binding
+    // validation. This source/numerical proof does not construct an affine Plan.
     let mut fuel = 16_777_216;
-    debit(&mut fuel, 4096 + 512).unwrap();
+    debit(&mut fuel, 512).unwrap();
     composition.validate_bindings(&bindings).unwrap();
-    let plan = scene::analyze(&composition).unwrap();
-    assert_eq!(plan.events.len(), 7);
     let fields = BTreeMap::new();
-    let sources = shadow::build_group_sources(
-        plan.composition(),
-        plan.retained_bytes(),
-        &bindings,
-        &fields,
+    let mut preparation = shadow::SourcePreparation::new(
         shadow::NeutralPreparationScale {
             field_raster_scale: 1.0,
             geometry_sample_scale: 4.0,
         },
         MAX_BYTES as u64,
-    )
-    .unwrap();
+    );
+    assert_eq!(preparation.admit_effects(&composition).unwrap(), 2);
+    let sources =
+        shadow::build_group_sources(&composition, 0, &bindings, &fields, preparation).unwrap();
     fuel = fuel.checked_sub(sources.graph_work()).unwrap();
     debit(&mut fuel, 1024).unwrap();
     let source = sources.source(0).unwrap();
     let storage = sources.storage();
     // Bound the single immutable resource/binding payload and map control
-    // separately from the original borrowed plan and renderer DAG retention.
+    // separately from the original renderer DAG retention.
     let ambient = storage
         .input_bytes
         .checked_add(size_of::<Render2dResourceBindings>() + size_of_val(&fields) + 1024)
@@ -130,10 +125,13 @@ fn prepare_fixture() -> super::plane::PreparedPlane {
     assert!(construction <= MAX_BYTES && query_peak <= MAX_BYTES);
     let field = source
         .prepare_gaussian_plane(
-            [0, 0, 256, 256],
-            4.0,
-            0.1,
-            [0.0; 2],
+            GaussianPlaneRequest {
+                root: [0, 0, 256, 256],
+                scale: 4.0,
+                sigma: 0.1,
+                offset: [0.0; 2],
+                parent_to_root: Render2dAffineTransform::IDENTITY,
+            },
             &mut fuel,
             MAX_BYTES
                 .checked_sub(storage.retained_bytes + ambient)

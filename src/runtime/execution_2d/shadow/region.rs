@@ -2186,6 +2186,7 @@ mod certified_cells;
 
 #[cfg(test)]
 mod tests {
+    use super::support::PreparationWork;
     use super::*;
     use crate::composition_2d::Render2dColorRgba8;
 
@@ -2354,7 +2355,7 @@ mod tests {
             ],
         );
         let composition = Render2dComposition::new(vec![Render2dEntry::group(root)]).unwrap();
-        let plan = shadow::scene::analyze(&composition).unwrap();
+        let plan = shadow::scene::analyze(&composition, &mut ()).unwrap();
         let bindings = Render2dResourceBindings::default();
         // The same original source graph is a complete continuous-query
         // input before any disposable vector geometry has been requested.
@@ -2364,11 +2365,13 @@ mod tests {
             plan.retained_bytes(),
             &bindings,
             &fields,
-            shadow::NeutralPreparationScale {
-                field_raster_scale: 1.0,
-                geometry_sample_scale: 4.0,
-            },
-            1_048_576,
+            shadow::SourcePreparation::new(
+                shadow::NeutralPreparationScale {
+                    field_raster_scale: 1.0,
+                    geometry_sample_scale: 4.0,
+                },
+                1_048_576,
+            ),
         )
         .unwrap();
         assert_eq!(dag.graph.retained_vertices, 0);
@@ -2432,8 +2435,7 @@ mod tests {
             "the actual root caster must be inspected before materialization"
         );
         let sources = result.expect("qualified C union disk must reach the ancestor");
-        let Some(shadow::NeutralCaster::RoundedRectangle(qualified)) = sources.casters.get(&0)
-        else {
+        let Some(shadow::NeutralCaster::RoundedRectangle(qualified)) = sources.caster(0) else {
             panic!("the root must carry one exact qualified rounded caster");
         };
         assert_eq!(qualified.radius, 1.0);
@@ -3438,7 +3440,7 @@ mod tests {
             ),
         ])
         .unwrap();
-        let plan = shadow::scene::analyze(&composition).unwrap();
+        let plan = shadow::scene::analyze(&composition, &mut ()).unwrap();
         let bindings = Render2dResourceBindings::default();
         let fields = std::collections::BTreeMap::new();
         let build = || {
@@ -3447,11 +3449,13 @@ mod tests {
                 plan.retained_bytes(),
                 &bindings,
                 &fields,
-                shadow::NeutralPreparationScale {
-                    field_raster_scale: 1.0,
-                    geometry_sample_scale: 4.0,
-                },
-                1_048_576,
+                shadow::SourcePreparation::new(
+                    shadow::NeutralPreparationScale {
+                        field_raster_scale: 1.0,
+                        geometry_sample_scale: 4.0,
+                    },
+                    1_048_576,
+                ),
             )
             .unwrap()
         };
@@ -3512,7 +3516,11 @@ mod tests {
             .prepare_polygonal_consumers(Some(&[0]), None, 1_048_576)
             .unwrap();
         assert_eq!(
-            prepared.casters.keys().copied().collect::<Vec<_>>(),
+            prepared
+                .casters
+                .iter()
+                .map(|entry| entry.0)
+                .collect::<Vec<_>>(),
             vec![0]
         );
         let Kind::Source(rectangle_geometry) = &rectangle.kind else {
@@ -3545,7 +3553,7 @@ mod tests {
             .unwrap();
         assert!(prepared.casters.is_empty());
         assert!(
-            prepared.graph_work > before,
+            prepared.work.used() > before,
             "dependency metadata is actual work"
         );
         let Kind::Source(geometry) = &original.kind else {
@@ -3598,18 +3606,20 @@ mod tests {
                 input_bytes,
                 &bindings,
                 &fields,
-                shadow::NeutralPreparationScale {
-                    field_raster_scale: 1.0,
-                    geometry_sample_scale: 4.0,
-                },
-                1_048_576,
+                shadow::SourcePreparation::new(
+                    shadow::NeutralPreparationScale {
+                        field_raster_scale: 1.0,
+                        geometry_sample_scale: 4.0,
+                    },
+                    1_048_576,
+                ),
             )
             .unwrap()
         };
         // There is no Plan or cumulative affine dependency at this point.
         let original = build(0);
         assert_eq!(original.storage().input_bytes, 0);
-        let plan = shadow::scene::analyze(&composition).unwrap();
+        let plan = shadow::scene::analyze(&composition, &mut ()).unwrap();
         let planned = build(plan.retained_bytes());
         assert_eq!(planned.storage().input_bytes, plan.retained_bytes());
         assert_eq!(original.graph_work(), planned.graph_work());
@@ -3658,11 +3668,13 @@ mod tests {
             0,
             &bindings,
             &fields,
-            shadow::NeutralPreparationScale {
-                field_raster_scale: 1.0,
-                geometry_sample_scale: 4.0,
-            },
-            32,
+            shadow::SourcePreparation::new(
+                shadow::NeutralPreparationScale {
+                    field_raster_scale: 1.0,
+                    geometry_sample_scale: 4.0,
+                },
+                32,
+            ),
         )
         .unwrap();
         assert!(dag.sources.is_empty());
@@ -3697,11 +3709,13 @@ mod tests {
             0,
             &bindings,
             &fields,
-            shadow::NeutralPreparationScale {
-                field_raster_scale: 1.0,
-                geometry_sample_scale: 4.0,
-            },
-            1_048_576,
+            shadow::SourcePreparation::new(
+                shadow::NeutralPreparationScale {
+                    field_raster_scale: 1.0,
+                    geometry_sample_scale: 4.0,
+                },
+                1_048_576,
+            ),
         );
         // Builder bookkeeping, cursor setup and the initial next call pay
         // first. Each inert root then needs a visit and a closing-frame step.
@@ -3715,7 +3729,7 @@ mod tests {
         // The ordinary non-shadow scene policy still permits this bounded
         // authored tree, whose active affine plan is genuinely empty.
         assert!(
-            shadow::scene::analyze(&composition)
+            shadow::scene::analyze(&composition, &mut ())
                 .unwrap()
                 .events
                 .is_empty()
@@ -3738,7 +3752,7 @@ mod tests {
             zero,
         )])
         .unwrap();
-        let plan = shadow::scene::analyze(&composition).unwrap();
+        let plan = shadow::scene::analyze(&composition, &mut ()).unwrap();
         let bindings = Render2dResourceBindings::default();
         let fields = std::collections::BTreeMap::new();
         let dag = shadow::build_group_sources(
@@ -3746,11 +3760,13 @@ mod tests {
             plan.retained_bytes(),
             &bindings,
             &fields,
-            shadow::NeutralPreparationScale {
-                field_raster_scale: 1.0,
-                geometry_sample_scale: 4.0,
-            },
-            1_048_576,
+            shadow::SourcePreparation::new(
+                shadow::NeutralPreparationScale {
+                    field_raster_scale: 1.0,
+                    geometry_sample_scale: 4.0,
+                },
+                1_048_576,
+            ),
         )
         .unwrap();
         let parent = dag.source(0).unwrap();
@@ -3761,10 +3777,11 @@ mod tests {
             .prepare_polygonal_consumers(Some(&[1, 0, 1]), None, 1_048_576)
             .unwrap();
         assert_eq!(prepared.casters.len(), 2);
-        let shadow::NeutralCaster::Mesh(parent_mesh) = &prepared.casters[&0] else {
+        let shadow::NeutralCaster::Mesh(parent_mesh) = prepared.caster(0).unwrap() else {
             panic!("parent mesh")
         };
-        let shadow::NeutralCaster::OriginalStraightPolygonUnion(child_mesh) = &prepared.casters[&1]
+        let shadow::NeutralCaster::OriginalStraightPolygonUnion(child_mesh) =
+            prepared.caster(1).unwrap()
         else {
             panic!("original signed polygon proof")
         };
