@@ -1,6 +1,7 @@
 //! Test-only connection of admitted Gaussian queries to the maintained F3E
 //! mask-fill and final resolve. Only final color is read back; preparation
 //! never reads query values back or replaces original-region authority.
+use super::gaussian::TILE_UNIFORM_BYTES;
 use super::*;
 use std::time::{Duration, Instant};
 
@@ -47,7 +48,7 @@ impl FieldStorage {
         let vertices = 2 * 6 * VERTEX_STRIDE;
         let upload = queries[0]
             .checked_add(map)
-            .and_then(|v| v.checked_add(tiles.checked_mul(16)?))
+            .and_then(|v| v.checked_add(tiles.checked_mul(TILE_UNIFORM_BYTES)?))
             .and_then(|v| v.checked_add(vertices))
             .ok_or_else(resource)?;
         let scratch = cells.checked_mul(12).ok_or_else(resource)?;
@@ -74,7 +75,7 @@ impl FieldStorage {
             .checked_add(queries[0])
             .and_then(|v| v.checked_add(queries[1])) // radii <= query output
             .and_then(|v| v.checked_add(upload))
-            .and_then(|v| v.checked_add(map.max(queries[0]).max(vertices).max(16)))
+            .and_then(|v| v.checked_add(map.max(queries[0]).max(vertices).max(TILE_UNIFORM_BYTES)))
             .and_then(|v| v.checked_add(readback.checked_mul(3)?))
             .and_then(|v| v.checked_add(output))
             .ok_or_else(resource)?;
@@ -111,9 +112,17 @@ pub(in crate::runtime::execution_2d) fn execute(
     query_input: &[u8],
     query_count: u32,
 ) -> Vec<u8> {
-    execute_tiles(samples, extent, query_input, query_count, extent, &[[0, 0]])
-        .pop()
-        .unwrap()
+    execute_tiles(
+        samples,
+        extent,
+        query_input,
+        query_count,
+        extent,
+        &[[0, 0]],
+        extent,
+    )
+    .pop()
+    .unwrap()
 }
 
 fn execute_tiles(
@@ -123,6 +132,7 @@ fn execute_tiles(
     query_count: u32,
     extent: [u32; 2],
     offsets: &[[i32; 2]],
+    visible_extent: [u32; 2],
 ) -> Vec<Vec<u8>> {
     assert_eq!(
         extent[0], extent[1],
@@ -198,6 +208,7 @@ fn execute_tiles(
         super::gaussian::FieldData {
             samples,
             extent: map_extent,
+            visible_extent,
             query_input,
             query_count,
         },
@@ -468,8 +479,8 @@ fn gaussian_field_data_admission_rejects_overflow_and_inflight_pressure() {
     let storage = FieldStorage::new([256; 2], [143_768, 2_976]).unwrap();
     let policy = GpuExecutionPolicy::default();
     storage.admit(policy).unwrap();
-    assert_eq!(storage.resident, 1_212_104);
-    assert_eq!(storage.upload, 406_312);
+    assert_eq!(storage.resident, 1_212_120);
+    assert_eq!(storage.upload, 406_328);
     assert_eq!(storage.readback, 16_384);
     // An otherwise-capable context with an exhausted transfer category must
     // reject before any resource or caller target is created or mutated.
@@ -507,7 +518,10 @@ fn gaussian_tiles_inventory_one_map_and_scratch_with_all_uniforms_and_readbacks(
     let storage = FieldStorage::for_tiles([16, 8], [8; 2], [16, 0], 5).unwrap();
     assert_eq!(storage.map, 512);
     assert_eq!(storage.scratch, 768);
-    assert_eq!(storage.upload, 16 + 512 + 5 * 16 + 2 * 6 * VERTEX_STRIDE);
+    assert_eq!(
+        storage.upload,
+        16 + 512 + 5 * TILE_UNIFORM_BYTES + 2 * 6 * VERTEX_STRIDE
+    );
     assert_eq!(storage.readback, 5 * 264);
     let policy = GpuExecutionPolicy::default();
     storage.admit(policy).unwrap();
@@ -563,6 +577,7 @@ fn gaussian_tile_offsets_and_seams_share_one_map_through_f3e_on_vulkan() {
             if queried { 3 } else { 0 },
             [8; 2],
             &offsets,
+            [16, 8],
         );
         assert_eq!(results.len(), offsets.len());
         for (pixels, offset) in results.iter().zip(offsets) {
@@ -609,5 +624,45 @@ fn gaussian_tile_offsets_and_seams_share_one_map_through_f3e_on_vulkan() {
                 }
             }
         }
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan: fractional canvas cutoff with globally phased cropped field samples"]
+fn gaussian_fractional_canvas_preserves_sample_phase_and_signed_crop_on_vulkan() {
+    // This map begins at global sample (3,3). Canvas 1.2 admits global centers
+    // 3.5 and 4.5, while the next center 5.5 is outside. The negative lookup
+    // offset leaves two admitted samples on each axis in the first pixel:
+    // alpha = 4/16, then ordinary linear-to-sRGB yields red 137 and alpha 64.
+    let visible =
+        super::gaussian::canvas_extent([1.2; 2], [3, 3, 11, 11], &mut 0_usize, &[0]).unwrap();
+    assert_eq!(visible, [2; 2]);
+    let mut words = vec![0_u32; 836 + 5];
+    words[0] = 1;
+    words[836 + 3] = 65536; // Q48 one, zero-node query.
+    let bytes = words
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect::<Vec<_>>();
+    for queried in [false, true] {
+        let samples = [if queried { 1_u32 << 31 } else { 1_u32 << 24 }; 64];
+        let pixels = execute_tiles(
+            &samples,
+            [8; 2],
+            if queried { &bytes } else { &[] },
+            u32::from(queried),
+            [8; 2],
+            &[[-1, -1]],
+            visible,
+        )
+        .pop()
+        .unwrap();
+        assert!(pixels[0].abs_diff(137) <= 2);
+        assert_eq!(&pixels[1..4], &[0, 0, 64]);
+        assert_eq!(
+            &pixels[4..],
+            &[0; 12],
+            "canvas clipping precedes F3E resolve"
+        );
     }
 }

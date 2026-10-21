@@ -5,9 +5,9 @@
 //! an already admitted positive quadrature rule. All coefficient and floating
 //! errors are compiled outward; no rounded point is source membership.
 
-use super::{
-    AreaQueryError, Components, Coordinates, Interval, MappedBoundary, checked, debit, iv,
-};
+use super::{AreaQueryError, Components, Interval, MappedBoundary, checked, debit};
+#[cfg(test)]
+use super::{Coordinates, iv};
 
 pub(super) mod query;
 

@@ -22,7 +22,7 @@ const FORMAT: GpuTextureFormat = GpuTextureFormat::R32Float;
 
 pub(super) struct PreparedShadow {
     pub(super) color: [f32; 4],
-    pub(super) coverage: Arc<NeutralCoverage>,
+    pub(super) coverage: ShadowCoverage,
     /// The mathematically bounded 3σ support reach in the immediate-parent
     /// continuous logical frame, not a rectangle used as membership.
     pub(super) logical_envelope: [f64; 4],
@@ -36,11 +36,31 @@ pub(super) struct PreparedShadow {
     sample_area_coverage: bool,
 }
 
+#[derive(Clone)]
+pub(super) enum ShadowCoverage {
+    Samples(Arc<NeutralCoverage>),
+    Gaussian(usize),
+}
+
+pub(super) struct NumericalField {
+    pub(super) plane: geometry_support::region::PreparedPlane,
+    pub(super) visible_extent: [u32; 2],
+    logical_envelope: [f64; 4],
+    pub(super) path: Vec<usize>,
+}
+
+struct PreparationAdmission {
+    work: support::PreparationBudget,
+    host: support::PreparationHostBudget,
+}
+
 /// Ordered physical preparations have a fallibly reserved inventory. Event
 /// indices are emitted monotonically; lookup never allocates a tree node.
 #[derive(Default)]
 pub(super) struct ShadowGroups {
     entries: Vec<(usize, Vec<PreparedShadow>)>,
+    pub(super) numerical: Vec<NumericalField>,
+    admission: Option<PreparationAdmission>,
 }
 
 impl ShadowGroups {
@@ -240,11 +260,11 @@ pub(in crate::runtime::execution_2d) fn prepare_sources<'scene>(
 ) -> Result<PreparedSources<'scene>, Render2dExecutionError> {
     let sources =
         geometry_support::build_group_sources(composition, 0, bindings, field_sets, preparation)?
-            .prepare_polygonal_consumers(
-            None,
-            Some((target.canvas(), target.raster_scale())),
-            MAX_SHADOW_COVERAGE_BYTES,
-        )?;
+            .prepare_consumers(geometry_support::GaussianTarget {
+            canvas: target.canvas(),
+            raster_scale: target.raster_scale(),
+            physical_extent: [target.physical_width, target.physical_height],
+        })?;
     PreparedSources::new(composition, sources, effects)
 }
 
@@ -282,9 +302,34 @@ pub(super) fn prepare(
     let geometry_support::GroupChildSources {
         casters: sources,
         work: mut aggregate_coverage_work,
+        mut host,
         ..
     } = sources;
+    host.reserve(metadata as usize, &[])?;
     let mut groups = ShadowGroups::default();
+    let inventory_work = sources
+        .len()
+        .checked_mul(32)
+        .and_then(|work| work.checked_add(128))
+        .ok_or_else(|| shadow_resource(&[], "numerical field inventory work overflow"))?;
+    aggregate_coverage_work.charge(
+        inventory_work,
+        usize::MAX,
+        &[],
+        "numerical field inventory exceeds invocation work",
+    )?;
+    let field_count = sources
+        .iter()
+        .try_fold(0_usize, |count, (_, source)| {
+            let fields = match source {
+                geometry_support::NeutralCaster::Gaussian(caster) => caster.planes.len(),
+                _ => 0,
+            };
+            count.checked_add(fields)
+        })
+        .ok_or_else(|| shadow_resource(&[], "numerical field inventory overflow"))?;
+    host.reserve_vector(&mut groups.numerical, field_count, &[])?;
+    let mut sources = sources.into_iter();
     groups
         .entries
         .try_reserve_exact(admitted_effects)
@@ -318,16 +363,33 @@ pub(super) fn prepare(
         if group.shadows().is_empty() {
             continue;
         }
-        let source = sources
-            .binary_search_by_key(&index, |entry| entry.0)
-            .ok()
-            .map(|position| &sources[position].1)
+        retained_coverage_bytes = host.live() as u64;
+        let (source_index, source) = sources
+            .next()
             .expect("the neutral F1 traversal records each shadow-bearing group");
-        if let geometry_support::NeutralCaster::Symbolic(source) = source {
+        assert_eq!(source_index, index, "caster and painter event order agree");
+        if let geometry_support::NeutralCaster::Gaussian(caster) = source {
+            let prepared = prepare_numerical(
+                caster,
+                group,
+                &mut groups.numerical,
+                NumericalPreparation {
+                    path,
+                    paintable,
+                    target,
+                    work: &mut aggregate_coverage_work,
+                    host: &mut host,
+                },
+            )?;
+            groups.insert(index, prepared);
+            continue;
+        }
+        if let geometry_support::NeutralCaster::Symbolic(source) = &source {
             let [a, b, c, d, tx, ty] = parent_to_root.coefficients();
             let ancestor = Render2dAffineTransform::new(a, b, c, d, tx, ty).map_err(|_| {
                 shadow_precision(path, "symbolic ancestor affine is unrepresentable")
             })?;
+            let before = retained_coverage_bytes;
             let prepared = symbolic::prepare(
                 source,
                 group.shadows(),
@@ -340,10 +402,11 @@ pub(super) fn prepare(
                     retained_bytes: &mut retained_coverage_bytes,
                 },
             )?;
+            host.reserve((retained_coverage_bytes - before) as usize, path)?;
             groups.insert(index, prepared);
             continue;
         }
-        let (mesh, qualified_disk, original_polygons) = match source {
+        let (mesh, qualified_disk, original_polygons) = match &source {
             geometry_support::NeutralCaster::Mesh(mesh) => (mesh.as_ref(), None, false),
             geometry_support::NeutralCaster::OriginalStraightPolygonUnion(mesh) => {
                 (mesh.as_ref(), None, true)
@@ -358,6 +421,9 @@ pub(super) fn prepare(
                     "symbolic caster {} was prepared above",
                     symbolic.owner_path()[0]
                 );
+            }
+            geometry_support::NeutralCaster::Gaussian(_) => {
+                unreachable!("numerical caster prepared above")
             }
         };
         let mut prepared = Vec::new();
@@ -642,10 +708,11 @@ pub(super) fn prepare(
                     "retained neutral coverage exceeds bounded memory",
                 ));
             }
+            host.reserve(bytes as usize, path)?;
             let bounds = output_bounds(&coverage, target, path)?;
             prepared.push(PreparedShadow {
                 color,
-                coverage: Arc::new(coverage),
+                coverage: ShadowCoverage::Samples(Arc::new(coverage)),
                 logical_envelope: envelope,
                 bounds,
                 group_visible: paintable,
@@ -656,7 +723,138 @@ pub(super) fn prepare(
         groups.insert(index, prepared);
     }
     debug_assert!(paintable_ancestors.is_empty());
+    debug_assert!(sources.next().is_none());
+    groups.admission = Some(PreparationAdmission {
+        work: aggregate_coverage_work,
+        host,
+    });
     Ok(groups)
+}
+
+struct NumericalPreparation<'a> {
+    path: &'a [usize],
+    paintable: bool,
+    target: &'a AdmittedTarget,
+    work: &'a mut support::PreparationBudget,
+    host: &'a mut support::PreparationHostBudget,
+}
+
+fn prepare_numerical(
+    caster: geometry_support::PreparedGaussianCaster,
+    group: &Render2dGroup,
+    fields: &mut Vec<NumericalField>,
+    context: NumericalPreparation<'_>,
+) -> Result<Vec<PreparedShadow>, Render2dExecutionError> {
+    let NumericalPreparation {
+        path,
+        paintable,
+        target,
+        work,
+        host,
+    } = context;
+    work.charge(
+        128 + group.shadows().len() * 32,
+        usize::MAX,
+        path,
+        "numerical authored effect traversal exceeds invocation work",
+    )?;
+    if caster.effect_planes.len() != group.shadows().len() {
+        return Err(shadow_precision(
+            path,
+            "numerical effect inventory does not match authored order",
+        ));
+    }
+    // Every original source/kernel was validated before this paint-only cut.
+    if !paintable
+        || group
+            .shadows()
+            .iter()
+            .all(|effect| effect.color().channels()[3] == 0)
+    {
+        return Ok(Vec::new());
+    }
+    let first = fields.len();
+    for field in caster.planes {
+        work.charge(
+            256 + path.len() * 2,
+            usize::MAX,
+            path,
+            "numerical field transfer exceeds invocation work",
+        )?;
+        let visible_extent =
+            super::gaussian::canvas_extent(target.canvas(), field.plane.root(), work, path)?;
+        let mut owner = Vec::new();
+        host.reserve_vector(&mut owner, path.len(), path)?;
+        owner.extend_from_slice(path);
+        assert!(
+            fields.len() < fields.capacity(),
+            "numerical field inventory was reserved"
+        );
+        fields.push(NumericalField {
+            plane: field.plane,
+            visible_extent,
+            logical_envelope: field.logical_envelope,
+            path: owner,
+        });
+    }
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(group.shadows().len())
+        .map_err(|_| shadow_resource(path, "numerical effect inventory allocation failed"))?;
+    if prepared.capacity() > group.shadows().len() {
+        return Err(shadow_resource(
+            path,
+            "numerical effect capacity exceeds admission",
+        ));
+    }
+    for (effect, field) in group.shadows().iter().zip(caster.effect_planes) {
+        let color = linear_color(effect.color());
+        if color[3] == 0.0 {
+            continue;
+        }
+        let Some(field) = field else { continue };
+        let index = first
+            .checked_add(field)
+            .filter(|&index| index < fields.len())
+            .ok_or_else(|| {
+                shadow_precision(path, "numerical effect references an unknown field")
+            })?;
+        work.charge(
+            256 + path.len() * 2,
+            usize::MAX,
+            path,
+            "numerical effect preparation exceeds invocation work",
+        )?;
+        let root = fields[index].plane.root();
+        let bounds = [
+            root[0] / SAMPLES,
+            root[1] / SAMPLES,
+            root[2].div_ceil(SAMPLES).min(target.physical_width),
+            root[3].div_ceil(SAMPLES).min(target.physical_height),
+        ];
+        let mut owner = Vec::new();
+        // The common occurrence reservation already includes this capacity.
+        owner
+            .try_reserve_exact(path.len())
+            .map_err(|_| shadow_resource(path, "numerical effect owner allocation failed"))?;
+        if owner.capacity() > path.len() {
+            return Err(shadow_resource(
+                path,
+                "numerical effect owner capacity exceeds admission",
+            ));
+        }
+        owner.extend_from_slice(path);
+        prepared.push(PreparedShadow {
+            color,
+            coverage: ShadowCoverage::Gaussian(index),
+            logical_envelope: fields[index].logical_envelope,
+            bounds: (bounds[0] < bounds[2] && bounds[1] < bounds[3]).then_some(bounds),
+            group_visible: paintable,
+            path: owner,
+            sample_area_coverage: true,
+        });
+    }
+    Ok(prepared)
 }
 
 pub(super) fn required_roles_admitted(context: &GpuContext) -> bool {
@@ -684,12 +882,65 @@ pub(super) fn visible(shadow: &PreparedShadow, tile: [u32; 4]) -> bool {
 /// plus all 4x mask samples written to its source-backed upload. The existing
 /// compositor charges this alongside authored painter-tree replay. The
 /// separate byte/node limits remain independent physical-resource ceilings.
+pub(super) struct TileAdmission {
+    pub(super) work: u64,
+    /// Shader-only work has no CPU per-sample loop. It stays in the tile
+    /// workload ceiling and must not be billed as CPU preparation as well.
+    pub(super) gpu_work: u64,
+    pub(super) numerical_uses: Vec<u64>,
+    pub(super) numerical_scratch: u64,
+}
+
+impl ShadowGroups {
+    pub(super) fn charge_replay(
+        &mut self,
+        work: u64,
+        gpu_work: u64,
+    ) -> Result<(), Render2dExecutionError> {
+        if let Some(admission) = &mut self.admission {
+            let work = work.checked_sub(gpu_work).ok_or_else(|| {
+                shadow_precision(&[], "GPU tile work exceeds complete replay receipt")
+            })?;
+            let work = usize::try_from(work)
+                .map_err(|_| shadow_resource(&[], "shadow replay work extent overflow"))?;
+            admission.work.charge(
+                work,
+                usize::MAX,
+                &[],
+                "shadow replay exceeds invocation work",
+            )?;
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn admit_tile_uploads(
-    shadows: &ShadowGroups,
+    shadows: &mut ShadowGroups,
     target: &AdmittedTarget,
+    context: &GpuContext,
     side: u32,
     bounds: [u32; 4],
-) -> Result<u64, Render2dExecutionError> {
+) -> Result<TileAdmission, Render2dExecutionError> {
+    let ShadowGroups {
+        entries,
+        numerical,
+        admission,
+    } = shadows;
+    let mut numerical_uses = Vec::<u64>::new();
+    if let Some(owner) = admission {
+        owner.work.charge(
+            // Includes the later physical slot construction, even for fields
+            // with no visible use and therefore no field preparation fee.
+            128 + numerical.len() * 64,
+            usize::MAX,
+            &[],
+            "shadow tile inventory exceeds invocation work",
+        )?;
+        owner
+            .host
+            .reserve_vector(&mut numerical_uses, numerical.len(), &[])?;
+    }
+    numerical_uses.resize(numerical.len(), 0);
     let dimension = side
         .checked_mul(SAMPLES)
         .ok_or_else(|| failure("shadow tile sample extent overflow"))?;
@@ -710,7 +961,9 @@ pub(super) fn admit_tile_uploads(
         .ok_or_else(|| failure("shadow tile upload/work addition overflow"))?;
     let mut total_bytes = 0_u64;
     let mut total_work = 0_u64;
+    let mut gpu_work = 0_u64;
     let mut count = 0_usize;
+    let mut lookup_uploads = 0_u64;
     for row in 0..u64::from((bounds[3] - origin_y).div_ceil(side)) {
         for col in 0..u64::from((bounds[2] - origin_x).div_ceil(side)) {
             let origin = [
@@ -726,8 +979,48 @@ pub(super) fn admit_tile_uploads(
             if tile[0] >= tile[2] || tile[1] >= tile[3] {
                 continue;
             }
-            for shadow in shadows.values().flatten() {
+            for shadow in entries.iter().flat_map(|(_, effects)| effects) {
+                if let Some(owner) = admission {
+                    owner.work.charge(
+                        32,
+                        usize::MAX,
+                        &shadow.path,
+                        "shadow tile selection exceeds invocation work",
+                    )?;
+                }
                 if !visible(shadow, tile) {
+                    continue;
+                }
+                if let ShadowCoverage::Gaussian(index) = shadow.coverage {
+                    let uses = numerical_uses.get_mut(index).ok_or_else(|| {
+                        shadow_precision(&shadow.path, "shadow tile has no numerical field")
+                    })?;
+                    *uses = uses.checked_add(1).ok_or_else(|| {
+                        shadow_resource(&shadow.path, "numerical tile use count overflow")
+                    })?;
+                    total_work = total_work
+                        .checked_add(sample_visits)
+                        .and_then(|work| work.checked_add(2))
+                        .ok_or_else(|| {
+                            shadow_resource(&shadow.path, "numerical tile work count overflow")
+                        })?;
+                    gpu_work = gpu_work.checked_add(sample_visits).ok_or_else(|| {
+                        shadow_resource(&shadow.path, "Gaussian lookup workload overflow")
+                    })?;
+                    lookup_uploads = lookup_uploads
+                        .checked_add(super::gaussian::TILE_UNIFORM_BYTES + 6 * VERTEX_STRIDE)
+                        .ok_or_else(|| {
+                            shadow_resource(&shadow.path, "numerical tile upload count overflow")
+                        })?;
+                    let owner = admission
+                        .as_mut()
+                        .expect("numerical field has its preparation owner");
+                    owner.work.charge(
+                        super::gaussian::lookup_preparation_work(),
+                        usize::MAX,
+                        &shadow.path,
+                        "numerical tile preparation exceeds invocation work",
+                    )?;
                     continue;
                 }
                 total_bytes = total_bytes
@@ -748,7 +1041,106 @@ pub(super) fn admit_tile_uploads(
             }
         }
     }
-    Ok(total_work)
+    let mut numerical_uploads = lookup_uploads;
+    let mut temporary = if total_bytes == 0 {
+        0
+    } else {
+        bytes
+            .checked_mul(2)
+            .ok_or_else(|| shadow_resource(&[], "shadow temporary upload bytes overflow"))?
+    };
+    let mut numerical_scratch = 0;
+    for (field, &uses) in numerical.iter().zip(&numerical_uses) {
+        if uses == 0 {
+            continue;
+        }
+        let data = super::gaussian::field_data(field);
+        super::gaussian::admit_field(&data, &field.path, context)?;
+        let map_bytes = (data.samples.len() as u64)
+            .checked_mul(4)
+            .ok_or_else(|| shadow_resource(&field.path, "numerical map byte count overflow"))?;
+        let input_bytes = data.query_input.len() as u64;
+        let dummy = if data.query_count == 0 { 16 } else { 0 };
+        numerical_uploads = numerical_uploads
+            .checked_add(map_bytes)
+            .and_then(|bytes| bytes.checked_add(input_bytes))
+            .and_then(|bytes| bytes.checked_add(dummy))
+            .ok_or_else(|| shadow_resource(&field.path, "numerical field upload bytes overflow"))?;
+        temporary = temporary
+            .max(map_bytes)
+            .max(input_bytes)
+            .max(6 * VERTEX_STRIDE)
+            .max(super::gaussian::TILE_UNIFORM_BYTES);
+        numerical_scratch = bytes;
+        let fee = super::gaussian::field_preparation_work(
+            data.samples.len(),
+            data.query_input.len(),
+            data.query_count,
+        )
+        .ok_or_else(|| shadow_resource(&field.path, "numerical field preparation work overflow"))?;
+        let owner = admission
+            .as_mut()
+            .expect("numerical field has its preparation owner");
+        owner.work.charge(
+            fee,
+            usize::MAX,
+            &field.path,
+            "numerical field preparation exceeds invocation work",
+        )?;
+        // Each node has at most two 12-product kernel polynomials and two
+        // weighted reductions; each signed Q48 multiply has 16 exact u32
+        // multiply-accumulates. Charge every referencing query's run, once per
+        // shared field dispatch. This is an arithmetic-work bound, not a claim
+        // that GPU execution consists solely of these instructions.
+        let arithmetic = field
+            .plane
+            .query_node_visits()
+            .checked_mul(26 * 16)
+            .and_then(|work| u64::try_from(work).ok())
+            .ok_or_else(|| {
+                shadow_resource(&field.path, "expanded Gaussian arithmetic work overflow")
+            })?;
+        total_work = total_work.checked_add(arithmetic).ok_or_else(|| {
+            shadow_resource(&field.path, "combined Gaussian execution work overflow")
+        })?;
+        gpu_work = gpu_work.checked_add(arithmetic).ok_or_else(|| {
+            shadow_resource(&field.path, "combined Gaussian shader workload overflow")
+        })?;
+        if data.query_count != 0 {
+            total_work = total_work.checked_add(2).ok_or_else(|| {
+                shadow_resource(&field.path, "Gaussian initialization node count overflow")
+            })?;
+        }
+    }
+    let all_uploads = total_bytes
+        .checked_add(numerical_uploads)
+        .ok_or_else(|| shadow_resource(&[], "combined shadow upload bytes overflow"))?;
+    if all_uploads > MAX_SHADOW_MASK_UPLOAD_BYTES
+        || all_uploads > context.execution_policy().max_upload_bytes_in_flight()
+    {
+        return Err(shadow_resource(
+            &[],
+            "combined shadow uploads exceed admission",
+        ));
+    }
+    if let Some(owner) = admission {
+        let metadata = super::gaussian::field_metadata_bytes(numerical.len())
+            .ok_or_else(|| shadow_resource(&[], "numerical physical metadata bytes overflow"))?;
+        let payload = all_uploads
+            .checked_add(temporary)
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .ok_or_else(|| shadow_resource(&[], "combined shadow upload host extent overflow"))?;
+        // Immutable transfer Arcs from all uses coexist. One conversion Vec
+        // (two for legacy mask expansion) is additional peak-live storage.
+        owner.host.reserve(payload, &[])?;
+        owner.host.reserve(metadata, &[])?;
+    }
+    Ok(TileAdmission {
+        work: total_work,
+        gpu_work,
+        numerical_uses,
+        numerical_scratch,
+    })
 }
 
 /// Source-backed R32Float mask: every 4x physical sample receives the ONE
@@ -762,6 +1154,9 @@ pub(super) fn upload_tile(
     target: &AdmittedTarget,
     resources: &mut GpuResourceScope,
 ) -> Result<GpuTextureViewHandle, Render2dExecutionError> {
+    let ShadowCoverage::Samples(coverage) = &shadow.coverage else {
+        unreachable!("encoded numerical fields use their retained GPU lookup")
+    };
     let count = usize::try_from(dimension)
         .ok()
         .and_then(|side| side.checked_mul(side))
@@ -804,16 +1199,14 @@ pub(super) fn upload_tile(
                 0.0
             } else {
                 let sx = x
-                    .checked_sub(shadow.coverage.origin_x)
+                    .checked_sub(coverage.origin_x)
                     .and_then(|delta| usize::try_from(delta).ok());
                 let sy = y
-                    .checked_sub(shadow.coverage.origin_y)
+                    .checked_sub(coverage.origin_y)
                     .and_then(|delta| usize::try_from(delta).ok());
                 match (sx, sy) {
-                    (Some(sx), Some(sy))
-                        if sx < shadow.coverage.width && sy < shadow.coverage.height =>
-                    {
-                        shadow.coverage.values[sy * shadow.coverage.width + sx]
+                    (Some(sx), Some(sy)) if sx < coverage.width && sy < coverage.height => {
+                        coverage.values[sy * coverage.width + sx]
                     }
                     _ => 0.0,
                 }
@@ -982,6 +1375,208 @@ mod tests {
         .prepare_polygonal_consumers(None, Some(([64.0, 64.0], 1.0)), MAX_SHADOW_COVERAGE_BYTES)
         .unwrap();
         PreparedSources::new(composition, sources, effects).unwrap()
+    }
+
+    fn gaussian_composition() -> Render2dComposition {
+        let mut commands = Vec::new();
+        for [x0, y0, x1, y1] in [[10.0, 10.0, 30.0, 30.0], [18.0, 18.0, 22.0, 22.0]] {
+            let point = |x, y| Render2dPoint::new(x, y).unwrap();
+            commands.extend([
+                Render2dPathCommand::MoveTo(point(x0, y0)),
+                Render2dPathCommand::LineTo(point(x1, y0)),
+                Render2dPathCommand::LineTo(point(x1, y1)),
+                Render2dPathCommand::LineTo(point(x0, y1)),
+                Render2dPathCommand::Close,
+            ]);
+        }
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::path(
+                    Render2dPath::new(Render2dFillRule::EvenOdd, commands).unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let child = Render2dGroup::new(
+            [Render2dEntry::item(item)],
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+            vec![
+                Render2dDropShadow::new(8.0, 0.0, 0.03125, -1.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+            ],
+        );
+        let wrapper = Render2dGroup::new(
+            [Render2dEntry::group(child)],
+            Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+            vec![],
+        );
+        let root = Render2dGroup::new(
+            [Render2dEntry::group(wrapper)],
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::OPAQUE,
+            vec![
+                Render2dDropShadow::new(
+                    0.0,
+                    0.0,
+                    0.1,
+                    0.0,
+                    Render2dColorRgba8::new(255, 0, 0, 255),
+                )
+                .unwrap(),
+            ],
+        );
+        Render2dComposition::new([Render2dEntry::group(root)]).unwrap()
+    }
+
+    #[test]
+    fn original_gaussian_source_and_affine_plan_share_the_complete_sheared_invocation() {
+        let composition = gaussian_composition();
+        let bindings = Render2dResourceBindings::default();
+        let fields = BTreeMap::new();
+        let mut preparation = geometry_support::SourcePreparation::new(
+            geometry_support::NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            MAX_SHADOW_COVERAGE_BYTES,
+        );
+        let effects = preparation.admit_effects(&composition).unwrap();
+        let sources =
+            geometry_support::build_group_sources(&composition, 0, &bindings, &fields, preparation)
+                .unwrap()
+                .prepare_consumers(geometry_support::GaussianTarget {
+                    canvas: [64.0; 2],
+                    raster_scale: 1.0,
+                    physical_extent: [64; 2],
+                })
+                .unwrap();
+        let before = sources.work.used();
+        let prepared = PreparedSources::new(&composition, sources, effects).unwrap();
+        let (plan, prepared) = prepared.plan().unwrap();
+        let geometry_support::NeutralCaster::Gaussian(caster) = prepared.sources.caster(0).unwrap()
+        else {
+            panic!("original Gaussian caster")
+        };
+        assert_eq!(caster.planes.len(), 1);
+        let plane = &caster.planes[0].plane;
+        let (words, count) = plane.query_data();
+        let physical = super::super::gaussian::field_preparation_work(
+            plane.samples().len(),
+            words.len(),
+            count,
+        )
+        .unwrap()
+            + super::super::gaussian::lookup_preparation_work();
+        eprintln!(
+            "ORDINARY_GAUSSIAN_CPU source={before} with_plan={} remaining={} physical_field_work={physical} root={:?} query_nodes={} Q48_products={} u32_MACs={} plan_events={} host_peak={}",
+            prepared.sources.work.used(),
+            prepared.sources.work.remaining(usize::MAX),
+            plane.root(),
+            plane.query_node_visits(),
+            plane.query_node_visits() * 26,
+            plane.query_node_visits() * 26 * 16,
+            plan.events.len(),
+            prepared.sources.host.peak()
+        );
+        assert!(physical < prepared.sources.work.remaining(usize::MAX));
+        assert!(prepared.sources.host.peak() <= support::MAX_SHADOW_HOST_BYTES);
+    }
+
+    #[test]
+    fn empty_invisible_effects_do_not_require_a_nonempty_symbolic_envelope() {
+        let mut entries = gaussian_composition().root_entries().to_vec();
+        entries.push(Render2dEntry::group(Render2dGroup::new(
+            [],
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+            vec![
+                Render2dDropShadow::new(0.0, 0.0, 0.1, -1.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+            ],
+        )));
+        let composition = Render2dComposition::new(entries).unwrap();
+        let bindings = Render2dResourceBindings::default();
+        let field_sets = BTreeMap::new();
+        let mut preparation = geometry_support::SourcePreparation::new(
+            geometry_support::NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            MAX_SHADOW_COVERAGE_BYTES,
+        );
+        let effects = preparation.admit_effects(&composition).unwrap();
+        let sources = geometry_support::build_group_sources(
+            &composition,
+            0,
+            &bindings,
+            &field_sets,
+            preparation,
+        )
+        .unwrap()
+        .prepare_consumers(geometry_support::GaussianTarget {
+            canvas: [64.0; 2],
+            raster_scale: 1.0,
+            physical_extent: [64; 2],
+        })
+        .unwrap();
+        assert!(
+            matches!(sources.caster(7), Some(geometry_support::NeutralCaster::Symbolic(source))
+            if source.logical_envelope().is_none())
+        );
+        let (plan, sources) = PreparedSources::new(&composition, sources, effects)
+            .unwrap()
+            .plan()
+            .unwrap();
+        let mut resources = GpuResourceScope::new();
+        let texture = resources
+            .texture(
+                GpuTextureDescriptor::ordinary_owned_2d(
+                    "CPU symbolic preparation target",
+                    GpuResourceLifetime::Transient,
+                    GpuReconstruction::SourceBacked,
+                    64,
+                    64,
+                    GpuTextureFormat::Rgba8UnormSrgb,
+                    [GpuTextureUsage::ColorAttachment],
+                    GpuTextureInitialization::Zeroed,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let view = resources
+            .texture_view(
+                GpuTextureViewDescriptor::ordinary_full_owned(
+                    "CPU symbolic preparation view",
+                    &texture,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let target = AdmittedTarget {
+            view,
+            format: GpuTextureFormat::Rgba8UnormSrgb,
+            physical_width: 64,
+            physical_height: 64,
+            continuous_width: 64.0,
+            continuous_height: 64.0,
+            raster_scale: 1.0,
+            max_texture_dimension_2d: 8192,
+            max_buffer_bytes: MAX_SHADOW_COVERAGE_BYTES,
+            image_format: true,
+            clip_format: true,
+        };
+        let result = prepare(&plan, &target, sources).unwrap();
+        assert_eq!(result.numerical.len(), 1);
+        assert!(result.get(&7).unwrap().is_empty());
     }
 
     #[test]

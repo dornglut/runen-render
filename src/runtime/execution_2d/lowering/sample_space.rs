@@ -5,8 +5,7 @@
 //! Effects remain fail-closed until their separately owned F3F delivery.
 //! Source colors share one correlated 4x4 plane and resolve only at the
 //! caller-owned target boundary.
-#[cfg(test)]
-mod gaussian;
+pub(in crate::runtime::execution_2d) mod gaussian;
 #[cfg(test)]
 pub(in crate::runtime::execution_2d) mod gaussian_gpu_proof;
 mod gpu;
@@ -37,7 +36,8 @@ const MAX_TILE_SIDE: u32 = 256;
 const MAX_TILES: u64 = 16384;
 const MAX_OPERATIONS: usize = 1_048_576;
 // Every tile visits the lexical plan, vector triangles and image patches.
-// Bound aggregate CPU replay separately from emitted GPU operations.
+// This bounds aggregate tile replay and encoded shadow sample/arithmetic
+// extent, independently of the invocation's CPU preparation and node limits.
 const MAX_TILE_WORK_UNITS: u64 = 16_777_216;
 const MAX_RETAINED_VECTOR_VERTICES: usize = 1_048_576;
 const SAMPLES: u32 = crate::runtime::program::abi::CORRELATED_SAMPLE_AXIS;
@@ -60,13 +60,19 @@ fn precision_failure(path: &[usize], detail: impl Into<String>) -> Render2dExecu
     }
 }
 
-fn tile_side(target: &AdmittedTarget, depth: usize) -> Result<u32, Render2dExecutionError> {
+fn tile_side(
+    target: &AdmittedTarget,
+    depth: usize,
+    numerical: bool,
+) -> Result<u32, Render2dExecutionError> {
     let depth = u64::try_from(depth).map_err(|_| failure("sample-depth overflow"))?;
     let bytes_per_pixel = (depth + 1)
         .checked_mul(COLOR_BYTES_PER_PIXEL)
-        .and_then(|v| v.checked_add(MASK_BYTES_PER_PIXEL))
+        .and_then(|v| v.checked_add(MASK_BYTES_PER_PIXEL * (1 + u64::from(numerical))))
         .ok_or_else(|| failure("sample-space allocation overflow"))?;
-    let mut side = MAX_TILE_SIDE.min(target.max_texture_dimension_2d() / SAMPLES);
+    let mut side = MAX_TILE_SIDE
+        .min(target.max_texture_dimension_2d() / SAMPLES)
+        .min(target.physical_width.max(target.physical_height));
     while side > 0 {
         let bytes = u64::from(side)
             .checked_mul(u64::from(side))
@@ -187,7 +193,7 @@ pub(in crate::runtime::execution_2d) fn lower(
     } = inspect(plan, target, bindings, glyphs_by_event)?;
     // This work comes from the SAME borrowed F1 painter tree as the visible
     // F3E items, but never from their clipped/colorized physical footprints.
-    let shadow_groups = match prepared_sources {
+    let mut shadow_groups = match prepared_sources {
         Some(prepared) => shadow::prepare(plan, target, prepared)?,
         None => shadow::ShadowGroups::default(),
     };
@@ -238,11 +244,12 @@ pub(in crate::runtime::execution_2d) fn lower(
     if !admits_sample_plane(context) {
         return Err(Render2dTargetAdmissionError::SamplePlaneFormatUnsupported.into());
     }
-    if shadow_groups
-        .values()
-        .flatten()
-        .any(|effect| effect.group_visible && effect.color[3] > 0.0 && effect.bounds.is_some())
-        && !shadow::required_roles_admitted(context)
+    if shadow_groups.values().flatten().any(|effect| {
+        effect.group_visible
+            && effect.color[3] > 0.0
+            && effect.bounds.is_some()
+            && matches!(effect.coverage, shadow::ShadowCoverage::Samples(_))
+    }) && !shadow::required_roles_admitted(context)
     {
         return Err(Render2dTargetAdmissionError::SamplePlaneFormatUnsupported.into());
     }
@@ -254,7 +261,11 @@ pub(in crate::runtime::execution_2d) fn lower(
         .any(|item| matches!(item, Some(PreparedItem::Text(_))));
     let has_isolated_items = has_images || has_text;
     let extra_layer = if has_isolated_items { 1 } else { 0 };
-    let side = tile_side(target, peak + extra_layer)?;
+    let side = tile_side(
+        target,
+        peak + extra_layer,
+        !shadow_groups.numerical.is_empty(),
+    )?;
     let x0 = bounds[0] / side * side;
     let y0 = bounds[1] / side * side;
     let x_end = bounds[2].min(target.physical_width);
@@ -271,12 +282,22 @@ pub(in crate::runtime::execution_2d) fn lower(
     // source-backed mask over every tile sample cell. Both resource traversal
     // and per-sample upload preparation share this compiler's replay budget.
     // Account for both before constructing any GPU resource or target work.
-    let shadow_work = shadow::admit_tile_uploads(&shadow_groups, target, side, bounds)?;
-    admit_tile_work(plan.events.len(), &items, tile_count, shadow_work)?;
+    let shadow_tiles =
+        shadow::admit_tile_uploads(&mut shadow_groups, target, context, side, bounds)?;
+    let replay = admit_tile_work(plan.events.len(), &items, tile_count, shadow_tiles.work)?;
+    shadow_groups.charge_replay(replay, shadow_tiles.gpu_work)?;
 
     let dimension = side * SAMPLES;
     let physical = [dimension, dimension];
     let mut resources = GpuResourceScope::new();
+    let mut numerical_fields = gaussian::FieldSet::prepare(
+        &shadow_groups.numerical,
+        &shadow_tiles.numerical_uses,
+        dimension,
+        shadow_tiles.numerical_scratch,
+        context,
+        &mut resources,
+    )?;
     let layers = (0..=peak)
         .map(|n| {
             scratch(
@@ -558,13 +579,23 @@ pub(in crate::runtime::execution_2d) fn lower(
                                     if !shadow::visible(effect, tile_bounds) {
                                         continue;
                                     }
-                                    let coverage = shadow::upload_tile(
-                                        effect,
-                                        origin,
-                                        dimension,
-                                        target,
-                                        &mut resources,
-                                    )?;
+                                    let coverage = match &effect.coverage {
+                                        shadow::ShadowCoverage::Samples(_) => shadow::upload_tile(
+                                            effect,
+                                            origin,
+                                            dimension,
+                                            target,
+                                            &mut resources,
+                                        )?,
+                                        shadow::ShadowCoverage::Gaussian(field) => numerical_fields
+                                            .lookup(
+                                                *field,
+                                                origin,
+                                                &effect.path,
+                                                &mut operations,
+                                                &mut resources,
+                                            )?,
+                                    };
                                     let mut quad = Vec::new();
                                     let sample_origin = [
                                         f64::from(origin[0]) * f64::from(SAMPLES),

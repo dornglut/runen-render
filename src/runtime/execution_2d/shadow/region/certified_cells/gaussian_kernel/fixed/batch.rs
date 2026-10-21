@@ -68,27 +68,6 @@ fn up_mul(a: f64, b: f64) -> f64 {
 }
 
 impl Batch {
-    pub(in super::super::super) fn field_preparation_work(
-        &self,
-        samples: usize,
-    ) -> Result<usize, AreaQueryError> {
-        // Actual one-time transfer copies: prepared query words and the POD
-        // u32 sample map. No intermediate expanded float plane is formed.
-        // Also reserve bounded descriptors/handles, two six-vertex F3E draws
-        // and the four-word extent uniform. Compiler/backend work has its
-        // existing separate sibling authority.
-        self.data
-            .bytes
-            .len()
-            .checked_add(samples.checked_mul(4).ok_or(AreaQueryError::Resource)?)
-            // A literal-only field retains one initialized 16-byte binding,
-            // rather than inventing a numerical query or compute operation.
-            .and_then(|v| v.checked_add(if self.data.count == 0 { 16 } else { 0 }))
-            .and_then(|v| v.checked_mul(2))
-            .and_then(|v| v.checked_add(4096 + 1024 + 768 + 32))
-            .ok_or(AreaQueryError::Resource)
-    }
-
     pub(in super::super::super) fn into_parts(self) -> (EncodedQueries, Vec<f64>) {
         (self.data, self.errors)
     }

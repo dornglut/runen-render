@@ -138,6 +138,7 @@ fn prepare_fixture() -> super::plane::PreparedPlane {
                 .unwrap(),
         )
         .unwrap();
+    field.admit_proof_physical(&mut fuel).unwrap();
     assert_eq!(field.samples().len(), 65_536);
     assert!(fuel > 0);
     println!(

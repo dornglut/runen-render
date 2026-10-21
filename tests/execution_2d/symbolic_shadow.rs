@@ -3,37 +3,53 @@ use super::*;
 use runen_render::composition_2d::{
     Render2dBrush, Render2dDropShadow, Render2dRect, Render2dShape,
 };
+use runen_render::execution_2d::Render2dUnsupportedContent;
 
 fn context() -> Option<GpuContext> {
-    let descriptor =
-        GpuContextDescriptor::new(GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements())
-            .with_fallback_policy(GpuSoftwareFallbackPolicy::Require)
-            .with_allowed_backends([GpuBackendFamily::Vulkan])
-            .require_format_role(
-                GpuTextureFormat::Rgba8UnormSrgb,
-                GpuFormatRole::ColorAttachment,
-            )
-            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Blendable)
-            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource)
-            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Sampled)
-            .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Filterable)
-            .require_format_role(
-                GpuTextureFormat::Rgba8UnormSrgb,
-                GpuFormatRole::CopyDestination,
-            )
-            .require_format_role(
-                GpuTextureFormat::Rgba16Float,
-                GpuFormatRole::ColorAttachment,
-            )
-            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable)
-            .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled)
-            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment)
-            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled)
-            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Filterable)
-            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::CopyDestination)
-            .require_format_role(GpuTextureFormat::R32Float, GpuFormatRole::Sampled)
-            .require_format_role(GpuTextureFormat::R32Float, GpuFormatRole::CopyDestination)
-            .with_label("F3F continuous original caster physical reference");
+    context_with_compute(false)
+}
+
+fn context_with_compute(compute: bool) -> Option<GpuContext> {
+    let mut requirements = GpuCapabilityProfile::OffscreenGraphicsBaseline.requirements();
+    if compute {
+        requirements
+            .insert(runen_gpu::GpuCapabilityRequirement::Required(
+                runen_gpu::GpuCapabilityFeature::Compute,
+            ))
+            .unwrap();
+    }
+    let mut descriptor = GpuContextDescriptor::new(requirements)
+        .with_fallback_policy(GpuSoftwareFallbackPolicy::Require)
+        .with_allowed_backends([GpuBackendFamily::Vulkan])
+        .require_format_role(
+            GpuTextureFormat::Rgba8UnormSrgb,
+            GpuFormatRole::ColorAttachment,
+        )
+        .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Blendable)
+        .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::CopySource)
+        .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Sampled)
+        .require_format_role(GpuTextureFormat::Rgba8UnormSrgb, GpuFormatRole::Filterable)
+        .require_format_role(
+            GpuTextureFormat::Rgba8UnormSrgb,
+            GpuFormatRole::CopyDestination,
+        )
+        .require_format_role(
+            GpuTextureFormat::Rgba16Float,
+            GpuFormatRole::ColorAttachment,
+        )
+        .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Blendable)
+        .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled)
+        .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment)
+        .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled)
+        .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Filterable)
+        .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::CopyDestination)
+        .require_format_role(GpuTextureFormat::R32Float, GpuFormatRole::Sampled)
+        .require_format_role(GpuTextureFormat::R32Float, GpuFormatRole::CopyDestination)
+        .with_label("F3F continuous original caster physical reference");
+    if compute {
+        descriptor = descriptor
+            .require_format_role(GpuTextureFormat::R32Float, GpuFormatRole::ColorAttachment);
+    }
     match pollster::block_on(GpuContext::request(descriptor)) {
         Ok(context) => Some(context),
         Err(error) if error.category() == GpuContextRequestErrorCategory::NoAdapterAvailable => {
@@ -45,6 +61,275 @@ fn context() -> Option<GpuContext> {
         }
         Err(error) => panic!("continuous caster Vulkan admission: {error}"),
     }
+}
+
+fn numerical_ring(
+    effects: Vec<Render2dDropShadow>,
+    image: bool,
+) -> (Render2dComposition, Render2dResourceBindings) {
+    use runen_render::composition_2d::{
+        Render2dFillRule, Render2dImagePatch, Render2dImagePrimitive, Render2dImageResource,
+        Render2dImageSourceRect, Render2dPath, Render2dPathCommand, Render2dPixelExtent,
+    };
+    let id = Render2dResourceId::new(2901).unwrap();
+    let extent = Render2dPixelExtent::new(1, 1).unwrap();
+    let primitive = if image {
+        let patches: Vec<_> = [
+            [10.0, 10.0, 20.0, 8.0],
+            [10.0, 22.0, 20.0, 8.0],
+            [10.0, 18.0, 8.0, 4.0],
+            [22.0, 18.0, 8.0, 4.0],
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, [x, y, w, h])| {
+            Render2dImagePatch::new(
+                Render2dImageSourceRect::new(0.0, 0.0, if index == 0 { 0.0 } else { 1.0 }, 1.0)
+                    .unwrap(),
+                Render2dRect::new(x, y, w, h).unwrap(),
+            )
+        })
+        .collect();
+        Render2dPrimitive::Image(Render2dImagePrimitive::new(id, extent, patches).unwrap())
+    } else {
+        let mut commands = Vec::new();
+        for [x0, y0, x1, y1] in [[10.0, 10.0, 30.0, 30.0], [18.0, 18.0, 22.0, 22.0]] {
+            let p = |x, y| Render2dPoint::new(x, y).unwrap();
+            commands.extend([
+                Render2dPathCommand::MoveTo(p(x0, y0)),
+                Render2dPathCommand::LineTo(p(x1, y0)),
+                Render2dPathCommand::LineTo(p(x1, y1)),
+                Render2dPathCommand::LineTo(p(x0, y1)),
+                Render2dPathCommand::Close,
+            ]);
+        }
+        Render2dPrimitive::Fill {
+            shape: Render2dShape::path(
+                Render2dPath::new(Render2dFillRule::EvenOdd, commands).unwrap(),
+            ),
+            brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+        }
+    };
+    let child = Render2dGroup::new(
+        [Render2dEntry::item(Render2dItem::new(
+            primitive,
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        ))],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        vec![
+            Render2dDropShadow::new(8.0, 0.0, 0.03125, -1.0, Render2dColorRgba8::TRANSPARENT)
+                .unwrap(),
+        ],
+    );
+    let wrapper = Render2dGroup::new(
+        [Render2dEntry::group(child)],
+        Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::TRANSPARENT,
+        Vec::new(),
+    );
+    let composition = Render2dComposition::new([Render2dEntry::group(Render2dGroup::new(
+        [Render2dEntry::group(wrapper)],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        effects,
+    ))])
+    .unwrap();
+    let bindings = if image {
+        Render2dResourceBindings::new(vec![Render2dResourceBinding::new(
+            id,
+            Render2dResourceValue::ImageRgba8Srgb(
+                Render2dImageResource::new(extent, vec![0; 4]).unwrap(),
+            ),
+        )])
+        .unwrap()
+    } else {
+        Render2dResourceBindings::default()
+    };
+    (composition, bindings)
+}
+
+#[test]
+fn ordinary_gaussian_consumes_original_nested_path_and_image_support_on_vulkan() {
+    let Some(context) = context_with_compute(true) else {
+        return;
+    };
+    for image in [false, true] {
+        let effect =
+            Render2dDropShadow::new(0.0, 0.0, 0.1, 0.0, Render2dColorRgba8::new(255, 0, 0, 255))
+                .unwrap();
+        let (composition, bindings) = numerical_ring(vec![effect], image);
+        let mut executor = Render2dExecutor::new();
+        let first = execute(
+            &context,
+            &mut executor,
+            &composition,
+            &bindings,
+            "ordinary original nested Gaussian",
+        );
+        // Independent 16-phase Gaussian/circle-segment references, shared with
+        // the complete-plane numerical qualification. Only final ordinary
+        // contribution color is read back here; no query readback is an input.
+        for ([x, y], expected) in [
+            ([34, 17], [193_u8, 0, 0, 136]),
+            ([23, 18], [184, 0, 0, 122]),
+            ([25, 12], [255, 0, 0, 255]),
+            ([47, 40], [0, 0, 0, 0]),
+        ] {
+            let actual = pixel(&first, x, y);
+            assert!(
+                actual[0].abs_diff(expected[0]) <= 2 && actual[1..] == expected[1..],
+                "ordinary original Gaussian image={image}, {x},{y}: {actual:?}"
+            );
+        }
+        executor.discard_cache();
+        let recreated = execute(
+            &context,
+            &mut executor,
+            &composition,
+            &bindings,
+            "recreated ordinary original Gaussian",
+        );
+        assert_eq!(first.as_bytes(), recreated.as_bytes());
+    }
+}
+
+#[test]
+fn ordinary_gaussian_shared_field_preserves_authored_color_order_on_vulkan() {
+    let Some(context) = context_with_compute(true) else {
+        return;
+    };
+    let red = Render2dDropShadow::new(0.0, 0.0, 0.1, 0.0, Render2dColorRgba8::new(255, 0, 0, 128))
+        .unwrap();
+    let blue = Render2dDropShadow::new(0.0, 0.0, 0.1, 0.0, Render2dColorRgba8::new(0, 0, 255, 128))
+        .unwrap();
+    for (effects, expected) in [
+        (vec![red, blue], [137_u8, 0, 188, 192]),
+        (vec![blue, red], [188, 0, 137, 192]),
+    ] {
+        let (composition, bindings) = numerical_ring(effects, false);
+        let bytes = execute(
+            &context,
+            &mut Render2dExecutor::new(),
+            &composition,
+            &bindings,
+            "ordered shared Gaussian field",
+        );
+        let actual = pixel(&bytes, 25, 12);
+        assert!(
+            actual[0].abs_diff(expected[0]) <= 2
+                && actual[1] == 0
+                && actual[2].abs_diff(expected[2]) <= 2
+                && actual[3] == expected[3],
+            "same field, authored color order: {actual:?} vs {expected:?}"
+        );
+        assert_eq!(pixel(&bytes, 47, 40), [0, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn ordinary_gaussian_reuses_one_field_across_output_tile_seams_on_vulkan() {
+    let Some(context) = context_with_compute(true) else {
+        return;
+    };
+    let effect =
+        Render2dDropShadow::new(0.0, 0.0, 0.1, 0.0, Render2dColorRgba8::new(255, 0, 0, 255))
+            .unwrap();
+    let (source, bindings) = numerical_ring(vec![effect], false);
+    let reference = execute(
+        &context,
+        &mut Render2dExecutor::new(),
+        &source,
+        &bindings,
+        "ordinary Gaussian single-tile reference",
+    );
+    let Render2dEntry::Group(root) = &source.root_entries()[0] else {
+        unreachable!()
+    };
+    let translated = Render2dComposition::new([Render2dEntry::group(Render2dGroup::new(
+        root.entries().to_vec(),
+        Render2dAffineTransform::translation(230.0, 0.0).unwrap(),
+        root.clips().to_vec(),
+        root.opacity(),
+        root.shadows().to_vec(),
+    ))])
+    .unwrap();
+    let tiled = execute_sized(
+        &context,
+        &mut Render2dExecutor::new(),
+        &translated,
+        &bindings,
+        "ordinary Gaussian shared field across tile boundary",
+        512,
+        64,
+    );
+    // Integer translation preserves every global 4x4 sample phase. Compare
+    // the complete result across x=256, including zero cutoff/background,
+    // rather than selecting only a convenient interior pixel.
+    for y in 0..64_usize {
+        for x in 0..512_usize {
+            let actual = &tiled.as_bytes()[(y * 512 + x) * 4..][..4];
+            if (230..294).contains(&x) {
+                assert_eq!(
+                    actual,
+                    &reference.as_bytes()[(y * 64 + x - 230) * 4..][..4],
+                    "shared field tile phase at {x},{y}"
+                );
+            } else {
+                assert_eq!(actual, &[0; 4], "outside translated field at {x},{y}");
+            }
+        }
+    }
+}
+
+#[test]
+fn ordinary_gaussian_missing_compute_rejects_before_work_and_executor_reuses_on_vulkan() {
+    let Some(context) = context() else { return };
+    let effect =
+        Render2dDropShadow::new(0.0, 0.0, 0.1, 0.0, Render2dColorRgba8::new(255, 0, 0, 255))
+            .unwrap();
+    let (composition, bindings) = numerical_ring(vec![effect], false);
+    let (_, target) = target("unadmitted Gaussian compute");
+    let mut executor = Render2dExecutor::new();
+    let error = executor
+        .prepare(&context, &composition, &bindings, &target)
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            Render2dExecutionError::UnsupportedContent(Render2dUnsupportedContent::Shadows {
+                root_index: 0
+            })
+        ),
+        "Gaussian capability failure: {error:?}"
+    );
+    // A rejection produces no contribution/work token. The same executor and
+    // context still realize the existing non-compute shadow family correctly.
+    let valid = Render2dComposition::new([Render2dEntry::group(Render2dGroup::new(
+        [rectangle(10.0, 10.0, 8.0, 8.0)],
+        Render2dAffineTransform::IDENTITY,
+        vec![],
+        Render2dOpacity::OPAQUE,
+        vec![
+            Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 255))
+                .unwrap(),
+        ],
+    ))])
+    .unwrap();
+    let bytes = execute(
+        &context,
+        &mut executor,
+        &valid,
+        &Render2dResourceBindings::default(),
+        "executor reuse after Gaussian capability rejection",
+    );
+    assert_eq!(pixel(&bytes, 12, 12), [0, 0, 255, 255]);
+    assert_eq!(pixel(&bytes, 30, 30), [0; 4]);
 }
 
 fn rectangle(x: f64, y: f64, width: f64, height: f64) -> Render2dEntry {

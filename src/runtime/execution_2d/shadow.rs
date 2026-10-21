@@ -451,6 +451,15 @@ impl SymbolicCaster<'_> {
         &self.first_unqualified_owner
     }
 
+    /// Original owner-frame reach for validity before invisible-paint elision.
+    /// The consuming preparation owner prepays the interval envelope work.
+    pub(super) fn effect_envelope(
+        &self,
+        effect: Render2dDropShadow,
+    ) -> Result<Option<[f64; 4]>, Render2dExecutionError> {
+        self.expression.effect_envelope(effect)
+    }
+
     /// Retains original borrowed F1 region authority across coherent sample
     /// blocks. The result is uncertain interval evidence, not paint alpha.
     pub(super) fn continuous_grid_enclosures(
@@ -477,7 +486,44 @@ impl SymbolicCaster<'_> {
 /// previously unsupported mixed signed morphology or repeated curved effects.
 /// One renderer-private physical realization of an immutable F1 caster.
 /// The qualified disk remains an exact curve, never triangle/AABB/alpha support.
+#[derive(Clone, Copy)]
+pub(super) struct GaussianTarget {
+    pub(super) canvas: [f64; 2],
+    pub(super) raster_scale: f64,
+    pub(super) physical_extent: [u32; 2],
+}
+
+pub(super) struct PreparedGaussianField {
+    pub(super) plane: region::PreparedPlane,
+    pub(super) logical_envelope: [f64; 4],
+}
+
+pub(super) struct PreparedGaussianCaster {
+    pub(super) planes: Vec<PreparedGaussianField>,
+    /// Authored occurrence order; repeated geometry indexes one owned plane.
+    pub(super) effect_planes: Vec<Option<usize>>,
+}
+
+impl PreparedGaussianCaster {
+    fn retained_bytes(&self) -> Option<usize> {
+        let mut bytes = self
+            .planes
+            .capacity()
+            .checked_mul(size_of::<PreparedGaussianField>())?
+            .checked_add(
+                self.effect_planes
+                    .capacity()
+                    .checked_mul(size_of::<Option<usize>>())?,
+            )?;
+        for field in &self.planes {
+            bytes = bytes.checked_add(field.plane.retained_bytes()?)?;
+        }
+        Some(bytes)
+    }
+}
+
 pub(super) enum NeutralCaster<'a> {
+    Gaussian(PreparedGaussianCaster),
     Mesh(Arc<NeutralMesh>),
     /// Every original F1 leaf is an exact straight rectangle or triangle fill.
     /// Signed disk integration may consume this geometry after original-F1 proof;
@@ -836,7 +882,22 @@ impl<'scene> GroupSourceDag<'scene, '_> {
         root_canvas: Option<([f64; 2], f64)>,
         max_host_bytes: u64,
     ) -> Result<GroupChildSources<'scene>, Render2dExecutionError> {
-        self.prepare_polygonal_with_probe(selected, root_canvas, max_host_bytes, |_, _| {})
+        self.prepare_polygonal_with_probe(selected, root_canvas, max_host_bytes, None, |_, _| {})
+    }
+
+    /// Select the bounded original numerical family before affine Plan. All
+    /// remaining consumers keep their existing authored physical replay.
+    pub(super) fn prepare_consumers(
+        self,
+        target: GaussianTarget,
+    ) -> Result<GroupChildSources<'scene>, Render2dExecutionError> {
+        self.prepare_polygonal_with_probe(
+            None,
+            Some((target.canvas, target.raster_scale)),
+            super::support::MAX_SHADOW_HOST_BYTES as u64,
+            Some(target),
+            |_, _| {},
+        )
     }
 
     fn selected_dependencies(
@@ -891,8 +952,95 @@ impl<'scene> GroupSourceDag<'scene, '_> {
         selected: Option<&[usize]>,
         root_canvas: Option<([f64; 2], f64)>,
         max_host_bytes: u64,
+        gaussian: Option<GaussianTarget>,
         mut inspect: impl FnMut(&Arc<region::NeutralRegion<'scene>>, &[usize]),
     ) -> Result<GroupChildSources<'scene>, Render2dExecutionError> {
+        let mut numerical = Vec::<usize>::new();
+        let mut physical = Vec::<usize>::new();
+        let mut deferred = Vec::<usize>::new();
+        if let Some(target) = gaussian {
+            self.graph
+                .charge_preparation(256 + self.sources.len() * 64 + self.demands.len() * 16, &[])?;
+            self.graph
+                .host
+                .reserve_vector(&mut numerical, self.sources.len(), &[])?;
+            self.graph
+                .host
+                .reserve_vector(&mut physical, self.sources.len(), &[])?;
+            for demand in &self.demands {
+                if let SourceDemand::Caster {
+                    index,
+                    group,
+                    path,
+                    nested,
+                } = demand
+                {
+                    self.graph
+                        .charge_preparation(1024 + group.shadows().len() * 1088, path)?;
+                    let source = self.source(*index).expect("registered source");
+                    // Existing certified absence wins before new capability
+                    // selection; it must not acquire numerical allocations.
+                    let absent = source.all_shadows_provably_empty(group.shadows())
+                        || !nested
+                            && source.all_root_shadows_provably_offscreen(
+                                group.shadows(),
+                                target.canvas,
+                                target.raster_scale,
+                            )?;
+                    let candidate = !nested
+                        && !absent
+                        && !group.shadows().is_empty()
+                        && group
+                            .shadows()
+                            .iter()
+                            .all(|effect| effect.spread() == 0.0 && effect.sigma() > 0.0)
+                        && source.contains_negative_disk
+                        && !source.contains_positive_disk
+                        && self.graph.original_gaussian_required(&source)?;
+                    if candidate {
+                        numerical.push(*index);
+                    } else {
+                        physical.push(*index);
+                    }
+                }
+            }
+            // Only root consumers enter numerical, hence their closing-event
+            // order is also sorted original BeginGroup order.
+            if !numerical.is_empty() {
+                self.graph
+                    .charge_preparation(128 + self.demands.len() * 64, &[])?;
+                self.graph
+                    .host
+                    .reserve_vector(&mut deferred, self.sources.len(), &[])?;
+                for demand in &self.demands {
+                    if let SourceDemand::Caster {
+                        index, group, path, ..
+                    } = demand
+                    {
+                        self.graph.charge_preparation(
+                            128 + group.shadows().len() * 16 + physical.len() * 16,
+                            path,
+                        )?;
+                        if group
+                            .shadows()
+                            .iter()
+                            .all(|effect| effect.color().channels()[3] == 0)
+                            && let Some(position) = physical.iter().position(|entry| entry == index)
+                        {
+                            physical.swap_remove(position);
+                            deferred.push(*index);
+                        }
+                    }
+                }
+            }
+            self.graph
+                .charge_preparation(64 + numerical.len() * 16 + physical.len() * 16, &[])?;
+        }
+        let selected = if !numerical.is_empty() {
+            Some(physical.as_slice())
+        } else {
+            selected
+        };
         let dependencies = selected
             .map(|indices| self.selected_dependencies(indices, max_host_bytes))
             .transpose()?;
@@ -917,7 +1065,15 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                             .sources
                             .binary_search_by_key(index, |entry| entry.0)
                             .expect("registered caster demand");
+                        self.graph.charge_preparation(
+                            64 + 32 * (usize::BITS - numerical.len().leading_zeros()) as usize,
+                            path,
+                        )?;
+                        self.graph
+                            .charge_preparation(64 + deferred.len() * 16, path)?;
                         dependencies.consumer(position)
+                            || numerical.binary_search(index).is_ok()
+                            || deferred.contains(index)
                     }
                 };
                 if !needed {
@@ -945,6 +1101,14 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                     path,
                     nested,
                 } => {
+                    // Dependency selection and this authored caster dispatch
+                    // are distinct visits. Prepay both membership searches on
+                    // every outcome, including a failed/deferred match.
+                    self.graph.charge_preparation(
+                        64 + deferred.len() * 16
+                            + 32 * (usize::BITS - numerical.len().leading_zeros()) as usize,
+                        &path,
+                    )?;
                     let in_parent = self.source(index).expect("registered group source");
                     inspect(&in_parent, &path);
                     // Resolve the proven curved DAG before asking for a
@@ -994,6 +1158,30 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                             .host
                             .reserve(size_of::<NeutralMesh>() + 2 * size_of::<usize>(), &path)?;
                         NeutralCaster::Mesh(Arc::new(empty_mesh()))
+                    } else if deferred.contains(&index) {
+                        // All original graph/resource/envelope validation is
+                        // complete. Preserve C without requesting an invisible
+                        // painted realization; ancestors still borrow the DAG.
+                        self.graph.charge_preparation(
+                            128 + path.len() * 2 + deferred.len() * 16,
+                            &path,
+                        )?;
+                        let mut owner = Vec::new();
+                        self.graph
+                            .host
+                            .reserve_vector(&mut owner, path.len(), &path)?;
+                        owner.extend_from_slice(&path);
+                        NeutralCaster::Symbolic(SymbolicCaster {
+                            expression: Arc::clone(&in_parent),
+                            first_unqualified_owner: owner,
+                        })
+                    } else if numerical.binary_search(&index).is_ok() {
+                        NeutralCaster::Gaussian(self.graph.prepare_gaussian_caster(
+                            &in_parent,
+                            group.shadows(),
+                            gaussian.expect("selected numerical target"),
+                            &path,
+                        )?)
                     } else if !nested {
                         match self.graph.qualified_rounded_rectangle(&in_parent)? {
                             Some(qualified) => NeutralCaster::RoundedRectangle(qualified),
@@ -1061,7 +1249,21 @@ impl<'scene> GroupSourceDag<'scene, '_> {
         let mut has_symbolic = false;
         for (_, source) in &sources {
             self.graph.charge_preparation(64, &[])?;
-            has_symbolic |= matches!(source, NeutralCaster::Symbolic(_));
+            has_symbolic |= matches!(
+                source,
+                NeutralCaster::Symbolic(_) | NeutralCaster::Gaussian(_)
+            );
+            if let NeutralCaster::Gaussian(caster) = source {
+                self.graph
+                    .charge_preparation(64 + caster.planes.len() * 128, &[])?;
+                retained_bytes = retained_bytes
+                    .checked_add(
+                        caster
+                            .retained_bytes()
+                            .ok_or_else(|| resource(&[], "Gaussian caster retention overflow"))?,
+                    )
+                    .ok_or_else(|| resource(&[], "Gaussian source inventory overflow"))?;
+            }
             let (mesh, path_capacity) = match source {
                 NeutralCaster::Mesh(mesh) | NeutralCaster::OriginalStraightPolygonUnion(mesh) => {
                     (Some(mesh), 0)
@@ -1072,6 +1274,7 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                 NeutralCaster::Symbolic(symbolic) => {
                     (None, symbolic.first_unqualified_owner.capacity())
                 }
+                NeutralCaster::Gaussian(_) => (None, 0),
             };
             let mesh_bytes = mesh
                 .map_or(Some(0), |mesh| {
@@ -1099,6 +1302,12 @@ impl<'scene> GroupSourceDag<'scene, '_> {
         // budget and its peak, trimming only to the conservative returned
         // caster inventory after those owners have actually been dropped.
         drop(dependencies);
+        let selection_bytes =
+            (numerical.capacity() + physical.capacity() + deferred.capacity()) * size_of::<usize>();
+        drop(numerical);
+        drop(physical);
+        drop(deferred);
+        self.graph.host.release(selection_bytes);
         drop(self.sources);
         let mut host = self.graph.into_host();
         host.retain(
@@ -1135,7 +1344,7 @@ fn group_child_sources_with_probe<'a>(
         field_sets,
         SourcePreparation::new(scales, max_buffer_bytes),
     )?
-    .prepare_polygonal_with_probe(None, root_canvas, max_buffer_bytes, inspect)
+    .prepare_polygonal_with_probe(None, root_canvas, max_buffer_bytes, None, inspect)
 }
 
 pub(super) fn build_group_sources<'scene, 'resources>(

@@ -179,3 +179,24 @@ CPU bitmap allocation; successful derived-cache residency keeps only the
 last completed preparation's needed field working set. These bounds are
 implementation policies, not a public source semantics or native-performance
 claim. Issue #72 separately owns safe long-lived immutable identity retirement.
+
+F3F original-region Gaussian proofs include ordinary public rendering of a
+transparent holed path or image destination union, its finite negative child
+effect, an ancestor shear, and a later finite Gaussian effect. Independent
+boundary pixels require exact alpha and zero channels, with the existing
+two-code sRGB tolerance. Shared fields preserve authored shadow color order;
+cache discard reproduces identical bytes. An integer translation across output
+tiles must reproduce the complete single-tile image, including the seam and
+cutoff. A missing compute capability rejects before contribution creation and
+leaves the executor usable for the existing non-compute family. These cases
+qualify the selected straight-boundary family, not all F3F source classes.
+
+Source construction, numerical integration, affine planning, CPU data copies
+and physical descriptor preparation use one invocation preparation budget.
+Encoded GPU lookup sample visits and the expanded Q48 multiply-accumulate
+extent use the existing aggregate tile-work ceiling; those shader-only counts
+are not also charged as CPU loops. The arithmetic extent does not claim to
+count every shader load or instruction. Immutable upload payloads coexist with
+retained numerical planes in host admission, and the lookup tile participates
+in the compositor's existing peak scratch admission. Focused exact/one-short
+work, host and canvas-phase proofs accompany actual Vulkan readbacks.

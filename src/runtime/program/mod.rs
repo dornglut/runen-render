@@ -31,18 +31,11 @@ const TEMPORAL_FALLBACK_SOURCE_UNIT_ID: u64 = 6;
 const VECTOR_REVISION: u64 = 4;
 const VECTOR_WGSL: &str = include_str!("shaders/solid_vector.wgsl");
 
-// The numerical family remains test-qualified until the production selection
-// and aggregate admission are complete. Its shader/artifact bridge already
-// belongs to this maintained-program owner, shared by both kinds of GPU work.
-#[cfg(test)]
+// Qualified Gaussian fields share this maintained owner for compute and lookup.
 const GAUSSIAN_MODULE_ID: u64 = 7;
-#[cfg(test)]
 const GAUSSIAN_SOURCE_UNIT_ID: u64 = 7;
-#[cfg(test)]
-const GAUSSIAN_COVERAGE_REVISION: u64 = 2;
-#[cfg(test)]
+const GAUSSIAN_COVERAGE_REVISION: u64 = 3;
 pub(crate) const GAUSSIAN_ARITHMETIC_WGSL: &str = include_str!("shaders/gaussian_arithmetic.wgsl");
-#[cfg(test)]
 static GAUSSIAN_COVERAGE_WGSL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "{GAUSSIAN_ARITHMETIC_WGSL}\n{}",
@@ -93,7 +86,6 @@ enum MaintainedShaderProgram {
     CameraReprojection,
     ShapedText,
     Vector,
-    #[cfg(test)]
     GaussianCoverage,
 }
 
@@ -106,7 +98,6 @@ impl MaintainedShaderProgram {
             Self::CameraReprojection => "camera reprojection",
             Self::ShapedText => "2D shaped text",
             Self::Vector => "2D solid vector coverage",
-            #[cfg(test)]
             Self::GaussianCoverage => "2D Gaussian coverage",
         }
     }
@@ -119,7 +110,6 @@ impl MaintainedShaderProgram {
             Self::CameraReprojection => "runenrender.maintained.camera_reprojection",
             Self::ShapedText => "runenrender.maintained.shaped_text",
             Self::Vector => "runenrender.maintained.solid_vector",
-            #[cfg(test)]
             Self::GaussianCoverage => "runenrender.maintained.gaussian_coverage",
         }
     }
@@ -132,7 +122,6 @@ impl MaintainedShaderProgram {
             Self::CameraReprojection => CAMERA_MODULE_ID,
             Self::ShapedText => SHAPED_TEXT_MODULE_ID,
             Self::Vector => VECTOR_MODULE_ID,
-            #[cfg(test)]
             Self::GaussianCoverage => GAUSSIAN_MODULE_ID,
         }
     }
@@ -145,7 +134,6 @@ impl MaintainedShaderProgram {
             Self::CameraReprojection => CAMERA_SOURCE_UNIT_ID,
             Self::ShapedText => SHAPED_TEXT_SOURCE_UNIT_ID,
             Self::Vector => VECTOR_SOURCE_UNIT_ID,
-            #[cfg(test)]
             Self::GaussianCoverage => GAUSSIAN_SOURCE_UNIT_ID,
         }
     }
@@ -457,7 +445,6 @@ pub(crate) fn retained_vector_source()
     )
 }
 
-#[cfg(test)]
 pub(crate) fn retained_gaussian_coverage_source()
 -> Result<GpuAdmittedProgramSource, RenderMaintainedProgramBuildError> {
     static PROGRAM: OnceLock<RenderMaintainedProgram> = OnceLock::new();

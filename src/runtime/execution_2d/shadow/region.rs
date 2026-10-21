@@ -14,8 +14,11 @@ use crate::execution_2d::{
 use crate::runtime::execution_2d::{shadow, support};
 use std::sync::{Arc, OnceLock};
 
+mod gaussian_consumer;
 pub(in crate::runtime::execution_2d) mod interval;
 mod source_envelope;
+pub(super) use certified_cells::scan_area::gaussian::GaussianPlaneRequest;
+pub(in crate::runtime::execution_2d) use certified_cells::scan_area::gaussian::PreparedPlane;
 
 const MAX_REGION_NODES: usize = 65_536;
 const MAX_REGION_DEPTH: usize = 512;
@@ -79,6 +82,10 @@ pub(in crate::runtime::execution_2d) struct NeutralRegion<'a> {
     /// retain their earlier typed rejection until their own exact
     /// continuous ancestor evaluator is independently qualified.
     pub(super) contains_positive_disk: bool,
+    /// Original-only consumer selection skips the unchanged plain-source
+    /// Gaussian family in constant time. This is morphology presence, not
+    /// membership or proof that the numerical consumer can admit the source.
+    pub(super) contains_negative_disk: bool,
 }
 
 /// An invocation-local optional physical realization, never source meaning.
@@ -471,6 +478,20 @@ impl NeutralRegion<'_> {
         matches!(&self.kind, Kind::Effect { shadow, .. } if shadow.spread() < 0.0)
     }
 
+    /// Caller prepays the bounded scalar interval envelope operation. This
+    /// reuses original reach and the sole owner-frame morphology formula.
+    pub(super) fn effect_envelope(
+        &self,
+        effect: Render2dDropShadow,
+    ) -> Result<Option<[f64; 4]>, Render2dExecutionError> {
+        if !self.certified_source_reach {
+            return Err(unsupported(&self.path));
+        }
+        self.envelope
+            .map(|bounds| nested_effect_envelope(bounds, effect, &self.path))
+            .transpose()
+    }
+
     pub(super) fn certified_logical_envelope(&self) -> Option<[f64; 4]> {
         self.certified_source_reach
             .then_some(self.envelope)
@@ -767,6 +788,16 @@ impl NeutralRegionBuilder {
                 shadow.spread() > 0.0 || source.contains_positive_disk
             }
         };
+        let contains_negative_disk = match &kind {
+            Kind::Source(_) => false,
+            Kind::Union(children) => children.iter().any(|child| child.contains_negative_disk),
+            Kind::Affine { source, .. } | Kind::Clip { source, .. } => {
+                source.contains_negative_disk
+            }
+            Kind::Effect { source, shadow } => {
+                shadow.spread() < 0.0 || source.contains_negative_disk
+            }
+        };
         let mut owner_path = Vec::new();
         self.host
             .reserve_vector(&mut owner_path, path.len(), path)?;
@@ -816,6 +847,7 @@ impl NeutralRegionBuilder {
             envelope,
             certified_source_reach,
             contains_positive_disk,
+            contains_negative_disk,
         }))
     }
 
@@ -1629,13 +1661,56 @@ impl NeutralRegionBuilder {
         seen == 0b1111
     }
 
+    /// Original command grammar shared with physical triangle correspondence.
+    fn original_triangle_path_points(
+        path: &crate::composition_2d::Render2dPath,
+    ) -> Option<[[f64; 2]; 3]> {
+        use crate::composition_2d::Render2dPathCommand as Command;
+        let [
+            Command::MoveTo(a),
+            Command::LineTo(b),
+            Command::LineTo(c),
+            rest @ ..,
+        ] = path.commands()
+        else {
+            return None;
+        };
+        if !(rest.is_empty()
+            || matches!(rest, [Command::Close])
+            || matches!(rest, [Command::LineTo(end)] if end == a)
+            || matches!(rest, [Command::LineTo(end), Command::Close] if end == a))
+        {
+            return None;
+        }
+        Some([[a.x(), a.y()], [b.x(), b.y()], [c.x(), c.y()]])
+    }
+
+    /// Necessary original-shape class for the existing physical correspondence
+    /// proof. False is conclusive without asking for a disposable mesh; true
+    /// still requires that unchanged proof, including all transformed vertices.
+    fn original_polygon_source_possible(item: &Render2dItem) -> bool {
+        if !item.clips().is_empty() {
+            return false;
+        }
+        match item.primitive() {
+            crate::composition_2d::Render2dPrimitive::Fill { shape, .. } => {
+                shape.as_rect().is_some()
+                    || shape.as_path().is_some_and(|path| {
+                        Self::original_rectangle_path_corners(path).is_some()
+                            || Self::original_triangle_path_points(path).is_some()
+                    })
+            }
+            crate::composition_2d::Render2dPrimitive::Image(image) => image.patches().len() == 1,
+            _ => false,
+        }
+    }
+
     /// A structural F1 triangle admits exact signed Euclidean support only
     /// if its ONLY filled contour is three original straight vertices and
     /// the disposable physical tessellation is precisely the same triangle.
     /// Neither its AABB nor three physical corners alone can certify a
     /// curved, crossed, multi-contour, clipped or subdivided authored source.
     fn exact_original_triangle_source(mesh: &support::NeutralMesh, item: &Render2dItem) -> bool {
-        use crate::composition_2d::Render2dPathCommand as Command;
         if !item.clips().is_empty() {
             return false;
         }
@@ -1645,24 +1720,12 @@ impl NeutralRegionBuilder {
         let Some(path) = shape.as_path() else {
             return false;
         };
-        let [
-            Command::MoveTo(a),
-            Command::LineTo(b),
-            Command::LineTo(c),
-            rest @ ..,
-        ] = path.commands()
-        else {
-            return false;
-        };
-        if !(rest.is_empty()
-            || matches!(rest, [Command::Close])
-            || matches!(rest, [Command::LineTo(end)] if end == a)
-            || matches!(rest, [Command::LineTo(end), Command::Close] if end == a))
-            || mesh.triangles.len() != 3
-        {
+        if mesh.triangles.len() != 3 {
             return false;
         }
-        let authored = [[a.x(), a.y()], [b.x(), b.y()], [c.x(), c.y()]];
+        let Some(authored) = Self::original_triangle_path_points(path) else {
+            return false;
+        };
         let orientation = |points: [[f64; 2]; 3]| {
             let [a, b, c] = points;
             (b[0] - a[0]).mul_add(c[1] - a[1], -((b[1] - a[1]) * (c[0] - a[0])))
@@ -1756,13 +1819,21 @@ impl NeutralRegionBuilder {
     ) -> Result<bool, Render2dExecutionError> {
         let result = match &region.kind {
             Kind::Source(mesh) => {
-                // An unrequested physical realization is not a failed
-                // correspondence proof and must never cache a false receipt.
-                let mesh = mesh.get().ok_or_else(|| unsupported(&region.path))?;
-                region.semantic_item.is_some_and(|item| {
-                    Self::exact_original_rectangle_source(mesh, item)
-                        || Self::exact_original_triangle_source(mesh, item)
-                })
+                // Original shape ineligibility is conclusive independently
+                // of a mesh. A potentially eligible unrequested realization
+                // still cannot cache a failed physical correspondence.
+                if region
+                    .semantic_item
+                    .is_some_and(|item| !Self::original_polygon_source_possible(item))
+                {
+                    false
+                } else {
+                    let mesh = mesh.get().ok_or_else(|| unsupported(&region.path))?;
+                    region.semantic_item.is_some_and(|item| {
+                        Self::exact_original_rectangle_source(mesh, item)
+                            || Self::exact_original_triangle_source(mesh, item)
+                    })
+                }
             }
             Kind::Union(children) => {
                 let mut proven = true;

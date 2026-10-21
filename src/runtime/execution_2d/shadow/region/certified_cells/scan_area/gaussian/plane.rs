@@ -1,4 +1,4 @@
-//! Complete test-only sample-plane preparation, without a diagnostic census.
+//! Complete owned sample-plane preparation, without a diagnostic census.
 //! Original-region classification remains distinct from disposable Q24 values.
 use super::super::super::gaussian_kernel::fixed::{FixedKernel, batch};
 use super::*;
@@ -558,7 +558,6 @@ pub(super) fn prepare(
             return Err(AreaQueryError::Precision);
         }
     }
-    debit(fuel, batch.field_preparation_work(cells)?)?;
     let (queries, errors) = batch.into_parts();
     #[cfg(not(test))]
     drop(errors);
@@ -619,6 +618,19 @@ impl PreparedPlane {
                 .checked_mul(size_of::<f64>())?,
         )?;
         Some(bytes)
+    }
+
+    /// Complete proof callers pay the same physical preparation as ordinary
+    /// lowering, on their remaining invocation fuel, rather than hiding it in
+    /// a reusable numerical compiler.
+    #[cfg(test)]
+    pub(super) fn admit_proof_physical(&self, fuel: &mut usize) -> Result<(), AreaQueryError> {
+        use crate::runtime::execution_2d::lowering::sample_space::gaussian;
+        let (words, count) = self.query_data();
+        let work = gaussian::field_preparation_work(self.samples.len(), words.len(), count)
+            .and_then(|work| work.checked_add(gaussian::lookup_preparation_work()))
+            .ok_or(AreaQueryError::Resource)?;
+        debit(fuel, work)
     }
 
     #[cfg(test)]
@@ -836,7 +848,7 @@ fn gaussian_plane_entry_rejects_before_allocating_and_preserves_shared_fuel() {
     ));
     assert_eq!(
         before - fuel,
-        1024,
+        128 + 1024,
         "reject before source/numerical reconstruction"
     );
     let after_rejection = fuel;
@@ -857,7 +869,7 @@ fn gaussian_plane_entry_rejects_before_allocating_and_preserves_shared_fuel() {
         fuel < after_rejection,
         "a second consumer inherits the debit"
     );
-    let mut short = 1023;
+    let mut short = 128 + 1024 - 1;
     assert!(matches!(
         source.prepare_gaussian_plane(
             GaussianPlaneRequest {

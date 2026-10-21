@@ -285,11 +285,7 @@ pub(super) fn prepare(
 ) -> Result<Vec<PreparedShadow>, Render2dExecutionError> {
     let owner = source.owner_path();
     charge(context.aggregate_work, 128, context.path)?;
-    admit_effects(effects, owner, context.path)?;
     charge(context.aggregate_work, effects.len(), context.path)?;
-    let source_envelope = source
-        .logical_envelope()
-        .ok_or_else(|| unsupported(owner))?;
     let sample_scale = context.target.raster_scale() * f64::from(SAMPLES);
     if !sample_scale.is_finite() || sample_scale <= 0.0 {
         return Err(shadow_precision(
@@ -297,6 +293,31 @@ pub(super) fn prepare(
             "symbolic target sample scale is invalid",
         ));
     }
+    // Original support and every authored kernel envelope stay significant,
+    // even when this group has no painted alpha. Once those facts are valid,
+    // an invisible own mask needs no numerical realization. Ancestor C was
+    // independently retained by the original-source graph before this cut.
+    if !context.paintable
+        || effects
+            .iter()
+            .all(|effect| effect.color().channels()[3] == 0)
+    {
+        for &effect in effects {
+            charge(context.aggregate_work, 1024, context.path)?;
+            if let Some(envelope) = source.effect_envelope(effect)? {
+                geometry_support::transform_envelope(
+                    envelope,
+                    context.parent_to_root,
+                    context.path,
+                )?;
+            }
+        }
+        return Ok(Vec::new());
+    }
+    admit_effects(effects, owner, context.path)?;
+    let source_envelope = source
+        .logical_envelope()
+        .ok_or_else(|| unsupported(owner))?;
     let sample_extent = [
         u64::from(context.target.physical_width) * u64::from(SAMPLES),
         u64::from(context.target.physical_height) * u64::from(SAMPLES),
@@ -339,7 +360,7 @@ pub(super) fn prepare(
             context.path,
         )?;
         if let Some(index) = query_keys.iter().position(|previous| *previous == key) {
-            let coverage = Arc::clone(&result[index].coverage);
+            let coverage = result[index].coverage.clone();
             let bounds = result[index].bounds;
             let path = occurrence_path(context.aggregate_work, context.path)?;
             result.push(PreparedShadow {
@@ -465,7 +486,7 @@ pub(super) fn prepare(
         let path = occurrence_path(context.aggregate_work, context.path)?;
         result.push(PreparedShadow {
             color,
-            coverage: Arc::new(coverage),
+            coverage: ShadowCoverage::Samples(Arc::new(coverage)),
             logical_envelope,
             bounds,
             group_visible: context.paintable,

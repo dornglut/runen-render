@@ -137,6 +137,7 @@ fn prepare(case: Case, root: [u32; 4], limit: usize) -> (PreparedPlane, usize) {
     let plane = source
         .prepare_gaussian_plane(request(root, case.affine()), &mut fuel, MAX_BYTES)
         .unwrap();
+    plane.admit_proof_physical(&mut fuel).unwrap();
     println!(
         "PARENT_CHART {case:?} root={root:?} total_work={} remaining={fuel} retained={} visits={}",
         limit - fuel,
@@ -208,7 +209,7 @@ fn chart_work_host_leases_and_unqualified_affines_fail_closed() {
     ));
     assert_eq!(
         before - fuel,
-        1024 + 512,
+        128 + 1024 + 512,
         "reject before any numerical allocation"
     );
     for raw in [

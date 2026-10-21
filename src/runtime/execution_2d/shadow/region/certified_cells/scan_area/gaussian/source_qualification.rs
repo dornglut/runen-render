@@ -143,6 +143,7 @@ fn prepare_fixture(variant: Variant) -> super::plane::PreparedPlane {
                 .unwrap(),
         )
         .unwrap();
+    field.admit_proof_physical(&mut fuel).unwrap();
     // Reporting belongs to this explicit conformance caller, never preparation.
     let node_visits = field.query_node_visits();
     let products = node_visits.checked_mul(26).unwrap();

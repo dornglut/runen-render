@@ -2211,5 +2211,4 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod gaussian;
+pub(in crate::runtime::execution_2d::shadow::region) mod gaussian;

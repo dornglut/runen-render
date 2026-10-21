@@ -59,7 +59,11 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
 // Compute and lookup use the same completed Q24 query values with no CPU readback.
 @group(0) @binding(2) var<storage, read> field_samples: array<u32>;
 @group(0) @binding(3) var<storage, read> field_queries: array<vec4<u32>>;
-@group(0) @binding(4) var<uniform> field_extent: vec4<u32>;
+struct FieldLookup {
+    extent_offset: vec4<u32>,
+    visible_extent: vec4<u32>,
+}
+@group(0) @binding(4) var<uniform> field_lookup: FieldLookup;
 @vertex fn field_vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     let vertices = array<vec2<f32>, 3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));
     return vec4<f32>(vertices[index],0.0,1.0);
@@ -67,12 +71,15 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
 @fragment fn field_fragment(@builtin(position) position: vec4<f32>) -> @location(0) f32 {
     // CPU admission proves local+offset is in the signed i32 domain.
     // Crop before converting to u32, preserving negative tile/map origins.
-    let offset=bitcast<vec2<i32>>(field_extent.zw);
+    let offset=bitcast<vec2<i32>>(field_lookup.extent_offset.zw);
     let sample=vec2<i32>(position.xy)+offset;
     if any(sample<vec2<i32>(0)) { return 0.0; }
     let point=vec2<u32>(sample);
-    if point.x>=field_extent.x || point.y>=field_extent.y { return 0.0; }
-    let value=field_samples[point.y*field_extent.x+point.x];
+    // The CPU converts the continuous canvas to an exclusive globally phased
+    // sample cutoff. Integer comparisons preserve exact half-sample decisions;
+    // no f32 canvas rounding may admit a sample outside the logical canvas.
+    if any(point>=field_lookup.visible_extent.xy) { return 0.0; }
+    let value=field_samples[point.y*field_lookup.extent_offset.x+point.x];
     if (value & 2147483648u)!=0u { return bitcast<f32>(field_queries[value & 2147483647u].z); }
     return f32(value)*(1.0/16777216.0);
 }

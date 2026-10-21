@@ -1,4 +1,4 @@
-//! Test-only normalized finite Gaussian CDF/density certificates; no paint.
+//! Normalized finite Gaussian CDF/density certificates; no paint.
 //!
 //! G(z) = integral(0,z) exp(-t*t/2) dt is entire. On a radius-one complex
 //! disc about m in [0,3], |z| <= 4 and |Im(z)| <= 1. Integrating along the
@@ -15,8 +15,6 @@
 //! the normalized CDF on [-3,3], with exact saturation outside the cutoff.
 //! This certifies only dimensionless kernel mass, not Gaussian geometry,
 //! quadrature, physical sample reconstruction or whole-scene feasibility.
-
-#![cfg(test)]
 
 pub(super) mod fixed;
 mod precomputed;

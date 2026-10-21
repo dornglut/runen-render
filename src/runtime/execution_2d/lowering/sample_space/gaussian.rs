@@ -2,6 +2,71 @@
 //! contain no GPU ownership; this lowering uses the maintained program bridge.
 use super::*;
 
+pub(super) const TILE_UNIFORM_BYTES: u64 = 32;
+
+/// One-time source-backed POD copies plus bounded field/dispatch descriptor
+/// preparation. Shader compilation and backend work retain their sibling
+/// authorities. Tile uniforms and compositor vertices are paid per use below.
+pub(in crate::runtime::execution_2d) fn field_preparation_work(
+    samples: usize,
+    query_bytes: usize,
+    query_count: u32,
+) -> Option<usize> {
+    samples
+        .checked_mul(size_of::<u32>())?
+        .checked_add(query_bytes)?
+        .checked_add(if query_count == 0 { 16 } else { 0 })?
+        .checked_mul(2)?
+        .checked_add(4096)
+}
+
+/// One lookup uniform, lookup descriptors and one six-vertex F3E fill draw.
+/// Every source-backed upload copies into a transfer Vec and then an Arc.
+pub(in crate::runtime::execution_2d) fn lookup_preparation_work() -> usize {
+    512 + 1024 + 2 * TILE_UNIFORM_BYTES as usize + 2 * 6 * VERTEX_STRIDE as usize
+}
+
+/// Convert the existing continuous-canvas center guard to map-local integer
+/// cutoffs. All u32 sample indices and their half-unit centers are exactly
+/// representable in f64. Binary search therefore preserves equality and its
+/// adjacent representable canvas values without a rounded f32 shader bound.
+pub(super) fn canvas_extent(
+    canvas: [f64; 2],
+    root: [u32; 4],
+    work: &mut dyn crate::runtime::execution_2d::support::PreparationWork,
+    path: &[usize],
+) -> Result<[u32; 2], Render2dExecutionError> {
+    let charge = |work: &mut dyn crate::runtime::execution_2d::support::PreparationWork, cost| {
+        work.charge(
+            cost,
+            usize::MAX,
+            path,
+            "Gaussian canvas clipping exceeds invocation work",
+        )
+    };
+    charge(work, 128)?;
+    let mut result = [0; 2];
+    for axis in 0..2 {
+        let limit = canvas[axis] * f64::from(SAMPLES);
+        if !limit.is_finite() || limit < 0.0 || root[axis] > root[axis + 2] {
+            return Err(precision_failure(path, "Gaussian canvas cutoff is invalid"));
+        }
+        let mut low = root[axis];
+        let mut high = root[axis + 2];
+        while low < high {
+            charge(work, 64)?;
+            let middle = low + (high - low) / 2;
+            if f64::from(middle) + 0.5 < limit {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        result[axis] = low - root[axis];
+    }
+    Ok(result)
+}
+
 fn resource(path: &[usize], detail: &'static str) -> Render2dExecutionError {
     Render2dExecutionError::SampleSpace {
         kind: Render2dSampleSpaceError::ResourceLimit,
@@ -15,6 +80,9 @@ fn resource(path: &[usize], detail: &'static str) -> Render2dExecutionError {
 pub(super) struct FieldData<'a> {
     pub(super) samples: &'a [u32],
     pub(super) extent: [u32; 2],
+    /// Exclusive canvas cutoff in map coordinates. It clips disposable
+    /// samples only; map extent/stride and original support stay unchanged.
+    pub(super) visible_extent: [u32; 2],
     pub(super) query_input: &'a [u8],
     pub(super) query_count: u32,
 }
@@ -26,6 +94,7 @@ pub(super) struct PreparedField {
     queries: GpuBufferHandle,
     pipeline: GpuRenderPipelineDescriptor,
     extent: [u32; 2],
+    visible_extent: [u32; 2],
     max_texture_dimension: u32,
 }
 
@@ -35,6 +104,126 @@ pub(super) struct FieldTile {
     pub(super) view: GpuTextureViewHandle,
     extent: [u32; 2],
     pub(super) scratch_bytes: u64,
+}
+
+struct FieldSlot {
+    root: [u32; 2],
+    field: Option<PreparedField>,
+}
+
+/// Invocation-local physical fields share one ordered R32 lookup tile.
+/// Initialization is consumed only when a visible compositor fill uses a field.
+pub(super) struct FieldSet {
+    slots: Vec<FieldSlot>,
+    tile: Option<FieldTile>,
+}
+
+pub(super) fn field_metadata_bytes(count: usize) -> Option<usize> {
+    count
+        .checked_mul(size_of::<FieldSlot>() + 2 * size_of::<GpuWorkOperation>())?
+        .checked_add(size_of::<FieldSet>())
+}
+
+pub(super) fn field_data(field: &super::shadow::NumericalField) -> FieldData<'_> {
+    let (query_input, query_count) = field.plane.query_data();
+    FieldData {
+        samples: field.plane.samples(),
+        extent: field.plane.extent(),
+        visible_extent: field.visible_extent,
+        query_input,
+        query_count,
+    }
+}
+
+impl FieldSet {
+    pub(super) fn prepare(
+        fields: &[super::shadow::NumericalField],
+        uses: &[u64],
+        dimension: u32,
+        scratch_lease: u64,
+        context: &GpuContext,
+        resources: &mut GpuResourceScope,
+    ) -> Result<Self, Render2dExecutionError> {
+        if fields.len() != uses.len() {
+            return Err(precision_failure(
+                &[],
+                "Gaussian use inventory disagrees with fields",
+            ));
+        }
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(fields.len())
+            .map_err(|_| resource(&[], "Gaussian physical field inventory allocation failed"))?;
+        if slots.capacity() > fields.len() {
+            return Err(resource(
+                &[],
+                "Gaussian physical field capacity exceeds admission",
+            ));
+        }
+        let mut tile = None;
+        for (source, &uses) in fields.iter().zip(uses) {
+            let root = source.plane.root();
+            let field = if uses == 0 {
+                None
+            } else {
+                let field = prepare_field(field_data(source), &source.path, context, resources)?;
+                if tile.is_none() {
+                    let allocated =
+                        field.tile([dimension; 2], scratch_lease, &source.path, resources)?;
+                    if allocated.scratch_bytes > scratch_lease {
+                        return Err(resource(
+                            &source.path,
+                            "Gaussian scratch receipt exceeds admission",
+                        ));
+                    }
+                    tile = Some(allocated);
+                }
+                Some(field)
+            };
+            slots.push(FieldSlot {
+                root: [root[0], root[1]],
+                field,
+            });
+        }
+        Ok(Self { slots, tile })
+    }
+
+    pub(super) fn lookup(
+        &mut self,
+        index: usize,
+        origin: [u32; 2],
+        path: &[usize],
+        operations: &mut Vec<GpuWorkOperation>,
+        resources: &mut GpuResourceScope,
+    ) -> Result<GpuTextureViewHandle, Render2dExecutionError> {
+        let slot = self
+            .slots
+            .get_mut(index)
+            .ok_or_else(|| precision_failure(path, "Gaussian lookup has no field"))?;
+        let field = slot
+            .field
+            .as_mut()
+            .ok_or_else(|| precision_failure(path, "Gaussian lookup was not admitted"))?;
+        let tile = self
+            .tile
+            .as_ref()
+            .ok_or_else(|| precision_failure(path, "Gaussian lookup has no scratch tile"))?;
+        let offset = |axis| {
+            i32::try_from(i64::from(origin[axis]) * i64::from(SAMPLES) - i64::from(slot.root[axis]))
+                .map_err(|_| {
+                    precision_failure(path, "Gaussian root-to-map offset exceeds signed domain")
+                })
+        };
+        let offset = [offset(0)?, offset(1)?];
+        // Every caller immediately emits a fill and marks its group/tile
+        // painted. A successful enclosing merge cannot truncate this prefix.
+        // Any later failure abandons the complete contribution and this owner.
+        for operation in field.operations.drain(..) {
+            append(operations, operation)?;
+        }
+        append(operations, tile.lookup(field, offset, path, resources)?)?;
+        Ok(tile.view.clone())
+    }
 }
 
 fn map_bytes(
@@ -107,12 +296,11 @@ fn tile_offset(
     Ok(())
 }
 
-pub(super) fn prepare_field(
-    data: FieldData<'_>,
+pub(super) fn admit_field(
+    data: &FieldData<'_>,
     path: &[usize],
     context: &GpuContext,
-    resources: &mut GpuResourceScope,
-) -> Result<PreparedField, Render2dExecutionError> {
+) -> Result<(u64, u32), Render2dExecutionError> {
     let facts = context.device_facts();
     let native = facts.device_limits().values();
     let limits = facts.workload_budget().limits();
@@ -124,7 +312,7 @@ pub(super) fn prepare_field(
     if native
         .max_uniform_buffer_binding_size()
         .min(limits.max_uniform_buffer_binding_size())
-        < 16
+        < TILE_UNIFORM_BYTES
     {
         return Err(resource(
             path,
@@ -132,6 +320,33 @@ pub(super) fn prepare_field(
         ));
     }
     let bytes = map_bytes(data.extent, data.samples.len(), maximum, path)?;
+    if data
+        .visible_extent
+        .into_iter()
+        .zip(data.extent)
+        .any(|(visible, extent)| visible > extent)
+    {
+        return Err(precision_failure(
+            path,
+            "Gaussian canvas cutoff exceeds map extent",
+        ));
+    }
+    admit_queries(data.query_input, data.query_count, path, context)?;
+    Ok((
+        bytes,
+        native
+            .max_texture_dimension_2d()
+            .min(limits.max_texture_dimension_2d()),
+    ))
+}
+
+pub(super) fn prepare_field(
+    data: FieldData<'_>,
+    path: &[usize],
+    context: &GpuContext,
+    resources: &mut GpuResourceScope,
+) -> Result<PreparedField, Render2dExecutionError> {
+    let (bytes, max_texture_dimension) = admit_field(&data, path, context)?;
     let (operations, queries, pipeline) =
         prepare_queries(data.query_input, data.query_count, path, context, resources)?;
     let payload = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
@@ -158,9 +373,8 @@ pub(super) fn prepare_field(
         queries,
         pipeline,
         extent: data.extent,
-        max_texture_dimension: native
-            .max_texture_dimension_2d()
-            .min(limits.max_texture_dimension_2d()),
+        visible_extent: data.visible_extent,
+        max_texture_dimension,
     })
 }
 
@@ -219,6 +433,10 @@ impl FieldTile {
             field.extent[1],
             offset[0].cast_unsigned(),
             offset[1].cast_unsigned(),
+            field.visible_extent[0],
+            field.visible_extent[1],
+            0,
+            0,
         ];
         let payload = PreparedGpuData::<TransferData>::ordinary_pod_transfer(
             "Gaussian tile-to-map origin",
@@ -231,7 +449,7 @@ impl FieldTile {
                     "Gaussian tile-to-map origin",
                     GpuResourceLifetime::Transient,
                     GpuReconstruction::SourceBacked,
-                    16,
+                    TILE_UNIFORM_BYTES,
                     [GpuBufferUsage::Uniform, GpuBufferUsage::CopyDestination],
                     GpuBufferInitialization::Prepared(payload),
                 )
@@ -275,20 +493,12 @@ impl FieldTile {
     }
 }
 
-pub(super) fn prepare_queries(
+fn admit_queries(
     input: &[u8],
     count: u32,
     path: &[usize],
     context: &GpuContext,
-    resources: &mut GpuResourceScope,
-) -> Result<
-    (
-        Vec<GpuWorkOperation>,
-        GpuBufferHandle,
-        GpuRenderPipelineDescriptor,
-    ),
-    Render2dExecutionError,
-> {
+) -> Result<(u64, u32), Render2dExecutionError> {
     let device = context.device_facts();
     if !device.is_enabled(GpuCapabilityFeature::Copy)
         || (count > 0 && !device.is_enabled(GpuCapabilityFeature::Compute))
@@ -361,6 +571,24 @@ pub(super) fn prepare_queries(
             "Gaussian encoded query header disagrees with dispatch",
         ));
     }
+    Ok((output_bytes, groups))
+}
+
+pub(super) fn prepare_queries(
+    input: &[u8],
+    count: u32,
+    path: &[usize],
+    context: &GpuContext,
+    resources: &mut GpuResourceScope,
+) -> Result<
+    (
+        Vec<GpuWorkOperation>,
+        GpuBufferHandle,
+        GpuRenderPipelineDescriptor,
+    ),
+    Render2dExecutionError,
+> {
+    let (output_bytes, groups) = admit_queries(input, count, path, context)?;
     let source = crate::runtime::program::retained_gaussian_coverage_source().map_err(|e| {
         Render2dExecutionError::Program {
             stage: "Gaussian maintained coverage source",
@@ -552,4 +780,60 @@ fn gaussian_tile_metadata_admission_preserves_limits_and_signed_crop_domain() {
     assert!(matches!(tile_offset([8; 2], [0, i32::MAX - 6], owner),
         Err(Render2dExecutionError::SampleSpace { kind: Render2dSampleSpaceError::PrecisionLimit,
             path: Some(path), .. }) if path == *owner));
+}
+
+#[test]
+fn gaussian_canvas_cutoffs_preserve_half_sample_equality_phase_and_query_fuel() {
+    let boundary = 1.125_f64;
+    for (canvas, expected) in [
+        (boundary.next_down(), 4),
+        (boundary, 4),
+        (boundary.next_up(), 5),
+        (1.2, 5),
+    ] {
+        assert_eq!(
+            canvas_extent([canvas; 2], [0, 0, 8, 8], &mut 0_usize, &[2, 1]).unwrap(),
+            [expected; 2]
+        );
+    }
+    assert_eq!(
+        canvas_extent([1.2; 2], [3, 3, 11, 11], &mut 0_usize, &[2, 1]).unwrap(),
+        [2; 2],
+        "map origins retain the global sample phase"
+    );
+    for canvas in [[f64::NAN, 1.0], [-1.0, 1.0], [f64::MAX, 1.0]] {
+        assert!(canvas_extent(canvas, [0, 0, 8, 8], &mut 0_usize, &[2, 1]).is_err());
+    }
+    assert!(canvas_extent([1.0; 2], [9, 0, 8, 8], &mut 0_usize, &[2, 1]).is_err());
+    let mut measured =
+        crate::runtime::execution_2d::support::PreparationBudget::for_contribution(true);
+    canvas_extent([1.2; 2], [0, 0, 8, 8], &mut measured, &[2, 1]).unwrap();
+    use crate::runtime::execution_2d::support::PreparationWork;
+    let paid = measured.used();
+    for (remaining, succeeds) in [(paid, true), (paid - 1, false)] {
+        let mut work =
+            crate::runtime::execution_2d::support::PreparationBudget::from_prepared_sources(
+                true,
+                crate::runtime::execution_2d::support::MAX_COMPOSITIONAL_SHADOW_WORK - remaining,
+            );
+        assert_eq!(
+            canvas_extent([1.2; 2], [0, 0, 8, 8], &mut work, &[2, 1]).is_ok(),
+            succeeds
+        );
+    }
+}
+
+#[test]
+fn gaussian_physical_preparation_work_counts_shared_field_and_each_lookup() {
+    assert_eq!(
+        field_preparation_work(64, 0, 0),
+        Some(4096 + 2 * (256 + 16))
+    );
+    assert_eq!(
+        field_preparation_work(64, 100, 1),
+        Some(4096 + 2 * (256 + 100))
+    );
+    assert!(field_preparation_work(usize::MAX, 0, 0).is_none());
+    assert!(field_preparation_work(1, usize::MAX, 1).is_none());
+    assert_eq!(lookup_preparation_work(), 1984);
 }

@@ -17,7 +17,7 @@ mod finite_square_geometry;
 #[cfg(test)]
 mod linear_x_gaussian;
 mod orthogonal_boundary;
-mod scan_area;
+pub(super) mod scan_area;
 
 use super::interval::Interval;
 use super::*;
@@ -4447,5 +4447,4 @@ fn bounded_cell_query_never_treats_unknown_curve_or_exhaustion_as_empty() {
     );
 }
 
-#[cfg(test)]
 mod gaussian_kernel;

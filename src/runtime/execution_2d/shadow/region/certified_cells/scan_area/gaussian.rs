@@ -1,4 +1,4 @@
-//! Test-only shared finite-Gaussian integration over original-region strips.
+//! Shared finite-Gaussian integration over original-region strips.
 //!
 //! A complete boundary arrangement and original DAG membership certify open
 //! occupied strips once. Unknown event slabs retain explicit possible mass.
@@ -6,11 +6,10 @@
 //! the numerical kernel; compiled scalar maps and shared profiles remove
 //! repeated preparation. Disposable field values never become source support.
 //!
-//! The owned plane and maintained F3E GPU readback qualify the bounded numerical
-//! path. Production selection remains absent until source and invocation-wide
-//! resource obligations are closed. No partial plane escapes on failure.
-
-#![cfg(test)]
+//! The source consumer selects only its qualified original-boundary family.
+//! Numerical output owns no scene, geometry cache or GPU resource. Physical
+//! lowering independently admits the complete contribution before painting;
+//! no partial plane escapes on failure.
 
 use super::super::gaussian_kernel::GaussianKernel;
 use super::*;
@@ -25,6 +24,7 @@ mod classified_spans;
 mod image_qualification;
 mod numeric_index;
 mod plane;
+pub(in crate::runtime::execution_2d) use plane::PreparedPlane;
 mod query_compiler;
 #[cfg(test)]
 mod reference;
@@ -763,6 +763,16 @@ pub(in crate::runtime::execution_2d) struct GaussianPlaneRequest {
     pub(in crate::runtime::execution_2d) parent_to_root: Render2dAffineTransform,
 }
 
+impl GaussianPlaneRequest {
+    pub(in crate::runtime::execution_2d) fn preparation_bytes(&self) -> Option<usize> {
+        let width = self.root[2].checked_sub(self.root[0])? as usize;
+        let height = self.root[3].checked_sub(self.root[1])? as usize;
+        (MAX_AREA_QUERY_FIXED_BYTES as usize)
+            .checked_add(width.checked_mul(height)?.checked_mul(size_of::<u32>())?)?
+            .checked_add(width.checked_mul(size_of::<f64>())?)
+    }
+}
+
 /// Exact row-preserving root-to-consuming-parent coordinate chart. Geometry,
 /// signed morphology and the finite square kernel stay in the parent frame.
 #[derive(Clone, Copy)]
@@ -853,6 +863,29 @@ impl NeutralRegion<'_> {
         fuel: &mut usize,
         host_lease: usize,
     ) -> Result<plane::PreparedPlane, AreaQueryError> {
+        // Translation commutes with the Euclidean spread already present in
+        // this C and with this finite convolution. Keep original boundaries
+        // in their existing chart and translate the numerical sample chart
+        // instead. Expanding translated conic coefficients can otherwise
+        // amplify cancellation despite an unchanged physical query.
+        // This removes only one exact outer translation; no source geometry,
+        // clip, kernel, offset or sample phase is rounded or reconstructed.
+        debit(fuel, 128)?;
+        if request.parent_to_root == Render2dAffineTransform::IDENTITY
+            && let Kind::Affine { source, to_parent } = &self.kind
+        {
+            let [a, b, c, d, tx, ty] = to_parent.components();
+            if [a, b, c, d] == [1.0, 0.0, 0.0, 1.0] && [tx, ty] != [0.0; 2] {
+                return source.prepare_gaussian_plane(
+                    GaussianPlaneRequest {
+                        parent_to_root: *to_parent,
+                        ..request
+                    },
+                    fuel,
+                    host_lease,
+                );
+            }
+        }
         let GaussianPlaneRequest {
             root,
             scale,
@@ -882,13 +915,8 @@ impl NeutralRegion<'_> {
         }
         let chart = ParentChart::new(parent_to_root, fuel)?;
         let fixed = MAX_AREA_QUERY_FIXED_BYTES as usize;
-        let peak = fixed
-            .checked_add(
-                cells
-                    .checked_mul(size_of::<u32>())
-                    .ok_or(AreaQueryError::Resource)?,
-            )
-            .and_then(|v| v.checked_add(width.checked_mul(size_of::<f64>())?))
+        let peak = request
+            .preparation_bytes()
             .ok_or(AreaQueryError::Resource)?;
         // Boundary construction, scan events and later numeric packing are
         // distinct phases. Each fits the SAME fixed reservation; width-sized
