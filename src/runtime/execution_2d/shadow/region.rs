@@ -35,7 +35,7 @@ const UNION_CHILD_WORK: usize = 64;
 const UNION_FIXED_WORK: usize = 128;
 const SOURCE_VERTEX_WORK: usize = 16;
 const MATERIALIZATION_LOOKUP_WORK: usize = 16;
-const MATERIALIZATION_NODE_WORK: usize = 128;
+const MATERIALIZATION_NODE_WORK: usize = 192;
 // Fixed node/path bookkeeping and nonleaf affine/effect interval envelopes.
 const REGION_NODE_WORK: usize = 1_024;
 const AFFINE_REACH_VERTEX_WORK: usize = 32;
@@ -477,7 +477,7 @@ impl NeutralRegion<'_> {
         )
     }
 
-    pub(super) fn all_root_shadows_provably_empty(&self, shadows: &[Render2dDropShadow]) -> bool {
+    pub(super) fn all_shadows_provably_empty(&self, shadows: &[Render2dDropShadow]) -> bool {
         !shadows.is_empty()
             && self.certified_source_reach
             && shadows
@@ -537,9 +537,11 @@ impl NeutralRegion<'_> {
 /// One invocation-owned bounded graph and memoized polygonal realization.
 /// Memo keys are monotonic graph IDs, NEVER F1 semantic or cache IDs.
 pub(super) struct NeutralRegionBuilder {
+    pub(super) host: support::PreparationHostBudget,
     nodes: usize,
     constructed_node_bytes: usize,
     retained_path_units: usize,
+    max_owner_path: usize,
     retained_vertices: usize,
     /// One invocation-wide original reach AND stable neutral-union scan budget.
     pub(super) graph_work: usize,
@@ -596,10 +598,15 @@ pub(in crate::runtime::execution_2d) struct CertifiedRoundedRectangle {
 
 impl NeutralRegionBuilder {
     pub(super) fn new(scales: shadow::NeutralPreparationScale, max_buffer_bytes: u64) -> Self {
+        let mut host = support::PreparationHostBudget::new();
+        host.reserve(size_of::<Self>(), &[])
+            .expect("fixed source owner fits host admission");
         Self {
+            host,
             nodes: 0,
             constructed_node_bytes: 0,
             retained_path_units: 0,
+            max_owner_path: 0,
             retained_vertices: 0,
             graph_work: 0,
             clip_work: 0,
@@ -738,14 +745,13 @@ impl NeutralRegionBuilder {
             }
         };
         let mut owner_path = Vec::new();
-        owner_path
-            .try_reserve_exact(path.len())
-            .map_err(|_| resource(path, "neutral support owner path allocation failed"))?;
-        if owner_path.capacity() > path.len() {
-            return Err(resource(
-                path,
-                "neutral support owner path capacity exceeds admission",
-            ));
+        self.host
+            .reserve_vector(&mut owner_path, path.len(), path)?;
+        let node_bytes = size_of::<NeutralRegion<'_>>() + 2 * size_of::<usize>();
+        if let Err(error) = self.host.reserve(node_bytes, path) {
+            self.host
+                .release(owner_path.capacity() * size_of::<usize>());
+            return Err(error);
         }
         owner_path.extend_from_slice(path);
         self.constructed_node_bytes = self
@@ -769,6 +775,7 @@ impl NeutralRegionBuilder {
             .ok_or_else(|| resource(path, "neutral node storage extent overflow"))?;
         self.nodes = next;
         self.retained_path_units = paths;
+        self.max_owner_path = self.max_owner_path.max(path.len());
         Ok(Arc::new(NeutralRegion {
             kind,
             semantic_item,
@@ -783,6 +790,31 @@ impl NeutralRegionBuilder {
 
     pub(super) fn storage_limit(&self) -> u64 {
         self.max_buffer_bytes
+    }
+
+    pub(super) fn into_host(self) -> support::PreparationHostBudget {
+        self.host
+    }
+
+    /// A normal capability result may transport one admitted node's owner
+    /// path. Reserve the observed maximum BEFORE materialization can produce
+    /// it; the caller either adopts its actual capacity or releases the lease.
+    pub(super) fn reserve_diagnostic_path(
+        &mut self,
+        path: &[usize],
+    ) -> Result<usize, Render2dExecutionError> {
+        let work = self
+            .max_owner_path
+            .checked_mul(2)
+            .and_then(|copy| copy.checked_add(64))
+            .ok_or_else(|| resource(path, "source diagnostic path work overflow"))?;
+        self.charge_graph_work(work, path)?;
+        let bytes = self
+            .max_owner_path
+            .checked_mul(size_of::<usize>())
+            .ok_or_else(|| resource(path, "source diagnostic path extent overflow"))?;
+        self.host.reserve(bytes, path)?;
+        Ok(bytes)
     }
 
     pub(super) fn charge_preparation(
@@ -833,17 +865,15 @@ impl NeutralRegionBuilder {
                 .ok_or_else(|| resource(&[], "polygon dependency initialization work overflow"))?,
             &[],
         )?;
-        fn table(count: usize) -> Result<Vec<bool>, Render2dExecutionError> {
+        self.charge_graph_work(256, &[])?;
+        self.host
+            .reserve(size_of::<PolygonDependencies<'_>>(), &[])?;
+        fn table(
+            count: usize,
+            host: &mut support::PreparationHostBudget,
+        ) -> Result<Vec<bool>, Render2dExecutionError> {
             let mut values = Vec::new();
-            values
-                .try_reserve_exact(count)
-                .map_err(|_| resource(&[], "polygon dependency allocation failed"))?;
-            if values.capacity() > count {
-                return Err(resource(
-                    &[],
-                    "polygon dependency capacity exceeds admission",
-                ));
-            }
+            host.reserve_vector(&mut values, count, &[])?;
             values.resize(count, false);
             Ok(values)
         }
@@ -852,18 +882,11 @@ impl NeutralRegionBuilder {
         // at most MAX_REGION_DEPTH frames can coexist by the DAG invariant.
         const { assert!(size_of::<(Arc<NeutralRegion<'_>>, usize)>() <= 128) };
         let mut frames = Vec::new();
-        frames
-            .try_reserve_exact(MAX_REGION_DEPTH)
-            .map_err(|_| resource(&[], "polygon dependency frame allocation failed"))?;
-        if frames.capacity() > MAX_REGION_DEPTH {
-            return Err(resource(
-                &[],
-                "polygon dependency frame capacity exceeds admission",
-            ));
-        }
+        self.host
+            .reserve_vector(&mut frames, MAX_REGION_DEPTH, &[])?;
         Ok(PolygonDependencies {
-            nodes: table(slots)?,
-            consumers: table(consumers)?,
+            nodes: table(slots, &mut self.host)?,
+            consumers: table(consumers, &mut self.host)?,
             frames,
             metadata_bytes,
         })
@@ -982,17 +1005,16 @@ impl NeutralRegionBuilder {
         self.charge_graph_work(
             slots
                 .checked_mul(8)
-                .and_then(|v| v.checked_add(64))
+                .and_then(|v| v.checked_add(128))
                 .ok_or_else(|| resource(&[], "source storage work overflow"))?,
             &[],
         )?;
         let mut seen = Vec::new();
-        seen.try_reserve_exact(slots)
-            .map_err(|_| resource(&[], "source storage index allocation failed"))?;
-        if seen.capacity() > slots {
-            return Err(resource(&[], "source storage index exceeds admission"));
-        }
+        self.host.reserve_vector(&mut seen, slots, &[])?;
         seen.resize(slots, false);
+        // Preserve the existing structural traversal allowance. This is not
+        // a measurement or proof of compiler-generated Rust stack frames.
+        self.host.reserve(MAX_REGION_DEPTH * 128, &[])?;
         let mut fuel = MAX_REGION_GRAPH_WORK - self.graph_work;
         let result = (|| {
             let mut bytes = size_of::<Self>()
@@ -1031,6 +1053,7 @@ impl NeutralRegionBuilder {
             Some((bytes, construction))
         })();
         self.graph_work = MAX_REGION_GRAPH_WORK - fuel;
+        self.host.release(seen.capacity() + MAX_REGION_DEPTH * 128);
         result.ok_or_else(|| resource(&[], "source storage inventory exceeds admission"))
     }
 
@@ -1230,6 +1253,13 @@ impl NeutralRegionBuilder {
             .and_then(|cost| cost.checked_add(64))
             .ok_or_else(|| resource(path, "neutral source scan work overflow"))?;
         self.charge_graph_work(scan_work, path)?;
+        // The factory has already returned this capacity. This is retained
+        // admission, NOT a claim about its unobserved construction scratch.
+        self.host.reserve(
+            Self::mesh_bytes(mesh)
+                .ok_or_else(|| resource(path, "source mesh retained storage overflow"))?,
+            path,
+        )?;
         let mut bounds = [
             f64::INFINITY,
             f64::INFINITY,
@@ -1318,6 +1348,7 @@ impl NeutralRegionBuilder {
                 let work = (needed - old_len)
                     .checked_add(relocation)
                     .and_then(|slots| slots.checked_mul(2))
+                    .and_then(|cost| cost.checked_add(64))
                     .ok_or_else(|| resource(path, "neutral union stamp work overflow"))?;
                 self.charge_graph_work(work, path)?;
                 // Bounded geometric capacity prevents an exact one-slot
@@ -1347,15 +1378,8 @@ impl NeutralRegionBuilder {
                         "neutral union capacity exceeds bounded memory",
                     ));
                 }
-                self.union_seen
-                    .try_reserve_exact(desired - old_len)
-                    .map_err(|_| resource(path, "neutral union stamp allocation failed"))?;
-                if self.union_seen.capacity() > desired {
-                    return Err(resource(
-                        path,
-                        "neutral union allocated capacity exceeds admission",
-                    ));
-                }
+                self.host
+                    .reserve_vector(&mut self.union_seen, desired, path)?;
                 self.union_seen.resize(needed, 0);
             }
             // Even when node admission fails after normalization, advance
@@ -1738,6 +1762,7 @@ impl NeutralRegionBuilder {
         remaining: &mut usize,
         memo: &mut Vec<Option<bool>>,
         max_buffer_bytes: u64,
+        host: &mut support::PreparationHostBudget,
     ) -> Result<bool, Render2dExecutionError> {
         Self::provenance_charge(remaining, PROVENANCE_LOOKUP_WORK, &root.path)?;
         if let Some(cached) = memo.get(root.id).copied().flatten() {
@@ -1774,6 +1799,7 @@ impl NeutralRegionBuilder {
             .and_then(|slots| slots.checked_mul(2))
             .and_then(|cost| cost.checked_add(PROVENANCE_NODE_WORK))
             .and_then(|cost| cost.checked_add(node_work))
+            .and_then(|cost| cost.checked_add(if entries > memo.capacity() { 64 } else { 0 }))
             .ok_or_else(|| {
                 resource(
                     &root.path,
@@ -1784,8 +1810,7 @@ impl NeutralRegionBuilder {
         // proof-cache allocation or source/child traversal can begin.
         Self::provenance_charge(remaining, work, &root.path)?;
         if growth != 0 {
-            memo.try_reserve_exact(growth)
-                .map_err(|_| resource(&root.path, "original F1 provenance allocation failed"))?;
+            host.reserve_vector(memo, entries, &root.path)?;
             if memo.capacity() > MAX_REGION_NODES + 1
                 || memo
                     .capacity()
@@ -1818,6 +1843,7 @@ impl NeutralRegionBuilder {
             &mut remaining,
             &mut self.polygonal_proofs,
             self.max_buffer_bytes,
+            &mut self.host,
         );
         // Failed/false queries keep every actually admitted charge; errors
         // cannot fall through to a free second proof or fresh allowance.
@@ -1896,10 +1922,15 @@ impl NeutralRegionBuilder {
         if support::certified_axis_aligned_rectangle(&rectangle.triangles).is_none() {
             return Ok(None);
         }
+        self.charge_graph_work(curved.path.len() * 2 + 64, &curved.path)?;
+        let mut curved_owner = Vec::new();
+        self.host
+            .reserve_vector(&mut curved_owner, curved.path.len(), &curved.path)?;
+        curved_owner.extend_from_slice(&curved.path);
         Ok(Some(CertifiedRoundedRectangle {
             rectangle,
             radius: shadow.spread(),
-            curved_owner: curved.path.clone(),
+            curved_owner,
         }))
     }
 
@@ -1954,16 +1985,16 @@ impl NeutralRegionBuilder {
             } else {
                 self.materialized.capacity()
             };
-            self.materialized
-                .try_reserve_exact(desired - old_len)
-                .map_err(|_| resource(path, "neutral materialization cache allocation failed"))?;
-            if self.materialized.capacity() > desired {
-                return Err(resource(
-                    path,
-                    "neutral materialization capacity exceeds admission",
-                ));
-            }
+            self.host
+                .reserve_vector(&mut self.materialized, desired, path)?;
             self.materialized.resize_with(needed, || None);
+        }
+        let new_mesh = !matches!(&region.kind, Kind::Source(_));
+        if new_mesh {
+            self.host.reserve(
+                size_of::<support::NeutralMesh>() + 2 * size_of::<usize>(),
+                path,
+            )?;
         }
         let mesh = match &region.kind {
             Kind::Source(mesh) => Arc::clone(mesh.get().ok_or_else(|| unsupported(path))?),
@@ -2121,6 +2152,17 @@ impl NeutralRegionBuilder {
                 }
             }
         };
+        if new_mesh {
+            // Materialization factories still own their physical scratch.
+            // Only their actual returned vertex capacity is retained here.
+            self.host.reserve(
+                mesh.triangles
+                    .capacity()
+                    .checked_mul(size_of::<[f64; 2]>())
+                    .ok_or_else(|| resource(path, "materialized mesh storage overflow"))?,
+                path,
+            )?;
+        }
         if mesh.triangles.is_empty()
             && (matches!(&region.kind, Kind::Clip { .. }) || region.semantic_item.is_some())
         {
@@ -2311,6 +2353,28 @@ mod tests {
             Render2dOpacity::TRANSPARENT,
         );
         (resource, fields, item)
+    }
+
+    #[test]
+    fn source_metadata_host_rejection_precedes_node_path_and_arc_allocation() {
+        let mut graph = builder();
+        let remaining = support::MAX_SHADOW_HOST_BYTES - graph.host.live();
+        graph.host.reserve(remaining, &[]).unwrap();
+        let before = graph.host.live();
+        let item = provenance_rectangle_item();
+        assert!(
+            matches!(graph.register_source(&item, &[7, 1]), Err(Render2dExecutionError::SampleSpace { kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), .. }) if path == [7, 1])
+        );
+        assert_eq!(graph.nodes, 0);
+        assert_eq!(graph.retained_path_units, 0);
+        assert_eq!(graph.constructed_node_bytes, 0);
+        assert_eq!(graph.host.live(), before);
+        assert!(
+            graph.graph_work > 0,
+            "attempted source work cannot be refunded with storage"
+        );
+        graph.host.release(remaining);
+        assert!(graph.register_source(&item, &[7, 1]).unwrap().is_some());
     }
 
     #[test]
@@ -3965,28 +4029,34 @@ mod tests {
         let composition = Render2dComposition::new(vec![inert; 140_000]).unwrap();
         let bindings = Render2dResourceBindings::default();
         let fields = std::collections::BTreeMap::new();
-        let result = shadow::build_group_sources(
-            &composition,
-            0,
-            &bindings,
-            &fields,
-            shadow::SourcePreparation::new(
-                shadow::NeutralPreparationScale {
-                    field_raster_scale: 1.0,
-                    geometry_sample_scale: 4.0,
-                },
-                1_048_576,
-            ),
+        let mut preparation = shadow::SourcePreparation::new(
+            shadow::NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            1_048_576,
         );
-        // Builder bookkeeping, cursor setup and the initial next call pay
-        // first. Each inert root then needs a visit and a closing-frame step.
+        // An earlier phase already spent this scalar debit. Besides proving
+        // ownership continuity, it places exhaustion at a leaf's closing step.
+        preparation.graph.charge_preparation(64, &[]).unwrap();
+        let result = shadow::build_group_sources(&composition, 0, &bindings, &fields, preparation);
+        // Source-owner setup (64), host/input transfer (128), builder dispatch
+        // (32), cursor setup (128) and initial next (32) pay first. Each inert
+        // root then needs a visit and a closing-frame step.
         // Rejection pays no closing pop, so its known owner is that leaf.
-        let owner = (MAX_REGION_GRAPH_WORK - 32 - 128 - 32) / (2 * 64);
-        assert!(matches!(result, Err(Render2dExecutionError::SampleSpace {
+        let owner = (MAX_REGION_GRAPH_WORK - 64 - 64 - 128 - 32 - 128 - 32) / (2 * 64);
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("inert occurrences must consume source fuel"),
+        };
+        assert!(
+            matches!(&error, Render2dExecutionError::SampleSpace {
             kind: Render2dSampleSpaceError::ResourceLimit,
             path: Some(path),
             ..
-        }) if path == [owner]));
+        } if path == &[owner]),
+            "expected owner {owner}, observed {error:?}"
+        );
         // The ordinary non-shadow scene policy still permits this bounded
         // authored tree, whose active affine plan is genuinely empty.
         assert!(
@@ -4641,10 +4711,10 @@ mod tests {
             Render2dDropShadow::new(2.0, -3.0, 0.3, -8.0, Render2dColorRgba8::TRANSPARENT).unwrap();
         let survivor =
             Render2dDropShadow::new(0.0, 0.0, 0.0, -0.5, Render2dColorRgba8::TRANSPARENT).unwrap();
-        assert!(complete.all_root_shadows_provably_empty(&[erased, erased]));
-        assert!(!complete.all_root_shadows_provably_empty(&[erased, survivor]));
-        assert!(!complete.all_root_shadows_provably_empty(&[survivor, erased]));
-        assert!(!complete.all_root_shadows_provably_empty(&[]));
+        assert!(complete.all_shadows_provably_empty(&[erased, erased]));
+        assert!(!complete.all_shadows_provably_empty(&[erased, survivor]));
+        assert!(!complete.all_shadows_provably_empty(&[survivor, erased]));
+        assert!(!complete.all_shadows_provably_empty(&[]));
         assert!(
             graph.materialize(&complete).is_err(),
             "the child positive disk remains symbolic, not silently polygonalized"

@@ -16,7 +16,7 @@ mod symbolic;
 
 // Retained floating neutral support is separate from per-tile source-backed
 // GPU uploads; both are aggregate limits across one immutable contribution.
-pub(super) const MAX_SHADOW_COVERAGE_BYTES: u64 = 64 * 1024 * 1024;
+pub(super) const MAX_SHADOW_COVERAGE_BYTES: u64 = support::MAX_SHADOW_HOST_BYTES as u64;
 pub(super) const MAX_SHADOW_MASK_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
 const FORMAT: GpuTextureFormat = GpuTextureFormat::R32Float;
 
@@ -161,30 +161,22 @@ pub(in crate::runtime::execution_2d) struct PreparedSources<'a> {
     composition: &'a crate::composition_2d::Render2dComposition,
     sources: geometry_support::GroupChildSources<'a>,
     effects: usize,
-    live_bytes: usize,
 }
 
 impl<'a> PreparedSources<'a> {
     fn new(
         composition: &'a crate::composition_2d::Render2dComposition,
-        sources: geometry_support::GroupChildSources<'a>,
+        mut sources: geometry_support::GroupChildSources<'a>,
         effects: usize,
     ) -> Result<Self, Render2dExecutionError> {
-        let live_bytes = sources
-            .retained_bytes
-            .checked_add(size_of::<Self>() - size_of::<geometry_support::GroupChildSources<'_>>())
-            .ok_or_else(|| shadow_resource(&[], "source owner storage overflow"))?;
-        if live_bytes > MAX_SHADOW_COVERAGE_BYTES as usize {
-            return Err(shadow_resource(
-                &[],
-                "retained shadow sources exceed host storage",
-            ));
-        }
+        sources.host.reserve(
+            size_of::<Self>() - size_of::<geometry_support::GroupChildSources<'_>>(),
+            &[],
+        )?;
         Ok(Self {
             composition,
             sources,
             effects,
-            live_bytes,
         })
     }
 
@@ -211,7 +203,7 @@ impl<'a> PreparedSources<'a> {
             .checked_add(size_of::<Self>() - size_of::<geometry_support::GroupChildSources<'_>>())
             .and_then(|bytes| bytes.checked_add(plan.retained_bytes()))
             .ok_or_else(|| shadow_resource(&[], "shadow plan receipt storage overflow"))?;
-        if expected != self.live_bytes {
+        if expected != self.sources.host.live() {
             return Err(shadow_precision(
                 &[],
                 "shadow planner retained storage does not match lease",
@@ -231,24 +223,10 @@ impl scene::PlanningAdmission for PreparedSources<'_> {
         )
     }
     fn reserve(&mut self, bytes: usize, path: &[usize]) -> Result<(), Render2dExecutionError> {
-        let total = self
-            .live_bytes
-            .checked_add(bytes)
-            .ok_or_else(|| shadow_resource(path, "shadow planning host storage overflow"))?;
-        if total > MAX_SHADOW_COVERAGE_BYTES as usize {
-            return Err(shadow_resource(
-                path,
-                "shadow planning exceeds remaining host storage",
-            ));
-        }
-        self.live_bytes = total;
-        Ok(())
+        self.sources.host.reserve(bytes, path)
     }
     fn release(&mut self, bytes: usize) {
-        self.live_bytes = self
-            .live_bytes
-            .checked_sub(bytes)
-            .expect("owned planning lease");
+        self.sources.host.release(bytes);
     }
 }
 
@@ -278,10 +256,10 @@ pub(super) fn prepare(
     target: &AdmittedTarget,
     prepared: PreparedSources<'_>,
 ) -> Result<ShadowGroups, Render2dExecutionError> {
+    let live_bytes = prepared.sources.host.live();
     let PreparedSources {
         sources,
         effects: admitted_effects,
-        live_bytes,
         ..
     } = prepared;
     let sample_scale = target.raster_scale() * f64::from(SAMPLES);
@@ -1016,12 +994,15 @@ mod tests {
         };
         let original = Arc::as_ptr(mesh);
         let paid = prepared.sources.work.used();
-        let source_bytes = prepared.live_bytes;
+        let source_bytes = prepared.sources.host.live();
         assert!(paid > 0);
         assert!(prepared.sources.work.maximum() > support::MAX_COMPOSITIONAL_SHADOW_WORK);
         let (plan, prepared) = prepared.plan().unwrap();
         assert!(prepared.sources.work.used() > paid);
-        assert_eq!(prepared.live_bytes, source_bytes + plan.retained_bytes());
+        assert_eq!(
+            prepared.sources.host.live(),
+            source_bytes + plan.retained_bytes()
+        );
         let geometry_support::NeutralCaster::Mesh(mesh) = prepared.sources.caster(0).unwrap()
         else {
             panic!("same polygonal source")
@@ -1052,7 +1033,8 @@ mod tests {
         // A fresh owning invocation is independent; the failed one was moved
         // and dropped, so its partial lease/counter cannot be reused.
         let mut fresh = before_plan(&composition);
-        fresh.live_bytes = MAX_SHADOW_COVERAGE_BYTES as usize;
+        let remaining = MAX_SHADOW_COVERAGE_BYTES as usize - fresh.sources.host.live();
+        fresh.sources.host.reserve(remaining, &[]).unwrap();
         assert!(matches!(
             fresh.plan(),
             Err(Render2dExecutionError::SampleSpace {

@@ -23,7 +23,137 @@ const MAX_GAUSSIAN_RADIUS_SAMPLES: u32 = 512;
 // across every authored effect in one contribution, not just one shadow.
 const MAX_AGGREGATE_SHADOW_PREPARATION_WORK: usize = 134_217_728;
 pub(super) const MAX_COMPOSITIONAL_SHADOW_WORK: usize = 16_777_216;
+pub(super) const MAX_SHADOW_HOST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CERTIFIED_RECTANGLE_AXIS_WORK: usize = 16_777_216;
+
+/// One linear owner of source metadata and its subsequent planning lease.
+/// Factory scratch is not observable through this boundary: returned physical
+/// meshes are admitted as retained storage, never claimed prepaid here.
+#[derive(Debug)]
+pub(super) struct PreparationHostBudget {
+    live: usize,
+    peak: usize,
+    maximum: usize,
+    failed: bool,
+}
+
+impl PreparationHostBudget {
+    pub(super) fn new() -> Self {
+        Self {
+            live: 0,
+            peak: 0,
+            maximum: MAX_SHADOW_HOST_BYTES,
+            failed: false,
+        }
+    }
+
+    pub(super) fn live(&self) -> usize {
+        self.live
+    }
+    pub(super) fn peak(&self) -> usize {
+        self.peak
+    }
+
+    pub(super) fn reserve(
+        &mut self,
+        bytes: usize,
+        path: &[usize],
+    ) -> Result<(), crate::execution_2d::Render2dExecutionError> {
+        let next = self.live.checked_add(bytes);
+        if self.failed || next.is_none_or(|next| next > self.maximum) {
+            return Err(mask_failure(
+                path,
+                crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                "source metadata exceeds remaining host storage",
+            ));
+        }
+        self.live = next.expect("checked host extent");
+        self.peak = self.peak.max(self.live);
+        Ok(())
+    }
+
+    pub(super) fn release(&mut self, bytes: usize) {
+        self.live = self
+            .live
+            .checked_sub(bytes)
+            .expect("owned host reservation");
+    }
+
+    /// Transfer the SAME owner across a destruction boundary without resetting
+    /// its peak. No new allocation is authorized by this inventory transfer.
+    pub(super) fn retain(
+        &mut self,
+        bytes: usize,
+        path: &[usize],
+    ) -> Result<(), crate::execution_2d::Render2dExecutionError> {
+        self.reserve(0, path)?;
+        if bytes > self.live {
+            self.reserve(bytes - self.live, path)?;
+        } else {
+            self.release(self.live - bytes);
+        }
+        Ok(())
+    }
+
+    /// New and old buffers coexist during allocator relocation. A failed
+    /// reservation refunds only storage, never numerical work. Unexpected
+    /// allocator overcapacity terminates this owner rather than permitting a
+    /// retry with an unaccounted allocation.
+    pub(super) fn reserve_vector<T>(
+        &mut self,
+        values: &mut Vec<T>,
+        capacity: usize,
+        path: &[usize],
+    ) -> Result<(), crate::execution_2d::Render2dExecutionError> {
+        if capacity <= values.capacity() {
+            return self.reserve(0, path);
+        }
+        let bytes = capacity.checked_mul(size_of::<T>()).ok_or_else(|| {
+            mask_failure(
+                path,
+                crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                "source metadata capacity overflow",
+            )
+        })?;
+        let old = values.capacity() * size_of::<T>();
+        self.reserve(bytes, path)?;
+        if values.try_reserve_exact(capacity - values.len()).is_err() {
+            self.release(bytes);
+            return Err(mask_failure(
+                path,
+                crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                "source metadata allocation failed",
+            ));
+        }
+        if values.capacity() > capacity {
+            self.failed = true;
+            return Err(mask_failure(
+                path,
+                crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                "source metadata capacity exceeds admission",
+            ));
+        }
+        self.release(old);
+        Ok(())
+    }
+
+    pub(super) fn verify_reserved_capacity(
+        &mut self,
+        actual: usize,
+        admitted: usize,
+        path: &[usize],
+    ) -> Result<(), crate::execution_2d::Render2dExecutionError> {
+        if actual > admitted {
+            self.failed = true;
+            return Err(mask_failure(
+                path,
+                crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                "source metadata capacity exceeds admission",
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// One counter carries the immutable contribution policy through every
 /// geometric evaluator. Legacy geometry owners retain their established
@@ -4022,6 +4152,45 @@ pub(super) fn signed_euclidean_spread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_host_lease_prepays_relocation_and_reuses_rejected_capacity() {
+        let mut host = PreparationHostBudget::new();
+        host.maximum = 47;
+        let mut values = Vec::<u32>::new();
+        host.reserve_vector(&mut values, 4, &[2]).unwrap();
+        values.extend([1, 2, 3, 4]);
+        let before = values.as_ptr();
+        // The final 32-byte buffer fits, but old+new requires 48 bytes.
+        assert!(host.reserve_vector(&mut values, 8, &[2]).is_err());
+        assert_eq!(values.as_ptr(), before);
+        assert_eq!(values, [1, 2, 3, 4]);
+        assert_eq!((host.live(), host.peak()), (16, 16));
+        host.maximum = 48;
+        host.reserve_vector(&mut values, 8, &[2]).unwrap();
+        assert_eq!((host.live(), host.peak()), (32, 48));
+        assert_eq!(values.capacity(), 8);
+        // Moving the owner across a destruction cut never resets its peak.
+        drop(values);
+        host.retain(8, &[2]).unwrap();
+        host.reserve(40, &[2]).unwrap();
+        assert_eq!((host.live(), host.peak()), (48, 48));
+        assert!(host.reserve(1, &[2]).is_err());
+        assert_eq!(host.live(), 48);
+    }
+
+    #[test]
+    fn source_host_input_and_discarded_construction_share_one_limit() {
+        let mut host = PreparationHostBudget::new();
+        host.maximum = 100;
+        host.reserve(60, &[]).unwrap(); // caller input remains live
+        host.reserve(40, &[1]).unwrap(); // exact source metadata admission
+        assert!(host.reserve(1, &[1]).is_err());
+        assert_eq!((host.live(), host.peak()), (100, 100));
+        host.release(40); // only the destroyed construction may be reused
+        host.reserve(40, &[3]).unwrap();
+        assert_eq!((host.live(), host.peak()), (100, 100));
+    }
 
     #[test]
     fn affine_positive_disk_area_is_euclidean_and_preserves_sheared_quarter_pixel() {

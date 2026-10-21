@@ -29,6 +29,8 @@ fn context() -> Option<GpuContext> {
             .require_format_role(GpuTextureFormat::Rgba16Float, GpuFormatRole::Sampled)
             .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::ColorAttachment)
             .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Sampled)
+            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::Filterable)
+            .require_format_role(GpuTextureFormat::Rgba8Unorm, GpuFormatRole::CopyDestination)
             .require_format_role(GpuTextureFormat::R32Float, GpuFormatRole::Sampled)
             .require_format_role(GpuTextureFormat::R32Float, GpuFormatRole::CopyDestination)
             .with_label("F3F continuous original caster physical reference");
@@ -265,6 +267,70 @@ fn reflected_finite_child_caster_keeps_original_quadrant_domains() {
             );
         }
     }
+}
+
+#[test]
+fn original_glyph_survives_completely_eroded_child_effect_and_casts_ancestor_on_vulkan() {
+    let Some(context) = context() else { return };
+    let id = Render2dResourceId::new(2802).unwrap();
+    let bindings = bindings(id, shaped_resource(OUTLINE_FONT, false, BOX_GLYPH, 8.0));
+    let child = Render2dEntry::group(Render2dGroup::new(
+        vec![shaped_entry(
+            id,
+            [8.0, 20.0],
+            Render2dColorRgba8::TRANSPARENT,
+        )],
+        Render2dAffineTransform::translation(2.0, 0.0).unwrap(),
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![
+            Render2dDropShadow::new(
+                10.0,
+                0.0,
+                0.1,
+                -8.0,
+                Render2dColorRgba8::new(255, 0, 0, 255),
+            )
+            .unwrap(),
+        ],
+    ));
+    let composition = Render2dComposition::new(vec![Render2dEntry::group(Render2dGroup::new(
+        vec![child],
+        Render2dAffineTransform::IDENTITY,
+        Vec::new(),
+        Render2dOpacity::OPAQUE,
+        vec![
+            Render2dDropShadow::new(2.0, 0.0, 0.0, 0.0, Render2dColorRgba8::new(0, 0, 255, 255))
+                .unwrap(),
+        ],
+    ))])
+    .unwrap();
+    let mut executor = Render2dExecutor::new();
+    let first = execute(
+        &context,
+        &mut executor,
+        &composition,
+        &bindings,
+        "original glyph after exact complete child erosion",
+    );
+    // The retained fixture outline has width <8 and height <8. A radius
+    // 8 disk cannot fit, so the child's entire translated/blurred effect
+    // is empty. Its transparent original glyph remains ancestor support.
+    // The +10 offset also defeats the erosion-subset absorption shortcut.
+    // Original text casts at x=[12,18.5], y=[13.625,20]. A false uneroded
+    // child effect would add blue at x=25; erasing pristine C loses x=14.
+    assert_eq!(pixel(&first, 14, 16), [0, 0, 255, 255]);
+    assert_eq!(pixel(&first, 5, 16), [0, 0, 0, 0]);
+    assert_eq!(pixel(&first, 25, 16), [0, 0, 0, 0]);
+    executor.discard_cache();
+    let recreated = execute(
+        &context,
+        &mut executor,
+        &composition,
+        &bindings,
+        "original glyph erosion after field cache loss",
+    );
+    assert_eq!(first.as_bytes(), recreated.as_bytes());
 }
 
 #[test]

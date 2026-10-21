@@ -501,17 +501,34 @@ fn materialized_or_symbolic<'a>(
     source: &Arc<region::NeutralRegion<'a>>,
     original_straight: bool,
 ) -> Result<NeutralCaster<'a>, Render2dExecutionError> {
+    let diagnostic = graph.reserve_diagnostic_path(source.owner_path())?;
     match graph.materialize(source) {
-        Ok(mesh) if original_straight => Ok(NeutralCaster::OriginalStraightPolygonUnion(mesh)),
-        Ok(mesh) => Ok(NeutralCaster::Mesh(mesh)),
+        Ok(mesh) if original_straight => {
+            graph.host.release(diagnostic);
+            Ok(NeutralCaster::OriginalStraightPolygonUnion(mesh))
+        }
+        Ok(mesh) => {
+            graph.host.release(diagnostic);
+            Ok(NeutralCaster::Mesh(mesh))
+        }
         Err(Render2dExecutionError::UnsupportedEntry {
             path,
             kind: Render2dUnsupportedContent::Shadows { .. },
-        }) if !source.contains_positive_disk => Ok(NeutralCaster::Symbolic(SymbolicCaster {
-            expression: Arc::clone(source),
-            first_unqualified_owner: path,
-        })),
-        Err(error) => Err(error),
+        }) if !source.contains_positive_disk => {
+            let actual = path.capacity() * size_of::<usize>();
+            graph
+                .host
+                .verify_reserved_capacity(actual, diagnostic, &path)?;
+            graph.host.release(diagnostic - actual);
+            Ok(NeutralCaster::Symbolic(SymbolicCaster {
+                expression: Arc::clone(source),
+                first_unqualified_owner: path,
+            }))
+        }
+        Err(error) => {
+            graph.host.release(diagnostic);
+            Err(error)
+        }
     }
 }
 
@@ -521,6 +538,7 @@ pub(super) struct GroupChildSources<'a> {
     pub(super) casters: Vec<(usize, NeutralCaster<'a>)>,
     pub(super) work: super::support::PreparationBudget,
     pub(super) retained_bytes: usize,
+    pub(super) host: super::support::PreparationHostBudget,
 }
 
 pub(super) const MAX_AUTHORED_SHADOWS: usize = 256;
@@ -566,8 +584,19 @@ pub(super) struct SourcePreparation {
 
 impl SourcePreparation {
     pub(super) fn new(scales: NeutralPreparationScale, max_buffer_bytes: u64) -> Self {
+        let mut graph = region::NeutralRegionBuilder::new(scales, max_buffer_bytes);
+        graph
+            .charge_preparation(64, &[])
+            .expect("fixed source owner setup fits work admission");
+        graph
+            .host
+            .reserve(
+                size_of::<Self>() - size_of::<region::NeutralRegionBuilder>(),
+                &[],
+            )
+            .expect("fixed source owner fits host admission");
         Self {
-            graph: region::NeutralRegionBuilder::new(scales, max_buffer_bytes),
+            graph,
             scales,
             max_buffer_bytes,
         }
@@ -577,6 +606,18 @@ impl SourcePreparation {
     /// factory. This is the canonical lexical cursor, with the same source
     /// phase's 16M counter, including each skipped inert occurrence.
     pub(super) fn admit_effects(
+        &mut self,
+        composition: &Render2dComposition,
+    ) -> Result<usize, Render2dExecutionError> {
+        let bytes = scene::OccurrenceCursor::storage_bytes();
+        self.graph.charge_preparation(64, &[])?;
+        self.graph.host.reserve(bytes, &[])?;
+        let result = self.admit_effects_inner(composition);
+        self.graph.host.release(bytes);
+        result
+    }
+
+    fn admit_effects_inner(
         &mut self,
         composition: &Render2dComposition,
     ) -> Result<usize, Render2dExecutionError> {
@@ -664,22 +705,14 @@ fn push_source_value<T>(
         .checked_add(1)
         .and_then(|v| v.checked_mul(size_of::<T>()))
         .and_then(|v| v.checked_mul(2))
-        .and_then(|v| v.checked_add(64))
+        .and_then(|v| v.checked_add(128))
         .ok_or_else(|| resource(path, "source container work overflow"))?;
     graph.charge_preparation(work, path)?;
     if grows {
         *construction = construction
             .checked_add(bytes)
             .ok_or_else(|| resource(path, "source container construction storage overflow"))?;
-        values
-            .try_reserve_exact(capacity - values.len())
-            .map_err(|_| resource(path, "source container allocation failed"))?;
-        if values.capacity() > capacity {
-            return Err(resource(
-                path,
-                "source container capacity exceeds admission",
-            ));
-        }
+        graph.host.reserve_vector(values, capacity, path)?;
     }
     values.push(value);
     Ok(())
@@ -697,7 +730,7 @@ fn copy_source_path(
     graph.charge_preparation(
         bytes
             .checked_mul(2)
-            .and_then(|v| v.checked_add(64))
+            .and_then(|v| v.checked_add(128))
             .ok_or_else(|| resource(path, "source path copy work overflow"))?,
         path,
     )?;
@@ -711,12 +744,7 @@ fn copy_source_path(
         return Err(resource(path, "source path exceeds buffer capacity"));
     }
     let mut result = Vec::new();
-    result
-        .try_reserve_exact(path.len())
-        .map_err(|_| resource(path, "source path allocation failed"))?;
-    if result.capacity() > path.len() {
-        return Err(resource(path, "source path capacity exceeds admission"));
-    }
+    graph.host.reserve_vector(&mut result, path.len(), path)?;
     result.extend_from_slice(path);
     Ok(result)
 }
@@ -873,12 +901,9 @@ impl<'scene> GroupSourceDag<'scene, '_> {
         // no opaque allocator-owned tree nodes survive into Plan admission.
         self.graph.charge_preparation(128, &[])?;
         let mut sources = Vec::new();
-        sources
-            .try_reserve_exact(self.sources.len())
-            .map_err(|_| resource(&[], "caster inventory allocation failed"))?;
-        if sources.capacity() > self.sources.len() {
-            return Err(resource(&[], "caster inventory exceeds admitted capacity"));
-        }
+        self.graph
+            .host
+            .reserve_vector(&mut sources, self.sources.len(), &[])?;
         for demand in std::mem::take(&mut self.demands) {
             if let Some(dependencies) = &dependencies {
                 let needed = match &demand {
@@ -927,6 +952,16 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                     // and an expected rejection is not control flow.
                     let offscreen = if !nested {
                         if let Some((canvas, raster_scale)) = root_canvas {
+                            // At most one interval halo projection per effect,
+                            // plus two canvas divisions/setup. 512 covers the
+                            // finite endpoint operations and loop comparisons.
+                            let cost = group
+                                .shadows()
+                                .len()
+                                .checked_mul(512)
+                                .and_then(|cost| cost.checked_add(512))
+                                .ok_or_else(|| resource(&path, "offscreen proof work overflow"))?;
+                            self.graph.charge_preparation(cost, &path)?;
                             in_parent.all_root_shadows_provably_offscreen(
                                 group.shadows(),
                                 canvas,
@@ -938,12 +973,26 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                     } else {
                         false
                     };
-                    let source = if !nested
-                        && (in_parent.all_root_shadows_provably_empty(group.shadows()) || offscreen)
+                    // Complete erosion examines up to two interval half-spans
+                    // per authored effect. Prepay every candidate, including
+                    // the early-false and nested paths, on this same counter.
+                    let cost = group
+                        .shadows()
+                        .len()
+                        .checked_mul(512)
+                        .and_then(|cost| cost.checked_add(64))
+                        .ok_or_else(|| resource(&path, "complete erosion proof work overflow"))?;
+                    self.graph.charge_preparation(cost, &path)?;
+                    let source = if in_parent.all_shadows_provably_empty(group.shadows())
+                        || offscreen
                     {
-                        // Certified-empty or fully offscreen root effects
-                        // cannot reach the requested target. Preserve all
-                        // original F3E child painting and nested support.
+                        // Complete erosion proves absence of this group's
+                        // own painted effects even when it is nested. Its
+                        // pristine C remains in the separate ancestor DAG.
+                        // Target offscreen admission is still root-only.
+                        self.graph
+                            .host
+                            .reserve(size_of::<NeutralMesh>() + 2 * size_of::<usize>(), &path)?;
                         NeutralCaster::Mesh(Arc::new(empty_mesh()))
                     } else if !nested {
                         match self.graph.qualified_rounded_rectangle(&in_parent)? {
@@ -981,14 +1030,23 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                 }
                 SourceDemand::Effect(effect_region) => {
                     let negative = effect_region.is_negative_effect();
-                    match self.graph.materialize(&effect_region) {
-                        Ok(_) => {}
+                    let diagnostic = self
+                        .graph
+                        .reserve_diagnostic_path(effect_region.owner_path())?;
+                    let disposition = match self.graph.materialize(&effect_region) {
+                        Ok(_) => Ok(()),
                         Err(Render2dExecutionError::UnsupportedEntry {
+                            path,
                             kind: Render2dUnsupportedContent::Shadows { .. },
-                            ..
-                        }) if negative => {}
-                        Err(error) => return Err(error),
-                    }
+                        }) if negative => self.graph.host.verify_reserved_capacity(
+                            path.capacity() * size_of::<usize>(),
+                            diagnostic,
+                            &path,
+                        ),
+                        Err(error) => Err(error),
+                    };
+                    self.graph.host.release(diagnostic);
+                    disposition?;
                 }
             }
         }
@@ -1032,14 +1090,28 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                 .and_then(|v| v.checked_add(path_capacity.checked_mul(size_of::<usize>())?))
                 .ok_or_else(|| resource(&[], "caster storage total overflow"))?;
         }
+        self.graph.charge_preparation(64, &[])?;
         let work = super::support::PreparationBudget::from_prepared_sources(
             has_symbolic,
             self.graph_work(),
         );
+        // All graph/cache/frontier owners die at this cut. Keep the same
+        // budget and its peak, trimming only to the conservative returned
+        // caster inventory after those owners have actually been dropped.
+        drop(dependencies);
+        drop(self.sources);
+        let mut host = self.graph.into_host();
+        host.retain(
+            retained_bytes
+                .checked_add(self.storage.input_bytes)
+                .ok_or_else(|| resource(&[], "source retained host extent overflow"))?,
+            &[],
+        )?;
         Ok(GroupChildSources {
             casters: sources,
             work,
             retained_bytes,
+            host,
         })
     }
 }
@@ -1081,12 +1153,18 @@ pub(super) fn build_group_sources<'scene, 'resources>(
         scales,
         max_buffer_bytes,
     } = preparation;
+    // Bound the host-owner/input transfer and cursor lease bookkeeping.
+    graph.charge_preparation(128, &[])?;
+    graph.host.reserve(input_bytes, &[])?;
+    let owner_growth = size_of::<GroupSourceDag<'_, '_>>() - size_of::<SourcePreparation>();
+    graph.host.reserve(owner_growth, &[])?;
     // This fixed host-only cursor is never uploaded to a native GPU buffer.
     // Include its exact bounded capacities in the construction inventory;
     // device buffer limits continue to govern the existing graph containers.
     // Whole-invocation host admission belongs to the caller's combined peak.
     graph.charge_preparation(32, &[])?;
     let cursor_bytes = scene::OccurrenceCursor::storage_bytes();
+    graph.host.reserve(cursor_bytes, &[])?;
     let mut construction_bytes = cursor_bytes;
     let mut cursor = scene::OccurrenceCursor::new(composition, &mut |cost, path| {
         graph.charge_preparation(cost, path)
@@ -1286,6 +1364,8 @@ pub(super) fn build_group_sources<'scene, 'resources>(
         }
     }
     debug_assert!(active.is_empty());
+    drop(cursor);
+    graph.host.release(cursor_bytes);
     order_sources(&mut sources, &mut graph)?;
     let roots = sources
         .iter()
@@ -1316,6 +1396,10 @@ pub(super) fn build_group_sources<'scene, 'resources>(
             .and_then(|v| v.checked_add(size_of::<GroupSourceDag<'_, '_>>()))
             .ok_or_else(|| resource(&[], "source construction storage overflow"))?,
     };
+    let mut storage = storage;
+    storage.construction_peak_bytes = storage
+        .construction_peak_bytes
+        .max(graph.host.peak().saturating_sub(input_bytes));
     let result = GroupSourceDag {
         graph,
         sources,
@@ -1747,6 +1831,70 @@ pub(super) fn intersect_clips(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn symbolic_transport_prepays_diagnostic_path_before_materialization() {
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: crate::composition_2d::Render2dShape::ellipse(
+                    crate::composition_2d::Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let mut graph = region::NeutralRegionBuilder::new(
+            NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            1_048_576,
+        );
+        let source = graph
+            .source_from_item(empty_mesh(), &item, &[3, 2])
+            .unwrap();
+        let fill = super::super::support::MAX_SHADOW_HOST_BYTES - graph.host.live();
+        graph.host.reserve(fill, &[]).unwrap();
+        let before = graph.host.live();
+        assert!(
+            matches!(materialized_or_symbolic(&mut graph, &source, false), Err(Render2dExecutionError::SampleSpace { kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), .. }) if path == [3, 2])
+        );
+        assert_eq!(graph.host.live(), before);
+        graph.host.release(fill);
+        let NeutralCaster::Symbolic(symbolic) =
+            materialized_or_symbolic(&mut graph, &source, false).unwrap()
+        else {
+            panic!("original ellipse cannot become an empty physical source")
+        };
+        assert_eq!(symbolic.owner_path(), [3, 2]);
+        assert!(graph.host.peak() >= graph.host.live());
+    }
+
+    #[test]
+    fn source_input_reservation_precedes_cursor_or_graph_construction() {
+        let composition =
+            Render2dComposition::new(Vec::<crate::composition_2d::Render2dEntry>::new()).unwrap();
+        let bindings = Render2dResourceBindings::default();
+        let fields = BTreeMap::new();
+        let result = build_group_sources(
+            &composition,
+            super::super::support::MAX_SHADOW_HOST_BYTES,
+            &bindings,
+            &fields,
+            SourcePreparation::new(
+                NeutralPreparationScale {
+                    field_raster_scale: 1.0,
+                    geometry_sample_scale: 4.0,
+                },
+                32,
+            ),
+        );
+        assert!(
+            matches!(result, Err(Render2dExecutionError::SampleSpace { kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), .. }) if path.is_empty())
+        );
+    }
 
     #[test]
     fn effect_admission_has_exact_late_owner_and_preserves_failed_debits() {
@@ -2305,7 +2453,7 @@ mod tests {
         ));
         assert_eq!(exhausted, MAX_COMPOSITIONAL_SHADOW_WORK);
         let group = Render2dGroup::new(
-            vec![Render2dEntry::item(glyph)],
+            vec![Render2dEntry::item(glyph.clone())],
             Render2dAffineTransform::IDENTITY,
             Vec::new(),
             Render2dOpacity::TRANSPARENT,
@@ -2362,6 +2510,55 @@ mod tests {
         };
         assert_eq!(original_mesh.triangles, mesh.triangles);
         assert_eq!(original_mesh.bounds, mesh.bounds);
+
+        let nested = Render2dGroup::new(
+            vec![Render2dEntry::item(glyph)],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            vec![
+                Render2dDropShadow::new(2000.0, 0.0, 0.1, -1000.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+            ],
+        );
+        let parent = Render2dGroup::new(
+            vec![Render2dEntry::group(nested)],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+            vec![
+                Render2dDropShadow::new(0.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+            ],
+        );
+        let nested = Render2dComposition::new(vec![Render2dEntry::group(parent)]).unwrap();
+        let prepared = build_group_sources(
+            &nested,
+            0,
+            &bindings,
+            &cached,
+            SourcePreparation::new(
+                NeutralPreparationScale {
+                    field_raster_scale: 1.0,
+                    geometry_sample_scale: 4.0,
+                },
+                1_048_576,
+            ),
+        )
+        .unwrap()
+        .prepare_polygonal_consumers(None, None, 1_048_576)
+        .unwrap();
+        let NeutralCaster::Mesh(parent) = prepared.caster(0).unwrap() else {
+            panic!("original ancestor support")
+        };
+        let NeutralCaster::Mesh(child) = prepared.caster(1).unwrap() else {
+            panic!("complete nested erosion")
+        };
+        assert!(
+            !parent.triangles.is_empty(),
+            "a child's absent own shadow cannot erase its original support from the ancestor"
+        );
+        assert!(child.triangles.is_empty());
     }
 
     #[test]
