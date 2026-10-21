@@ -243,6 +243,21 @@ impl ResourceFields {
         self.by_glyph.get(&glyph_id).and_then(Option::as_ref)
     }
 
+    /// Original-outline consumers must distinguish a validated empty glyph
+    /// from a missing admission record. Missing data cannot prove absence.
+    pub(super) fn admitted_outline(&self, glyph_id: u32) -> Result<Option<&GlyphField>, ()> {
+        self.by_glyph
+            .get(&glyph_id)
+            .map(|field| field.as_deref())
+            .ok_or(())
+    }
+
+    pub(super) fn outline_lookup_work(&self) -> usize {
+        // B-tree nodes compare at most 11 keys and height <= bit length.
+        // Includes dispatch, an empty hit and scalar placement bookkeeping.
+        256 + 512 * (usize::BITS - self.by_glyph.len().leading_zeros()) as usize
+    }
+
     pub(super) fn charge_cached(
         &self,
         resource_id: Render2dResourceId,

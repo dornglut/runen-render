@@ -167,6 +167,43 @@ fn neutral_source_error(error: Render2dExecutionError, path: &[usize]) -> Render
     }
 }
 
+/// One lookup contract for the immutable F2 facts used by both original reach
+/// and disposable glyph tessellation. No font reconstruction or quality
+/// selection authority is duplicated by neutral source admission.
+fn shaped_source<'a>(
+    primitive: &crate::composition_2d::Render2dShapedTextPrimitive,
+    bindings: &'a Render2dResourceBindings,
+    field_sets: &'a BTreeMap<FieldSetKey, Arc<ResourceFields>>,
+    field_raster_scale: f64,
+    path: &[usize],
+    work: &mut NeutralPreparationWork<'_>,
+) -> Result<
+    (
+        &'a crate::composition_2d::Render2dShapedTextResource,
+        &'a ResourceFields,
+    ),
+    Render2dExecutionError,
+> {
+    let bits = |len: usize| (usize::BITS - len.leading_zeros()) as usize;
+    work.charge(
+        512 + 512 * (bits(bindings.len()) + bits(field_sets.len())),
+        path,
+    )?;
+    let value = bindings
+        .get(primitive.resource_id())
+        .ok_or_else(|| precision(path, "missing validated shaped-text binding"))?;
+    let Render2dResourceValue::ShapedText(resource) = value else {
+        return Err(precision(path, "shaped-text binding kind changed"));
+    };
+    let quality = QualityTier::select(resource.font_size(), field_raster_scale)
+        .ok_or_else(|| precision(path, "shaped-text quality is not representable"))?;
+    let key = FieldSetKey::new(primitive.resource_id(), quality);
+    let fields = field_sets
+        .get(&key)
+        .ok_or_else(|| precision(path, "missing validated immutable font outlines"))?;
+    Ok((resource, fields))
+}
+
 fn neutral_item(
     item: &Render2dItem,
     path: &[usize],
@@ -196,22 +233,23 @@ fn neutral_item(
         )
         .map_err(|error| neutral_source_error(error, path))?,
         Render2dPrimitive::ShapedText(primitive) => {
-            let value = bindings
-                .get(primitive.resource_id())
-                .ok_or_else(|| precision(path, "missing validated shaped-text binding"))?;
-            let Render2dResourceValue::ShapedText(resource) = value else {
-                return Err(precision(path, "shaped-text binding kind changed"));
-            };
-            let quality = QualityTier::select(resource.font_size(), scales.field_raster_scale)
-                .ok_or_else(|| precision(path, "shaped-text quality is not representable"))?;
-            let key = FieldSetKey::new(primitive.resource_id(), quality);
-            let fields = field_sets
-                .get(&key)
-                .ok_or_else(|| precision(path, "missing validated immutable font outlines"))?;
+            let (resource, fields) = shaped_source(
+                primitive,
+                bindings,
+                field_sets,
+                scales.field_raster_scale,
+                path,
+                work,
+            )?;
             let mut result = empty_mesh();
             let mut has_original_outline = false;
+            let lookup_work = fields.outline_lookup_work();
             for glyph in resource.glyphs() {
-                let Some(field) = fields.glyph(glyph.id()) else {
+                work.charge(lookup_work, path)?;
+                let Some(field) = fields
+                    .admitted_outline(glyph.id())
+                    .map_err(|()| precision(path, "missing validated glyph outline record"))?
+                else {
                     // An admitted empty glyph outline has no neutral area.
                     continue;
                 };
@@ -1088,11 +1126,23 @@ pub(super) fn build_group_sources<'scene, 'resources>(
                 if active.is_empty() {
                     continue;
                 }
-                let leaf = if matches!(
-                    item.primitive(),
-                    Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. }
-                ) {
-                    let leaf = graph.register_source(item, path)?;
+                let leaf = if !matches!(item.primitive(), Render2dPrimitive::Image(_)) {
+                    let leaf = if let Render2dPrimitive::ShapedText(primitive) = item.primitive() {
+                        let (resource, fields) = shaped_source(
+                            primitive,
+                            bindings,
+                            field_sets,
+                            scales.field_raster_scale,
+                            path,
+                            &mut NeutralPreparationWork {
+                                graph: &mut graph.graph_work,
+                                clip_pairs: &mut graph.clip_work,
+                            },
+                        )?;
+                        graph.register_shaped_source(item, resource, fields, path)?
+                    } else {
+                        graph.register_source(item, path)?
+                    };
                     if let Some(leaf) = &leaf {
                         push_source_value(
                             &mut demands,
@@ -1104,8 +1154,7 @@ pub(super) fn build_group_sources<'scene, 'resources>(
                     }
                     leaf
                 } else {
-                    // Retain existing image and immutable shaped-outline admission.
-                    // Text does not yet have a certified original-outline reach.
+                    // Image destination support retains its existing factory.
                     graph.prepare_source_from_item(item, path, |work| {
                         neutral_item(
                             item,
@@ -2263,9 +2312,9 @@ mod tests {
             vec![shadow],
         );
         let composition = Render2dComposition::new(vec![Render2dEntry::group(group)]).unwrap();
-        // Original lexical preparation does not need the affine plan. Text
-        // still runs its admitted outline factory eagerly: missing mesh reach
-        // must not become a cached empty source in any containing node.
+        // Original lexical preparation does not need the affine plan or a
+        // polygon factory. The borrowed outlines certify reach first; the
+        // later polygon consumer reconstructs the same physical mesh once.
         let original = build_group_sources(
             &composition,
             0,
@@ -2281,6 +2330,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(original.storage().input_bytes, 0);
+        let reach = original
+            .source(0)
+            .unwrap()
+            .certified_logical_envelope()
+            .unwrap();
+        assert!(reach[0] < reach[2] && reach[1] < reach[3]);
         let original = original
             .prepare_polygonal_consumers(None, None, 1_048_576)
             .unwrap();

@@ -2073,6 +2073,51 @@ fn builder() -> NeutralRegionBuilder {
 }
 
 #[test]
+fn original_glyph_reach_only_proves_exclusion_and_preserves_unknown_inside_its_hull() {
+    let (resource, fields, item) = super::tests::glyph_source_fixture(2, 1);
+    let mut graph = builder();
+    let source = graph
+        .register_shaped_source(&item, &resource, &fields, &[6, 0])
+        .unwrap()
+        .unwrap();
+    let mut fuel = 1_000_000;
+    assert_eq!(
+        source.certify_cell(Cell::new([4.0, -10.0, 5.0, -9.0]).unwrap(), &mut fuel),
+        CellCertificate::Unknown
+    );
+    assert_eq!(
+        source.certify_cell(Cell::new([40.0, -10.0, 41.0, -9.0]).unwrap(), &mut fuel),
+        CellCertificate::Outside
+    );
+    assert_eq!(
+        source.certify_cell(Cell::new([1.25, 1.5, 2.0, 2.0]).unwrap(), &mut fuel),
+        CellCertificate::Unknown
+    );
+    // Installing a forged rectangle cannot promote its interior to semantic
+    // glyph membership. Original text remains the classifier's authority.
+    graph
+        .prepare_registered_source(&source, |_, _, _| {
+            Ok(Some(support::NeutralMesh {
+                units_per_parent_logical_unit: 1.0,
+                triangles: vec![
+                    [0.0, -20.0],
+                    [30.0, -20.0],
+                    [30.0, 2.0],
+                    [0.0, -20.0],
+                    [30.0, 2.0],
+                    [0.0, 2.0],
+                ],
+                bounds: [0.0, -20.0, 30.0, 2.0],
+            }))
+        })
+        .unwrap();
+    assert_eq!(
+        source.certify_cell(Cell::new([4.0, -10.0, 5.0, -9.0]).unwrap(), &mut fuel),
+        CellCertificate::Unknown
+    );
+}
+
+#[test]
 fn interval_halo_complete_plane_encloses_independent_sixteen_cell_oracle() {
     use crate::composition_2d::{
         Render2dBrush, Render2dColorRgba8, Render2dFillRule, Render2dOpacity, Render2dPath,

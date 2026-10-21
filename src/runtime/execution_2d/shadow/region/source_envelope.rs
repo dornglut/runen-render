@@ -9,6 +9,65 @@ use crate::composition_2d::{
 };
 use crate::execution_2d::{Render2dExecutionError, Render2dSampleSpaceError};
 
+/// One outward-rounded control-hull projection. Source-specific placement
+/// precedes these two frames; neither composed rounded affines nor physical
+/// tessellation can replace the original controls.
+struct ControlEnvelope {
+    item: [Interval; 6],
+    after: [Interval; 6],
+    bounds: Option<[f64; 4]>,
+}
+
+impl ControlEnvelope {
+    fn new(
+        item: &Render2dItem,
+        after: Option<Render2dAffineTransform>,
+        path: &[usize],
+    ) -> Result<Self, Render2dExecutionError> {
+        fn coefficients(
+            transform: Render2dAffineTransform,
+            path: &[usize],
+        ) -> Result<[Interval; 6], Render2dExecutionError> {
+            let [Some(a), Some(b), Some(c), Some(d), Some(tx), Some(ty)] =
+                transform.components().map(Interval::scalar)
+            else {
+                return Err(precision(path));
+            };
+            Ok([a, b, c, d, tx, ty])
+        }
+        Ok(Self {
+            item: coefficients(item.local_to_parent(), path)?,
+            after: coefficients(after.unwrap_or(Render2dAffineTransform::IDENTITY), path)?,
+            bounds: None,
+        })
+    }
+
+    fn visit(
+        &mut self,
+        x: Interval,
+        y: Interval,
+        path: &[usize],
+    ) -> Result<(), Render2dExecutionError> {
+        fn project(
+            [a, b, c, d, tx, ty]: [Interval; 6],
+            x: Interval,
+            y: Interval,
+        ) -> Option<[Interval; 2]> {
+            Some([
+                a.mul(x)?.add(c.mul(y)?)?.add(tx)?,
+                b.mul(x)?.add(d.mul(y)?)?.add(ty)?,
+            ])
+        }
+        let [px, py] = project(self.item, x, y).ok_or_else(|| precision(path))?;
+        let [xx, yy] = project(self.after, px, py).ok_or_else(|| precision(path))?;
+        self.bounds = Some(match self.bounds {
+            Some([x0, y0, x1, y1]) => [x0.min(xx.lo), y0.min(yy.lo), x1.max(xx.hi), y1.max(yy.hi)],
+            None => [xx.lo, yy.lo, xx.hi, yy.hi],
+        });
+        Ok(())
+    }
+}
+
 fn precision(path: &[usize]) -> Render2dExecutionError {
     Render2dExecutionError::SampleSpace {
         kind: Render2dSampleSpaceError::PrecisionLimit,
@@ -33,6 +92,83 @@ fn abs_upper(value: Interval) -> f64 {
     value.lo.abs().max(value.hi.abs())
 }
 
+/// Certify only reach from the SAME retained F2 outlines used for glyph
+/// painting. No outline, font, field bitmap or resource is copied/retained.
+/// Every glyph lookup and command/control visit is paid before examination,
+/// including repeated and valid empty glyphs. This is not a membership proof.
+pub(super) fn shaped_bounds(
+    item: &Render2dItem,
+    resource: &crate::composition_2d::Render2dShapedTextResource,
+    fields: &crate::runtime::execution_2d::field::ResourceFields,
+    path: &[usize],
+    mut charge: impl FnMut(usize) -> Result<(), Render2dExecutionError>,
+) -> Result<Option<[f64; 4]>, Render2dExecutionError> {
+    charge(512)?;
+    let Render2dPrimitive::ShapedText(primitive) = item.primitive() else {
+        return Err(precision(path));
+    };
+    let fail = || precision(path);
+    let size = Interval::scalar(resource.font_size()).ok_or_else(fail)?;
+    let origin_x = Interval::scalar(primitive.origin().x()).ok_or_else(fail)?;
+    let origin_y = Interval::scalar(primitive.origin().y()).ok_or_else(fail)?;
+    let mut envelope = ControlEnvelope::new(item, None, path)?;
+    let lookup_work = fields.outline_lookup_work();
+    for glyph in resource.glyphs() {
+        charge(lookup_work)?;
+        let Some(field) = fields
+            .admitted_outline(glyph.id())
+            .map_err(|()| precision(path))?
+        else {
+            continue;
+        };
+        let commands = field.outline_commands();
+        let work = commands
+            .len()
+            .checked_mul(3 * (super::SOURCE_REACH_CONTROL_WORK + 512))
+            .ok_or_else(|| super::resource(path, "original glyph reach work overflow"))?;
+        charge(work)?;
+        // Enclose the original sum, rather than treating rounded placement
+        // or a rounded fontsize/affine product as exact source geometry.
+        let dx = origin_x
+            .add(Interval::scalar(glyph.x()).ok_or_else(fail)?)
+            .ok_or_else(fail)?;
+        let dy = origin_y
+            .add(Interval::scalar(glyph.y()).ok_or_else(fail)?)
+            .ok_or_else(fail)?;
+        let mut visit = |point: crate::composition_2d::Render2dPoint| {
+            let x = Interval::scalar(point.x())
+                .and_then(|v| v.mul(size))
+                .and_then(|v| v.add(dx))
+                .ok_or_else(fail)?;
+            let y = Interval::scalar(point.y())
+                .and_then(|v| v.mul(size))
+                .and_then(|v| v.add(dy))
+                .ok_or_else(fail)?;
+            envelope.visit(x, y, path)
+        };
+        for command in commands {
+            match command.map_err(|()| precision(path))? {
+                Render2dPathCommand::MoveTo(to) | Render2dPathCommand::LineTo(to) => visit(to)?,
+                Render2dPathCommand::QuadraticTo { control, to } => {
+                    visit(control)?;
+                    visit(to)?;
+                }
+                Render2dPathCommand::CubicTo {
+                    control1,
+                    control2,
+                    to,
+                } => {
+                    visit(control1)?;
+                    visit(control2)?;
+                    visit(to)?;
+                }
+                Render2dPathCommand::Close => {}
+            }
+        }
+    }
+    Ok(envelope.bounds)
+}
+
 /// The Bézier convex-hull property encloses ALL points of each segment by
 /// its authored controls, independent of tessellation quality. A rounded
 /// rectangle or ellipse fits inside its rectangle. Caps/joins of a centered
@@ -50,64 +186,12 @@ pub(super) fn bounds(
             Render2dPrimitive::Image(_) => (None, None),
             Render2dPrimitive::ShapedText(_) => return Ok(None),
         };
-    let [a, b, c, d, tx, ty] = item.local_to_parent().components().map(Interval::scalar);
-    let (a, b, c, d, tx, ty) = (
-        a.ok_or_else(|| precision(path))?,
-        b.ok_or_else(|| precision(path))?,
-        c.ok_or_else(|| precision(path))?,
-        d.ok_or_else(|| precision(path))?,
-        tx.ok_or_else(|| precision(path))?,
-        ty.ok_or_else(|| precision(path))?,
-    );
-    let (aa, bb, cc, dd, ttx, tty) = match after {
-        Some(next) => {
-            let [aa, bb, cc, dd, ttx, tty] = next.components().map(Interval::scalar);
-            (
-                aa.ok_or_else(|| precision(path))?,
-                bb.ok_or_else(|| precision(path))?,
-                cc.ok_or_else(|| precision(path))?,
-                dd.ok_or_else(|| precision(path))?,
-                ttx.ok_or_else(|| precision(path))?,
-                tty.ok_or_else(|| precision(path))?,
-            )
-        }
-        None => (
-            Interval::scalar(1.0).expect("finite identity"),
-            Interval::scalar(0.0).expect("finite identity"),
-            Interval::scalar(0.0).expect("finite identity"),
-            Interval::scalar(1.0).expect("finite identity"),
-            Interval::scalar(0.0).expect("finite identity"),
-            Interval::scalar(0.0).expect("finite identity"),
-        ),
-    };
+    let mut envelope = ControlEnvelope::new(item, after, path)?;
+    let [a, b, c, d, _, _] = envelope.item;
+    let [aa, bb, cc, dd, _, _] = envelope.after;
     let fail = || precision(path);
-    let mut coverage: Option<[f64; 4]> = None;
     let mut visit = |x: Interval, y: Interval| -> Result<(), Render2dExecutionError> {
-        let px = a
-            .mul(x)
-            .and_then(|v| v.add(c.mul(y)?))
-            .and_then(|v| v.add(tx))
-            .ok_or_else(fail)?;
-        let py = b
-            .mul(x)
-            .and_then(|v| v.add(d.mul(y)?))
-            .and_then(|v| v.add(ty))
-            .ok_or_else(fail)?;
-        let xx = aa
-            .mul(px)
-            .and_then(|v| v.add(cc.mul(py)?))
-            .and_then(|v| v.add(ttx))
-            .ok_or_else(fail)?;
-        let yy = bb
-            .mul(px)
-            .and_then(|v| v.add(dd.mul(py)?))
-            .and_then(|v| v.add(tty))
-            .ok_or_else(fail)?;
-        coverage = Some(match coverage {
-            Some([x0, y0, x1, y1]) => [x0.min(xx.lo), y0.min(yy.lo), x1.max(xx.hi), y1.max(yy.hi)],
-            None => [xx.lo, yy.lo, xx.hi, yy.hi],
-        });
-        Ok(())
+        envelope.visit(x, y, path)
     };
     if let Some(rect) = shape.and_then(|shape| {
         shape
@@ -179,7 +263,7 @@ pub(super) fn bounds(
             }
         }
     }
-    let Some([x0, y0, x1, y1]) = coverage else {
+    let Some([x0, y0, x1, y1]) = envelope.bounds else {
         return Ok(None);
     };
     let (mut x0, mut y0, mut x1, mut y1) = (x0, y0, x1, y1);

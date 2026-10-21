@@ -71,8 +71,8 @@ pub(in crate::runtime::execution_2d) struct NeutralRegion<'a> {
     envelope: Option<[f64; 4]>,
     /// Only true when every original F1 source's authored reach is enclosed
     /// by the graph envelope, independent of disposable tessellation.
-    /// Shaped-text curves require separate outline/control-hull admission;
-    /// a physical glyph mesh bound cannot authorize complete signed erosion.
+    /// A physical glyph mesh bound cannot authorize complete signed erosion;
+    /// text requires the separately paid original-outline control hull.
     certified_source_reach: bool,
     /// One immutable DAG-local eligibility bit. Positive Euclidean disks
     /// cannot be reinterpreted as the newly transported SIGNED caster;
@@ -83,19 +83,31 @@ pub(in crate::runtime::execution_2d) struct NeutralRegion<'a> {
 
 /// An invocation-local optional physical realization, never source meaning.
 /// Once installed, every polygon consumer borrows this same immutable mesh.
-struct SourceGeometry(OnceLock<Arc<support::NeutralMesh>>);
+struct SourceGeometry {
+    mesh: OnceLock<Arc<support::NeutralMesh>>,
+    /// Original glyph control-hull reach in the item's parent frame. This
+    /// scalar receipt retains no font/outline/field allocation and can only
+    /// prove absence. Ordinary F1 sources borrow controls from semantic_item.
+    outline_reach: Option<[f64; 4]>,
+}
 
 impl SourceGeometry {
     fn deferred() -> Self {
-        Self(OnceLock::new())
+        Self {
+            mesh: OnceLock::new(),
+            outline_reach: None,
+        }
     }
 
     fn prepared(mesh: Arc<support::NeutralMesh>) -> Self {
-        Self(OnceLock::from(mesh))
+        Self {
+            mesh: OnceLock::from(mesh),
+            outline_reach: None,
+        }
     }
 
     fn get(&self) -> Option<&Arc<support::NeutralMesh>> {
-        self.0.get()
+        self.mesh.get()
     }
 }
 
@@ -304,7 +316,9 @@ fn region_envelope(
         Kind::Source(mesh) => {
             // This DAG's reach belongs to original F1 geometry. Disposable
             // realization vertices may neither enlarge nor erase it.
-            if let Some(item) = semantic_item
+            if let Some(reach) = mesh.outline_reach {
+                Some(reach)
+            } else if let Some(item) = semantic_item
                 && let Some(authored) = source_envelope::bounds(item, None, path)?
             {
                 Some(authored)
@@ -345,7 +359,12 @@ fn region_envelope(
         }
         Kind::Affine { source, to_parent } => {
             if let Kind::Source(mesh) = &source.kind {
-                if let Some(item) = source.semantic_item
+                if let Some(reach) = mesh.outline_reach {
+                    // The original hull already includes glyph placement and
+                    // the item affine. Its interval image encloses all source
+                    // controls without revisiting a font or physical mesh.
+                    Some(nested_affine_envelope(reach, *to_parent, path)?)
+                } else if let Some(item) = source.semantic_item
                     && let Some(authored) = source_envelope::bounds(item, Some(*to_parent), path)?
                 {
                     Some(authored)
@@ -631,7 +650,9 @@ impl NeutralRegionBuilder {
         // traversal behind a cached semantic-looking rectangle.
         let mesh_visits = match &kind {
             Kind::Affine { source, .. } => match &source.kind {
-                Kind::Source(mesh) => mesh.get().map_or(0, |mesh| mesh.triangles.len()),
+                Kind::Source(mesh) if mesh.outline_reach.is_none() => {
+                    mesh.get().map_or(0, |mesh| mesh.triangles.len())
+                }
                 _ => 0,
             },
             _ => 0,
@@ -692,12 +713,15 @@ impl NeutralRegionBuilder {
         // DAG. A glyph outline reconstructed into physical triangles is NOT
         // a conservative authored Bézier control-hull certificate.
         let certified_source_reach = match &kind {
-            Kind::Source(_) => semantic_item.is_none_or(|item| {
-                !matches!(
-                    item.primitive(),
-                    crate::composition_2d::Render2dPrimitive::ShapedText(_)
-                )
-            }),
+            Kind::Source(source) => {
+                source.outline_reach.is_some()
+                    || semantic_item.is_none_or(|item| {
+                        !matches!(
+                            item.primitive(),
+                            crate::composition_2d::Render2dPrimitive::ShapedText(_)
+                        )
+                    })
+            }
             Kind::Union(children) => children.iter().all(|child| child.certified_source_reach),
             Kind::Affine { source, .. }
             | Kind::Clip { source, .. }
@@ -1098,6 +1122,41 @@ impl NeutralRegionBuilder {
         .map(Some)
     }
 
+    /// Resolve glyph reach from borrowed, already validated F2 facts before
+    /// any polygon factory. Only the bounded hull receipt survives this call;
+    /// source membership remains the original F1 item, never this envelope.
+    pub(super) fn register_shaped_source<'a>(
+        &mut self,
+        item: &'a Render2dItem,
+        resource: &crate::composition_2d::Render2dShapedTextResource,
+        fields: &crate::runtime::execution_2d::field::ResourceFields,
+        path: &[usize],
+    ) -> Result<Option<Arc<NeutralRegion<'a>>>, Render2dExecutionError> {
+        self.charge_graph_work(REGION_NODE_WORK, path)?;
+        let reach = source_envelope::shaped_bounds(item, resource, fields, path, |cost| {
+            self.charge_graph_work(cost, path)
+        })?;
+        let Some(reach) = reach else {
+            // Every admitted glyph was empty. No disposable factory or mesh
+            // is needed to establish absence of original outline controls.
+            return Ok(None);
+        };
+        if trivially_empty_original_source(item) {
+            return Ok(None);
+        }
+        self.node_with_source_admission(
+            Kind::Source(SourceGeometry {
+                mesh: OnceLock::new(),
+                outline_reach: Some(reach),
+            }),
+            path,
+            1,
+            Some(item),
+            true,
+        )
+        .map(Some)
+    }
+
     /// Explicit polygon demand. The factory is invocation-scoped, not retained
     /// by a source leaf; failed reconstruction installs no physical receipt.
     pub(super) fn prepare_registered_source(
@@ -1135,7 +1194,7 @@ impl NeutralRegionBuilder {
         })?;
         let retained = self.admit_source_mesh(&mut mesh, &region.path)?;
         source
-            .0
+            .mesh
             .set(Arc::new(mesh))
             .expect("one invocation owns source reconstruction");
         self.retained_vertices = retained;
@@ -1960,9 +2019,8 @@ impl NeutralRegionBuilder {
                 // symbolic effect). Blur of the empty eroded set remains
                 // empty; a near-threshold radius is never guessed empty.
                 // This is independent of disposable Lyon mesh fidelity.
-                // Shaped glyph contours currently lack an independently
-                // certified original outline reach: never infer emptiness
-                // OR signed erosion from their sampled physical bounds.
+                // A leaf without original reach admission cannot infer
+                // emptiness OR signed erosion from sampled physical bounds.
                 if effect.spread() < 0.0 && !source.certified_source_reach {
                     return Err(unsupported(path));
                 }
@@ -2206,6 +2264,209 @@ mod tests {
             },
             1_048_576,
         )
+    }
+
+    pub(super) fn glyph_source_fixture(
+        glyph_id: u32,
+        count: usize,
+    ) -> (
+        crate::composition_2d::Render2dShapedTextResource,
+        crate::runtime::execution_2d::field::ResourceFields,
+        Render2dItem,
+    ) {
+        use crate::composition_2d::*;
+        use crate::runtime::execution_2d::field;
+        let id = Render2dResourceId::new(94).unwrap();
+        let resource = Render2dShapedTextResource::new(
+            Render2dFontBinding::new(
+                include_bytes!("../../../../tests/fixtures/f2_outline.ttf").to_vec(),
+                0,
+                Vec::new(),
+                false,
+                None,
+            )
+            .unwrap(),
+            24.0,
+            (0..count)
+                .map(|_| Render2dGlyph::new(glyph_id, 0.25, -0.5, 24.0).unwrap())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let fields = field::realize(
+            id,
+            &resource,
+            field::QualityTier::P24,
+            4096,
+            &mut field::FieldBudget::default(),
+        )
+        .unwrap();
+        let item = Render2dItem::new(
+            Render2dPrimitive::ShapedText(Render2dShapedTextPrimitive::new(
+                id,
+                Render2dPoint::new(1.0, 2.0).unwrap(),
+                Render2dColorRgba8::TRANSPARENT,
+            )),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        (resource, fields, item)
+    }
+
+    #[test]
+    fn original_glyph_reach_survives_empty_mesh_and_affine_without_inventing_membership() {
+        let (resource, fields, item) = glyph_source_fixture(2, 1);
+        let mut graph = builder();
+        let source = graph
+            .register_shaped_source(&item, &resource, &fields, &[3, 0])
+            .unwrap()
+            .unwrap();
+        let Kind::Source(geometry) = &source.kind else {
+            panic!("original source")
+        };
+        assert!(geometry.get().is_none(), "original reach precedes Lyon");
+        let before = source.certified_logical_envelope().unwrap();
+        // The existing F2 size-one unhinted pen resolves this font's box to
+        // [0,-51/64,52/64,0], including its original bearing adjustment and
+        // outline coordinate representation. Preserve THAT accepted source,
+        // independently of Lyon's bounds and the MSDF field pixels.
+        for (actual, expected) in before.iter().zip([1.25, -17.625, 20.75, 1.5]) {
+            assert!((actual - expected).abs() < 1.0e-12);
+        }
+        for [x, y] in [[1.25, -17.625], [20.75, -17.625], [1.25, 1.5], [20.75, 1.5]] {
+            assert!(before[0] <= x && before[2] >= x);
+            assert!(before[1] <= y && before[3] >= y);
+        }
+        // An empty disposable reconstruction cannot erase original text.
+        graph
+            .prepare_registered_source(&source, |_, _, _| Ok(Some(shadow::empty_mesh())))
+            .unwrap();
+        assert_eq!(source.certified_logical_envelope(), Some(before));
+        assert!(
+            matches!(graph.materialize(&source), Err(Render2dExecutionError::UnsupportedEntry { path, .. }) if path == [3, 0])
+        );
+        let affine = Render2dAffineTransform::new(-2.0, 0.5, 0.75, 1.0, 8.0, -2.0).unwrap();
+        let mapped = graph.affine(Arc::clone(&source), affine, &[3]).unwrap();
+        let bounds = mapped.certified_logical_envelope().unwrap();
+        for [x, y] in [
+            [before[0], before[1]],
+            [before[0], before[3]],
+            [before[2], before[1]],
+            [before[2], before[3]],
+        ] {
+            let [a, b, c, d, tx, ty] = affine.components();
+            let px = a * x + c * y + tx;
+            let py = b * x + d * y + ty;
+            assert!(bounds[0] <= px && px <= bounds[2]);
+            assert!(bounds[1] <= py && py <= bounds[3]);
+        }
+        // Strict complete erosion is an absence proof, independent of any
+        // physical mesh or font-field alpha. The neighboring nonempty case
+        // must retain its unsupported result until original winding is ready.
+        let eroded = graph
+            .effect(
+                Arc::clone(&mapped),
+                Render2dDropShadow::new(2.0, -1.0, 0.2, -1000.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+                &[3, 1],
+            )
+            .unwrap();
+        assert!(graph.materialize(&eroded).unwrap().triangles.is_empty());
+        let nonempty = graph
+            .effect(
+                mapped,
+                Render2dDropShadow::new(0.0, 0.0, 0.0, -0.1, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+                &[3, 2],
+            )
+            .unwrap();
+        assert!(
+            matches!(graph.materialize(&nonempty), Err(Render2dExecutionError::UnsupportedEntry { path, .. }) if path == [3, 2])
+        );
+    }
+
+    #[test]
+    fn original_glyph_reach_pays_empty_repeated_missing_and_exact_work_before_node_commit() {
+        let (resource, fields, item) = glyph_source_fixture(1, 3);
+        let mut graph = builder();
+        assert!(
+            graph
+                .register_shaped_source(&item, &resource, &fields, &[4, 0])
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(graph.nodes, 0);
+        assert_eq!(
+            graph.graph_work,
+            REGION_NODE_WORK + 512 + 3 * fields.outline_lookup_work()
+        );
+
+        let (resource, fields, item) = glyph_source_fixture(2, 2);
+        let mut measured = builder();
+        measured
+            .register_shaped_source(&item, &resource, &fields, &[4, 1])
+            .unwrap();
+        let cost = measured.graph_work;
+        let mut exact = builder();
+        exact.graph_work = MAX_REGION_GRAPH_WORK - cost;
+        assert!(
+            exact
+                .register_shaped_source(&item, &resource, &fields, &[4, 1])
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(exact.graph_work, MAX_REGION_GRAPH_WORK);
+        let mut short = builder();
+        short.graph_work = MAX_REGION_GRAPH_WORK - cost + 1;
+        assert!(
+            matches!(short.register_shaped_source(&item, &resource, &fields, &[4, 1]), Err(Render2dExecutionError::SampleSpace { kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), .. }) if path == [4, 1])
+        );
+        assert_eq!(short.nodes, 0);
+        assert_eq!(short.retained_vertices, 0);
+        assert_eq!(short.constructed_node_bytes, 0);
+
+        let (_, empty_fields, _) = glyph_source_fixture(1, 1);
+        let mut missing = builder();
+        assert!(
+            matches!(missing.register_shaped_source(&item, &resource, &empty_fields, &[4, 2]), Err(Render2dExecutionError::SampleSpace { kind: Render2dSampleSpaceError::PrecisionLimit, path: Some(path), .. }) if path == [4, 2])
+        );
+        assert_eq!(missing.nodes, 0, "missing is not an admitted empty glyph");
+    }
+
+    #[test]
+    fn original_glyph_reach_encloses_placement_cancellation_and_rejects_overflow() {
+        use crate::composition_2d::*;
+        let (resource, fields, _) = glyph_source_fixture(2, 1);
+        let item = Render2dItem::new(
+            Render2dPrimitive::ShapedText(Render2dShapedTextPrimitive::new(
+                Render2dResourceId::new(94).unwrap(),
+                Render2dPoint::new(1.0e16, 0.0).unwrap(),
+                Render2dColorRgba8::TRANSPARENT,
+            )),
+            Render2dAffineTransform::translation(-1.0e16, 0.0).unwrap(),
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let mut graph = builder();
+        let bounds = graph
+            .register_shaped_source(&item, &resource, &fields, &[5, 0])
+            .unwrap()
+            .unwrap()
+            .certified_logical_envelope()
+            .unwrap();
+        assert!(
+            bounds[0] <= 0.25 && bounds[2] >= 19.75,
+            "rounded combined glyph origin must not become source truth"
+        );
+        let overflow = Render2dItem::new(
+            item.primitive().clone(),
+            Render2dAffineTransform::new(f64::MAX, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap(),
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        assert!(
+            matches!(graph.register_shaped_source(&overflow, &resource, &fields, &[5, 1]), Err(Render2dExecutionError::SampleSpace { kind: Render2dSampleSpaceError::PrecisionLimit, path: Some(path), .. }) if path == [5, 1])
+        );
     }
 
     #[test]
