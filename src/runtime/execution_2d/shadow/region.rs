@@ -85,24 +85,47 @@ pub(in crate::runtime::execution_2d) struct NeutralRegion<'a> {
 /// Once installed, every polygon consumer borrows this same immutable mesh.
 struct SourceGeometry {
     mesh: OnceLock<Arc<support::NeutralMesh>>,
-    /// Original glyph control-hull reach in the item's parent frame. This
-    /// scalar receipt retains no font/outline/field allocation and can only
-    /// prove absence. Ordinary F1 sources borrow controls from semantic_item.
-    outline_reach: Option<[f64; 4]>,
+    glyphs: Option<GlyphSources>,
+}
+
+/// Frozen original F2 controls and placement, independent of field bitmaps
+/// and resource/cache lifetimes. Per-glyph winding precedes set union.
+struct GlyphSource {
+    outline: crate::runtime::execution_2d::field::GlyphOutline,
+    position: [f64; 2],
+}
+
+struct GlyphSources {
+    instances: Vec<GlyphSource>,
+    font_size: f64,
+    /// Original control-hull reach in the item's parent frame; absence only.
+    reach: [f64; 4],
+    /// Conservative per-occurrence shared-body inventory. Repeated handles
+    /// may count one allocation more than once; they never duplicate it.
+    outline_bytes: usize,
+}
+
+impl GlyphSources {
+    fn storage_bytes(&self) -> Option<usize> {
+        self.instances
+            .capacity()
+            .checked_mul(size_of::<GlyphSource>())?
+            .checked_add(self.outline_bytes)
+    }
 }
 
 impl SourceGeometry {
     fn deferred() -> Self {
         Self {
             mesh: OnceLock::new(),
-            outline_reach: None,
+            glyphs: None,
         }
     }
 
     fn prepared(mesh: Arc<support::NeutralMesh>) -> Self {
         Self {
             mesh: OnceLock::from(mesh),
-            outline_reach: None,
+            glyphs: None,
         }
     }
 
@@ -316,8 +339,8 @@ fn region_envelope(
         Kind::Source(mesh) => {
             // This DAG's reach belongs to original F1 geometry. Disposable
             // realization vertices may neither enlarge nor erase it.
-            if let Some(reach) = mesh.outline_reach {
-                Some(reach)
+            if let Some(glyphs) = &mesh.glyphs {
+                Some(glyphs.reach)
             } else if let Some(item) = semantic_item
                 && let Some(authored) = source_envelope::bounds(item, None, path)?
             {
@@ -359,11 +382,11 @@ fn region_envelope(
         }
         Kind::Affine { source, to_parent } => {
             if let Kind::Source(mesh) = &source.kind {
-                if let Some(reach) = mesh.outline_reach {
+                if let Some(glyphs) = &mesh.glyphs {
                     // The original hull already includes glyph placement and
                     // the item affine. Its interval image encloses all source
                     // controls without revisiting a font or physical mesh.
-                    Some(nested_affine_envelope(reach, *to_parent, path)?)
+                    Some(nested_affine_envelope(glyphs.reach, *to_parent, path)?)
                 } else if let Some(item) = source.semantic_item
                     && let Some(authored) = source_envelope::bounds(item, Some(*to_parent), path)?
                 {
@@ -657,7 +680,7 @@ impl NeutralRegionBuilder {
         // traversal behind a cached semantic-looking rectangle.
         let mesh_visits = match &kind {
             Kind::Affine { source, .. } => match &source.kind {
-                Kind::Source(mesh) if mesh.outline_reach.is_none() => {
+                Kind::Source(mesh) if mesh.glyphs.is_none() => {
                     mesh.get().map_or(0, |mesh| mesh.triangles.len())
                 }
                 _ => 0,
@@ -721,7 +744,7 @@ impl NeutralRegionBuilder {
         // a conservative authored Bézier control-hull certificate.
         let certified_source_reach = match &kind {
             Kind::Source(source) => {
-                source.outline_reach.is_some()
+                source.glyphs.is_some()
                     || semantic_item.is_none_or(|item| {
                         !matches!(
                             item.primitive(),
@@ -769,7 +792,15 @@ impl NeutralRegionBuilder {
                 Kind::Source(source) => match source.get() {
                     Some(mesh) => bytes.checked_add(Self::mesh_bytes(mesh)?),
                     None => Some(bytes),
-                },
+                }
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        source
+                            .glyphs
+                            .as_ref()
+                            .map_or(Some(0), GlyphSources::storage_bytes)?,
+                    )
+                }),
                 _ => Some(bytes),
             })
             .ok_or_else(|| resource(path, "neutral node storage extent overflow"))?;
@@ -974,6 +1005,12 @@ impl NeutralRegionBuilder {
             bytes = bytes.checked_add(node.path.capacity().checked_mul(size_of::<usize>())?)?;
             match &node.kind {
                 Kind::Source(source) => {
+                    bytes = bytes.checked_add(
+                        source
+                            .glyphs
+                            .as_ref()
+                            .map_or(Some(0), GlyphSources::storage_bytes)?,
+                    )?;
                     if cached.get(node.id).is_none_or(Option::is_none)
                         && let Some(mesh) = source.get()
                     {
@@ -1145,9 +1182,9 @@ impl NeutralRegionBuilder {
         .map(Some)
     }
 
-    /// Resolve glyph reach from borrowed, already validated F2 facts before
-    /// any polygon factory. Only the bounded hull receipt survives this call;
-    /// source membership remains the original F1 item, never this envelope.
+    /// Resolve original glyph reach and shared controls from already validated
+    /// F2 facts before any polygon factory. The hull remains absence-only;
+    /// membership uses original winding and separately retained placement.
     pub(super) fn register_shaped_source<'a>(
         &mut self,
         item: &'a Render2dItem,
@@ -1156,10 +1193,8 @@ impl NeutralRegionBuilder {
         path: &[usize],
     ) -> Result<Option<Arc<NeutralRegion<'a>>>, Render2dExecutionError> {
         self.charge_graph_work(REGION_NODE_WORK, path)?;
-        let reach = source_envelope::shaped_bounds(item, resource, fields, path, |cost| {
-            self.charge_graph_work(cost, path)
-        })?;
-        let Some(reach) = reach else {
+        let glyphs = source_envelope::shaped_source(item, resource, fields, path, self)?;
+        let Some(glyphs) = glyphs else {
             // Every admitted glyph was empty. No disposable factory or mesh
             // is needed to establish absence of original outline controls.
             return Ok(None);
@@ -1170,7 +1205,7 @@ impl NeutralRegionBuilder {
         self.node_with_source_admission(
             Kind::Source(SourceGeometry {
                 mesh: OnceLock::new(),
-                outline_reach: Some(reach),
+                glyphs: Some(glyphs),
             }),
             path,
             1,
@@ -2375,6 +2410,119 @@ mod tests {
         );
         graph.host.release(remaining);
         assert!(graph.register_source(&item, &[7, 1]).unwrap().is_some());
+    }
+
+    #[test]
+    fn original_glyph_metadata_prepays_shared_handles_and_combined_capacity() {
+        let (resource, fields, item) = glyph_source_fixture(2, 2);
+        let owners = fields.glyph(2).unwrap().outline_owners();
+        let mut rejected = builder();
+        let fill = support::MAX_SHADOW_HOST_BYTES - rejected.host.live();
+        rejected.host.reserve(fill, &[]).unwrap();
+        assert!(matches!(
+            rejected.register_shaped_source(&item, &resource, &fields, &[6, 2]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
+        assert_eq!(
+            fields.glyph(2).unwrap().outline_owners(),
+            owners,
+            "a failed host debit must precede handle retention"
+        );
+        assert_eq!(rejected.nodes, 0);
+        assert_eq!(rejected.constructed_node_bytes, 0);
+
+        let mut measured = builder();
+        let base = measured.host.live();
+        let source = measured
+            .register_shaped_source(&item, &resource, &fields, &[6, 2])
+            .unwrap()
+            .unwrap();
+        let needed = measured.host.peak() - base;
+        let Kind::Source(geometry) = &source.kind else {
+            panic!("glyph source")
+        };
+        let glyphs = geometry.glyphs.as_ref().unwrap();
+        assert_eq!(glyphs.instances.len(), 2);
+        assert_eq!(
+            glyphs.outline_bytes,
+            2 * fields.glyph(2).unwrap().outline_storage_bytes().unwrap(),
+            "repeated shared bodies are conservatively inventoried per occurrence"
+        );
+        assert_eq!(fields.glyph(2).unwrap().outline_owners(), owners + 2);
+        let (retained, construction) = measured.storage_bounds([&source]).unwrap();
+        eprintln!(
+            "GLYPH_SOURCE_METADATA instance_bytes={} node_bytes={} outline_body_per_occurrence={} source_work={} source_host_growth={} retained_bound={} construction_bound={}",
+            size_of::<GlyphSource>(),
+            size_of::<NeutralRegion<'_>>(),
+            fields.glyph(2).unwrap().outline_storage_bytes().unwrap(),
+            measured.graph_work,
+            needed,
+            retained,
+            construction
+        );
+        assert!(retained >= glyphs.storage_bytes().unwrap());
+        assert!(construction >= retained);
+        drop(source);
+        assert_eq!(fields.glyph(2).unwrap().outline_owners(), owners);
+
+        // A late unadmitted glyph is NOT a validated empty outline. Already
+        // shared earlier controls must drop without installing a source node.
+        use crate::composition_2d::{Render2dGlyph, Render2dShapedTextResource};
+        let missing_resource = Render2dShapedTextResource::new(
+            resource.font().clone(),
+            resource.font_size(),
+            vec![
+                Render2dGlyph::new(2, 0.0, 0.0, 24.0).unwrap(),
+                Render2dGlyph::new(1, 0.0, 0.0, 24.0).unwrap(),
+            ],
+        )
+        .unwrap();
+        let mut missing = builder();
+        assert!(matches!(
+            missing.register_shaped_source(&item, &missing_resource, &fields, &[6, 3]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                ..
+            })
+        ));
+        assert_eq!(missing.nodes, 0);
+        assert_eq!(fields.glyph(2).unwrap().outline_owners(), owners);
+
+        let mut exact = builder();
+        exact
+            .host
+            .reserve(
+                support::MAX_SHADOW_HOST_BYTES - exact.host.live() - needed,
+                &[],
+            )
+            .unwrap();
+        assert!(
+            exact
+                .register_shaped_source(&item, &resource, &fields, &[6, 2])
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(exact.host.peak(), support::MAX_SHADOW_HOST_BYTES);
+        let mut short = builder();
+        short
+            .host
+            .reserve(
+                support::MAX_SHADOW_HOST_BYTES - short.host.live() - needed + 1,
+                &[],
+            )
+            .unwrap();
+        assert!(matches!(
+            short.register_shaped_source(&item, &resource, &fields, &[6, 2]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
+        assert_eq!(short.nodes, 0);
+        assert_eq!(fields.glyph(2).unwrap().outline_owners(), owners);
     }
 
     #[test]

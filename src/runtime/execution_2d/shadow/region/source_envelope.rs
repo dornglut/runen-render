@@ -1,4 +1,4 @@
-//! Conservative SOURCE reach from original, borrowed F1 authoring facts.
+//! Original SOURCE reach and immutable glyph-fact capture from F1/F2 facts.
 //! Never infer original Bezier/stroke support from a disposable Lyon mesh.
 //! This is an enclosing bound, NOT a membership or Gaussian-alpha oracle.
 
@@ -93,17 +93,19 @@ fn abs_upper(value: Interval) -> f64 {
 }
 
 /// Certify only reach from the SAME retained F2 outlines used for glyph
-/// painting. No outline, font, field bitmap or resource is copied/retained.
+/// painting. Only original outline handles and raw placement survive; no
+/// font, field bitmap, resource or control-body copy is retained.
 /// Every glyph lookup and command/control visit is paid before examination,
-/// including repeated and valid empty glyphs. This is not a membership proof.
-pub(super) fn shaped_bounds(
+/// including repeated and valid empty glyphs. The hull alone is not a
+/// membership proof; later queries consume the shared original controls.
+pub(super) fn shaped_source(
     item: &Render2dItem,
     resource: &crate::composition_2d::Render2dShapedTextResource,
     fields: &crate::runtime::execution_2d::field::ResourceFields,
     path: &[usize],
-    mut charge: impl FnMut(usize) -> Result<(), Render2dExecutionError>,
-) -> Result<Option<[f64; 4]>, Render2dExecutionError> {
-    charge(512)?;
+    graph: &mut super::NeutralRegionBuilder,
+) -> Result<Option<super::GlyphSources>, Render2dExecutionError> {
+    graph.charge_graph_work(512, path)?;
     let Render2dPrimitive::ShapedText(primitive) = item.primitive() else {
         return Err(precision(path));
     };
@@ -112,9 +114,11 @@ pub(super) fn shaped_bounds(
     let origin_x = Interval::scalar(primitive.origin().x()).ok_or_else(fail)?;
     let origin_y = Interval::scalar(primitive.origin().y()).ok_or_else(fail)?;
     let mut envelope = ControlEnvelope::new(item, None, path)?;
+    let mut instances = Vec::new();
+    let mut outline_bytes = 0_usize;
     let lookup_work = fields.outline_lookup_work();
     for glyph in resource.glyphs() {
-        charge(lookup_work)?;
+        graph.charge_graph_work(lookup_work, path)?;
         let Some(field) = fields
             .admitted_outline(glyph.id())
             .map_err(|()| precision(path))?
@@ -126,7 +130,7 @@ pub(super) fn shaped_bounds(
             .len()
             .checked_mul(3 * (super::SOURCE_REACH_CONTROL_WORK + 512))
             .ok_or_else(|| super::resource(path, "original glyph reach work overflow"))?;
-        charge(work)?;
+        graph.charge_graph_work(work, path)?;
         // Enclose the original sum, rather than treating rounded placement
         // or a rounded fontsize/affine product as exact source geometry.
         let dx = origin_x
@@ -165,8 +169,45 @@ pub(super) fn shaped_bounds(
                 Render2dPathCommand::Close => {}
             }
         }
+        let grows = instances.len() == instances.capacity();
+        let copies = if grows { instances.len() } else { 0 };
+        // Pay handle reads/writes, geometric relocation, Arc clone and host
+        // bookkeeping BEFORE allocation or retaining the shared body.
+        let work = copies
+            .checked_add(1)
+            .and_then(|copies| copies.checked_mul(2 * size_of::<super::GlyphSource>()))
+            .and_then(|work| work.checked_add(192))
+            .ok_or_else(|| super::resource(path, "original glyph metadata work overflow"))?;
+        graph.charge_graph_work(work, path)?;
+        let body = field
+            .outline_storage_bytes()
+            .ok_or_else(|| super::resource(path, "original glyph outline storage overflow"))?;
+        let next_bytes = outline_bytes
+            .checked_add(body)
+            .ok_or_else(|| super::resource(path, "original glyph retained storage overflow"))?;
+        graph.host.reserve(body, path)?;
+        if grows {
+            let capacity = instances
+                .capacity()
+                .checked_mul(2)
+                .map(|capacity| capacity.max(4).min(resource.glyphs().len()))
+                .ok_or_else(|| {
+                    super::resource(path, "original glyph instance capacity overflow")
+                })?;
+            graph.host.reserve_vector(&mut instances, capacity, path)?;
+        }
+        instances.push(super::GlyphSource {
+            outline: field.original_outline(),
+            position: [glyph.x(), glyph.y()],
+        });
+        outline_bytes = next_bytes;
     }
-    Ok(envelope.bounds)
+    Ok(envelope.bounds.map(|reach| super::GlyphSources {
+        instances,
+        font_size: resource.font_size(),
+        reach,
+        outline_bytes,
+    }))
 }
 
 /// The Bézier convex-hull property encloses ALL points of each segment by

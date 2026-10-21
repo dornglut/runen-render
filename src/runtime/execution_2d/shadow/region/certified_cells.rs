@@ -1477,6 +1477,9 @@ impl NeutralRegion<'_> {
         match &self.kind {
             Kind::Source(mesh) => {
                 if let Some(item) = self.semantic_item {
+                    if let Some(glyphs) = &mesh.glyphs {
+                        return certify_glyph_source(item, glyphs, cell, visits);
+                    }
                     return certify_authored_item(item, cell, visits);
                 }
                 let Some(mesh) = mesh.get() else {
@@ -1933,6 +1936,78 @@ pub(super) fn certified_grid_area_enclosures(
 
 /// Certify original F1 source geometry first; apply item clips independently
 /// in their declared immediate-parent space. Painter color/opacity are ignored.
+fn certify_glyph_source(
+    item: &Render2dItem,
+    glyphs: &GlyphSources,
+    cell: Cell,
+    visits: &mut usize,
+) -> CellCertificate {
+    if !admit_query_work(visits, 128 + preimage_work(item.local_to_parent())) {
+        return CellCertificate::Unknown;
+    }
+    let Render2dPrimitive::ShapedText(primitive) = item.primitive() else {
+        return CellCertificate::Unknown;
+    };
+    // The source item, text origin, glyph position and font size remain
+    // separate real facts. Never invert a rounded combined glyph affine.
+    let local = cell
+        .preimage(item.local_to_parent())
+        .and_then(|local| local.shift(primitive.origin().x(), primitive.origin().y()));
+    let Some(size) = Interval::scalar(glyphs.font_size).filter(|size| size.lo > 0.0) else {
+        return CellCertificate::Unknown;
+    };
+    let source = local.map_or(CellCertificate::Unknown, |local| {
+        let mut unknown = false;
+        for glyph in &glyphs.instances {
+            // Two coordinate shifts/divisions, handle dispatch and union
+            // bookkeeping. Command conversion and winding are separate.
+            if !admit_query_work(visits, 256) {
+                return CellCertificate::Unknown;
+            }
+            let Some(canonical) =
+                local
+                    .shift(glyph.position[0], glyph.position[1])
+                    .and_then(|local| {
+                        Some(Cell {
+                            x: local.x.div(size)?,
+                            y: local.y.div(size)?,
+                        })
+                    })
+            else {
+                unknown = true;
+                continue;
+            };
+            let commands = glyph.outline.commands();
+            // Existing winding's 128/command bound plus <=64 for up to
+            // three validated original control-point conversions. Adaptive
+            // Bezier subdivision additionally spends this SAME query fuel.
+            let Some(work) = commands.len().checked_mul(192) else {
+                return CellCertificate::Unknown;
+            };
+            if !admit_query_work(visits, work) {
+                return CellCertificate::Unknown;
+            }
+            match bezier_winding::certify_command_winding(
+                commands,
+                crate::composition_2d::Render2dFillRule::NonZero,
+                canonical,
+                visits,
+            ) {
+                CellCertificate::Inside => return CellCertificate::Inside,
+                CellCertificate::Unknown => unknown = true,
+                CellCertificate::Outside => {}
+            }
+        }
+        if unknown {
+            CellCertificate::Unknown
+        } else {
+            CellCertificate::Outside
+        }
+    });
+    // Item clips belong to the ORIGINAL parent cell, not glyph coordinates.
+    certify_clipped(source, cell, item.clips(), visits)
+}
+
 fn certify_authored_item(item: &Render2dItem, cell: Cell, visits: &mut usize) -> CellCertificate {
     if !matches!(
         item.primitive(),
@@ -2073,7 +2148,7 @@ fn builder() -> NeutralRegionBuilder {
 }
 
 #[test]
-fn original_glyph_reach_only_proves_exclusion_and_preserves_unknown_inside_its_hull() {
+fn original_glyph_winding_precedes_physical_meshes_and_preserves_boundary_uncertainty() {
     let (resource, fields, item) = super::tests::glyph_source_fixture(2, 1);
     let mut graph = builder();
     let source = graph
@@ -2083,7 +2158,7 @@ fn original_glyph_reach_only_proves_exclusion_and_preserves_unknown_inside_its_h
     let mut fuel = 1_000_000;
     assert_eq!(
         source.certify_cell(Cell::new([4.0, -10.0, 5.0, -9.0]).unwrap(), &mut fuel),
-        CellCertificate::Unknown
+        CellCertificate::Inside
     );
     assert_eq!(
         source.certify_cell(Cell::new([40.0, -10.0, 41.0, -9.0]).unwrap(), &mut fuel),
@@ -2113,8 +2188,235 @@ fn original_glyph_reach_only_proves_exclusion_and_preserves_unknown_inside_its_h
         .unwrap();
     assert_eq!(
         source.certify_cell(Cell::new([4.0, -10.0, 5.0, -9.0]).unwrap(), &mut fuel),
+        CellCertificate::Inside
+    );
+    assert_eq!(
+        source.certify_cell(Cell::new([25.0, -10.0, 26.0, -9.0]).unwrap(), &mut fuel),
+        CellCertificate::Outside
+    );
+}
+
+#[cfg(test)]
+fn glyph_certificate_fixture(
+    instances: Vec<(crate::runtime::execution_2d::field::GlyphOutline, [f64; 2])>,
+    font_size: f64,
+) -> GlyphSources {
+    let outline_bytes = instances
+        .iter()
+        .map(|(outline, _)| outline.fixture_storage_bytes())
+        .sum();
+    GlyphSources {
+        instances: instances
+            .into_iter()
+            .map(|(outline, position)| GlyphSource { outline, position })
+            .collect(),
+        font_size,
+        reach: [-100.0, -100.0, 100.0, 100.0],
+        outline_bytes,
+    }
+}
+
+#[cfg(test)]
+fn glyph_item_fixture(
+    origin: [f64; 2],
+    affine: Render2dAffineTransform,
+    clips: Vec<Render2dClip>,
+) -> Render2dItem {
+    use crate::composition_2d::*;
+    Render2dItem::new(
+        Render2dPrimitive::ShapedText(Render2dShapedTextPrimitive::new(
+            Render2dResourceId::new(178).unwrap(),
+            Render2dPoint::new(origin[0], origin[1]).unwrap(),
+            Render2dColorRgba8::TRANSPARENT,
+        )),
+        affine,
+        clips,
+        Render2dOpacity::TRANSPARENT,
+    )
+}
+
+#[test]
+fn original_glyph_nonzero_contours_cancel_only_within_each_glyph_before_union() {
+    use crate::runtime::execution_2d::field::GlyphOutline;
+    let forward = [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]];
+    let reverse = [[0.0, 0.0], [0.0, 8.0], [8.0, 8.0], [8.0, 0.0]];
+    let hole = [[2.0, 2.0], [2.0, 6.0], [6.0, 6.0], [6.0, 2.0]];
+    let a = GlyphOutline::linear_fixture(&[&forward]);
+    let b = GlyphOutline::linear_fixture(&[&reverse]);
+    let item = glyph_item_fixture([0.0, 0.0], Render2dAffineTransform::IDENTITY, Vec::new());
+    let query = |source: &GlyphSources, rect| {
+        certify_glyph_source(&item, source, Cell::new(rect).unwrap(), &mut 1_000_000)
+    };
+    let union = glyph_certificate_fixture(vec![(a.clone(), [0.0, 0.0]), (b, [0.0, 0.0])], 1.0);
+    assert_eq!(
+        query(&union, [3.0, 3.0, 4.0, 4.0]),
+        CellCertificate::Inside,
+        "separate oppositely wound glyphs are a union"
+    );
+    let cancelled = glyph_certificate_fixture(
+        vec![(
+            GlyphOutline::linear_fixture(&[&forward, &reverse]),
+            [0.0, 0.0],
+        )],
+        1.0,
+    );
+    assert_eq!(
+        query(&cancelled, [3.0, 3.0, 4.0, 4.0]),
+        CellCertificate::Outside,
+        "NonZero cancellation remains real within one outline"
+    );
+    let holed = glyph_certificate_fixture(
+        vec![(GlyphOutline::linear_fixture(&[&forward, &hole]), [0.0, 0.0])],
+        1.0,
+    );
+    assert_eq!(
+        query(&holed, [3.0, 3.0, 4.0, 4.0]),
+        CellCertificate::Outside
+    );
+    assert_eq!(query(&holed, [0.5, 3.0, 1.0, 4.0]), CellCertificate::Inside);
+    let separated = glyph_certificate_fixture(vec![(a.clone(), [0.0, 0.0]), (a, [12.0, 0.0])], 1.0);
+    assert_eq!(
+        query(&separated, [9.0, 3.0, 10.0, 4.0]),
+        CellCertificate::Outside,
+        "a union bounding rectangle is never inside truth"
+    );
+    assert_eq!(
+        query(&separated, [13.0, 3.0, 14.0, 4.0]),
+        CellCertificate::Inside
+    );
+    assert_eq!(
+        query(&separated, [0.0, 2.0, 1.0, 3.0]),
         CellCertificate::Unknown
     );
+}
+
+#[test]
+fn original_glyph_placement_and_clips_keep_separate_parent_frames() {
+    use crate::runtime::execution_2d::field::GlyphOutline;
+    let outline =
+        GlyphOutline::linear_fixture(&[&[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]]]);
+    let source = glyph_certificate_fixture(vec![(outline.clone(), [-0.25, 0.5])], 2.0);
+    let clip = Render2dClip::new(
+        Render2dShape::rect(Render2dRect::new(14.0, 20.0, 4.0, 4.0).unwrap()),
+        Render2dAffineTransform::IDENTITY,
+    );
+    let item = glyph_item_fixture(
+        [3.25, -1.5],
+        Render2dAffineTransform::translation(10.0, 20.0).unwrap(),
+        vec![clip],
+    );
+    // Original glyph rectangle is [13,19,29,35], but the clip is [14,20,18,24]
+    // in the item's PARENT, never its glyph or local coordinates.
+    for (rect, expected) in [
+        ([15.0, 21.0, 16.0, 22.0], CellCertificate::Inside),
+        ([20.0, 25.0, 21.0, 26.0], CellCertificate::Outside),
+        ([14.0, 21.0, 15.0, 22.0], CellCertificate::Unknown),
+    ] {
+        assert_eq!(
+            certify_glyph_source(&item, &source, Cell::new(rect).unwrap(), &mut 1_000_000),
+            expected
+        );
+    }
+    let reflected = glyph_item_fixture(
+        [3.25, -1.5],
+        Render2dAffineTransform::new(-1.0, 0.25, 0.5, 2.0, 7.0, -3.0).unwrap(),
+        Vec::new(),
+    );
+    assert_eq!(
+        certify_glyph_source(
+            &reflected,
+            &source,
+            Cell::new([-0.51, 13.74, -0.49, 13.76]).unwrap(),
+            &mut 1_000_000
+        ),
+        CellCertificate::Inside
+    );
+    let cancellation = glyph_item_fixture(
+        [1.0e16, 0.0],
+        Render2dAffineTransform::translation(-1.0e16, 0.0).unwrap(),
+        Vec::new(),
+    );
+    let shifted = glyph_certificate_fixture(vec![(outline, [0.25, 0.0])], 1.0);
+    assert_eq!(
+        certify_glyph_source(
+            &cancellation,
+            &shifted,
+            Cell::new([0.05, 2.0, 0.125, 3.0]).unwrap(),
+            &mut 1_000_000
+        ),
+        CellCertificate::Unknown,
+        "rounded combined placement would invent an interior left of the true x=.25 edge"
+    );
+}
+
+#[test]
+fn original_glyph_queries_share_exact_fuel_and_outlive_field_cache() {
+    let (resource, fields, item) = super::tests::glyph_source_fixture(2, 2);
+    let mut graph = builder();
+    let source = graph
+        .register_shaped_source(&item, &resource, &fields, &[6, 1])
+        .unwrap()
+        .unwrap();
+    drop(fields);
+    drop(resource);
+    let cell = Cell::new([4.0, -10.0, 5.0, -9.0]).unwrap();
+    let mut fuel = 1_000_000;
+    assert_eq!(
+        source.certify_cell(cell, &mut fuel),
+        CellCertificate::Inside
+    );
+    let paid = 1_000_000 - fuel;
+    let mut exact = paid;
+    assert_eq!(
+        source.certify_cell(cell, &mut exact),
+        CellCertificate::Inside
+    );
+    assert_eq!(exact, 0);
+    let mut short = paid - 1;
+    assert_eq!(
+        source.certify_cell(cell, &mut short),
+        CellCertificate::Unknown
+    );
+    assert_eq!(short, 0);
+}
+
+#[test]
+fn original_glyph_quadratic_and_cubic_controls_use_existing_adaptive_winding() {
+    use crate::runtime::execution_2d::field::GlyphOutline;
+    let item = glyph_item_fixture([0.0, 0.0], Render2dAffineTransform::IDENTITY, Vec::new());
+    for cubic in [false, true] {
+        let source =
+            glyph_certificate_fixture(vec![(GlyphOutline::arch_fixture(cubic), [0.0, 0.0])], 1.0);
+        assert_eq!(
+            certify_glyph_source(
+                &item,
+                &source,
+                Cell::new([3.0, 1.0, 4.0, 2.0]).unwrap(),
+                &mut 1_000_000
+            ),
+            CellCertificate::Inside
+        );
+        assert_eq!(
+            certify_glyph_source(
+                &item,
+                &source,
+                Cell::new([3.0, 7.0, 4.0, 8.0]).unwrap(),
+                &mut 1_000_000
+            ),
+            CellCertificate::Outside
+        );
+        // At t=1/2 the quadratic is (4,4), the cubic (4,6).
+        let y = if cubic { 6.0 } else { 4.0 };
+        assert_eq!(
+            certify_glyph_source(
+                &item,
+                &source,
+                Cell::new([4.0, y, 4.0, y]).unwrap(),
+                &mut 1_000_000
+            ),
+            CellCertificate::Unknown
+        );
+    }
 }
 
 #[test]

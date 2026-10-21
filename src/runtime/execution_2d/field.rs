@@ -183,27 +183,24 @@ impl GlyphField {
     pub(super) fn outline_commands(
         &self,
     ) -> impl ExactSizeIterator<Item = Result<Render2dPathCommand, ()>> + Clone + '_ {
-        self.outline.iter().copied().map(|verb| {
-            let point = |p: OutlinePoint| Render2dPoint::new(p.x, p.y).map_err(|_| ());
-            Ok(match verb {
-                OutlineVerb::MoveTo(to) => Render2dPathCommand::MoveTo(point(to)?),
-                OutlineVerb::LineTo(to) => Render2dPathCommand::LineTo(point(to)?),
-                OutlineVerb::QuadraticTo { control, to } => Render2dPathCommand::QuadraticTo {
-                    control: point(control)?,
-                    to: point(to)?,
-                },
-                OutlineVerb::CubicTo {
-                    control1,
-                    control2,
-                    to,
-                } => Render2dPathCommand::CubicTo {
-                    control1: point(control1)?,
-                    control2: point(control2)?,
-                    to: point(to)?,
-                },
-                OutlineVerb::Close => Render2dPathCommand::Close,
-            })
-        })
+        outline_commands(&self.outline)
+    }
+
+    /// Share only the original controls. A semantic consumer must never pin
+    /// the disposable MSDF bitmap or the field cache to retain an outline.
+    pub(super) fn original_outline(&self) -> GlyphOutline {
+        GlyphOutline {
+            verbs: Arc::clone(&self.outline),
+        }
+    }
+
+    pub(super) fn outline_storage_bytes(&self) -> Option<usize> {
+        outline_storage_bytes(self.outline.len())
+    }
+
+    #[cfg(test)]
+    pub(super) fn outline_owners(&self) -> usize {
+        Arc::strong_count(&self.outline)
     }
 
     /// Reuses the exact F2 retained outline authority for F3F neutral path
@@ -231,6 +228,32 @@ impl GlyphField {
         let path = Render2dPath::new(Render2dFillRule::NonZero, commands).map_err(|_| invalid())?;
         Ok(Render2dShape::path(path))
     }
+}
+
+fn outline_commands(
+    outline: &[OutlineVerb],
+) -> impl ExactSizeIterator<Item = Result<Render2dPathCommand, ()>> + Clone + '_ {
+    outline.iter().copied().map(|verb| {
+        let point = |p: OutlinePoint| Render2dPoint::new(p.x, p.y).map_err(|_| ());
+        Ok(match verb {
+            OutlineVerb::MoveTo(to) => Render2dPathCommand::MoveTo(point(to)?),
+            OutlineVerb::LineTo(to) => Render2dPathCommand::LineTo(point(to)?),
+            OutlineVerb::QuadraticTo { control, to } => Render2dPathCommand::QuadraticTo {
+                control: point(control)?,
+                to: point(to)?,
+            },
+            OutlineVerb::CubicTo {
+                control1,
+                control2,
+                to,
+            } => Render2dPathCommand::CubicTo {
+                control1: point(control1)?,
+                control2: point(control2)?,
+                to: point(to)?,
+            },
+            OutlineVerb::Close => Render2dPathCommand::Close,
+        })
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -318,8 +341,58 @@ enum OutlineVerb {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct GlyphOutline {
+pub(super) struct GlyphOutline {
     verbs: Arc<[OutlineVerb]>,
+}
+
+fn outline_storage_bytes(verbs: usize) -> Option<usize> {
+    // Arc's two counters plus conservative alignment padding; the immutable
+    // control allocation is shared, never recopied by source preparation.
+    verbs
+        .checked_mul(size_of::<OutlineVerb>())?
+        .checked_add(2 * size_of::<usize>() + align_of::<OutlineVerb>())
+}
+
+impl GlyphOutline {
+    pub(super) fn commands(
+        &self,
+    ) -> impl ExactSizeIterator<Item = Result<Render2dPathCommand, ()>> + Clone + '_ {
+        outline_commands(&self.verbs)
+    }
+
+    /// Synthetic source controls for private certificate tests. The same F2
+    /// pen validates contours; no new production outline construction exists.
+    #[cfg(test)]
+    pub(super) fn linear_fixture(contours: &[&[[f32; 2]]]) -> Self {
+        let mut pen = OutlinePathPen::new(None);
+        for contour in contours {
+            let (first, rest) = contour.split_first().expect("fixture contour");
+            pen.move_to(first[0], -first[1]);
+            for point in rest {
+                pen.line_to(point[0], -point[1]);
+            }
+            pen.close();
+        }
+        pen.finish().unwrap().unwrap()
+    }
+
+    #[cfg(test)]
+    pub(super) fn fixture_storage_bytes(&self) -> usize {
+        outline_storage_bytes(self.verbs.len()).unwrap()
+    }
+
+    #[cfg(test)]
+    pub(super) fn arch_fixture(cubic: bool) -> Self {
+        let mut pen = OutlinePathPen::new(None);
+        pen.move_to(0.0, 0.0);
+        if cubic {
+            pen.curve_to(0.0, -8.0, 8.0, -8.0, 8.0, 0.0);
+        } else {
+            pen.quad_to(4.0, -8.0, 8.0, 0.0);
+        }
+        pen.close();
+        pen.finish().unwrap().unwrap()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -816,6 +889,32 @@ mod tests {
     use crate::composition_2d::{Render2dFontBinding, Render2dGlyph};
 
     const OUTLINE: &[u8] = include_bytes!("../../../tests/fixtures/f2_outline.ttf");
+
+    #[test]
+    fn original_outline_handle_survives_without_retaining_field_bitmap() {
+        let fields = realize_fixture(OUTLINE, 2).unwrap();
+        let field = fields.glyph(2).unwrap();
+        let pixels = Arc::downgrade(&field.rgba8);
+        let before = field.outline_owners();
+        let source = field.original_outline();
+        assert_eq!(field.outline_owners(), before + 1);
+        let expected = field.outline_commands().collect::<Vec<_>>();
+        drop(fields);
+        assert!(
+            pixels.upgrade().is_none(),
+            "semantic handles cannot pin disposable bitmap storage"
+        );
+        assert_eq!(source.commands().collect::<Vec<_>>(), expected);
+        let recreated = realize_fixture(OUTLINE, 2).unwrap();
+        assert_eq!(
+            source.commands().collect::<Vec<_>>(),
+            recreated
+                .glyph(2)
+                .unwrap()
+                .outline_commands()
+                .collect::<Vec<_>>()
+        );
+    }
 
     fn resource(bytes: &[u8], glyph_id: u32) -> Render2dShapedTextResource {
         Render2dShapedTextResource::new(
