@@ -206,27 +206,48 @@ impl GlyphField {
     /// Reuses the exact F2 retained outline authority for F3F neutral path
     /// tessellation. Coordinates are normalized em units; glyph placement and
     /// font-size/parent transforms belong to the receiving F1 item.
-    #[allow(
-        dead_code,
-        reason = "F3F neutral shaped-text support awaiting group lowering"
-    )]
     pub(super) fn neutral_shape(
         &self,
         resource_id: Render2dResourceId,
+        path: &[usize],
+        work: &mut super::shadow::NeutralPreparationWork<'_>,
     ) -> Result<Render2dShape, Render2dExecutionError> {
         let invalid = || Render2dShapedTextError::InvalidOutline {
             resource_id,
             glyph_id: self.glyph_id,
         };
+        // Conversion, point validation, F1 contour validation and the final
+        // Arc copy all traverse these commands. Pay before the first visit.
+        let count = self.outline.len();
+        work.charge(256 + 128 * count, path)?;
         let mut commands = Vec::new();
-        commands
-            .try_reserve_exact(self.outline.len())
-            .map_err(|_| invalid())?;
+        work.reserve_vector(&mut commands, count, path)?;
+        let command_bytes = commands.capacity() * size_of::<Render2dPathCommand>();
         for command in self.outline_commands() {
-            commands.push(command.map_err(|()| invalid())?);
+            let Ok(command) = command else {
+                drop(commands);
+                work.release_bytes(command_bytes);
+                return Err(invalid().into());
+            };
+            commands.push(command);
         }
-        let path = Render2dPath::new(Render2dFillRule::NonZero, commands).map_err(|_| invalid())?;
-        Ok(Render2dShape::path(path))
+        // Vec -> Arc keeps the Vec allocation alive during the copy. Include
+        // both buffers and the two Arc counters before calling F1 construction.
+        let arc_bytes = count * size_of::<Render2dPathCommand>() + 2 * size_of::<usize>();
+        if let Err(error) = work.reserve_bytes(arc_bytes, path) {
+            drop(commands);
+            work.release_bytes(command_bytes);
+            return Err(error);
+        }
+        let result = Render2dPath::new(Render2dFillRule::NonZero, commands);
+        work.release_bytes(command_bytes);
+        match result {
+            Ok(path) => Ok(Render2dShape::path(path)),
+            Err(_) => {
+                work.release_bytes(arc_bytes);
+                Err(invalid().into())
+            }
+        }
     }
 }
 
@@ -989,8 +1010,28 @@ mod tests {
         let again = reproduced.glyph(2).expect("recreated outline exists");
         assert!(!field.outline.is_empty());
         let id = Render2dResourceId::new(1).unwrap();
-        let a = field.neutral_shape(id).unwrap();
-        let b = again.neutral_shape(id).unwrap();
+        let a = field
+            .neutral_shape(
+                id,
+                &[0],
+                &mut super::super::shadow::NeutralPreparationWork::new(
+                    &mut 0,
+                    &mut 0,
+                    &mut super::super::support::PreparationHostBudget::new(),
+                ),
+            )
+            .unwrap();
+        let b = again
+            .neutral_shape(
+                id,
+                &[0],
+                &mut super::super::shadow::NeutralPreparationWork::new(
+                    &mut 0,
+                    &mut 0,
+                    &mut super::super::support::PreparationHostBudget::new(),
+                ),
+            )
+            .unwrap();
         assert_eq!(a, b);
         let path = a.as_path().unwrap();
         assert_eq!(path.fill_rule(), Render2dFillRule::NonZero);
@@ -999,6 +1040,152 @@ mod tests {
                 .iter()
                 .any(|v| matches!(v, Render2dPathCommand::Close))
         );
+    }
+
+    #[test]
+    fn neutral_glyph_command_conversion_admits_work_and_vec_arc_coexistence() {
+        use super::super::{
+            shadow::NeutralPreparationWork,
+            support::{
+                MAX_COMPOSITIONAL_SHADOW_WORK, MAX_SHADOW_HOST_BYTES, PreparationHostBudget,
+            },
+        };
+        let field = GlyphField {
+            glyph_id: 1,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            width: 1,
+            height: 1,
+            rgba8: Arc::from([0; 4]),
+            outline: Arc::from([
+                OutlineVerb::MoveTo(OutlinePoint { x: 0.0, y: 0.0 }),
+                OutlineVerb::LineTo(OutlinePoint { x: 1.0, y: 0.0 }),
+                OutlineVerb::LineTo(OutlinePoint { x: 0.0, y: 1.0 }),
+                OutlineVerb::Close,
+            ]),
+        };
+        let id = Render2dResourceId::new(1).unwrap();
+        let path = [3, 4];
+        let cost = 256 + 128 * 4;
+        let vector_bytes = 4 * size_of::<Render2dPathCommand>();
+        let arc_bytes = vector_bytes + 2 * size_of::<usize>();
+        let peak = vector_bytes + arc_bytes;
+        let mut work = MAX_COMPOSITIONAL_SHADOW_WORK - cost;
+        let mut host = PreparationHostBudget::new();
+        let shape = field
+            .neutral_shape(
+                id,
+                &path,
+                &mut NeutralPreparationWork::new(&mut work, &mut 0, &mut host),
+            )
+            .unwrap();
+        assert_eq!(
+            shape.as_path().unwrap().commands(),
+            &[
+                Render2dPathCommand::MoveTo(Render2dPoint::new(0.0, 0.0).unwrap()),
+                Render2dPathCommand::LineTo(Render2dPoint::new(1.0, 0.0).unwrap()),
+                Render2dPathCommand::LineTo(Render2dPoint::new(0.0, 1.0).unwrap()),
+                Render2dPathCommand::Close,
+            ]
+        );
+        assert_eq!(work, MAX_COMPOSITIONAL_SHADOW_WORK);
+        assert_eq!((host.live(), host.peak()), (arc_bytes, peak));
+        drop(shape);
+
+        let mut work = MAX_COMPOSITIONAL_SHADOW_WORK - cost + 1;
+        let initial = work;
+        let mut host = PreparationHostBudget::new();
+        assert!(
+            matches!(field.neutral_shape(id, &path, &mut NeutralPreparationWork::new(
+            &mut work, &mut 0, &mut host,
+        )), Err(Render2dExecutionError::SampleSpace {
+            kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+            path: Some(owner), ..
+        }) if owner == path)
+        );
+        assert_eq!(work, initial);
+        assert_eq!((host.live(), host.peak()), (0, 0));
+
+        for short in [0, 1] {
+            let occupied = MAX_SHADOW_HOST_BYTES - peak + short;
+            let mut work = 0;
+            let mut host = PreparationHostBudget::new();
+            host.reserve(occupied, &path).unwrap();
+            let result = field.neutral_shape(
+                id,
+                &path,
+                &mut NeutralPreparationWork::new(&mut work, &mut 0, &mut host),
+            );
+            if short == 0 {
+                assert!(result.is_ok());
+                assert_eq!(host.live(), occupied + arc_bytes);
+                assert_eq!(host.peak(), MAX_SHADOW_HOST_BYTES);
+            } else {
+                assert!(matches!(result, Err(Render2dExecutionError::SampleSpace {
+                    kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                    path: Some(owner), ..
+                }) if owner == path));
+                assert_eq!(host.live(), occupied);
+                assert_eq!(host.peak(), occupied + vector_bytes);
+            }
+            assert_eq!(work, cost);
+        }
+
+        // Both point conversion and F1 contour validation preserve the original
+        // outline diagnostic and return all newly owned command storage.
+        for outline in [
+            Arc::from([OutlineVerb::MoveTo(OutlinePoint {
+                x: f64::NAN,
+                y: 0.0,
+            })]),
+            Arc::from([OutlineVerb::LineTo(OutlinePoint { x: 0.0, y: 0.0 })]),
+        ] {
+            let invalid = GlyphField {
+                outline,
+                ..field.clone()
+            };
+            let mut work = 0;
+            let mut host = PreparationHostBudget::new();
+            assert!(
+                matches!(invalid.neutral_shape(id, &path, &mut NeutralPreparationWork::new(
+                &mut work, &mut 0, &mut host,
+            )), Err(Render2dExecutionError::ShapedText(
+                Render2dShapedTextError::InvalidOutline { resource_id, glyph_id: 1 }
+            )) if resource_id == id)
+            );
+            assert_eq!(host.live(), 0);
+            assert_eq!(work, 256 + 128);
+        }
+
+        let mut work = 0;
+        let mut host = PreparationHostBudget::new();
+        assert!(
+            super::super::vector::neutral_shaped_glyph(
+                super::super::vector::NeutralGlyphInstance {
+                    field: &field,
+                    resource_id: id,
+                    origin: [0.0, 0.0],
+                    font_size: 1.0,
+                    to_parent: crate::composition_2d::Render2dAffineTransform::translation(
+                        2.0_f64.powi(44),
+                        0.0,
+                    )
+                    .unwrap(),
+                },
+                &path,
+                4.0,
+                1_048_576,
+                &mut NeutralPreparationWork::new(&mut work, &mut 0, &mut host),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            host.live(),
+            0,
+            "glyph path drops after late physical failure"
+        );
+        assert_eq!(host.peak(), peak);
+        assert_eq!(work, cost + 512);
     }
 
     #[test]
@@ -1018,6 +1205,11 @@ mod tests {
             &path,
             1.0,
             1_048_576,
+            &mut super::super::shadow::NeutralPreparationWork::new(
+                &mut 0,
+                &mut 0,
+                &mut super::super::support::PreparationHostBudget::new(),
+            ),
         )
         .unwrap()
         .expect("nonempty actual outline tessellates");
@@ -1035,6 +1227,11 @@ mod tests {
             &path,
             1.0,
             1_048_576,
+            &mut super::super::shadow::NeutralPreparationWork::new(
+                &mut 0,
+                &mut 0,
+                &mut super::super::support::PreparationHostBudget::new(),
+            ),
         )
         .unwrap()
         .expect("parent affine retains neutral glyph support");
@@ -1060,6 +1257,11 @@ mod tests {
             &path,
             1.0,
             1_048_576,
+            &mut super::super::shadow::NeutralPreparationWork::new(
+                &mut 0,
+                &mut 0,
+                &mut super::super::support::PreparationHostBudget::new(),
+            ),
         )
         .unwrap()
         .expect("MSDF zero-alpha bytes are not geometry");

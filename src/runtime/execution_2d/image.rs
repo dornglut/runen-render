@@ -55,7 +55,6 @@ fn narrow(value: f64, root_index: usize) -> Result<f32, Render2dExecutionError> 
 /// This is a disposable private physical approximation of immutable F1
 /// destination patches, not a source-authority image-alpha mask. Group effects
 /// and item clips consume the patches at a later F3F lowering boundary.
-#[allow(dead_code, reason = "awaiting F3F group lowering")]
 pub(super) fn neutral_support(
     item: &Render2dItem,
     image: &Render2dImagePrimitive,
@@ -95,7 +94,7 @@ pub(super) fn neutral_support(
     if bytes > max_buffer_bytes {
         return Err(failure(root_index, Render2dImageError::ResourceLimit));
     }
-    // Per nonempty patch: four corners, eight affine FMAs and scale products,
+    // Per nonempty patch: four corners, sixteen affine FMAs and eight scale products,
     // finite/precision checks, six vertex copies and 24 extrema updates.
     // The second destination scan includes empty entries too. Prepay the
     // entire emission before reserving or entering its first patch.

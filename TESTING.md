@@ -227,3 +227,10 @@ storage and reservation transfer without duplicate retention charges. These
 proofs cover owned image emission; Lyon's internal vector/clip factory work,
 glyph assembly and other unobserved construction scratch remain unfinished F3F
 accounting obligations.
+
+Glyph command conversion separately admits its full traversal and the
+coexisting command Vec and immutable F1 path Arc before construction. Tests
+cover exact/one-short work and peak bytes, unchanged outline commands, invalid
+outline diagnostics, and path-storage release after a later physical failure.
+The original F2 outline remains the source; these conversion receipts do not
+certify Lyon's internal fill sweep or the accumulated glyph mesh assembly.

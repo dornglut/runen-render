@@ -211,7 +211,6 @@ pub(super) fn realize(
 /// foreground alpha, field overscan and final-target clipping never define
 /// neutral glyph support. An ancestor affine is deliberately absent: effects
 /// using this support operate in their group's parent frame first.
-#[allow(dead_code, reason = "F3F group support integration in progress")]
 pub(super) struct NeutralGlyphInstance<'a> {
     pub(super) field: &'a super::field::GlyphField,
     pub(super) resource_id: Render2dResourceId,
@@ -220,13 +219,14 @@ pub(super) struct NeutralGlyphInstance<'a> {
     pub(super) to_parent: Render2dAffineTransform,
 }
 
-#[allow(dead_code, reason = "F3F group support integration in progress")]
 pub(super) fn neutral_shaped_glyph(
     glyph: NeutralGlyphInstance<'_>,
     path: &[usize],
     samples_per_parent_logical_unit: f64,
     max_buffer_bytes: u64,
+    work: &mut super::shadow::NeutralPreparationWork<'_>,
 ) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
+    work.charge(512, path)?;
     let NeutralGlyphInstance {
         field,
         resource_id,
@@ -257,21 +257,27 @@ pub(super) fn neutral_shaped_glyph(
         b.mul_add(glyph_origin[0], d.mul_add(glyph_origin[1], ty)),
     )
     .map_err(|_| precision())?;
+    let shape = field.neutral_shape(resource_id, path, work)?;
+    let command_bytes = size_of_val(shape.as_path().expect("neutral glyph path").commands())
+        + 2 * size_of::<usize>();
     let item = Render2dItem::new(
         Render2dPrimitive::Fill {
-            shape: field.neutral_shape(resource_id)?,
+            shape,
             brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
         },
         transform,
         Vec::new(),
         Render2dOpacity::TRANSPARENT,
     );
-    neutral_support(
+    let result = neutral_support(
         &item,
         path[0],
         samples_per_parent_logical_unit,
         max_buffer_bytes,
-    )
+    );
+    drop(item);
+    work.release_bytes(command_bytes);
+    result
 }
 
 /// A source-neutral vector's tessellated physical support before paint/canvas culling.

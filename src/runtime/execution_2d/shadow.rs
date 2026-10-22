@@ -72,6 +72,18 @@ impl NeutralPreparationWork<'_> {
         self.host.reserve_vector(values, capacity, path)
     }
 
+    pub(super) fn reserve_bytes(
+        &mut self,
+        bytes: usize,
+        path: &[usize],
+    ) -> Result<(), Render2dExecutionError> {
+        self.host.reserve(bytes, path)
+    }
+
+    pub(super) fn release_bytes(&mut self, bytes: usize) {
+        self.host.release(bytes);
+    }
+
     fn append(
         &mut self,
         output: &mut NeutralMesh,
@@ -304,6 +316,7 @@ fn neutral_item(
                     path,
                     scales.geometry_sample_scale,
                     max_buffer_bytes,
+                    work,
                 )? {
                     work.append(&mut result, &mesh, path)?;
                 }
