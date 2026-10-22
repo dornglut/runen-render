@@ -151,7 +151,6 @@ fn validate_required_files(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-
 fn parse_manifest(contents: &str) -> Result<toml::Value, String> {
     contents
         .parse::<toml::Table>()
@@ -219,7 +218,10 @@ fn validate_manifest_identity(manifest: &toml::Value) -> Result<(), String> {
         (&["package", "version"][..], "0.1.0"),
         (&["package", "edition"][..], "2024"),
         (&["package", "rust-version"][..], "1.97.1"),
-        (&["package", "repository"][..], "https://github.com/dornglut/runen-render"),
+        (
+            &["package", "repository"][..],
+            "https://github.com/dornglut/runen-render",
+        ),
         (
             &["package", "description"][..],
             "Reusable semantic rendering and maintained image-formation framework",
@@ -777,6 +779,7 @@ mod manifest_policy_tests {
         let changed = CURRENT.replace("publish = false", "publish=false");
         assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
         let manifest = parse_manifest(&changed).expect("TOML whitespace is immaterial");
-        validate_manifest_identity(&manifest).expect("semantic identity must not depend on spacing");
+        validate_manifest_identity(&manifest)
+            .expect("semantic identity must not depend on spacing");
     }
 }
