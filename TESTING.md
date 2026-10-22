@@ -217,3 +217,13 @@ count every shader load or instruction. Immutable upload payloads coexist with
 retained numerical planes in host admission, and the lookup tile participates
 in the compositor's existing peak scratch admission. Focused exact/one-short
 work, host and canvas-phase proofs accompany actual Vulkan readbacks.
+
+Neutral image factories use the same invocation CPU and host owners before
+destination counting, complete triangle emission and exact-capacity allocation.
+An unclipped image transfers its existing scaled mesh directly into retained
+source admission. Exact/one-short work and byte tests, a late precision failure,
+and once-only source reconstruction check paid failure work, released temporary
+storage and reservation transfer without duplicate retention charges. These
+proofs cover owned image emission; Lyon's internal vector/clip factory work,
+glyph assembly and other unobserved construction scratch remain unfinished F3F
+accounting obligations.

@@ -27,8 +27,9 @@ pub(super) const MAX_SHADOW_HOST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CERTIFIED_RECTANGLE_AXIS_WORK: usize = 16_777_216;
 
 /// One linear owner of source metadata and its subsequent planning lease.
-/// Factory scratch is not observable through this boundary: returned physical
-/// meshes are admitted as retained storage, never claimed prepaid here.
+/// Owned factory buffers reserve here before allocation and transfer into
+/// retained storage. Opaque Lyon scratch is still unobserved; admission of a
+/// returned vector mesh does not certify its construction work or peak.
 #[derive(Debug)]
 pub(super) struct PreparationHostBudget {
     live: usize,

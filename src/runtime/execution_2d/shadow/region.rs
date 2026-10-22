@@ -1134,7 +1134,7 @@ impl NeutralRegionBuilder {
         mesh: support::NeutralMesh,
         path: &[usize],
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
-        self.source_impl(mesh, None, path, false)
+        self.source_impl(mesh, None, path, false, 0)
     }
 
     /// Preserve the original borrowed F1 authoring item beside disposable
@@ -1146,7 +1146,7 @@ impl NeutralRegionBuilder {
         item: &'a Render2dItem,
         path: &[usize],
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
-        self.source_impl(mesh, Some(item), path, false)
+        self.source_impl(mesh, Some(item), path, false, 0)
     }
 
     /// Admit the existing original-source reach and node allowance BEFORE
@@ -1173,14 +1173,24 @@ impl NeutralRegionBuilder {
             .and_then(|cost| cost.checked_add(REGION_NODE_WORK))
             .ok_or_else(|| resource(path, "neutral source preparation admission overflow"))?;
         self.charge_graph_work(cost, path)?;
-        let mesh = prepare(&mut shadow::NeutralPreparationWork {
-            graph: &mut self.graph_work,
-            clip_pairs: &mut self.clip_work,
-        })?;
-        let Some(mesh) = mesh else {
-            return Ok(None);
-        };
-        self.source_impl(mesh, Some(item), path, true).map(Some)
+        let host_before = self.host.live();
+        let result = (|| {
+            let mesh = prepare(&mut shadow::NeutralPreparationWork::new(
+                &mut self.graph_work,
+                &mut self.clip_work,
+                &mut self.host,
+            ))?;
+            let Some(mesh) = mesh else {
+                return Ok(None);
+            };
+            let factory_bytes = self.host.live() - host_before;
+            self.source_impl(mesh, Some(item), path, true, factory_bytes)
+                .map(Some)
+        })();
+        if result.is_err() || matches!(result, Ok(None)) {
+            self.host.release(self.host.live() - host_before);
+        }
+        result
     }
 
     /// Register original F1 meaning without asking a polygon consumer to
@@ -1268,27 +1278,36 @@ impl NeutralRegionBuilder {
         let item = region
             .semantic_item
             .ok_or_else(|| unsupported(&region.path))?;
-        let mut mesh = prepare(
-            item,
-            &region.path,
-            &mut shadow::NeutralPreparationWork {
-                graph: &mut self.graph_work,
-                clip_pairs: &mut self.clip_work,
-            },
-        )?
-        .ok_or_else(|| {
-            precision(
+        let host_before = self.host.live();
+        let result = (|| {
+            let mut mesh = prepare(
+                item,
                 &region.path,
-                "registered nonempty source lost its original support",
-            )
-        })?;
-        let retained = self.admit_source_mesh(&mut mesh, &region.path)?;
-        source
-            .mesh
-            .set(Arc::new(mesh))
-            .expect("one invocation owns source reconstruction");
-        self.retained_vertices = retained;
-        Ok(())
+                &mut shadow::NeutralPreparationWork::new(
+                    &mut self.graph_work,
+                    &mut self.clip_work,
+                    &mut self.host,
+                ),
+            )?
+            .ok_or_else(|| {
+                precision(
+                    &region.path,
+                    "registered nonempty source lost its original support",
+                )
+            })?;
+            let factory_bytes = self.host.live() - host_before;
+            let retained = self.admit_source_mesh(&mut mesh, &region.path, factory_bytes)?;
+            source
+                .mesh
+                .set(Arc::new(mesh))
+                .expect("one invocation owns source reconstruction");
+            self.retained_vertices = retained;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.host.release(self.host.live() - host_before);
+        }
+        result
     }
 
     /// Shared physical admission for seeded and explicitly requested meshes.
@@ -1298,6 +1317,7 @@ impl NeutralRegionBuilder {
         &mut self,
         mesh: &mut support::NeutralMesh,
         path: &[usize],
+        factory_bytes: usize,
     ) -> Result<usize, Render2dExecutionError> {
         // The cached tessellation AABB is disposable physical metadata, not
         // F1 semantic authority. Certify the support envelope from the
@@ -1320,13 +1340,16 @@ impl NeutralRegionBuilder {
             .and_then(|cost| cost.checked_add(64))
             .ok_or_else(|| resource(path, "neutral source scan work overflow"))?;
         self.charge_graph_work(scan_work, path)?;
-        // The factory has already returned this capacity. This is retained
-        // admission, NOT a claim about its unobserved construction scratch.
-        self.host.reserve(
-            Self::mesh_bytes(mesh)
-                .ok_or_else(|| resource(path, "source mesh retained storage overflow"))?,
-            path,
-        )?;
+        // Transfer factory-owned capacity into the retained mesh, without
+        // billing the same allocation twice. Legacy vector factories still
+        // expose only their returned mesh: this does not certify Lyon scratch.
+        let bytes = Self::mesh_bytes(mesh)
+            .ok_or_else(|| resource(path, "source mesh retained storage overflow"))?;
+        if bytes >= factory_bytes {
+            self.host.reserve(bytes - factory_bytes, path)?;
+        } else {
+            self.host.release(factory_bytes - bytes);
+        }
         let mut bounds = [
             f64::INFINITY,
             f64::INFINITY,
@@ -1355,8 +1378,9 @@ impl NeutralRegionBuilder {
         semantic_item: Option<&'a Render2dItem>,
         path: &[usize],
         source_prepaid: bool,
+        factory_bytes: usize,
     ) -> Result<Arc<NeutralRegion<'a>>, Render2dExecutionError> {
-        let retained = self.admit_source_mesh(&mut mesh, path)?;
+        let retained = self.admit_source_mesh(&mut mesh, path, factory_bytes)?;
         let node = self.node_with_source_admission(
             Kind::Source(SourceGeometry::prepared(Arc::new(mesh))),
             path,
@@ -2138,6 +2162,7 @@ impl NeutralRegionBuilder {
                     &mut shadow::NeutralPreparationWork {
                         graph: &mut self.graph_work,
                         clip_pairs: &mut self.clip_work,
+                        host: &mut self.host,
                     },
                 )?;
                 shadow::charge_vertices(
@@ -3928,6 +3953,125 @@ mod tests {
         let physical = graph.materialize(&source).unwrap();
         assert!(Arc::ptr_eq(&physical, geometry.get().unwrap()));
         assert!(Arc::ptr_eq(&physical, &graph.materialize(&source).unwrap()));
+    }
+
+    fn factory_image_item(second_x: f64) -> Render2dItem {
+        use crate::composition_2d::*;
+        let image = Render2dImagePrimitive::new(
+            Render2dResourceId::new(1).unwrap(),
+            Render2dPixelExtent::new(1, 1).unwrap(),
+            [0.0, second_x]
+                .map(|x| {
+                    Render2dImagePatch::new(
+                        Render2dImageSourceRect::new(0.0, 0.0, 0.0, 0.0).unwrap(),
+                        Render2dRect::new(x, 0.0, 2.0, 2.0).unwrap(),
+                    )
+                })
+                .to_vec(),
+        )
+        .unwrap();
+        Render2dItem::new(
+            Render2dPrimitive::Image(image),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        )
+    }
+
+    #[test]
+    fn image_factory_transfers_retained_capacity_and_refunds_only_failed_storage() {
+        let item = factory_image_item(4.0);
+        let mut graph = builder();
+        let path = [7, 1];
+        let source = graph.register_source(&item, &path).unwrap().unwrap();
+        let Kind::Source(geometry) = &source.kind else {
+            unreachable!()
+        };
+        let before = graph.host.live();
+        let work_before = graph.graph_work;
+        let prepare =
+            |item: &Render2dItem, path: &[usize], work: &mut shadow::NeutralPreparationWork<'_>| {
+                shadow::neutral_item(
+                    item,
+                    path,
+                    &crate::composition_2d::Render2dResourceBindings::new(Vec::new()).unwrap(),
+                    &std::collections::BTreeMap::new(),
+                    shadow::NeutralPreparationScale {
+                        field_raster_scale: 1.0,
+                        geometry_sample_scale: 4.0,
+                    },
+                    1_048_576,
+                    work,
+                )
+            };
+        let bytes = 12 * size_of::<[f64; 2]>();
+        assert!(
+            graph
+                .prepare_registered_source(&source, |item, path, work| {
+                    let mesh = prepare(item, path, work)?.unwrap();
+                    assert_eq!(work.host.live(), before + bytes);
+                    drop(mesh);
+                    Err(precision(path, "independent late factory rejection"))
+                })
+                .is_err()
+        );
+        assert!(geometry.get().is_none());
+        assert_eq!(graph.host.live(), before);
+        assert_eq!(graph.host.peak(), before + bytes);
+        let paid = graph.graph_work - work_before;
+        assert!(paid > 0);
+        assert_eq!(graph.retained_vertices, 0);
+
+        graph.prepare_registered_source(&source, prepare).unwrap();
+        let mesh = geometry.get().unwrap();
+        assert_eq!(mesh.triangles.len(), 12);
+        assert_eq!(mesh.units_per_parent_logical_unit, 4.0);
+        let retained = NeutralRegionBuilder::mesh_bytes(mesh).unwrap();
+        assert_eq!(graph.host.live(), before + retained);
+        assert_eq!(graph.host.peak(), before + retained);
+        assert!(graph.graph_work >= work_before + 2 * paid);
+        assert_eq!(graph.retained_vertices, 12);
+        let completed = graph.graph_work;
+        graph
+            .prepare_registered_source(&source, |_, _, _| panic!("already prepared"))
+            .unwrap();
+        assert_eq!(graph.graph_work, completed + MATERIALIZATION_LOOKUP_WORK);
+        assert_eq!(graph.host.live(), before + retained);
+    }
+
+    #[test]
+    fn late_image_precision_failure_releases_factory_storage_without_installing_source() {
+        let item = factory_image_item(2.0_f64.powi(44));
+        let mut graph = builder();
+        let path = [7, 2];
+        let source = graph.register_source(&item, &path).unwrap().unwrap();
+        let Kind::Source(geometry) = &source.kind else {
+            unreachable!()
+        };
+        let before = graph.host.live();
+        let work_before = graph.graph_work;
+        let nodes_before = graph.nodes;
+        assert!(
+            matches!(graph.prepare_registered_source(&source, |item, path, work| {
+            shadow::neutral_item(
+                item, path, &crate::composition_2d::Render2dResourceBindings::new(Vec::new()).unwrap(),
+                &std::collections::BTreeMap::new(),
+                shadow::NeutralPreparationScale {
+                    field_raster_scale: 1.0,
+                    geometry_sample_scale: 4.0,
+                },
+                1_048_576, work,
+            )
+        }), Err(Render2dExecutionError::SampleSpace {
+            kind: Render2dSampleSpaceError::PrecisionLimit, path: Some(owner), ..
+        }) if owner == path)
+        );
+        assert!(geometry.get().is_none());
+        assert_eq!(graph.host.live(), before);
+        assert_eq!(graph.host.peak(), before + 12 * size_of::<[f64; 2]>());
+        assert!(graph.graph_work > work_before);
+        assert_eq!(graph.retained_vertices, 0);
+        assert_eq!(graph.nodes, nodes_before);
     }
 
     #[test]

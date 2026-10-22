@@ -31,16 +31,45 @@ const MAX_NEUTRAL_CLIP_WORK: usize = 16_777_216;
 pub(super) struct NeutralPreparationWork<'a> {
     graph: &'a mut usize,
     clip_pairs: &'a mut usize,
+    host: &'a mut super::support::PreparationHostBudget,
 }
 
 impl NeutralPreparationWork<'_> {
-    fn charge(&mut self, cost: usize, path: &[usize]) -> Result<(), Render2dExecutionError> {
+    pub(super) fn new<'a>(
+        graph: &'a mut usize,
+        clip_pairs: &'a mut usize,
+        host: &'a mut super::support::PreparationHostBudget,
+    ) -> NeutralPreparationWork<'a> {
+        NeutralPreparationWork {
+            graph,
+            clip_pairs,
+            host,
+        }
+    }
+
+    pub(super) fn charge(
+        &mut self,
+        cost: usize,
+        path: &[usize],
+    ) -> Result<(), Render2dExecutionError> {
         self.graph.charge(
             cost,
             MAX_COMPOSITIONAL_SHADOW_WORK,
             path,
             "neutral source preparation exceeds shared graph work",
         )
+    }
+
+    /// Factory-owned buffers use the invocation's existing host owner. A
+    /// completed source transfers this reservation into retained admission;
+    /// failed factories release storage while keeping their paid CPU work.
+    pub(super) fn reserve_vector<T>(
+        &mut self,
+        values: &mut Vec<T>,
+        capacity: usize,
+        path: &[usize],
+    ) -> Result<(), Render2dExecutionError> {
+        self.host.reserve_vector(values, capacity, path)
     }
 
     fn append(
@@ -233,6 +262,8 @@ fn neutral_item(
             root_index,
             scales.geometry_sample_scale,
             max_buffer_bytes,
+            path,
+            work,
         )
         .map_err(|error| neutral_source_error(error, path))?,
         Render2dPrimitive::ShapedText(primitive) => {
@@ -291,6 +322,12 @@ fn neutral_item(
     let mesh = result.unwrap_or_else(empty_mesh);
     if region::trivially_empty_original_source(item) {
         return Ok(None);
+    }
+    // An image factory already emits the complete destination triangles. With
+    // no clips there is no reason to allocate a second normalized copy. The
+    // mesh's explicit scale is preserved by every later physical consumer.
+    if matches!(item.primitive(), Render2dPrimitive::Image(_)) && item.clips().is_empty() {
+        return Ok(Some(mesh));
     }
     let clipped = intersect_clips(
         &mesh,
@@ -1469,6 +1506,7 @@ pub(super) fn build_group_sources<'scene, 'resources>(
                             &mut NeutralPreparationWork {
                                 graph: &mut graph.graph_work,
                                 clip_pairs: &mut graph.clip_work,
+                                host: &mut graph.host,
                             },
                         )?;
                         graph.register_shaped_source(item, resource, fields, path)?
@@ -2364,6 +2402,7 @@ mod tests {
                 &mut NeutralPreparationWork {
                     graph: &mut 0,
                     clip_pairs: &mut 0,
+                    host: &mut crate::runtime::execution_2d::support::PreparationHostBudget::new(),
                 },
             )
             .unwrap()
@@ -2463,6 +2502,7 @@ mod tests {
                 &mut NeutralPreparationWork {
                     graph: &mut 0,
                     clip_pairs: &mut 0,
+                    host: &mut crate::runtime::execution_2d::support::PreparationHostBudget::new(),
                 },
             )
             .unwrap();
@@ -2698,7 +2738,7 @@ mod tests {
                 &cached,
                 NeutralPreparationScale { field_raster_scale: 1.0, geometry_sample_scale: 4.0 },
                 1_048_576,
-                &mut NeutralPreparationWork { graph: &mut exhausted, clip_pairs: &mut 0 },
+                &mut NeutralPreparationWork { graph: &mut exhausted, clip_pairs: &mut 0, host: &mut crate::runtime::execution_2d::support::PreparationHostBudget::new(), },
             ),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit,
@@ -3041,7 +3081,8 @@ mod tests {
                 &[1],
                 &mut NeutralPreparationWork {
                     graph: &mut 0,
-                    clip_pairs: &mut 0
+                    clip_pairs: &mut 0,
+                    host: &mut crate::runtime::execution_2d::support::PreparationHostBudget::new(),
                 }
             )
             .unwrap()
@@ -3056,6 +3097,7 @@ mod tests {
             &mut NeutralPreparationWork {
                 graph: &mut 0,
                 clip_pairs: &mut 0,
+                host: &mut crate::runtime::execution_2d::support::PreparationHostBudget::new(),
             },
         )
         .unwrap();
@@ -3079,7 +3121,7 @@ mod tests {
         assert!(matches!(
             intersect_clips(
                 &mesh, &[], 2, &[2, 1], 4.0, 1_048_576,
-                &mut NeutralPreparationWork { graph: &mut exhausted, clip_pairs: &mut clip_pairs },
+                &mut NeutralPreparationWork { graph: &mut exhausted, clip_pairs: &mut clip_pairs, host: &mut crate::runtime::execution_2d::support::PreparationHostBudget::new(), },
             ),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
@@ -3094,7 +3136,7 @@ mod tests {
         let mut setup_only = MAX_COMPOSITIONAL_SHADOW_WORK - 256;
         assert!(matches!(
             triangle_intersection(&triangle, &triangle, &[2, 3],
-                &mut NeutralPreparationWork { graph: &mut setup_only, clip_pairs: &mut clip_pairs }),
+                &mut NeutralPreparationWork { graph: &mut setup_only, clip_pairs: &mut clip_pairs, host: &mut crate::runtime::execution_2d::support::PreparationHostBudget::new(), }),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit, path: Some(path), ..
             }) if path == [2, 3]
@@ -3143,6 +3185,7 @@ mod tests {
             &mut NeutralPreparationWork {
                 graph: &mut 0,
                 clip_pairs: &mut used,
+                host: &mut crate::runtime::execution_2d::support::PreparationHostBudget::new(),
             },
         )
         .unwrap();
@@ -3156,7 +3199,7 @@ mod tests {
                 &[0, 1],
                 4.0,
                 1_048_576,
-                &mut NeutralPreparationWork { graph: &mut 0, clip_pairs: &mut used },
+                &mut NeutralPreparationWork { graph: &mut 0, clip_pairs: &mut used, host: &mut crate::runtime::execution_2d::support::PreparationHostBudget::new(), },
             ),
             Err(Render2dExecutionError::SampleSpace {
                 kind: Render2dSampleSpaceError::ResourceLimit,
@@ -3199,6 +3242,7 @@ mod tests {
             &mut NeutralPreparationWork {
                 graph: &mut 0,
                 clip_pairs: &mut clip_work_used,
+                host: &mut crate::runtime::execution_2d::support::PreparationHostBudget::new(),
             },
         )
         .unwrap();
