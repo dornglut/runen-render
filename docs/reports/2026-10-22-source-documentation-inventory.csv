@@ -1,0 +1,201 @@
+revision,file,classification,finding_id,finding_or_disposition
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,.cargo/config.toml,Build/CI configuration,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,.github/workflows/rr86-reference.yml,Build/CI configuration,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,.github/workflows/validation.yml,Build/CI configuration,F16,One comment refers to predecessor-era ordering; current camera cold-start reason is sufficient.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,.gitignore,Build/CI configuration,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,AGENTS.md,Documentation,F02,Historical RX sequence is executor noise; link BOOTSTRAP instead.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,ARCHITECTURE.md,Documentation,F01,"632-line root blends contracts, math, realization and provenance; relocate detail with one owning home."
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,BOOTSTRAP.md,Documentation,F06,"Historical file census labelled Current; fix temporal qualifier, preserve exact provenance."
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,Cargo.lock,External/generated text,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,Cargo.toml,Build/CI configuration,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,LICENSE,External/generated text,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,LICENSING.md,Documentation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,README.md,Documentation,F03,Long retained-example implementation tour; keep concise landing and link detailed example guide.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,TESTING.md,Documentation,F04,Phase-by-phase proof chronicle obscures stable validation/coverage matrix.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,docs/temporal-current-radiance-fallback.md,Documentation,F07,Dense technical paragraphs and closed #83 status not labelled accepted.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,examples/headless_scene.rs,Example,F03,"Primary detailed retained example; move walkthrough here or nearby, keep code demonstrative."
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,examples/ordinary_render.rs,Example,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,research/rr86/DECISION.md,Archived research,F05,Accepted issue #86 vs “proposed” document with old “Live” head; label archival.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,research/rr86/README.md,Archived research,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,research/rr86/field_certificates.py,Archived research,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,research/rr86/indexed_exact_region.py,Archived research,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,research/rr86/nested_affine_gaussian.py,Archived research,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,research/rr86/nested_boolean_blur.py,Archived research,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,research/rr86/orthogonal_csg_reference.py,Archived research,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,research/rr86/preflight_scaling.py,Archived research,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,rust-toolchain.toml,Build/CI configuration,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/admission.rs,Semantic API / module,F08,Public rustdoc labels semantic admission R5.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/appearance.rs,Semantic API / module,F08,Public rustdoc labels appearance R3.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/composition_2d/geometry.rs,2D semantic API,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/composition_2d/mod.rs,2D semantic API,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/composition_2d/paint.rs,2D semantic API,F08,F1 law used to point to group-shadow semantics; link specific contract section.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/composition_2d/resource.rs,2D semantic API,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/derived_state.rs,Semantic API / module,F08,Public rustdoc labels derived state R7.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/execution_2d.rs,Semantic API / module,F09,Public error docs use F2/F3E codes and unclear “Counter-critical” wording.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/execution_2d/evidence_tests.rs,Semantic API / module,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/field_input.rs,Semantic API / module,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/lib.rs,Semantic API / module,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/lowering.rs,Semantic API / module,F08,"Production module contract titled R6, historical stage not responsibility."
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/method.rs,Semantic API / module,F08,Public method contract titled R4 / founding language.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/ordinary/errors.rs,Ordinary API,F13,Large error projection boundary: assess repeated mapping and owner-oriented shape; no finding solely from length.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/ordinary/invocation.rs,Ordinary API,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/ordinary/lifecycle.rs,Ordinary API,F14,"Large but coherent distinct occurrence/capture/result lifecycle; check documentation usability, not naive split."
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/ordinary/mod.rs,Ordinary API,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/ordinary/operations.rs,Ordinary API,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/ordinary/state.rs,Ordinary API,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/ordinary/state/tests.rs,Ordinary API,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/ordinary/tests.rs,Ordinary API,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/output_result.rs,Semantic API / module,F08,Public module uses R2 stage in definedness explanation.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/participation.rs,Semantic API / module,F08,Public comments repeatedly use R3 ownership vs semantic responsibility.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/camera_history.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/composition.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/derived_transform.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/execution.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/execution_edges.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/field_execution.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/founding_realization.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/founding_reference.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/mod.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/requested_coverage.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/semantic_binding.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/semantic_spine.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/proofs/semantic_spine_execution.rs,Internal proof,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/render_result.rs,Semantic API / module,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/representation.rs,Semantic API / module,F08,Module header uses R3 instead of representation contract.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/request.rs,Semantic API / module,F08,Several public doc-comments refer to R2/founding.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/admission.rs,Private implementation,F08,Internal header retains R5 and Deterministic provenance.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/capture.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/carrier.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution/errors.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution/finalize.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution/layout.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution/lifecycle.rs,Private implementation,F12,RR566-EVAL-001 opaque references in retained result correlation comments.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution/mod.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution/output_context.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution/packing.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution/passes.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution/prepare.rs,Private implementation,F12,RR566-EVAL-001 opaque references in verifier preparation comments.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution/state.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution/submission.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution/tests.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/clip.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/field.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/image.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/intrinsic.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/lowering.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/lowering/clip.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/lowering/image.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/lowering/sample_space.rs,Private implementation,F10,Accepted production doc says staging/future F3E despite accepted compositor.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/lowering/sample_space/gpu.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/lowering/sample_space/inspection.rs,Private implementation,F08,Repeated ONE F1 / F2 heritage phrasing in private realization comments.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/lowering/sample_space_gpu_proof.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/lowering/vector.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/mod.rs,Private implementation,F08,Comments refer to F1 provenance rather than current admitted contribution contract.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/scene.rs,Private implementation,F08,F1 historical shorthand in core traversal docs.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/execution_2d/vector.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/method.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/mod.rs,Private implementation,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/program/abi.rs,Private implementation,F15,Private WGSL/host parity is important; maintain tests rather than manually copy ABI explanations.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/program/mod.rs,Private implementation,OK,One maintained shader artifact-to-GPU bridge; no obvious duplicated authority.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/program/shaders/camera_reprojection.wgsl,Shader,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/program/shaders/evaluator.wgsl,Shader,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/program/shaders/scene_query.wgsl,Shader,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/program/shaders/shaped_text.wgsl,Shader,F08,Shader comments retain F2/F3E stage framing.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/program/shaders/solid_vector.wgsl,Shader,F11,"Name no longer captures image, gradient, group and mask pass responsibilities."
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/program/shaders/temporal_fallback.wgsl,Shader,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/program/shaders/temporal_reconstruction.wgsl,Shader,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/transform.rs,Private implementation,F08,R7/R2/R3 phase-based documentation in maintained module.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/verification/mod.rs,Private implementation,F12,RR566-EVAL-001 and “proof” references need stable contract meaning nearby.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/verification/numeric.rs,Private implementation,F12,Module introduced by RR566-EVAL-001 rather than stable verification role.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/verification/observation.rs,Private implementation,F12,Module introduced by RR566-EVAL-001 rather than stable readback role.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/runtime/verification/semantic.rs,Private implementation,F12,Module introduced by RR566-EVAL-001 rather than stable result verification role.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/scene/mod.rs,Semantic API / module,F08,Public object/revision docs include R1–R3 stage language; large file partly inline tests.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/scene/storage.rs,Semantic API / module,OK,Private persistent radix implementation; no obvious misleading historical comments.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/semantic_binding.rs,Semantic API / module,F08,"Private module header R5 and R4, not current binding authority."
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/semantic_plan.rs,Semantic API / module,F08,"Planner named R4; ~1316 lines are inline tests, not all production."
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/space_time.rs,Semantic API / module,F08,Public temporal contracts described as R2/future extension.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/surface_input.rs,Semantic API / module,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,src/surface_result.rs,Semantic API / module,F08,Module docs describe surface semantics as R3.
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/composition_2d_public_api.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/execution_2d/clip.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/execution_2d/control_order.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/execution_2d/gradient.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/execution_2d/group.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/execution_2d/image.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/execution_2d/vector.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/execution_2d_public_api.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/f3f_shadow_semantic_authoring.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/fixtures/f2_bitmap.ttf,Binary fixture,BINARY,Binary fixture: only metadata/generator inspected
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/fixtures/f2_colrv0.ttf,Binary fixture,BINARY,Binary fixture: only metadata/generator inspected
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/fixtures/f2_colrv1.ttf,Binary fixture,BINARY,Binary fixture: only metadata/generator inspected
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/fixtures/f2_outline.ttf,Binary fixture,BINARY,Binary fixture: only metadata/generator inspected
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/fixtures/f2_svg.ttf,Binary fixture,BINARY,Binary fixture: only metadata/generator inspected
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/fixtures/generate_f2_fonts.py,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/named_construction.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/ordinary_public_api.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/scene_r1_semantics.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,tests/scene_r3_semantics.rs,External test/fixture,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,xtask/Cargo.toml,Validation tooling,—,Full-text screened; no specific finding established
+main 801b31cfe9c6701640f922d342a88e8fa6b0d9d9,xtask/src/main.rs,Validation tooling,F17,"String-contains and lightweight module parsing are guards, not semantic proof; assess failure modes."
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,.github/workflows/validation.yml,Modified,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,TESTING.md,Modified,P09,"Adds F3F phase-specific conformance prose; align with stable capability matrix, no premature completeness."
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/composition_2d/mod.rs,Modified,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/execution_2d.rs,Modified,P02,Some public errors still say F2/F3E/F3F delivery phase rather than capability.
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/field.rs,Modified,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/image.rs,Modified,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/lowering/sample_space.rs,Modified,P02,Branch header still says effects fail-closed and future F3E staging; accepted subset differs.
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/lowering/sample_space/gaussian.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/lowering/sample_space/gaussian_gpu_proof.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/lowering/sample_space/gpu.rs,Modified,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/lowering/sample_space/inspection.rs,Modified,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/lowering/sample_space/shadow.rs,Added,P05,“ONE F3E” emphasis and F1 origin language; replace rhetoric with precise source-support invariants.
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/lowering/sample_space/shadow/symbolic.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/mod.rs,Modified,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/scene.rs,Modified,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow.rs,Added,P01,"3,275 lines, ~2,137 before tests; candidate for responsibility inventory, not blind splitting."
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region.rs,Added,P01,"5,628 lines, ~2,418 before test block; symbolic region/builder/physical dependencies coupled."
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells.rs,Added,P01,"4,451 lines, mixes production and numerous gated test helpers; verify meaningful responsibility boundaries."
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/axis_gaussian.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/bezier_winding.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/conic_integral.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/curved_gaussian.rs,Added,P04,"Clearly cfg(test)-only feasibility, not production admission. Keep claims bounded."
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/finite_square_geometry.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/gaussian_kernel.rs,Added,P07,Finite-kernel interval coefficients have mathematical proof obligations; valid only within stated interval.
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/gaussian_kernel/fixed.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/gaussian_kernel/fixed/arithmetic_proof.wgsl,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/gaussian_kernel/fixed/batch.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/gaussian_kernel/fixed/gpu.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/gaussian_kernel/fixed/precomputed.rs,Added,P03,613-line Q48 coefficient table; inspect reproducible derivation path.
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/gaussian_kernel/precomputed.rs,Added,P03,"1,531-line frozen numerical bit-pattern table; inspect generation and bit-for-bit verification path."
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/linear_x_gaussian.rs,Added,P04,Test-only restricted feasibility; do not generalize to accepted capability.
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/orthogonal_boundary.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area.rs,Added,P01,"2,205 lines; scan geometry, arithmetic and fallback routes require ownership explanation."
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/finite_square.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian.rs,Added,P01,"2,011 lines; Gaussian integration combines many internal algorithms under one path."
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/classified_spans.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/cutoff_qualification.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/diagnostic.rs,Added,P06,Diagnostic functions are test-only; avoid promoting oracle wiring to production authority.
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/image_qualification.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/numeric_index.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/plane.rs,Added,P07,Numerical chart/work estimation precision and resource cost need independent final acceptance proof.
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/plane/chart_qualification.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/query_compiler.rs,Added,P07,Compile/share immutable numeric queries; compare work accounting with independent oracle.
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/reference.rs,Added,P06,Reference numerical data needs clear independent-oracle and test-only boundary.
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/scalar_map.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/scalar_map/query.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/source_qualification.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/gaussian/storage.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/certified_cells/scan_area/membership.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/gaussian_consumer.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/interval.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/shadow/region/source_envelope.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/support.rs,Added,P01,"6,340 lines, ~4,153 before test block; reservation/work budgets and geometry are concentrated."
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/support/area.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/support/orthogonal.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/execution_2d/vector.rs,Modified,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/program/mod.rs,Modified,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/program/shaders/gaussian_arithmetic.wgsl,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,src/runtime/program/shaders/gaussian_coverage.wgsl,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,tests/execution_2d/shadow.rs,Added,P08,"67 GPU public tests, but issue/PR states classes and aggregate resource gates remain unfinished."
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,tests/execution_2d/symbolic_shadow.rs,Added,—,Full-text screened; no specific finding established
+draft #85 5ed1dce33282d03ffcfc15cf469c1238e5a9b4fc,tests/execution_2d_public_api.rs,Modified,—,Full-text screened; no specific finding established
