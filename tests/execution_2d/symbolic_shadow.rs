@@ -332,6 +332,150 @@ fn ordinary_gaussian_missing_compute_rejects_before_work_and_executor_reuses_on_
     assert_eq!(pixel(&bytes, 30, 30), [0; 4]);
 }
 
+#[test]
+fn ordinary_nested_gaussian_keeps_kernel_in_consuming_parent_frame_on_vulkan() {
+    let Some(context) = context_with_compute(true) else {
+        return;
+    };
+    let effect = Render2dDropShadow::new(
+        0.0,
+        0.0,
+        0.125,
+        0.0,
+        Render2dColorRgba8::new(255, 0, 0, 255),
+    )
+    .unwrap();
+    let (fixture, bindings) = numerical_ring(vec![effect], false);
+    let Render2dEntry::Group(root) = &fixture.root_entries()[0] else {
+        unreachable!()
+    };
+    let Render2dEntry::Group(wrapper) = &root.entries()[0] else {
+        unreachable!()
+    };
+    // Put the existing finite child directly in the consumer. The shear is
+    // outside that consuming group, so it maps the completed Gaussian color.
+    let consumer = Render2dGroup::new(
+        wrapper.entries().to_vec(),
+        Render2dAffineTransform::IDENTITY,
+        vec![],
+        Render2dOpacity::OPAQUE,
+        root.shadows().to_vec(),
+    );
+    // This larger requested window exhausts the fixed invocation CPU limit
+    // (20,493 of21,252 samples prepared at the measured failure). Preserve
+    // the truthful rejection; the cropped positives below do not claim it
+    // fits. No prepared contribution or work token escapes this failure.
+    let larger = Render2dComposition::new([Render2dEntry::group(Render2dGroup::new(
+        [Render2dEntry::group(consumer.clone())],
+        Render2dAffineTransform::new(2.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
+        vec![],
+        Render2dOpacity::OPAQUE,
+        vec![],
+    ))])
+    .unwrap();
+    let (_, larger_target) = target_sized("nested Gaussian bounded rejection", 96, 64);
+    let mut executor = Render2dExecutor::new();
+    let error = executor
+        .prepare(&context, &larger, &bindings, &larger_target)
+        .unwrap_err();
+    assert!(matches!(error,Render2dExecutionError::SampleSpace {
+        kind: runen_render::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+        path:Some(path),..
+    } if path == [0,0]));
+    // At parent y=16 the displaced finite child ends exactly at x=37+3/32.
+    // The sixteen root phases in pixel(41,16) have normalized coverage
+    // F(j/2-2i). Independent110-digit series integration gives mean alpha
+    // .22039569311145207981876287429553705616 and sRGB code129.23576519.
+    // Alpha code56.20090174 is .299 away from a rounding boundary, exceeding
+    // the <.064-code combined numerical/half-float/resolve error bound.
+    // The scale/reflection cases use the same independent series at phases
+    // 7.25-4i+j and -6.5+2i-j/2. The compressed scale is positive coverage;
+    // the expanded scale's fixed-budget rejection remains explicit above.
+    // both rounding margins also exceed the physical error bound above.
+    for (raw, point, expected, inside, outside) in [
+        (
+            [1.0, 0.0, 0.25, 1.0, 0.0, 0.0],
+            41,
+            [129_u8, 0, 0, 56],
+            39,
+            43,
+        ),
+        (
+            [0.5, 0.0, 0.25, 1.0, 0.0, 0.0],
+            22,
+            [214, 0, 0, 171],
+            20,
+            24,
+        ),
+        ([-1.0, 0.0, 0.25, 1.0, 80.0, 0.0], 46, [52, 0, 0, 9], 49, 45),
+    ] {
+        eprintln!("ordinary nested Gaussian chart {raw:?}");
+        let ancestor = Render2dGroup::new(
+            [Render2dEntry::group(consumer.clone())],
+            Render2dAffineTransform::new(raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]).unwrap(),
+            vec![],
+            Render2dOpacity::OPAQUE,
+            vec![],
+        );
+        let composition = Render2dComposition::new([Render2dEntry::group(ancestor)]).unwrap();
+        let bytes = execute_sized(
+            &context,
+            &mut executor,
+            &composition,
+            &bindings,
+            "nested Gaussian original parent chart",
+            64,
+            64,
+        );
+        let actual = pixel(&bytes, point, 16);
+        assert!(
+            actual[0].abs_diff(expected[0]) <= 2,
+            "parent-frame Gaussian {raw:?}: {actual:?}"
+        );
+        assert_eq!(&actual[1..], &expected[1..]);
+        assert_eq!(pixel(&bytes, inside, 16), [255, 0, 0, 255]);
+        assert_eq!(pixel(&bytes, outside, 16), [0; 4]);
+    }
+    // Consumer clipping happens AFTER its blur, then each of the two group
+    // opacities applies once. At pixel40,16 precisely two of16 correlated
+    // samples pass x<=36 in the parent frame and have full shadow coverage:
+    // alpha=(2/16)*.5*.5=1/32. Applying the clip before blur changes this.
+    let clipped = Render2dGroup::new(
+        consumer.entries().to_vec(),
+        consumer.local_to_parent(),
+        vec![runen_render::composition_2d::Render2dClip::new(
+            Render2dShape::rect(Render2dRect::new(0.0, 0.0, 36.0, 64.0).unwrap()),
+            Render2dAffineTransform::IDENTITY,
+        )],
+        Render2dOpacity::new(0.5).unwrap(),
+        consumer.shadows().to_vec(),
+    );
+    let composition = Render2dComposition::new([Render2dEntry::group(Render2dGroup::new(
+        [Render2dEntry::group(clipped)],
+        Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
+        vec![],
+        Render2dOpacity::new(0.5).unwrap(),
+        vec![],
+    ))])
+    .unwrap();
+    let bytes = execute(
+        &context,
+        &mut executor,
+        &composition,
+        &bindings,
+        "nested Gaussian clip then once-only opacity",
+    );
+    for (x, red, alpha) in [(38, 137_u8, 64_u8), (40, 49, 8)] {
+        let actual = pixel(&bytes, x, 16);
+        assert!(
+            actual[0].abs_diff(red) <= 2,
+            "clipped nested Gaussian {x}: {actual:?}"
+        );
+        assert_eq!(&actual[1..], &[0, 0, alpha]);
+    }
+    assert_eq!(pixel(&bytes, 42, 16), [0; 4]);
+}
+
 fn rectangle(x: f64, y: f64, width: f64, height: f64) -> Render2dEntry {
     Render2dEntry::item(Render2dItem::new(
         Render2dPrimitive::Fill {

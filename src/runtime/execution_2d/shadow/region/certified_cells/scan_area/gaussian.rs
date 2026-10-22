@@ -25,6 +25,8 @@ mod image_qualification;
 mod numeric_index;
 mod plane;
 pub(in crate::runtime::execution_2d) use plane::PreparedPlane;
+#[cfg(test)]
+mod cutoff_qualification;
 mod query_compiler;
 #[cfg(test)]
 mod reference;
@@ -259,26 +261,67 @@ struct Coordinates {
     jacobian: Interval,
 }
 
+/// Two Y cutoff roots and at most four quadratic X roots. This exact bounded
+/// inventory needs no per-query allocation; scalar scratch is already part
+/// of the compiler's fixed reservation.
+#[derive(Clone, Copy)]
+struct CutoffEvents {
+    values: [Interval; 6],
+    len: usize,
+}
+
+impl CutoffEvents {
+    fn push(&mut self, value: Interval) -> Result<(), AreaQueryError> {
+        let slot = self
+            .values
+            .get_mut(self.len)
+            .ok_or(AreaQueryError::Resource)?;
+        *slot = value;
+        self.len += 1;
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for CutoffEvents {
+    type Target = [Interval];
+    fn deref(&self) -> &Self::Target {
+        &self.values[..self.len]
+    }
+}
+
 impl MappedBoundary {
     fn cutoff_events(
         self,
         center: [f64; 2],
         sigma: f64,
         fuel: &mut usize,
-    ) -> Result<Option<Vec<Interval>>, AreaQueryError> {
-        debit(fuel, 1_024)?;
+    ) -> Result<Option<CutoffEvents>, AreaQueryError> {
+        // 104 bytes of initialized stack inventory plus setup; no allocator
+        // call or capacity reservation remains in this per-query operation.
+        debit(fuel, 256)?;
         let halo = checked(iv(sigma).mul(iv(3.0)))?;
-        let mut events = bounded_vector(16).ok_or(AreaQueryError::Resource)?;
+        let mut events = CutoffEvents {
+            values: [iv(0.0); 6],
+            len: 0,
+        };
         for sign_cut in [-1.0, 1.0] {
+            debit(fuel, 256)?;
             let offset = checked(iv(sign_cut).mul(halo))?;
-            let x_cut = checked(iv(center[0]).add(offset))?;
-            let y_cut = checked(iv(center[1]).add(offset))?;
+            let exact_offset = exact_mul(3.0, sigma).and_then(|halo| exact_mul(sign_cut, halo));
+            let cut = |axis| -> Result<Interval, AreaQueryError> {
+                match exact_offset.and_then(|offset| exact_add(center[axis], offset)) {
+                    Some(value) => Ok(iv(value)),
+                    None => checked(iv(center[axis]).add(offset)),
+                }
+            };
+            let x_cut = cut(0)?;
+            let y_cut = cut(1)?;
             match self {
                 Self::Line { intercept, slope } => {
-                    events.push(y_cut);
+                    events.push(y_cut)?;
                     if slope != 0.0 {
                         debit(fuel, 192)?;
-                        events.push(checked(checked(x_cut.sub(iv(intercept)))?.div(iv(slope)))?);
+                        events.push(checked(checked(x_cut.sub(iv(intercept)))?.div(iv(slope)))?)?;
                     }
                 }
                 Self::Circle {
@@ -299,17 +342,30 @@ impl MappedBoundary {
                             radical.hi,
                         ))?)
                         .ok_or(AreaQueryError::Precision)?;
-                        events.push(checked(t.div(checked(iv(1.0).add(root))?))?);
+                        events.push(checked(t.div(checked(iv(1.0).add(root))?))?)?;
                     }
                     // (h-x-br)u²+2*a*sign*r*u+(h-x+br)=0 is the
                     // exact rational-circle X-cutoff equation. A nonzero
                     // leading interval and a strictly signed discriminant
                     // supply a complete set of enclosed real roots.
-                    let difference = checked(iv(h).sub(x_cut))?;
-                    let leading = checked(difference.sub(iv(b * r)))?;
-                    if leading.lo <= 0.0 && leading.hi >= 0.0 {
-                        return Ok(None);
-                    }
+                    debit(fuel, 512)?;
+                    let br = exact_mul(b, r).ok_or(AreaQueryError::Precision)?;
+                    let exact_difference = (x_cut.lo == x_cut.hi)
+                        .then(|| exact_add(h, -x_cut.lo))
+                        .flatten();
+                    let difference = match exact_difference {
+                        Some(value) => iv(value),
+                        None => checked(iv(h).sub(x_cut))?,
+                    };
+                    let coefficient = |sign| -> Result<Interval, AreaQueryError> {
+                        if difference.lo == difference.hi
+                            && let Some(value) = exact_add(difference.lo, sign * br)
+                        {
+                            return Ok(iv(value));
+                        }
+                        checked(difference.add(iv(sign * br)))
+                    };
+                    let leading = coefficient(-1.0)?;
                     let linear = iv(2.0 * a * sign * r);
                     // The product above must be the exact source value.
                     if exact_mul(
@@ -321,11 +377,39 @@ impl MappedBoundary {
                     {
                         return Ok(None);
                     }
-                    let constant = checked(difference.add(iv(b * r)))?;
-                    let discriminant = checked(
-                        checked(linear.mul(linear))?
-                            .sub(checked(iv(4.0).mul(checked(leading.mul(constant))?))?),
-                    )?;
+                    let constant = coefficient(1.0)?;
+                    // An exactly absent quadratic term is a linear equation,
+                    // not an uncertain pair of roots. Constant nonzero means
+                    // no root; an identically zero equation stays unqualified.
+                    if leading.lo == 0.0 && leading.hi == 0.0 {
+                        if linear.lo != 0.0 {
+                            events.push(checked(checked(iv(0.0).sub(constant))?.div(linear))?)?;
+                        } else if constant.lo <= 0.0 && constant.hi >= 0.0 {
+                            return Ok(None);
+                        }
+                        continue;
+                    }
+                    if leading.lo <= 0.0 && leading.hi >= 0.0 {
+                        return Ok(None);
+                    }
+                    debit(fuel, 512)?;
+                    let exact_discriminant = || {
+                        if leading.lo != leading.hi || constant.lo != constant.hi {
+                            return None;
+                        }
+                        exact_add(
+                            exact_mul(linear.lo, linear.lo)?,
+                            -exact_mul(4.0, exact_mul(leading.lo, constant.lo)?)?,
+                        )
+                    };
+                    let discriminant = if let Some(value) = exact_discriminant() {
+                        iv(value)
+                    } else {
+                        checked(
+                            checked(linear.mul(linear))?
+                                .sub(checked(iv(4.0).mul(checked(leading.mul(constant))?))?),
+                        )?
+                    };
                     if discriminant.hi < 0.0 {
                         continue;
                     }
@@ -336,10 +420,10 @@ impl MappedBoundary {
                     let denominator = checked(iv(2.0).mul(leading))?;
                     events.push(checked(
                         checked(iv(-linear.lo).sub(root))?.div(denominator),
-                    )?);
+                    )?)?;
                     events.push(checked(
                         checked(iv(-linear.lo).add(root))?.div(denominator),
-                    )?);
+                    )?)?;
                 }
             }
         }
@@ -792,20 +876,13 @@ impl ParentChart {
         // One exact triangular inverse, scalar checks and returned record.
         // Dense charts need a separately qualified query-sharing traversal.
         debit(fuel, 512)?;
-        let [a, b, c, d, tx, ty] = raw;
+        let [a, b, _, d, _, _] = raw;
         if b != 0.0 || a == 0.0 || d == 0.0 {
             return Err(AreaQueryError::Unsupported);
         }
-        let calculate = || {
-            let ia = exact_div(1.0, a)?;
-            let id = exact_div(1.0, d)?;
-            let ic = exact_mul(exact_mul(-c, ia)?, id)?;
-            let ix = exact_add(-exact_mul(ia, tx)?, -exact_mul(ic, ty)?)?;
-            let iy = -exact_mul(id, ty)?;
-            Some([ia, 0.0, ic, id, ix, iy])
-        };
         Ok(Self {
-            inverse: calculate().ok_or(AreaQueryError::Precision)?,
+            inverse: super::super::super::interval::exact_row_inverse(raw)
+                .ok_or(AreaQueryError::Precision)?,
         })
     }
 

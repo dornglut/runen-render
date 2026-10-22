@@ -37,6 +37,8 @@ pub(super) struct Compiler<'a> {
     normalizations: Vec<scalar_map::query::Normalization>,
     mass_index: numeric_index::Index<3>,
     masses: Vec<Interval>,
+    cutoff_index: numeric_index::Index<9>,
+    cutoff_events: Vec<CutoffEvents>,
     pub(super) nodes: Vec<batch::Node>,
     cuts: Vec<f64>,
     pending: Vec<Interval>,
@@ -62,6 +64,8 @@ impl<'a> Compiler<'a> {
             .checked_add(numeric_index::Index::<8>::heap_bound()?)?
             .checked_add(numeric_index::Index::<9>::heap_bound()?)?
             .checked_add(numeric_index::Index::<3>::heap_bound()?)?
+            .checked_add(numeric_index::Index::<9>::heap_bound()?)?
+            .checked_add(MAX_GEOMETRY.checked_mul(size_of::<CutoffEvents>())?)?
             .checked_add(34 * size_of::<f64>() + 64 * size_of::<Interval>())?
             .checked_add(CompiledCache::peak_bound()?)?
             .checked_add(size_of::<Self>())
@@ -86,10 +90,12 @@ impl<'a> Compiler<'a> {
         let proof_index = numeric_index::Index::new(fuel)?;
         let geometry_index = numeric_index::Index::new(fuel)?;
         let mass_index = numeric_index::Index::new(fuel)?;
+        let cutoff_index = numeric_index::Index::new(fuel)?;
         let proofs = bounded_vector(MAX_GEOMETRY).ok_or(AreaQueryError::Resource)?;
         let coordinates = bounded_vector(MAX_GEOMETRY * 16).ok_or(AreaQueryError::Resource)?;
         let normalizations = bounded_vector(MAX_GEOMETRY).ok_or(AreaQueryError::Resource)?;
         let masses = bounded_vector(MAX_GEOMETRY).ok_or(AreaQueryError::Resource)?;
+        let cutoff_events = bounded_vector(MAX_GEOMETRY).ok_or(AreaQueryError::Resource)?;
         let nodes = bounded_vector(MAX_NODES).ok_or(AreaQueryError::Resource)?;
         let cuts = bounded_vector(34).ok_or(AreaQueryError::Resource)?;
         let pending = bounded_vector(64).ok_or(AreaQueryError::Resource)?;
@@ -97,6 +103,7 @@ impl<'a> Compiler<'a> {
             || coordinates.capacity() != MAX_GEOMETRY * 16
             || normalizations.capacity() != MAX_GEOMETRY
             || masses.capacity() != MAX_GEOMETRY
+            || cutoff_events.capacity() != MAX_GEOMETRY
             || nodes.capacity() != MAX_NODES
             || cuts.capacity() != 34
             || pending.capacity() != 64
@@ -116,6 +123,8 @@ impl<'a> Compiler<'a> {
             normalizations,
             mass_index,
             masses,
+            cutoff_index,
+            cutoff_events,
             nodes,
             cuts,
             pending,
@@ -227,7 +236,9 @@ impl<'a> Compiler<'a> {
         fuel: &mut usize,
     ) -> Result<(), AreaQueryError> {
         debit(fuel, 192)?;
-        let (index, inserted) = self.geometry_index.observe(panel_key(map, domain), fuel)?;
+        let (index, inserted) = self
+            .geometry_index
+            .observe(map_key(map, [domain.lo, domain.hi]), fuel)?;
         if inserted {
             let compiled = self.compiled.get(map, fuel)?;
             let entry = compiled.map(|index| &self.compiled.entries[index]);
@@ -324,9 +335,44 @@ impl<'a> Compiler<'a> {
     ) -> Result<(Interval, f64), AreaQueryError> {
         let map = demand.map;
         let domain = demand.domain;
-        let events = map
-            .cutoff_events(demand.center, self.sigma, fuel)?
-            .ok_or(AreaQueryError::Unsupported)?;
+        // For constant X and Y(t)=t, separability factors the entire integral
+        // into one certified CDF and one certified Y mass. This also handles
+        // exact finite-cutoff equality: subdividing Y cannot make a constant
+        // X at +/-3 sigma strictly belong to an analytic interior branch.
+        // Require identical parameter/ordinate limits so no endpoint-domain
+        // uncertainty is discarded. Other maps retain their existing proof.
+        debit(fuel, 256)?;
+        if let MappedBoundary::Line {
+            intercept,
+            slope: 0.0,
+        } = map
+            && domain.lo == demand.y.lo
+            && domain.hi == demand.y.hi
+        {
+            let z = self.normalize(iv(intercept), demand.center[0], fuel)?;
+            let cdf = self.kernel.cdf(z, fuel)?;
+            let mass = self.mass(demand.y, demand.center[1], fuel)?;
+            debit(fuel, 192)?;
+            return Ok((checked(checked(cdf.mul(mass))?.mul(iv(demand.sign)))?, 0.0));
+        }
+        // A boundary's cutoff roots depend on its coefficients and center,
+        // not on which occupied strip/domain references that same boundary.
+        // Reuse only these numerical events; source occupancy is never cached
+        // under a coefficient key. Every lookup, record and copy is paid.
+        let (index, inserted) = self
+            .cutoff_index
+            .observe(map_key(map, demand.center), fuel)?;
+        debit(fuel, 256)?;
+        if inserted {
+            let events = map
+                .cutoff_events(demand.center, self.sigma, fuel)?
+                .ok_or(AreaQueryError::Unsupported)?;
+            if self.cutoff_events.len() != index || index == MAX_GEOMETRY {
+                return Err(AreaQueryError::Resource);
+            }
+            self.cutoff_events.push(events);
+        }
+        let events = self.cutoff_events[index];
         debit(fuel, 256)?;
         let allowance = checked(iv(1.0 / 524_288.0).div(iv(8.0 * demand.terms as f64)))?.lo;
         let original_length = checked(iv(domain.hi).sub(iv(domain.lo)))?;
@@ -350,7 +396,7 @@ impl<'a> Compiler<'a> {
         self.pending.clear();
         self.cuts.push(domain.lo);
         self.cuts.push(domain.hi);
-        for event in &events {
+        for event in events.iter() {
             for value in [event.lo, event.hi] {
                 debit(fuel, 24)?;
                 if value > domain.lo && value < domain.hi {
@@ -421,6 +467,21 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             let analytic = y_inside && x.lo > -3.0 && x.hi < 3.0;
+            if !analytic {
+                // Exact cutoff equality and the last representable parameter
+                // panels need not admit a strict analytic midpoint branch.
+                // Keep their COMPLETE possible mass, just as for an enclosed
+                // cutoff-root sliver. CDF<=1 and normalized density<=1/sigma
+                // bound this by physical ordinate width/sigma. Nothing is
+                // dropped; the final combined query radius still must pass.
+                debit(fuel, 256)?;
+                let width = checked(checked(iv(y.hi).sub(iv(y.lo)))?.div(iv(self.sigma)))?.hi;
+                if width <= allowance / 64.0 {
+                    let uncertain = checked(Interval::new(0.0, width))?;
+                    known = checked(known.add(checked(uncertain.mul(iv(demand.sign)))?))?;
+                    continue;
+                }
+            }
             debit(fuel, 160)?;
             let allocation = checked(iv(allowance).mul(checked(
                 checked(iv(panel.hi).sub(iv(panel.lo)))?.div(original_length),
@@ -445,11 +506,11 @@ impl<'a> Compiler<'a> {
     }
 }
 
-pub(super) fn panel_key(map: MappedBoundary, panel: Interval) -> [u64; 9] {
+pub(super) fn map_key(map: MappedBoundary, tail: [f64; 2]) -> [u64; 9] {
     let raw = match map {
-        MappedBoundary::Line { intercept, slope } => [
-            0.0, intercept, slope, 0.0, 0.0, 0.0, 0.0, panel.lo, panel.hi,
-        ],
+        MappedBoundary::Line { intercept, slope } => {
+            [0.0, intercept, slope, 0.0, 0.0, 0.0, 0.0, tail[0], tail[1]]
+        }
         MappedBoundary::Circle {
             h,
             a,
@@ -457,7 +518,41 @@ pub(super) fn panel_key(map: MappedBoundary, panel: Interval) -> [u64; 9] {
             k,
             r,
             sign,
-        } => [1.0, h, a, b, k, r, sign, panel.lo, panel.hi],
+        } => [1.0, h, a, b, k, r, sign, tail[0], tail[1]],
     };
     raw.map(f64::to_bits)
+}
+
+#[test]
+fn cutoff_event_reuse_requires_identical_coefficients_and_center_not_domain_or_sign() {
+    let mut fuel = 16_777_216;
+    let kernel = GaussianKernel::compiled(&mut fuel, MAX_BYTES).unwrap();
+    let mut compiler = Compiler::new(&kernel, 0.125, [2.0; 2], &mut fuel).unwrap();
+    for (intercept, center, domain, sign) in [
+        (0.0, [0.0; 2], [-0.125, 0.0], 1.0),
+        (0.0, [0.0; 2], [0.0, 0.125], -1.0),
+        (0.0, [0.03125, 0.0], [0.0, 0.125], 1.0),
+        (0.03125, [0.03125, 0.0], [0.0, 0.125], 1.0),
+    ] {
+        let y = Interval::new(domain[0], domain[1]).unwrap();
+        compiler
+            .integral(
+                IntegralRequest {
+                    map: MappedBoundary::Line {
+                        intercept,
+                        slope: 1.0,
+                    },
+                    domain: y,
+                    y,
+                    center,
+                    terms: 1,
+                    sign,
+                },
+                &mut fuel,
+            )
+            .unwrap();
+    }
+    assert_eq!(compiler.cutoff_events.len(), 3);
+    assert!(compiler.cutoff_index.maximum_probes > 0);
+    assert!(fuel > 0);
 }

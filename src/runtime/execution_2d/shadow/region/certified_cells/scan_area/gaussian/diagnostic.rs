@@ -328,7 +328,7 @@ impl<'a> Integrator<'a> {
             cuts[0] = domain.lo;
             cuts[1] = domain.hi;
             let mut length = 2;
-            for event in &events {
+            for event in events.iter() {
                 for value in [event.lo, event.hi] {
                     debit(fuel, 16)?;
                     if value > domain.lo && value < domain.hi {

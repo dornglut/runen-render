@@ -23,8 +23,8 @@ const FORMAT: GpuTextureFormat = GpuTextureFormat::R32Float;
 pub(super) struct PreparedShadow {
     pub(super) color: [f32; 4],
     pub(super) coverage: ShadowCoverage,
-    /// The mathematically bounded 3σ support reach in the immediate-parent
-    /// continuous logical frame, not a rectangle used as membership.
+    /// The completed 3σ reach projected into continuous root logical space
+    /// for physical admission, never a rectangle used as source membership.
     pub(super) logical_envelope: [f64; 4],
     /// Clipped physical-pixel envelope, never geometric membership.
     pub(super) bounds: Option<[u32; 4]>,

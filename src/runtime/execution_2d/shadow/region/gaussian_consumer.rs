@@ -136,6 +136,7 @@ impl NeutralRegionBuilder {
         source: &NeutralRegion<'_>,
         effects: &[Render2dDropShadow],
         target: GaussianTarget,
+        parent_to_root: Render2dAffineTransform,
         path: &[usize],
     ) -> Result<PreparedGaussianCaster, Render2dExecutionError> {
         self.charge_preparation(1024 + effects.len() * 64, path)?;
@@ -162,7 +163,12 @@ impl NeutralRegionBuilder {
             let Some(envelope) = source.certified_logical_envelope() else {
                 return Err(unsupported(path));
             };
-            let logical_envelope = nested_effect_envelope(envelope, *effect, path)?;
+            let parent_envelope = nested_effect_envelope(envelope, *effect, path)?;
+            // Only disposable root cropping/reach is projected. The source
+            // and every kernel parameter remain in the immediate parent.
+            self.charge_preparation(1024, path)?;
+            let logical_envelope =
+                shadow::transform_envelope(parent_envelope, parent_to_root, path)?;
             let mut root = [0_u32; 4];
             for axis in 0..2 {
                 let end = if axis == 0 { width } else { height };
@@ -197,7 +203,7 @@ impl NeutralRegionBuilder {
                 scale,
                 sigma: effect.sigma(),
                 offset: [effect.offset_x(), effect.offset_y()],
-                parent_to_root: Render2dAffineTransform::IDENTITY,
+                parent_to_root,
             };
             let peak = request
                 .preparation_bytes()
@@ -243,6 +249,79 @@ mod tests {
     use crate::composition_2d::*;
     use crate::runtime::execution_2d::support::PreparationWork;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn original_parent_chart_uses_exact_ancestry_and_excludes_consumers_own_transform() {
+        let frame = |child, transform, shadows| {
+            Render2dEntry::group(Render2dGroup::new(
+                [child],
+                transform,
+                vec![],
+                Render2dOpacity::OPAQUE,
+                shadows,
+            ))
+        };
+        let own = Render2dAffineTransform::translation(8.0, 0.0).unwrap();
+        let effect =
+            Render2dDropShadow::new(0.0, 0.0, 0.125, 0.0, Render2dColorRgba8::BLACK).unwrap();
+        for (outer, middle, expected) in [
+            (
+                Render2dAffineTransform::new(1.0, 0.0, 0.25, 1.0, 0.0, 0.0).unwrap(),
+                Render2dAffineTransform::new(2.0, 0.0, 0.0, 1.0, 4.0, 1.0).unwrap(),
+                Some([2.0, 0.0, 0.25, 1.0, 4.25, 1.0]),
+            ),
+            (
+                Render2dAffineTransform::translation(1.0, 0.0).unwrap(),
+                Render2dAffineTransform::translation(2.0_f64.powi(-54), 0.0).unwrap(),
+                None,
+            ),
+            (
+                Render2dAffineTransform::new(1.0, 0.25, 0.0, 1.0, 0.0, 0.0).unwrap(),
+                Render2dAffineTransform::IDENTITY,
+                Some([1.0, 0.25, 0.0, 1.0, 0.0, 0.0]),
+            ),
+        ] {
+            let consumer = frame(Render2dEntry::item(ring()), own, vec![effect]);
+            let composition =
+                Render2dComposition::new([frame(frame(consumer, middle, vec![]), outer, vec![])])
+                    .unwrap();
+            let bindings = Render2dResourceBindings::default();
+            let fields = BTreeMap::new();
+            let dag = shadow::build_group_sources(
+                &composition,
+                0,
+                &bindings,
+                &fields,
+                shadow::SourcePreparation::new(
+                    shadow::NeutralPreparationScale {
+                        field_raster_scale: 1.0,
+                        geometry_sample_scale: 4.0,
+                    },
+                    64 * 1024 * 1024,
+                ),
+            )
+            .unwrap();
+            let chart = dag
+                .demands
+                .iter()
+                .find_map(|demand| match demand {
+                    shadow::SourceDemand::Caster {
+                        path, parent_chart, ..
+                    } if path == &[0, 0, 0] => Some(*parent_chart),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(chart.map(Render2dAffineTransform::components), expected);
+            if let Some(raw) = expected
+                && raw[1] != 0.0
+            {
+                assert!(
+                    interval::exact_row_inverse(raw).is_none(),
+                    "dense chart is valid F1 without a numerical receipt"
+                );
+            }
+        }
+    }
     fn builder() -> NeutralRegionBuilder {
         NeutralRegionBuilder::new(
             shadow::NeutralPreparationScale {
@@ -354,6 +433,7 @@ mod tests {
                         raster_scale: 1.0,
                         physical_extent: [64; 2]
                     },
+                    Render2dAffineTransform::IDENTITY,
                     &[0]
                 )
                 .is_err()
@@ -376,7 +456,13 @@ mod tests {
         let source = baseline.register_source(&input, &[0, 0]).unwrap().unwrap();
         let before = baseline.graph_work;
         let caster = baseline
-            .prepare_gaussian_caster(&source, &[effect], target, &[0])
+            .prepare_gaussian_caster(
+                &source,
+                &[effect],
+                target,
+                Render2dAffineTransform::IDENTITY,
+                &[0],
+            )
             .unwrap();
         let cost = baseline.graph_work - before;
         assert_eq!(caster.planes.len(), 1);
@@ -385,7 +471,13 @@ mod tests {
             let mut graph = builder();
             let source = graph.register_source(&input, &[0, 0]).unwrap().unwrap();
             graph.graph_work = MAX_REGION_GRAPH_WORK - cost + usize::from(short);
-            let prepared = graph.prepare_gaussian_caster(&source, &[effect], target, &[0]);
+            let prepared = graph.prepare_gaussian_caster(
+                &source,
+                &[effect],
+                target,
+                Render2dAffineTransform::IDENTITY,
+                &[0],
+            );
             assert_eq!(prepared.is_err(), short);
             assert_eq!(graph.graph_work, MAX_REGION_GRAPH_WORK);
         }

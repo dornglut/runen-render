@@ -66,19 +66,9 @@ impl Affine {
         charge(fuel, 512).ok_or(AreaQueryError::Resource)?;
         let [a, b, c, d, tx, ty] = self.0;
         let [e, f, g, h, ux, uy] = transform.components().map(|v| Interval::scalar(v).unwrap());
-        let exact = || {
-            let [a, b, c, d, tx, ty] = self.2?;
-            let [e, f, g, h, ux, uy] = transform.components();
-            Some([
-                exact_add(exact_mul(a, e)?, exact_mul(c, f)?)?,
-                exact_add(exact_mul(b, e)?, exact_mul(d, f)?)?,
-                exact_add(exact_mul(a, g)?, exact_mul(c, h)?)?,
-                exact_add(exact_mul(b, g)?, exact_mul(d, h)?)?,
-                exact_add(exact_add(exact_mul(a, ux)?, exact_mul(c, uy)?)?, tx)?,
-                exact_add(exact_add(exact_mul(b, ux)?, exact_mul(d, uy)?)?, ty)?,
-            ])
-        };
-        if let Some(raw) = exact() {
+        if let Some(raw) = self.2.and_then(|parent| {
+            super::super::interval::exact_affine_compose(parent, transform.components())
+        }) {
             return Ok(Self(
                 raw.map(|v| Interval::scalar(v).unwrap()),
                 frame,

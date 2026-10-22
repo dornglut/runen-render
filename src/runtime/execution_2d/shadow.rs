@@ -120,6 +120,9 @@ struct SourceFrame<'a> {
     begin_event: usize,
     path: Vec<usize>,
     group: &'a crate::composition_2d::Render2dGroup,
+    /// Exact numerical chart of this group's immediate parent, excluding
+    /// its own transform. None is lack of a receipt, not invalid F1 geometry.
+    parent_chart: Option<Render2dAffineTransform>,
     /// Structural source-neutral support in this group's LOCAL frame.
     /// No ancestor completion, opacity or disk morphology has been flattened.
     children: Vec<Arc<region::NeutralRegion<'a>>>,
@@ -495,6 +498,7 @@ pub(super) struct GaussianTarget {
 
 pub(super) struct PreparedGaussianField {
     pub(super) plane: region::PreparedPlane,
+    /// Completed parent-frame effect reach projected only for root cropping.
     pub(super) logical_envelope: [f64; 4],
 }
 
@@ -845,6 +849,7 @@ enum SourceDemand<'a> {
         group: &'a crate::composition_2d::Render2dGroup,
         path: Vec<usize>,
         nested: bool,
+        parent_chart: Option<Render2dAffineTransform>,
     },
     Effect(Arc<region::NeutralRegion<'a>>),
 }
@@ -973,6 +978,7 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                     group,
                     path,
                     nested,
+                    parent_chart,
                 } = demand
                 {
                     self.graph
@@ -987,7 +993,16 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                                 target.canvas,
                                 target.raster_scale,
                             )?;
-                    let candidate = !nested
+                    // This pays the chart proof even when another eligibility
+                    // condition declines. No numerical failure is a fallback.
+                    self.graph.charge_preparation(512, path)?;
+                    let chart_qualified = parent_chart.is_some_and(|chart| {
+                        let raw = chart.components();
+                        // Existing complete chart proofs cover d=1. Other
+                        // vertical maps await their own numerical evidence.
+                        raw[3] == 1.0 && region::interval::exact_row_inverse(raw).is_some()
+                    });
+                    let candidate = chart_qualified
                         && !absent
                         && !group.shadows().is_empty()
                         && group
@@ -1004,8 +1019,21 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                     }
                 }
             }
-            // Only root consumers enter numerical, hence their closing-event
-            // order is also sorted original BeginGroup order.
+            // Nested closing order differs from original BeginGroup order.
+            // Meter every comparison and move before binary-search consumers.
+            for index in 1..numerical.len() {
+                let mut position = index;
+                while position > 0 {
+                    self.graph.charge_preparation(32, &[])?;
+                    if numerical[position - 1] <= numerical[position] {
+                        break;
+                    }
+                    self.graph
+                        .charge_preparation(3 * size_of::<usize>() + 32, &[])?;
+                    numerical.swap(position - 1, position);
+                    position -= 1;
+                }
+            }
             if !numerical.is_empty() {
                 self.graph
                     .charge_preparation(128 + self.demands.len() * 64, &[])?;
@@ -1100,6 +1128,7 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                     group,
                     path,
                     nested,
+                    parent_chart,
                 } => {
                     // Dependency selection and this authored caster dispatch
                     // are distinct visits. Prepay both membership searches on
@@ -1180,6 +1209,7 @@ impl<'scene> GroupSourceDag<'scene, '_> {
                             &in_parent,
                             group.shadows(),
                             gaussian.expect("selected numerical target"),
+                            parent_chart.expect("selected exact parent chart"),
                             &path,
                         )?)
                     } else if !nested {
@@ -1395,6 +1425,20 @@ pub(super) fn build_group_sources<'scene, 'resources>(
         graph.charge_preparation(64, event_path)?;
         match event {
             scene::Occurrence::BeginGroup { path, group } => {
+                // The original lexical ancestry supplies a numerical receipt.
+                // Rounded cumulative paint transforms are never source facts.
+                graph.charge_preparation(512, path)?;
+                let parent_chart = match active.last() {
+                    None => Some(Render2dAffineTransform::IDENTITY),
+                    Some(parent) => parent.parent_chart.and_then(|chart| {
+                        let raw = region::interval::exact_affine_compose(
+                            chart.components(),
+                            parent.group.local_to_parent().components(),
+                        )?;
+                        Render2dAffineTransform::new(raw[0], raw[1], raw[2], raw[3], raw[4], raw[5])
+                            .ok()
+                    }),
+                };
                 let frame_path = copy_source_path(path, &mut graph, &mut construction_bytes)?;
                 push_source_value(
                     &mut active,
@@ -1402,6 +1446,7 @@ pub(super) fn build_group_sources<'scene, 'resources>(
                         begin_event: index,
                         path: frame_path,
                         group,
+                        parent_chart,
                         children: Vec::new(),
                     },
                     &mut graph,
@@ -1490,6 +1535,7 @@ pub(super) fn build_group_sources<'scene, 'resources>(
                             group: frame.group,
                             path: demand_path,
                             nested,
+                            parent_chart: frame.parent_chart,
                         },
                         &mut graph,
                         &mut construction_bytes,

@@ -191,6 +191,23 @@ cutoff. A missing compute capability rejects before contribution creation and
 leaves the executor usable for the existing non-compute family. These cases
 qualify the selected straight-boundary family, not all F3F source classes.
 
+Nested Gaussian consumers also qualify exact row-preserving parent charts
+with unchanged vertical scale. Independent sixteen-phase references bind the
+original finite negative-effect source to the consuming shear; ordinary final
+pixels additionally cover horizontal compression, reflection, post-blur group
+clipping and once-only nested opacity. Exact ancestry excludes the consumer's
+own transform; an unavailable chart receipt does not invalidate F1 geometry.
+The larger 96×64 expanded-scale workload remains an explicit owner-attributed
+resource rejection followed by successful reuse. Its rejection is not positive
+conformance or a claim that all chart workloads fit the invocation ceiling.
+
+Finite-cutoff regressions cover constant-coordinate separability, tangent and
+reduced-degree circular cutoff equations, adjacent representable endpoints,
+signed uncertain mass, empty runs and complete error rejection. Root-event
+reuse is keyed only by numerical coefficients and query center; it never
+reuses original-region occupancy. Its fixed event records and bounded index
+are included in the numerical compiler's existing reservation.
+
 Source construction, numerical integration, affine planning, CPU data copies
 and physical descriptor preparation use one invocation preparation budget.
 Encoded GPU lookup sample visits and the expanded Q48 multiply-accumulate

@@ -2,6 +2,7 @@
 use super::*;
 use crate::composition_2d::{Render2dBrush, Render2dColorRgba8, Render2dOpacity};
 use crate::runtime::execution_2d::shadow::region::NeutralRegionBuilder;
+use crate::runtime::execution_2d::support::PreparationWork;
 
 // 100-digit Decimal evaluation of G(z)=sum_n (-1)^n*z^(2n+1)/
 // (2^n*n!*(2n+1)), 180 terms. For |z|<=3 the remaining alternating
@@ -376,4 +377,104 @@ fn consuming_parent_chart_matches_independent_phases_on_vulkan() {
         // crop. Final compositor pixels above use an aligned complete plane.
         assert_phase_references(&crop, &values, case);
     }
+}
+
+#[test]
+#[ignore = "requires Vulkan: original nested negative-effect source and all sixteen consuming-parent phases"]
+fn nested_original_parent_chart_matches_all_sixteen_phases_on_vulkan() {
+    use crate::composition_2d::{
+        Render2dComposition, Render2dEntry, Render2dGroup, Render2dResourceBindings,
+    };
+    use crate::runtime::execution_2d::shadow::{GaussianTarget, NeutralCaster, SourcePreparation};
+    let child = Render2dGroup::new(
+        [Render2dEntry::item(super::super::tests::original_ring())],
+        Render2dAffineTransform::IDENTITY,
+        vec![],
+        Render2dOpacity::TRANSPARENT,
+        vec![
+            Render2dDropShadow::new(8.0, 0.0, 0.03125, -1.0, Render2dColorRgba8::TRANSPARENT)
+                .unwrap(),
+        ],
+    );
+    let consumer = Render2dGroup::new(
+        [Render2dEntry::group(child)],
+        Render2dAffineTransform::IDENTITY,
+        vec![],
+        Render2dOpacity::OPAQUE,
+        vec![
+            Render2dDropShadow::new(
+                0.0,
+                0.0,
+                0.125,
+                0.0,
+                Render2dColorRgba8::new(255, 0, 0, 255),
+            )
+            .unwrap(),
+        ],
+    );
+    let ancestor = Render2dGroup::new(
+        [Render2dEntry::group(consumer)],
+        Case::Shear.affine(),
+        vec![],
+        Render2dOpacity::OPAQUE,
+        vec![],
+    );
+    let composition = Render2dComposition::new([Render2dEntry::group(ancestor)]).unwrap();
+    let bindings = Render2dResourceBindings::default();
+    let fields = std::collections::BTreeMap::new();
+    let mut preparation = SourcePreparation::new(
+        shadow::NeutralPreparationScale {
+            field_raster_scale: 1.0,
+            geometry_sample_scale: 4.0,
+        },
+        MAX_BYTES as u64,
+    );
+    assert_eq!(preparation.admit_effects(&composition).unwrap(), 2);
+    let sources = shadow::build_group_sources(&composition, 0, &bindings, &fields, preparation)
+        .unwrap()
+        .prepare_consumers(GaussianTarget {
+            canvas: [64.0; 2],
+            raster_scale: 1.0,
+            physical_extent: [64; 2],
+        })
+        .unwrap();
+    let NeutralCaster::Gaussian(caster) = sources.caster(1).unwrap() else {
+        panic!("nested numerical consumer")
+    };
+    let plane = &caster.planes[0].plane;
+    let mut fuel = sources.work.remaining(usize::MAX);
+    plane.admit_proof_physical(&mut fuel).unwrap();
+    // Independent110-digit finite Gaussian series F(j/2-2i). This source's
+    // right boundary is exactly37+3/32 throughout every finite kernel here.
+    const PHASES: [[f64; 4]; 4] = [
+        [0.5, 0.02145816659023421, 0.0, 0.0],
+        [0.6919807702016251, 0.0656345030100686, 0.0, 0.0],
+        [0.842268802032848, 0.157731197967152, 0.0, 0.0],
+        [
+            0.9343654969899314,
+            0.30801922979837487,
+            0.0048729231929990685,
+            0.0,
+        ],
+    ];
+    let values = plane.queries.execute_proof();
+    let root = plane.root();
+    let width = plane.extent()[0] as usize;
+    for (j, row) in PHASES.iter().enumerate() {
+        for (i, &truth) in row.iter().enumerate() {
+            let index = (16 * 4 + j - root[1] as usize) * width + 41 * 4 + i - root[0] as usize;
+            let word = plane.samples[index];
+            let (actual, radius) = if word & QUERY != 0 {
+                let query = (word & !QUERY) as usize;
+                (f64::from(values[query]), plane.certificates.errors[query])
+            } else {
+                (f64::from(word) / Q24, plane.certificates.literal_radius)
+            };
+            assert!(
+                (actual - truth).abs() <= radius,
+                "nested phase{i},{j}: {actual} +/- {radius}, truth={truth}"
+            );
+        }
+    }
+    assert!(sources.host.peak() <= support::MAX_SHADOW_HOST_BYTES);
 }

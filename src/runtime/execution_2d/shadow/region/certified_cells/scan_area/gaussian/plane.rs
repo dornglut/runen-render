@@ -250,6 +250,9 @@ impl Assembly {
         fuel: &mut usize,
     ) -> Result<(), AreaQueryError> {
         debit(fuel, 64)?;
+        if count == 0 {
+            return Ok(());
+        }
         let mass = self.unknown_mass;
         let value = if inside {
             checked(Interval::new((1.0 - mass).next_down().max(0.0), 1.0))?
@@ -936,4 +939,27 @@ fn gaussian_plane_entry_rejects_before_allocating_and_preserves_shared_fuel() {
         ),
         Err(AreaQueryError::Precision)
     ));
+}
+
+#[test]
+fn empty_constant_runs_require_no_unused_certificate_and_keep_nonempty_error_gate() {
+    let mut fuel = 100_000;
+    let mut assembly = Assembly::new(1, 1, &mut fuel).unwrap();
+    assembly.unknown_mass = WIDTH;
+    for inside in [false, true] {
+        let mut empty_fuel = 64;
+        assembly.constants(inside, 0, &mut empty_fuel).unwrap();
+        assert_eq!(empty_fuel, 0);
+        assert!(assembly.samples.is_empty());
+        assert_eq!(assembly.literal_radius, 0.0);
+        assert!(matches!(
+            assembly.constants(inside, 0, &mut 63),
+            Err(AreaQueryError::Resource)
+        ));
+        assert!(matches!(
+            assembly.constants(inside, 1, &mut fuel),
+            Err(AreaQueryError::Precision)
+        ));
+        assert!(assembly.samples.is_empty());
+    }
 }

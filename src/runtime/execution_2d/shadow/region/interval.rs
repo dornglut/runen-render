@@ -34,6 +34,37 @@ pub(in crate::runtime::execution_2d) fn exact_div(a: f64, b: f64) -> Option<f64>
     (quotient.is_finite() && exact_mul(quotient, b) == Some(a)).then_some(quotient)
 }
 
+/// A numerical chart receipt, not a replacement for authored transform
+/// semantics. Return only when every real product and sum is representable.
+pub(in crate::runtime::execution_2d) fn exact_affine_compose(
+    parent: [f64; 6],
+    child: [f64; 6],
+) -> Option<[f64; 6]> {
+    let [a, b, c, d, tx, ty] = parent;
+    let [e, f, g, h, ux, uy] = child;
+    Some([
+        exact_add(exact_mul(a, e)?, exact_mul(c, f)?)?,
+        exact_add(exact_mul(b, e)?, exact_mul(d, f)?)?,
+        exact_add(exact_mul(a, g)?, exact_mul(c, h)?)?,
+        exact_add(exact_mul(b, g)?, exact_mul(d, h)?)?,
+        exact_add(exact_add(exact_mul(a, ux)?, exact_mul(c, uy)?)?, tx)?,
+        exact_add(exact_add(exact_mul(b, ux)?, exact_mul(d, uy)?)?, ty)?,
+    ])
+}
+
+pub(in crate::runtime::execution_2d) fn exact_row_inverse(raw: [f64; 6]) -> Option<[f64; 6]> {
+    let [a, b, c, d, tx, ty] = raw;
+    if b != 0.0 || a == 0.0 || d == 0.0 {
+        return None;
+    }
+    let ia = exact_div(1.0, a)?;
+    let id = exact_div(1.0, d)?;
+    let ic = exact_mul(exact_mul(-c, ia)?, id)?;
+    let ix = exact_add(-exact_mul(ia, tx)?, -exact_mul(ic, ty)?)?;
+    let iy = -exact_mul(id, ty)?;
+    Some([ia, 0.0, ic, id, ix, iy])
+}
+
 /// Compare two REAL products of finite binary64 inputs without rounding.
 /// Each significand has at most 53 bits, so its 106-bit product fits u128.
 /// Removing powers of two gives one exact signed-integer/exponent identity,
