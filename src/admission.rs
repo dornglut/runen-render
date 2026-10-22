@@ -1,10 +1,10 @@
-//! R5 semantic-binding, current availability, physical output binding, and execution admission.
+//! Request-scoped semantic binding, current availability, physical output binding and execution admission.
 //!
-//! This module consumes an accepted R4 [`RenderPlan`] plus invocation-scoped semantic and
+//! This module consumes an accepted [`RenderPlan`] plus invocation-scoped semantic and
 //! operational facts. Request-scoped semantic binding first specializes every candidate's already-
 //! planned representation alternatives. Only semantically admitted candidates then observe current
 //! availability, GPU state, and physical destinations. None of these invocation-local facts become
-//! R1-R4 semantic authority.
+//! scene, request, method or representation semantic authority.
 
 use super::field_input::{RenderFieldSemanticInput, RenderFieldSemanticInputBinding};
 use super::method::RenderAbstractExecutionRequirement;

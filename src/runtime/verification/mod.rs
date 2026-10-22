@@ -1,5 +1,5 @@
 //! Private static eligibility, same-submission correlation, physical observation normalization, and
-//! conservative semantic verification for RR566-EVAL-001 verified-result formation.
+//! conservative semantic verification for finite verified-result formation.
 //!
 //! This module deliberately does not narrow maintained deterministic execution. The ordinary
 //! evaluator accepts every request already proven by `AdmittedDeterministicRender`; this gate asks a

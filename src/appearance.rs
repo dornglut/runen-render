@@ -1,4 +1,4 @@
-//! R3 minimum renderer-semantic appearance contracts.
+//! Renderer-semantic appearance contracts.
 //!
 //! These values describe renderer meaning only. Authored material graphs, compiler IR, WGSL,
 //! shader resources, texture bindings, and GPU realization remain outside this module.

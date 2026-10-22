@@ -1,4 +1,4 @@
-//! Same-submission physical observation decoding for RR566-EVAL-001.
+//! Same-submission physical observation decoding for maintained result verification.
 //!
 //! This module consumes only renderer-private readbacks already correlated to one exact maintained
 //! `GpuSubmission`. It normalizes the maintained one-word carrier into logical per-sample words

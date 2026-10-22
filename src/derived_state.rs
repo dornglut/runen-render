@@ -1,4 +1,4 @@
-//! R7 renderer-derived scene dependency and invalidation semantics.
+//! Renderer-derived scene dependencies and invalidation semantics.
 //!
 //! Derived state is non-authoritative. This module records only which accepted renderer-scene facts
 //! one retained derived artifact depends on and whether accepted scene-change evidence invalidates

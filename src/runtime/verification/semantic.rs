@@ -1,4 +1,4 @@
-//! Conservative semantic verification for RR566-EVAL-001.
+//! Conservative semantic-result verification of admitted renderer semantics.
 //!
 //! This module is deliberately narrower than maintained execution. Static eligibility has already
 //! proven identity observation linear bases plus unit, right-handed, translation-only object frames.

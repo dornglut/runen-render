@@ -1,8 +1,8 @@
-//! R6 renderer-owned lowering products.
+//! Renderer-owned lowering products for admitted RunenGPU work.
 //!
-//! R1-R5 establish semantic scene/request meaning, legal method/representation choices, current
-//! admission, and physical output bindings. R6 is the first boundary allowed to turn that admitted
-//! renderer meaning into concrete RunenGPU work. It does not re-plan semantics and it does not own
+//! Scene/request semantics, planning and invocation admission establish legal choices and
+//! physical output bindings before this boundary turns admitted renderer meaning into
+//! concrete RunenGPU work. It does not re-plan semantics and it does not own
 //! RunenGPU preparation, hazard analysis, physical realization, submission, or backend execution.
 
 use super::admission::AdmittedRenderPlan;
