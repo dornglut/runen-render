@@ -725,6 +725,10 @@ mod manifest_policy_tests {
     fn commented_out_publish_false_cannot_pass() {
         let changed = CURRENT.replace("publish = false", "# publish = false");
         assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
+        assert!(
+            changed.contains("publish = false"),
+            "the old substring check still finds the commented-out marker",
+        );
         let manifest = parse_manifest(&changed).expect("comment remains valid TOML");
         assert!(validate_manifest_identity(&manifest).is_err());
     }
@@ -742,11 +746,16 @@ mod manifest_policy_tests {
 
     #[test]
     fn altered_git_revision_with_original_in_comment_cannot_pass() {
-        let changed = CURRENT.replace(
+        let mut changed = CURRENT.replace(
             "rev = \"f967356c9ca55df6c9d99381850a88bf3695bf81\"",
             "rev = \"0000000000000000000000000000000000000000\"",
         );
         assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
+        changed.push_str("# rev = \"f967356c9ca55df6c9d99381850a88bf3695bf81\"\\n");
+        assert!(
+            changed.contains("rev = \"f967356c9ca55df6c9d99381850a88bf3695bf81\""),
+            "old dependency pin remains visible only in a comment",
+        );
         let manifest = parse_manifest(&changed).expect("mutation remains valid TOML");
         assert!(validate_manifest_dependencies(&manifest).is_err());
     }
