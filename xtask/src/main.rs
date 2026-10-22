@@ -234,13 +234,18 @@ fn validate_manifest_identity(manifest: &toml::Value) -> Result<(), String> {
     expect_manifest_bool(manifest, &["package", "license", "workspace"], true)?;
     expect_manifest_strings(manifest, &["features", "default"], &[])?;
 
-    // A comment mentioning the forbidden policy is not an active Cargo lint.
-    let unsafe_code = manifest_value(manifest, &["lints", "rust", "unsafe_code"]);
-    if unsafe_code.is_some_and(|value| {
-        value.as_str() == Some("forbid")
-            || value.get("level").and_then(toml::Value::as_str) == Some("forbid")
-    }) {
-        return Err("Cargo.toml enables the unaccepted template unsafe-code policy".to_owned());
+    // Local or inherited workspace lints are active policy; comments are not.
+    for path in [
+        &["lints", "rust", "unsafe_code"][..],
+        &["workspace", "lints", "rust", "unsafe_code"][..],
+    ] {
+        let unsafe_code = manifest_value(manifest, path);
+        if unsafe_code.is_some_and(|value| {
+            value.as_str() == Some("forbid")
+                || value.get("level").and_then(toml::Value::as_str) == Some("forbid")
+        }) {
+            return Err("Cargo.toml enables the unaccepted template unsafe-code policy".to_owned());
+        }
     }
     Ok(())
 }
@@ -772,6 +777,14 @@ mod manifest_policy_tests {
         assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
         let manifest = parse_manifest(&changed).expect("mutation remains valid TOML");
         assert!(validate_manifest_dependencies(&manifest).is_err());
+    }
+
+    #[test]
+    fn inherited_workspace_unsafe_lint_is_rejected() {
+        let mut changed = CURRENT.to_owned();
+        changed.push_str("\n[workspace.lints.rust]\nunsafe_code = \"forbid\"\n");
+        let manifest = parse_manifest(&changed).expect("workspace lint must be valid TOML");
+        assert!(validate_manifest_identity(&manifest).is_err());
     }
 
     #[test]
