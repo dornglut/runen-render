@@ -154,7 +154,8 @@ fn validate_required_files(root: &Path) -> Result<(), String> {
 
 fn parse_manifest(contents: &str) -> Result<toml::Value, String> {
     contents
-        .parse::<toml::Value>()
+        .parse::<toml::Table>()
+        .map(toml::Value::Table)
         .map_err(|error| format!("Cargo.toml is not valid TOML: {error}"))
 }
 
@@ -751,7 +752,7 @@ mod manifest_policy_tests {
             "rev = \"0000000000000000000000000000000000000000\"",
         );
         assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
-        changed.push_str("# rev = \"f967356c9ca55df6c9d99381850a88bf3695bf81\"\\n");
+        changed.push_str("# rev = \"f967356c9ca55df6c9d99381850a88bf3695bf81\"\n");
         assert!(
             changed.contains("rev = \"f967356c9ca55df6c9d99381850a88bf3695bf81\""),
             "old dependency pin remains visible only in a comment",
