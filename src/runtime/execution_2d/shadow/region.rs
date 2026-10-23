@@ -2156,9 +2156,8 @@ impl NeutralRegionBuilder {
                 {
                     // The incomplete affine mesh is never retained. Its
                     // previously reserved header has no ownership to transfer.
-                    self.host.release(
-                        size_of::<support::NeutralMesh>() + 2 * size_of::<usize>(),
-                    );
+                    self.host
+                        .release(size_of::<support::NeutralMesh>() + 2 * size_of::<usize>());
                     return Err(error);
                 }
                 output_admitted = true;
@@ -3625,10 +3624,7 @@ mod tests {
             + output.triangles.capacity() * size_of::<[f64; 2]>();
         assert_eq!(output.triangles.len(), 3);
         assert_eq!(graph.host.live() - before, bytes);
-        assert!(Arc::ptr_eq(
-            &output,
-            &graph.materialize(&affine).unwrap()
-        ));
+        assert!(Arc::ptr_eq(&output, &graph.materialize(&affine).unwrap()));
         assert_eq!(graph.host.live() - before, bytes);
     }
 
