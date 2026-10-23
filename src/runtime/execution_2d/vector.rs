@@ -750,11 +750,19 @@ impl BoundedGeometry {
 /// Success transfers both buffers and their leases through neutral conversion.
 struct TessellationSink<'w, 'a> {
     geometry: BoundedGeometry,
-    admitted: Option<(&'w mut super::shadow::NeutralPreparationWork<'a>, &'w [usize])>,
+    admitted: Option<(
+        &'w mut super::shadow::NeutralPreparationWork<'a>,
+        &'w [usize],
+    )>,
 }
 
 impl<'w, 'a> TessellationSink<'w, 'a> {
-    fn new(admitted: Option<(&'w mut super::shadow::NeutralPreparationWork<'a>, &'w [usize])>) -> Self {
+    fn new(
+        admitted: Option<(
+            &'w mut super::shadow::NeutralPreparationWork<'a>,
+            &'w [usize],
+        )>,
+    ) -> Self {
         Self {
             geometry: BoundedGeometry::default(),
             admitted,
@@ -762,7 +770,11 @@ impl<'w, 'a> TessellationSink<'w, 'a> {
     }
 
     fn next_capacity(current: usize, needed: usize) -> usize {
-        current.max(4).saturating_mul(2).max(needed).min(MAX_ELEMENTS)
+        current
+            .max(4)
+            .saturating_mul(2)
+            .max(needed)
+            .min(MAX_ELEMENTS)
     }
 
     fn into_geometry(mut self) -> BoundedGeometry {
@@ -781,8 +793,12 @@ impl<'w, 'a> TessellationSink<'w, 'a> {
         let id = VertexId(self.geometry.vertices.len() as u32);
         if self.geometry.vertices.len() == self.geometry.vertices.capacity() {
             if let Some((work, path)) = self.admitted.as_mut() {
-                let capacity = Self::next_capacity(self.geometry.vertices.capacity(), id.0 as usize + 1);
-                if work.reserve_vector(&mut self.geometry.vertices, capacity, path).is_err() {
+                let capacity =
+                    Self::next_capacity(self.geometry.vertices.capacity(), id.0 as usize + 1);
+                if work
+                    .reserve_vector(&mut self.geometry.vertices, capacity, path)
+                    .is_err()
+                {
                     self.geometry.exceeded = true;
                     return Err(GeometryBuilderError::TooManyVertices);
                 }
@@ -816,7 +832,10 @@ impl GeometryBuilder for TessellationSink<'_, '_> {
         if needed > self.geometry.indices.capacity() {
             if let Some((work, path)) = self.admitted.as_mut() {
                 let capacity = Self::next_capacity(self.geometry.indices.capacity(), needed);
-                if work.reserve_vector(&mut self.geometry.indices, capacity, path).is_err() {
+                if work
+                    .reserve_vector(&mut self.geometry.indices, capacity, path)
+                    .is_err()
+                {
                     self.geometry.exceeded = true;
                     return;
                 }
@@ -1261,7 +1280,10 @@ mod tests {
         assert_eq!(mesh.triangles.len(), 6);
         assert_eq!(mesh.triangles.capacity(), 6);
         assert_eq!(mesh.bounds, [-10.0, -2.0, -1.0, 2.0]);
-        assert_eq!(owner.live(), super::super::support::MAX_SHADOW_HOST_BYTES - scratch);
+        assert_eq!(
+            owner.live(),
+            super::super::support::MAX_SHADOW_HOST_BYTES - scratch
+        );
         assert_eq!(owner.peak(), super::super::support::MAX_SHADOW_HOST_BYTES);
         owner.release(mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
         assert_eq!(
@@ -1315,10 +1337,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(
-            (owner.live(), owner.peak()),
-            (prior, prior + scratch)
-        );
+        assert_eq!((owner.live(), owner.peak()), (prior, prior + scratch));
     }
 
     #[test]
