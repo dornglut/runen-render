@@ -1791,7 +1791,7 @@ pub(super) fn append_admitted(
     source: &NeutralMesh,
     source_to_parent: Render2dAffineTransform,
     path: &[usize],
-    host: &mut support::PreparationHostBudget,
+    host: &mut super::support::PreparationHostBudget,
 ) -> Result<(), Render2dExecutionError> {
     append_triangles(
         output,
