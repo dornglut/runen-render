@@ -152,12 +152,8 @@ fn prepare_clip(
     super::clip::upload(target, &mask, resources).map(Some)
 }
 
-/// Compiles a real F1 group tree through one
-/// globally-phased sample plane. This is an admitted *staging subset* of the
-/// the same mixed-content F3E compiler, not a second persistent renderer.
-/// All nonadmitted semantics reject before an external target is modified.
-/// All painting scenes use this one compositor. Missing private physical roles
-/// are a typed admission failure rather than a second pixel-formation law.
+/// Whether the device admits the private color sample-plane and coverage roles.
+/// This does not admit an individual scene, effect, or resource budget.
 pub(in crate::runtime::execution_2d) fn admits_sample_plane(context: &GpuContext) -> bool {
     let admitted = context
         .device_facts()
@@ -178,6 +174,8 @@ pub(in crate::runtime::execution_2d) fn admits_sample_plane(context: &GpuContext
     .all(|role| admitted.contains(&role))
 }
 
+/// Lowers qualified painter and effect work through the shared correlated
+/// sample plane; unsupported cases reject before external target mutation.
 pub(in crate::runtime::execution_2d) fn lower(
     context: &GpuContext,
     target: &AdmittedTarget,

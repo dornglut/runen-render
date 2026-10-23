@@ -252,7 +252,7 @@ impl fmt::Display for Render2dTargetAdmissionError {
 
 impl Error for Render2dTargetAdmissionError {}
 
-/// Bounded semantic class rejected by the Counter-critical F2 admission gate.
+/// Content or representation requests rejected by bounded 2D execution admission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Render2dUnsupportedContent {
     /// A group-shadow request not supported by the current physical renderer.
