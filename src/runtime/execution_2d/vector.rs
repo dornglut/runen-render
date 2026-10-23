@@ -1171,10 +1171,27 @@ mod tests {
                 let original = old_path.iter().collect::<Vec<_>>();
                 assert_eq!(events.clone().collect::<Vec<_>>(), original);
                 assert_eq!(
-                    events.clone().flattened(tolerance as f32).collect::<Vec<_>>(),
-                    old_path.iter().flattened(tolerance as f32).collect::<Vec<_>>()
+                    events
+                        .clone()
+                        .flattened(tolerance as f32)
+                        .collect::<Vec<_>>(),
+                    old_path
+                        .iter()
+                        .flattened(tolerance as f32)
+                        .collect::<Vec<_>>()
                 );
-                for stroke in [None, Some(Render2dStrokeStyle::new(2.0, Render2dStrokeCap::Butt, Render2dStrokeJoin::Miter, 4.0).unwrap())] {
+                for stroke in [
+                    None,
+                    Some(
+                        Render2dStrokeStyle::new(
+                            2.0,
+                            Render2dStrokeCap::Butt,
+                            Render2dStrokeJoin::Miter,
+                            4.0,
+                        )
+                        .unwrap(),
+                    ),
+                ] {
                     let new = tessellate_shape(&shape, stroke, 3, 1.0, None);
                     let mut old = TessellationSink::new(None);
                     let result = if let Some(style) = stroke {
