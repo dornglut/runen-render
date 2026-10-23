@@ -4446,8 +4446,8 @@ mod tests {
             &mut work,
             &mut PreparationHostBudget::new(),
         )
-            .unwrap()
-            .expect("a sheared convex union has a certified exact erosion");
+        .unwrap()
+        .expect("a sheared convex union has a certified exact erosion");
         assert!(work > 0);
         assert!(!region.triangles.is_empty());
         assert_eq!(neutral_union_distance(&region.triangles, [17.0, 15.0]), 0.0);
@@ -4907,8 +4907,8 @@ mod tests {
                 &mut 0,
                 &mut PreparationHostBudget::new(),
             )
-                .unwrap()
-                .is_none(),
+            .unwrap()
+            .is_none(),
             "nonconvex union must remain unsupported, never treated as empty"
         );
     }

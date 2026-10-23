@@ -5277,16 +5277,15 @@ mod tests {
         );
         let failed_candidate = expected_local;
         assert!(failed_candidate > 0);
-        let expected =
-            support::certified_convex_erosion_mesh(
-                &mesh,
-                0.25,
-                &[8, 1],
-                &mut expected_local,
-                &mut support::PreparationHostBudget::new(),
-            )
-                .unwrap()
-                .unwrap();
+        let expected = support::certified_convex_erosion_mesh(
+            &mesh,
+            0.25,
+            &[8, 1],
+            &mut expected_local,
+            &mut support::PreparationHostBudget::new(),
+        )
+        .unwrap()
+        .unwrap();
         assert!(expected_local > failed_candidate);
         let append = shadow::append_work(&shadow::empty_mesh(), &expected, &[8, 1]).unwrap();
 
