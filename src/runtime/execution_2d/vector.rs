@@ -780,10 +780,8 @@ mod tests {
             Render2dCornerRadii::new(1.0, 2.0, 1.5, 0.5).unwrap(),
             Render2dCornerRadii::new(0.0, 2.0, 1.5, 0.0).unwrap(),
         ] {
-            let shape = Render2dShape::rounded_rect(
-                Render2dRect::new(-2.0, 1.0, 9.0, 8.0).unwrap(),
-                radii,
-            );
+            let shape =
+                Render2dShape::rounded_rect(Render2dRect::new(-2.0, 1.0, 9.0, 8.0).unwrap(), radii);
             let actual = build_path(&shape, tolerance).unwrap();
             let (rect, radii) = shape.as_rounded_rect().unwrap();
             let [x, y, w, h] = [rect.x(), rect.y(), rect.width(), rect.height()];
@@ -821,7 +819,8 @@ mod tests {
                 let angle = 2.0 * (1.0 - (tolerance / (2.0 * radius)).min(1.0)).acos();
                 let segments = (std::f64::consts::FRAC_PI_2 / angle).ceil().max(1.0) as usize;
                 for index in 0..=segments {
-                    let theta = start + std::f64::consts::FRAC_PI_2 * index as f64 / segments as f64;
+                    let theta =
+                        start + std::f64::consts::FRAC_PI_2 * index as f64 / segments as f64;
                     points.push(point(
                         narrow(center[0] + radius * theta.cos(), tolerance).unwrap(),
                         narrow(center[1] + radius * theta.sin(), tolerance).unwrap(),
