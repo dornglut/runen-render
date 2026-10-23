@@ -332,7 +332,9 @@ fn neutral_item(
                         scales.geometry_sample_scale,
                         max_buffer_bytes,
                         work,
-                    )? {
+                    )
+                    .map_err(|error| neutral_source_error(error, path))?
+                    {
                         let appended = work.append_admitted(&mut result, &mesh, path);
                         work.release_bytes(
                             mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>(),
