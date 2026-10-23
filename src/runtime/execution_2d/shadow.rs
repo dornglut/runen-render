@@ -1863,7 +1863,21 @@ fn append_triangles(
         }
     }
     if let Some(host) = host {
-        host.reserve_vector(&mut output.triangles, required, path)?;
+        // Amortize repeated Union appends: exact +3 growth on every child
+        // would relocate O(n²) vertices. The 2x policy is bounded by the
+        // existing geometry limit, and its entire NEW capacity is reserved
+        // while the old vector is still live.
+        let desired = if required > output.triangles.capacity() {
+            output
+                .triangles
+                .capacity()
+                .saturating_mul(2)
+                .min(MAX_NEUTRAL_VERTICES)
+                .max(required)
+        } else {
+            required
+        };
+        host.reserve_vector(&mut output.triangles, desired, path)?;
     } else {
         output
             .triangles
