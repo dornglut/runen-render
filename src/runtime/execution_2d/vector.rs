@@ -389,6 +389,15 @@ fn neutral_support_impl(
     // or enter tessellation before paying the same required setup work.
     if let Some((work, path)) = admitted.as_mut() {
         work.charge(256, path)?;
+        if let Some(authored) = shape.as_path() {
+            // Admission for the submitted path-command inventory precedes
+            // Lyon's private point/verb Vec growth. This counts known input
+            // operations; it does not prove the builder's heap peak.
+            if authored.commands().len() > MAX_ELEMENTS {
+                return Err(error(root_index, Render2dVectorError::ResourceLimit));
+            }
+            work.charge(authored.commands().len(), path)?;
+        }
     }
     let geometry = tessellate_shape(
         shape,
@@ -1224,9 +1233,34 @@ mod tests {
             super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 255
         );
         assert_eq!((host.live(), host.peak()), (0, 0));
-        // At the exact setup threshold the same F1 input now reaches
-        // physical construction and is correctly rejected for precision.
-        work_used -= 1;
+        // The exact 256 setup leaves only three units for four authored
+        // commands. Charge attempted original path preparation before Lyon
+        // builds its private point and verb storage.
+        work_used -= 4;
+        assert!(matches!(
+            neutral_support_admitted(
+                &badly_narrowed,
+                7,
+                1.0,
+                4096,
+                &mut super::super::shadow::NeutralPreparationWork::new(
+                    &mut work_used,
+                    &mut clips,
+                    &mut host,
+                ),
+                &owner,
+            ),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == owner
+        ));
+        assert_eq!(work_used, super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 3);
+        assert_eq!((host.live(), host.peak()), (0, 0));
+        // With all four path commands admitted, the same source reaches
+        // actual Lyon construction and its genuine physical precision error.
+        work_used = super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 256 - 4;
         assert!(matches!(
             neutral_support_admitted(
                 &badly_narrowed,

@@ -1188,7 +1188,7 @@ mod tests {
         // The one-triangle glyph pays four flattened path events and its
         // three-index original-vector scan before the late transform rejects.
         // Executed work is not refunded; temporary geometry is retired.
-        assert_eq!(work, cost + 512 + 256 + 4 + 3 * 64);
+        assert_eq!(work, cost + 512 + 256 + 4 + 4 + 3 * 64);
     }
 
     #[test]
