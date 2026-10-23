@@ -4532,9 +4532,19 @@ mod tests {
         let mut reference = builder();
         let source = reference.register_source(&item, &path).unwrap().unwrap();
         reference.host.reserve(SEED, &path).unwrap();
+        let factory_before = reference.host.live();
+        let factory_peak = std::cell::Cell::new(0_usize);
         reference
-            .prepare_registered_source(&source, prepare)
+            .prepare_registered_source(&source, |item, path, work| {
+                let mesh = prepare(item, path, work)?;
+                factory_peak.set(work.host.peak());
+                Ok(mesh)
+            })
             .unwrap();
+        // The returned vector source and the normalized clip copy each own
+        // six f64 vertices. Measure this inside the factory, before retained
+        // region-node metadata is added by the caller.
+        assert!(factory_peak.get() >= factory_before + 2 * 96);
         let Kind::Source(geometry) = &source.kind else {
             panic!("original vector source");
         };
@@ -4542,8 +4552,7 @@ mod tests {
         assert_eq!(mesh.triangles.len(), 6);
         assert_eq!(mesh.triangles.capacity() * size_of::<[f64; 2]>(), 96);
         let stage_peak = reference.host.peak() - SEED;
-        let retained = reference.host.live() - SEED;
-        assert!(stage_peak >= retained + 96); // factory source and normalized copy overlap
+        assert!(stage_peak >= reference.host.live() - SEED);
         let filler = support::MAX_SHADOW_HOST_BYTES - stage_peak;
 
         let mut exact = builder();
