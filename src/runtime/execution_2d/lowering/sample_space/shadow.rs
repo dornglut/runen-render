@@ -687,8 +687,7 @@ pub(super) fn prepare(
                         path,
                         &mut host,
                     )?;
-                    let projected_bytes =
-                        projected.triangles.capacity() * size_of::<[f64; 2]>();
+                    let projected_bytes = projected.triangles.capacity() * size_of::<[f64; 2]>();
                     let coverage = support::prepare_shadow_coverage_admitted(
                         &projected,
                         remaining_spread,
@@ -1752,15 +1751,13 @@ mod tests {
 
     #[test]
     fn nested_shadow_transform_copies_obey_exact_shared_host_peak() {
-        let composition = Render2dComposition::new([Render2dEntry::group(
-            Render2dGroup::new(
-                [legacy_group()],
-                Render2dAffineTransform::IDENTITY,
-                Vec::new(),
-                Render2dOpacity::OPAQUE,
-                Vec::new(),
-            ),
-        )])
+        let composition = Render2dComposition::new([Render2dEntry::group(Render2dGroup::new(
+            [legacy_group()],
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::OPAQUE,
+            Vec::new(),
+        ))])
         .unwrap();
         let mut resources = GpuResourceScope::new();
         let texture = resources
@@ -1829,5 +1826,4 @@ mod tests {
             })
         ));
     }
-
 }
