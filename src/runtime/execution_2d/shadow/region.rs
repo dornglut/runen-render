@@ -4532,7 +4532,9 @@ mod tests {
         let mut reference = builder();
         let source = reference.register_source(&item, &path).unwrap().unwrap();
         reference.host.reserve(SEED, &path).unwrap();
-        reference.prepare_registered_source(&source, prepare).unwrap();
+        reference
+            .prepare_registered_source(&source, prepare)
+            .unwrap();
         let Kind::Source(geometry) = &source.kind else {
             panic!("original vector source");
         };
