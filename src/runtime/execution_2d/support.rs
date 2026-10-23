@@ -2211,6 +2211,17 @@ fn reserve_erosion_buffer<T: Copy>(
     work: &mut dyn PreparationWork,
     path: &[usize],
 ) -> Result<(), crate::execution_2d::Render2dExecutionError> {
+    reserve_erosion_buffer_with_host(buffer, required, maximum, work, path, None)
+}
+
+fn reserve_erosion_buffer_with_host<T: Copy>(
+    buffer: &mut Vec<T>,
+    required: usize,
+    maximum: usize,
+    work: &mut dyn PreparationWork,
+    path: &[usize],
+    host: Option<&mut PreparationHostBudget>,
+) -> Result<(), crate::execution_2d::Render2dExecutionError> {
     let resource = |detail| {
         mask_failure(
             path,
@@ -2240,13 +2251,17 @@ fn reserve_erosion_buffer<T: Copy>(
         .max(4)
         .min(maximum)
         .max(required);
-    buffer
-        .try_reserve_exact(desired - buffer.len())
-        .map_err(|_| resource("continuous erosion buffer allocation failed"))?;
-    if buffer.capacity() > desired {
-        return Err(resource(
-            "continuous erosion allocated capacity exceeds admission",
-        ));
+    if let Some(host) = host {
+        host.reserve_vector(buffer, desired, path)?;
+    } else {
+        buffer
+            .try_reserve_exact(desired - buffer.len())
+            .map_err(|_| resource("continuous erosion buffer allocation failed"))?;
+        if buffer.capacity() > desired {
+            return Err(resource(
+                "continuous erosion allocated capacity exceeds admission",
+            ));
+        }
     }
     Ok(())
 }
@@ -2257,6 +2272,17 @@ fn push_erosion_buffer<T: Copy>(
     maximum: usize,
     work: &mut dyn PreparationWork,
     path: &[usize],
+) -> Result<(), crate::execution_2d::Render2dExecutionError> {
+    push_erosion_buffer_with_host(buffer, value, maximum, work, path, None)
+}
+
+fn push_erosion_buffer_with_host<T: Copy>(
+    buffer: &mut Vec<T>,
+    value: T,
+    maximum: usize,
+    work: &mut dyn PreparationWork,
+    path: &[usize],
+    host: Option<&mut PreparationHostBudget>,
 ) -> Result<(), crate::execution_2d::Render2dExecutionError> {
     // Checked extent/capacity, scalar copies, store and bounded control.
     charge_shadow_preparation_work(
@@ -2279,7 +2305,7 @@ fn push_erosion_buffer<T: Copy>(
         ));
     }
     if required > buffer.capacity() {
-        reserve_erosion_buffer(buffer, required, maximum, work, path)?;
+        reserve_erosion_buffer_with_host(buffer, required, maximum, work, path, host)?;
     }
     buffer.push(value);
     Ok(())
@@ -2344,6 +2370,15 @@ fn union_exterior_boundary(
     path: &[usize],
     aggregate_work: Option<&mut dyn PreparationWork>,
 ) -> Result<Vec<UnionBoundaryEdge>, crate::execution_2d::Render2dExecutionError> {
+    union_exterior_boundary_with_host(triangles, path, aggregate_work, None)
+}
+
+fn union_exterior_boundary_with_host(
+    triangles: &[[f64; 2]],
+    path: &[usize],
+    aggregate_work: Option<&mut dyn PreparationWork>,
+    mut host: Option<&mut PreparationHostBudget>,
+) -> Result<Vec<UnionBoundaryEdge>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
@@ -2379,143 +2414,155 @@ fn union_exterior_boundary(
     // Reuse this one edge-event buffer. Each other source edge emits at
     // most two collinear endpoints; every push still checks the bound.
     let mut intervals = Vec::new();
-    let mut work = pairs;
-    for (i, tri) in tris.iter().enumerate() {
-        charge_shadow_preparation_work(aggregate_work, 64, path)?;
-        let area = orient(tri[0], tri[1], tri[2]);
-        if !area.is_finite() {
-            return Err(precision(
-                "continuous erosion triangle area is not representable",
-            ));
-        }
-        if area == 0.0 {
-            continue;
-        }
-        for e in 0..3 {
+    let completed: Result<(), crate::execution_2d::Render2dExecutionError> = (|| {
+        let mut work = pairs;
+        for (i, tri) in tris.iter().enumerate() {
             charge_shadow_preparation_work(aggregate_work, 64, path)?;
-            let a = tri[e];
-            let b = tri[(e + 1) % 3];
-            let edge = [b[0] - a[0], b[1] - a[1]];
-            let length_squared = edge[0].mul_add(edge[0], edge[1] * edge[1]);
-            if !length_squared.is_finite() || length_squared == 0.0 {
-                return Err(precision("continuous erosion has collapsed boundary edge"));
+            let area = orient(tri[0], tri[1], tri[2]);
+            if !area.is_finite() {
+                return Err(precision(
+                    "continuous erosion triangle area is not representable",
+                ));
             }
-            intervals.clear();
-            push_erosion_buffer(&mut intervals, 0.0, interval_limit, aggregate_work, path)?;
-            push_erosion_buffer(&mut intervals, 1.0, interval_limit, aggregate_work, path)?;
-            for (j, other) in tris.iter().enumerate() {
-                // Pair control, source orientation and indexed vertex loads.
+            if area == 0.0 {
+                continue;
+            }
+            for e in 0..3 {
                 charge_shadow_preparation_work(aggregate_work, 64, path)?;
-                if i == j || orient(other[0], other[1], other[2]) == 0.0 {
-                    continue;
+                let a = tri[e];
+                let b = tri[(e + 1) % 3];
+                let edge = [b[0] - a[0], b[1] - a[1]];
+                let length_squared = edge[0].mul_add(edge[0], edge[1] * edge[1]);
+                if !length_squared.is_finite() || length_squared == 0.0 {
+                    return Err(precision("continuous erosion has collapsed boundary edge"));
                 }
-                for k in 0..3 {
-                    // Cross products/ratios, finite/range guards, and both
-                    // possible collinear projections. Pushes pay separately.
-                    charge_shadow_preparation_work(aggregate_work, 192, path)?;
-                    let c = other[k];
-                    let d = other[(k + 1) % 3];
-                    let v = [d[0] - c[0], d[1] - c[1]];
-                    let divisor = edge[0].mul_add(v[1], -(edge[1] * v[0]));
-                    let difference = [c[0] - a[0], c[1] - a[1]];
-                    if divisor != 0.0 {
-                        let t = difference[0].mul_add(v[1], -(difference[1] * v[0])) / divisor;
-                        let u =
-                            difference[0].mul_add(edge[1], -(difference[1] * edge[0])) / divisor;
-                        if !t.is_finite() || !u.is_finite() {
-                            return Err(precision(
-                                "continuous erosion edge crossing lost precision",
-                            ));
-                        }
-                        if t > 0.0 && t < 1.0 && (0.0..=1.0).contains(&u) {
-                            push_erosion_buffer(
-                                &mut intervals,
-                                t,
-                                interval_limit,
-                                aggregate_work,
-                                path,
-                            )?;
-                        }
-                    } else if orient(a, b, c) == 0.0 && orient(a, b, d) == 0.0 {
-                        for p in [c, d] {
-                            let t = (p[0] - a[0]).mul_add(edge[0], (p[1] - a[1]) * edge[1])
-                                / length_squared;
-                            if !t.is_finite() {
+                intervals.clear();
+                push_erosion_buffer_with_host(&mut intervals, 0.0, interval_limit, aggregate_work, path, host.as_deref_mut())?;
+                push_erosion_buffer_with_host(&mut intervals, 1.0, interval_limit, aggregate_work, path, host.as_deref_mut())?;
+                for (j, other) in tris.iter().enumerate() {
+                    // Pair control, source orientation and indexed vertex loads.
+                    charge_shadow_preparation_work(aggregate_work, 64, path)?;
+                    if i == j || orient(other[0], other[1], other[2]) == 0.0 {
+                        continue;
+                    }
+                    for k in 0..3 {
+                        // Cross products/ratios, finite/range guards, and both
+                        // possible collinear projections. Pushes pay separately.
+                        charge_shadow_preparation_work(aggregate_work, 192, path)?;
+                        let c = other[k];
+                        let d = other[(k + 1) % 3];
+                        let v = [d[0] - c[0], d[1] - c[1]];
+                        let divisor = edge[0].mul_add(v[1], -(edge[1] * v[0]));
+                        let difference = [c[0] - a[0], c[1] - a[1]];
+                        if divisor != 0.0 {
+                            let t = difference[0].mul_add(v[1], -(difference[1] * v[0])) / divisor;
+                            let u =
+                                difference[0].mul_add(edge[1], -(difference[1] * edge[0])) / divisor;
+                            if !t.is_finite() || !u.is_finite() {
                                 return Err(precision(
-                                    "continuous erosion collinear crossing lost precision",
+                                    "continuous erosion edge crossing lost precision",
                                 ));
                             }
-                            if t > 0.0 && t < 1.0 {
-                                push_erosion_buffer(
+                            if t > 0.0 && t < 1.0 && (0.0..=1.0).contains(&u) {
+                                push_erosion_buffer_with_host(
                                     &mut intervals,
                                     t,
                                     interval_limit,
                                     aggregate_work,
                                     path,
+                                    host.as_deref_mut(),
                                 )?;
+                            }
+                        } else if orient(a, b, c) == 0.0 && orient(a, b, d) == 0.0 {
+                            for p in [c, d] {
+                                let t = (p[0] - a[0]).mul_add(edge[0], (p[1] - a[1]) * edge[1])
+                                    / length_squared;
+                                if !t.is_finite() {
+                                    return Err(precision(
+                                        "continuous erosion collinear crossing lost precision",
+                                    ));
+                                }
+                                if t > 0.0 && t < 1.0 {
+                                    push_erosion_buffer_with_host(
+                                        &mut intervals,
+                                        t,
+                                        interval_limit,
+                                        aggregate_work,
+                                        path,
+                                        host.as_deref_mut(),
+                                    )?;
+                                }
                             }
                         }
                     }
                 }
-            }
-            sort_erosion_intervals(&mut intervals, aggregate_work, path)?;
-            let outward = if area > 0.0 {
-                [edge[1], -edge[0]]
-            } else {
-                [-edge[1], edge[0]]
-            };
-            for interval in intervals.windows(2) {
-                if interval[0] >= interval[1] {
-                    continue;
+                sort_erosion_intervals(&mut intervals, aggregate_work, path)?;
+                let outward = if area > 0.0 {
+                    [edge[1], -edge[0]]
+                } else {
+                    [-edge[1], edge[0]]
+                };
+                for interval in intervals.windows(2) {
+                    if interval[0] >= interval[1] {
+                        continue;
+                    }
+                    work = work
+                        .checked_add(tris.len())
+                        .ok_or_else(|| resource("continuous erosion exposed-edge work overflow"))?;
+                    if work > MAX_BOUNDARY_OPERATIONS {
+                        return Err(resource(
+                            "continuous erosion exposed-edge classification exceeds budget",
+                        ));
+                    }
+                    // At most one area and three side/derivative orientations
+                    // per source, including indexed loads and short-circuit tests.
+                    charge_shadow_preparation_work(aggregate_work, 64 + 192 * tris.len(), path)?;
+                    let t = (interval[0] + interval[1]) * 0.5;
+                    let p = [edge[0].mul_add(t, a[0]), edge[1].mul_add(t, a[1])];
+                    if tris.iter().enumerate().any(|(j, other)| {
+                        j != i && oriented_triangle_contains_outward(other, p, outward)
+                    }) {
+                        continue;
+                    }
+                    charge_shadow_preparation_work(aggregate_work, 64, path)?;
+                    let endpoints = [
+                        [
+                            edge[0].mul_add(interval[0], a[0]),
+                            edge[1].mul_add(interval[0], a[1]),
+                        ],
+                        [
+                            edge[0].mul_add(interval[1], a[0]),
+                            edge[1].mul_add(interval[1], a[1]),
+                        ],
+                    ];
+                    if !endpoints.iter().flatten().all(|v| v.is_finite()) {
+                        return Err(precision("continuous erosion boundary endpoint invalid"));
+                    }
+                    push_erosion_buffer_with_host(
+                        &mut boundary,
+                        endpoints,
+                        boundary_limit,
+                        aggregate_work,
+                        path,
+                        host.as_deref_mut(),
+                    )?;
                 }
-                work = work
-                    .checked_add(tris.len())
-                    .ok_or_else(|| resource("continuous erosion exposed-edge work overflow"))?;
-                if work > MAX_BOUNDARY_OPERATIONS {
-                    return Err(resource(
-                        "continuous erosion exposed-edge classification exceeds budget",
-                    ));
-                }
-                // At most one area and three side/derivative orientations
-                // per source, including indexed loads and short-circuit tests.
-                charge_shadow_preparation_work(aggregate_work, 64 + 192 * tris.len(), path)?;
-                let t = (interval[0] + interval[1]) * 0.5;
-                let p = [edge[0].mul_add(t, a[0]), edge[1].mul_add(t, a[1])];
-                if tris.iter().enumerate().any(|(j, other)| {
-                    j != i && oriented_triangle_contains_outward(other, p, outward)
-                }) {
-                    continue;
-                }
-                charge_shadow_preparation_work(aggregate_work, 64, path)?;
-                let endpoints = [
-                    [
-                        edge[0].mul_add(interval[0], a[0]),
-                        edge[1].mul_add(interval[0], a[1]),
-                    ],
-                    [
-                        edge[0].mul_add(interval[1], a[0]),
-                        edge[1].mul_add(interval[1], a[1]),
-                    ],
-                ];
-                if !endpoints.iter().flatten().all(|v| v.is_finite()) {
-                    return Err(precision("continuous erosion boundary endpoint invalid"));
-                }
-                push_erosion_buffer(
-                    &mut boundary,
-                    endpoints,
-                    boundary_limit,
-                    aggregate_work,
-                    path,
-                )?;
             }
         }
+        if !triangles.is_empty() && boundary.is_empty() {
+            return Err(precision(
+                "continuous erosion cannot certify exterior boundary",
+            ));
+        }
+        Ok(())
+    })();
+    if let Some(host) = host {
+        host.release(intervals.capacity() * size_of::<f64>());
+        if completed.is_err() {
+            host.release(boundary.capacity() * size_of::<UnionBoundaryEdge>());
+        }
     }
-    if !triangles.is_empty() && boundary.is_empty() {
-        return Err(precision(
-            "continuous erosion cannot certify exterior boundary",
-        ));
-    }
-    Ok(boundary)
+    completed.map(|()| boundary)
 }
 
 /// A conservative separation certificate for the exact union exterior.
@@ -2573,6 +2620,17 @@ fn certified_convex_eroded_union(
     path: &[usize],
     aggregate_work: Option<&mut dyn PreparationWork>,
 ) -> Result<Option<Vec<[f64; 2]>>, crate::execution_2d::Render2dExecutionError> {
+    certified_convex_eroded_union_with_host(triangles, exterior, radius, path, aggregate_work, None)
+}
+
+fn certified_convex_eroded_union_with_host(
+    triangles: &[[f64; 2]],
+    exterior: &[UnionBoundaryEdge],
+    radius: f64,
+    path: &[usize],
+    aggregate_work: Option<&mut dyn PreparationWork>,
+    mut host: Option<&mut PreparationHostBudget>,
+) -> Result<Option<Vec<[f64; 2]>>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
     let resource = |detail| mask_failure(path, Render2dSampleSpaceError::ResourceLimit, detail);
@@ -2615,146 +2673,159 @@ fn certified_convex_eroded_union(
     }
     let mut standalone_work = 0;
     let aggregate_work = aggregate_work.unwrap_or(&mut standalone_work);
-    charge_shadow_preparation_work(aggregate_work, 64, path)?;
     let mut planes = Vec::new();
-    for &[a, b] in exterior {
-        // Length/finite tests, supporting-side state and plane setup.
-        charge_shadow_preparation_work(aggregate_work, 64, path)?;
-        let length = (b[0] - a[0]).hypot(b[1] - a[1]);
-        if !length.is_finite() || length == 0.0 {
-            return Err(precision("convex erosion exposed boundary is degenerate"));
-        }
-        let mut side = 0.0_f64;
-        for &point in triangles {
-            // One six-arithmetic orientation, finite/sign/side tests,
-            // indexed loads, state writes and loop progression.
-            charge_shadow_preparation_work(aggregate_work, 32, path)?;
-            let cross = orient(a, b, point);
-            if !cross.is_finite() {
-                return Err(precision("convex erosion supporting line lost precision"));
-            }
-            if cross == 0.0 {
-                continue;
-            }
-            if side == 0.0 {
-                side = cross.signum();
-            } else if cross.signum() != side {
-                // An exposed edge with triangle vertices on both sides
-                // cannot define a supporting halfplane: reject certificate.
-                return Ok(None);
-            }
-        }
-        if side == 0.0 {
-            return Ok(None);
-        }
-        push_erosion_buffer(&mut planes, (a, b, side, length), m, aggregate_work, path)?;
-    }
     let mut output = Vec::new();
-    let polygon_limit = m + 3;
     let mut polygon = Vec::new();
     let mut next = Vec::new();
-    // Two bounded scratch buffers survive every triangle and plane. Neither
-    // triangle copies nor clipping pushes may allocate infallibly.
-    reserve_erosion_buffer(
-        &mut polygon,
-        polygon_limit,
-        polygon_limit,
-        aggregate_work,
-        path,
-    )?;
-    reserve_erosion_buffer(
-        &mut next,
-        polygon_limit,
-        polygon_limit,
-        aggregate_work,
-        path,
-    )?;
-    for triangle in triangles.as_chunks::<3>().0 {
+    let completed: Result<Option<()>, crate::execution_2d::Render2dExecutionError> = (|| {
         charge_shadow_preparation_work(aggregate_work, 64, path)?;
-        if orient(triangle[0], triangle[1], triangle[2]) == 0.0 {
-            continue;
-        }
-        polygon.clear();
-        for &point in triangle {
-            push_erosion_buffer(&mut polygon, point, polygon_limit, aggregate_work, path)?;
-        }
-        for &(a, b, side, length) in &planes {
+        for &[a, b] in exterior {
+            // Length/finite tests, supporting-side state and plane setup.
             charge_shadow_preparation_work(aggregate_work, 64, path)?;
-            if polygon.len() < 3 {
-                break;
+            let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+            if !length.is_finite() || length == 0.0 {
+                return Err(precision("convex erosion exposed boundary is degenerate"));
             }
-            next.clear();
-            let next_limit = polygon.len() + 1;
-            for j in 0..polygon.len() {
-                // Two orientations/distances and their finite tests, up to
-                // one intersection, range/finite guards and indexed control.
-                // Checked output pushes admit their own copies separately.
-                charge_shadow_preparation_work(aggregate_work, 192, path)?;
-                let p = polygon[j];
-                let q = polygon[(j + 1) % polygon.len()];
-                let dp = side * orient(a, b, p) / length - radius;
-                let dq = side * orient(a, b, q) / length - radius;
-                if !dp.is_finite() || !dq.is_finite() {
-                    return Err(precision("convex erosion clip distance lost precision"));
+            let mut side = 0.0_f64;
+            for &point in triangles {
+                // One six-arithmetic orientation, finite/sign/side tests,
+                // indexed loads, state writes and loop progression.
+                charge_shadow_preparation_work(aggregate_work, 32, path)?;
+                let cross = orient(a, b, point);
+                if !cross.is_finite() {
+                    return Err(precision("convex erosion supporting line lost precision"));
                 }
-                if (dp >= 0.0) != (dq >= 0.0) {
-                    let denominator = dp - dq;
-                    if denominator == 0.0 {
-                        return Err(precision("convex erosion clip intersection is singular"));
-                    }
-                    let t = dp / denominator;
-                    if !t.is_finite() || !(0.0..=1.0).contains(&t) {
-                        return Err(precision("convex erosion clip ratio is unrepresentable"));
-                    }
-                    let intersection = [
-                        (q[0] - p[0]).mul_add(t, p[0]),
-                        (q[1] - p[1]).mul_add(t, p[1]),
-                    ];
-                    if !intersection.iter().all(|v| v.is_finite()) {
-                        return Err(precision("convex erosion intersection is not finite"));
-                    }
-                    // A next polygon exceeding n+1 vertices invalidates the
-                    // admitted convex clipping inventory. Reject before the
-                    // push, even when an old scratch allocation is larger.
-                    push_erosion_buffer(&mut next, intersection, next_limit, aggregate_work, path)?;
+                if cross == 0.0 {
+                    continue;
                 }
-                if dq >= 0.0 {
-                    push_erosion_buffer(&mut next, q, next_limit, aggregate_work, path)?;
+                if side == 0.0 {
+                    side = cross.signum();
+                } else if cross.signum() != side {
+                    // An exposed edge with triangle vertices on both sides
+                    // cannot define a supporting halfplane: reject certificate.
+                    return Ok(None);
                 }
             }
-            std::mem::swap(&mut polygon, &mut next);
+            if side == 0.0 {
+                return Ok(None);
+            }
+            push_erosion_buffer_with_host(&mut planes, (a, b, side, length), m, aggregate_work, path, host.as_deref_mut())?;
         }
-        if polygon.len() < 3 {
-            continue;
-        }
-        for i in 1..polygon.len() - 1 {
-            // Output orientation, finite/degenerate tests, extent admission,
-            // three point copies and bounded loop progression.
+        let polygon_limit = m + 3;
+        // Two bounded scratch buffers survive every triangle and plane. Neither
+        // triangle copies nor clipping pushes may allocate infallibly.
+        reserve_erosion_buffer_with_host(
+            &mut polygon,
+            polygon_limit,
+            polygon_limit,
+            aggregate_work,
+            path,
+            host.as_deref_mut(),
+        )?;
+        reserve_erosion_buffer_with_host(
+            &mut next,
+            polygon_limit,
+            polygon_limit,
+            aggregate_work,
+            path,
+            host.as_deref_mut(),
+        )?;
+        for triangle in triangles.as_chunks::<3>().0 {
             charge_shadow_preparation_work(aggregate_work, 64, path)?;
-            let tri = [polygon[0], polygon[i], polygon[i + 1]];
-            let area = orient(tri[0], tri[1], tri[2]);
-            if !area.is_finite() {
-                return Err(precision(
-                    "convex erosion output triangle area lost precision",
-                ));
-            }
-            if area == 0.0 {
+            if orient(triangle[0], triangle[1], triangle[2]) == 0.0 {
                 continue;
             }
-            let size = output
-                .len()
-                .checked_add(3)
-                .ok_or_else(|| resource("convex erosion triangle count overflow"))?;
-            if size > MAX_NEUTRAL_MASK_SAMPLES {
-                return Err(resource(
-                    "convex erosion triangle retention exceeds admission",
-                ));
+            polygon.clear();
+            for &point in triangle {
+                push_erosion_buffer_with_host(&mut polygon, point, polygon_limit, aggregate_work, path, host.as_deref_mut())?;
             }
-            reserve_erosion_buffer(&mut output, size, retained_vertices, aggregate_work, path)?;
-            output.extend(tri);
+            for &(a, b, side, length) in &planes {
+                charge_shadow_preparation_work(aggregate_work, 64, path)?;
+                if polygon.len() < 3 {
+                    break;
+                }
+                next.clear();
+                let next_limit = polygon.len() + 1;
+                for j in 0..polygon.len() {
+                    // Two orientations/distances and their finite tests, up to
+                    // one intersection, range/finite guards and indexed control.
+                    // Checked output pushes admit their own copies separately.
+                    charge_shadow_preparation_work(aggregate_work, 192, path)?;
+                    let p = polygon[j];
+                    let q = polygon[(j + 1) % polygon.len()];
+                    let dp = side * orient(a, b, p) / length - radius;
+                    let dq = side * orient(a, b, q) / length - radius;
+                    if !dp.is_finite() || !dq.is_finite() {
+                        return Err(precision("convex erosion clip distance lost precision"));
+                    }
+                    if (dp >= 0.0) != (dq >= 0.0) {
+                        let denominator = dp - dq;
+                        if denominator == 0.0 {
+                            return Err(precision("convex erosion clip intersection is singular"));
+                        }
+                        let t = dp / denominator;
+                        if !t.is_finite() || !(0.0..=1.0).contains(&t) {
+                            return Err(precision("convex erosion clip ratio is unrepresentable"));
+                        }
+                        let intersection = [
+                            (q[0] - p[0]).mul_add(t, p[0]),
+                            (q[1] - p[1]).mul_add(t, p[1]),
+                        ];
+                        if !intersection.iter().all(|v| v.is_finite()) {
+                            return Err(precision("convex erosion intersection is not finite"));
+                        }
+                        // A next polygon exceeding n+1 vertices invalidates the
+                        // admitted convex clipping inventory. Reject before the
+                        // push, even when an old scratch allocation is larger.
+                        push_erosion_buffer_with_host(&mut next, intersection, next_limit, aggregate_work, path, host.as_deref_mut())?;
+                    }
+                    if dq >= 0.0 {
+                        push_erosion_buffer_with_host(&mut next, q, next_limit, aggregate_work, path, host.as_deref_mut())?;
+                    }
+                }
+                std::mem::swap(&mut polygon, &mut next);
+            }
+            if polygon.len() < 3 {
+                continue;
+            }
+            for i in 1..polygon.len() - 1 {
+                // Output orientation, finite/degenerate tests, extent admission,
+                // three point copies and bounded loop progression.
+                charge_shadow_preparation_work(aggregate_work, 64, path)?;
+                let tri = [polygon[0], polygon[i], polygon[i + 1]];
+                let area = orient(tri[0], tri[1], tri[2]);
+                if !area.is_finite() {
+                    return Err(precision(
+                        "convex erosion output triangle area lost precision",
+                    ));
+                }
+                if area == 0.0 {
+                    continue;
+                }
+                let size = output
+                    .len()
+                    .checked_add(3)
+                    .ok_or_else(|| resource("convex erosion triangle count overflow"))?;
+                if size > MAX_NEUTRAL_MASK_SAMPLES {
+                    return Err(resource(
+                        "convex erosion triangle retention exceeds admission",
+                    ));
+                }
+                reserve_erosion_buffer_with_host(&mut output, size, retained_vertices, aggregate_work, path, host.as_deref_mut())?;
+                output.extend(tri);
+            }
+        }
+        Ok(Some(()))
+    })();
+    if let Some(host) = host {
+        host.release(planes.capacity() * size_of::<([f64; 2], [f64; 2], f64, f64)>());
+        host.release(polygon.capacity() * size_of::<[f64; 2]>());
+        host.release(next.capacity() * size_of::<[f64; 2]>());
+        if !matches!(&completed, Ok(Some(()))) {
+            host.release(output.capacity() * size_of::<[f64; 2]>());
         }
     }
-    Ok(Some(output))
+    completed.map(|result| result.map(|()| output))
 }
 
 /// Certify a renderer-private nested *negative* Euclidean spread as exact
@@ -2802,6 +2873,7 @@ pub(super) fn certified_convex_erosion_mesh(
     }
     let mut triangles = Vec::<[f64; 2]>::new();
     let mut rectangle_derived = Vec::<[f64; 2]>::new();
+    let mut convex_derived = Vec::<[f64; 2]>::new();
     let completed: Result<Option<()>, crate::execution_2d::Render2dExecutionError> = (|| {
         // Charge contribution-wide inspection and normalization BEFORE another
         // potentially large temporary triangle payload is materialized.
@@ -2878,18 +2950,26 @@ pub(super) fn certified_convex_erosion_mesh(
                     std::borrow::Cow::Borrowed(&rectangle_derived)
                 }
             } else {
-                let boundary = union_exterior_boundary(&triangles, path, Some(aggregate_work))?;
-                let Some(derived) = certified_convex_eroded_union(
+                let boundary = union_exterior_boundary_with_host(
+                    &triangles,
+                    path,
+                    Some(aggregate_work),
+                    Some(&mut *host),
+                )?;
+                let derived = certified_convex_eroded_union_with_host(
                     &triangles,
                     &boundary,
                     radius,
                     path,
                     Some(aggregate_work),
-                )?
-                else {
+                    Some(&mut *host),
+                );
+                host.release(boundary.capacity() * size_of::<UnionBoundaryEdge>());
+                let Some(derived) = derived? else {
                     return Ok(None);
                 };
-                std::borrow::Cow::Owned(derived)
+                convex_derived = derived;
+                std::borrow::Cow::Borrowed(&convex_derived)
             };
         if derived.len() > MAX_NEUTRAL_MASK_SAMPLES {
             return Err(resource(
@@ -2928,6 +3008,7 @@ pub(super) fn certified_convex_erosion_mesh(
     // Normalize/rectangle scratch end before the consumer can retire the
     // separately preadmitted output. Actual heap capacities, not lengths,
     // are the accounting units for both successful and failed attempts.
+    host.release(convex_derived.capacity() * size_of::<[f64; 2]>());
     host.release(rectangle_derived.capacity() * size_of::<[f64; 2]>());
     host.release(triangles.capacity() * size_of::<[f64; 2]>());
     if !matches!(&completed, Ok(Some(()))) {
@@ -4419,6 +4500,73 @@ mod tests {
         ));
         assert_eq!(host.live(), before);
         assert!(work > 0, "failed peak allocation keeps paid arithmetic");
+    }
+
+    #[test]
+    fn general_convex_erosion_retains_only_output_and_refunds_failed_peak() {
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [10.0, 10.0],
+                [20.0, 10.0],
+                [25.0, 20.0],
+                [10.0, 10.0],
+                [25.0, 20.0],
+                [15.0, 20.0],
+            ],
+            bounds: [10.0, 10.0, 25.0, 20.0],
+        };
+        let mut host = PreparationHostBudget::new();
+        let mut work = 0;
+        let output = certified_convex_erosion_mesh(
+            &source, 1.0, &[8, 1], &mut work, &mut host,
+        )
+        .unwrap()
+        .expect("sheared convex support has exact disk erosion");
+        assert!(!output.triangles.is_empty());
+        let output_bytes = output.triangles.capacity() * size_of::<[f64; 2]>();
+        assert_eq!(host.live(), output_bytes, "all proof scratch must retire");
+        let peak = host.peak();
+        assert!(
+            peak > output_bytes + source.triangles.len() * size_of::<[f64; 2]>(),
+            "boundary, supporting planes and clipping scratch must overlap"
+        );
+        assert!(work > 0);
+
+        let mut rejected = PreparationHostBudget::new();
+        rejected.reserve(MAX_SHADOW_HOST_BYTES - peak + 1, &[8, 2]).unwrap();
+        let before = rejected.live();
+        let mut failed_work = 0;
+        assert!(matches!(
+            certified_convex_erosion_mesh(
+                &source, 1.0, &[8, 2], &mut failed_work, &mut rejected,
+            ),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [8, 2]
+        ));
+        assert_eq!(rejected.live(), before, "rejected buffers must be retired");
+        assert!(failed_work > 0, "CPU work remains paid across rejection");
+
+        let nonconvex = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [10.0, 10.0], [14.0, 10.0], [10.0, 12.0],
+                [14.0, 10.0], [14.0, 12.0], [10.0, 12.0],
+                [10.0, 12.0], [12.0, 12.0], [10.0, 14.0],
+                [12.0, 12.0], [12.0, 14.0], [10.0, 14.0],
+            ],
+            bounds: [10.0, 10.0, 14.0, 14.0],
+        };
+        let mut unsupported = PreparationHostBudget::new();
+        let mut work = 0;
+        assert!(certified_convex_erosion_mesh(
+            &nonconvex, 0.25, &[8, 3], &mut work, &mut unsupported,
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(unsupported.live(), 0, "false convex certificate refunds scratch");
     }
 
     #[test]
