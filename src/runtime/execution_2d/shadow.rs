@@ -2073,7 +2073,10 @@ fn triangle_intersection(
     let winding = orient(clip[0], clip[1], clip[2]);
     let source_turn = orient(source[0], source[1], source[2]);
     if !winding.is_finite() || !source_turn.is_finite() {
-        return Err(precision(path, "neutral clip triangle orientation loses precision"));
+        return Err(precision(
+            path,
+            "neutral clip triangle orientation loses precision",
+        ));
     }
     if winding == 0.0 || source_turn == 0.0 {
         return Ok(ClipPolygon::empty());
@@ -2112,7 +2115,10 @@ fn triangle_intersection(
                 }
                 let t = d0 / denominator;
                 if !t.is_finite() {
-                    return Err(precision(path, "neutral clip intersection factor lost precision"));
+                    return Err(precision(
+                        path,
+                        "neutral clip intersection factor lost precision",
+                    ));
                 }
                 let intersection = [
                     (q[0] - p[0]).mul_add(t, p[0]),
