@@ -394,89 +394,89 @@ fn neutral_support_impl(
     // Keep geometry output and final source storage under the same host owner
     // until source conversion completes (including every error exit).
     let prepared = (|| -> Result<Option<NeutralMesh>, Render2dExecutionError> {
-    let mut triangles = Vec::new();
-    if let Some((work, path)) = admitted.as_mut() {
-        // Only the per-index scan work remains: the 256 setup was paid before
-        // Lyon allocation. Do not double-charge successful source work.
-        // Lyon preprocessing/sweep remain separate unproved owners.
-        let scan_cost = geometry
-            .indices
-            .len()
-            .checked_mul(64)
-            .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
-        work.charge(scan_cost, path)?;
-        // Preflight all *actual* emitted triangles before committing a host
-        // lease, rather than reserving tessellator triangles later rejected
-        // by a singular transform. This source is immutable and the second
-        // pass uses the identical deterministic conversion.
-        let mut required = 0_usize;
-        for indices in geometry.indices.as_chunks::<3>().0 {
-            if transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
-                .is_some()
-            {
-                required = required
+        let mut triangles = Vec::new();
+        if let Some((work, path)) = admitted.as_mut() {
+            // Only the per-index scan work remains: the 256 setup was paid before
+            // Lyon allocation. Do not double-charge successful source work.
+            // Lyon preprocessing/sweep remain separate unproved owners.
+            let scan_cost = geometry
+                .indices
+                .len()
+                .checked_mul(64)
+                .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
+            work.charge(scan_cost, path)?;
+            // Preflight all *actual* emitted triangles before committing a host
+            // lease, rather than reserving tessellator triangles later rejected
+            // by a singular transform. This source is immutable and the second
+            // pass uses the identical deterministic conversion.
+            let mut required = 0_usize;
+            for indices in geometry.indices.as_chunks::<3>().0 {
+                if transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
+                    .is_some()
+                {
+                    required = required
+                        .checked_add(3)
+                        .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
+                    let bytes = u64::try_from(required)
+                        .ok()
+                        .and_then(|n| {
+                            n.checked_mul(crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE)
+                        })
+                        .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
+                    if required > MAX_ELEMENTS || bytes > max_buffer_bytes {
+                        return Err(error(root_index, Render2dVectorError::ResourceLimit));
+                    }
+                }
+            }
+            work.reserve_vector(&mut triangles, required, path)?;
+        }
+        let mut bounds = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        let emitted = (|| -> Result<(), Render2dExecutionError> {
+            for indices in geometry.indices.as_chunks::<3>().0 {
+                let Some(triangle) =
+                    transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
+                else {
+                    continue;
+                };
+                let count = triangles
+                    .len()
                     .checked_add(3)
                     .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
-                let bytes = u64::try_from(required)
+                let bytes = u64::try_from(count)
                     .ok()
                     .and_then(|n| {
                         n.checked_mul(crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE)
                     })
                     .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
-                if required > MAX_ELEMENTS || bytes > max_buffer_bytes {
+                if count > MAX_ELEMENTS || bytes > max_buffer_bytes {
                     return Err(error(root_index, Render2dVectorError::ResourceLimit));
                 }
+                for [x, y] in triangle {
+                    bounds[0] = bounds[0].min(x);
+                    bounds[1] = bounds[1].min(y);
+                    bounds[2] = bounds[2].max(x);
+                    bounds[3] = bounds[3].max(y);
+                    triangles.push([x, y]);
+                }
             }
-        }
-        work.reserve_vector(&mut triangles, required, path)?;
-    }
-    let mut bounds = [
-        f64::INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::NEG_INFINITY,
-    ];
-    let emitted = (|| -> Result<(), Render2dExecutionError> {
-        for indices in geometry.indices.as_chunks::<3>().0 {
-            let Some(triangle) =
-                transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
-            else {
-                continue;
-            };
-            let count = triangles
-                .len()
-                .checked_add(3)
-                .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
-            let bytes = u64::try_from(count)
-                .ok()
-                .and_then(|n| {
-                    n.checked_mul(crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE)
-                })
-                .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
-            if count > MAX_ELEMENTS || bytes > max_buffer_bytes {
-                return Err(error(root_index, Render2dVectorError::ResourceLimit));
+            Ok(())
+        })();
+        if let Err(err) = emitted {
+            if let Some((work, _)) = admitted.as_mut() {
+                work.release_bytes(triangles.capacity() * std::mem::size_of::<[f64; 2]>());
             }
-            for [x, y] in triangle {
-                bounds[0] = bounds[0].min(x);
-                bounds[1] = bounds[1].min(y);
-                bounds[2] = bounds[2].max(x);
-                bounds[3] = bounds[3].max(y);
-                triangles.push([x, y]);
-            }
+            return Err(err);
         }
-        Ok(())
-    })();
-    if let Err(err) = emitted {
-        if let Some((work, _)) = admitted.as_mut() {
-            work.release_bytes(triangles.capacity() * std::mem::size_of::<[f64; 2]>());
-        }
-        return Err(err);
-    }
-    Ok((!triangles.is_empty()).then_some(NeutralMesh {
-        units_per_parent_logical_unit: scale,
-        triangles,
-        bounds,
-    }))
+        Ok((!triangles.is_empty()).then_some(NeutralMesh {
+            units_per_parent_logical_unit: scale,
+            triangles,
+            bounds,
+        }))
     })();
     // The physical scratch is destroyed before its host lease is retired.
     let scratch_bytes = geometry.leased_bytes();
