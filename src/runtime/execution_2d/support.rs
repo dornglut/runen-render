@@ -2852,6 +2852,15 @@ pub(super) fn certified_convex_erosion_mesh(
                 Vec::new()
             } else {
                 let [x0, y0, x1, y1] = bounds;
+                // A strictly nonempty original rectangle must not turn into
+                // an empty caster just because its f64 determinant underflows.
+                // An invalid inset cannot certify complete signed erosion.
+                let area = orient([x0, y0], [x1, y0], [x0, y1]);
+                if !area.is_finite() || area == 0.0 {
+                    return Err(precision(
+                        "nested certified rectangle inset area lost precision",
+                    ));
+                }
                 vec![[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]]
             }
         } else {
@@ -4511,6 +4520,33 @@ mod tests {
         }
         assert_eq!(local, paid, "rejected admission executes no geometry phase");
         assert_eq!(graph, MAX_COMPOSITIONAL_SHADOW_WORK - 1);
+    }
+
+    #[test]
+    fn nonempty_subnormal_erosion_inset_must_not_appear_empty() {
+        let side = 1.0e-200;
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [0.0, 0.0],
+                [side, 0.0],
+                [0.0, side],
+                [side, 0.0],
+                [side, side],
+                [0.0, side],
+            ],
+            bounds: [0.0, 0.0, side, side],
+        };
+        let mut work = 0;
+        assert!(matches!(
+            certified_convex_erosion_mesh(&source, 1.0e-201, &[5, 1], &mut work),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                detail,
+            }) if path == [5, 1] && detail == "nested certified rectangle inset area lost precision"
+        ));
+        assert!(work > 0);
     }
 
     #[test]
