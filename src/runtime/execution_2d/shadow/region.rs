@@ -2311,7 +2311,10 @@ impl NeutralRegionBuilder {
                                 path,
                             )?;
                             let mut shifted = shadow::empty_mesh();
-                            self.charge_graph_work(shadow::append_work(&shifted, caster, path)?, path)?;
+                            self.charge_graph_work(
+                                shadow::append_work(&shifted, caster, path)?,
+                                path,
+                            )?;
                             shadow::append_admitted(
                                 &mut shifted,
                                 caster,

@@ -2980,7 +2980,8 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
         host.reserve_vector(&mut rectangles, count, path)?;
         let mut largest = 0.0_f64;
         for triangles in source.triangles.as_chunks::<6>().0 {
-            let Some(bounds) = charge_and_certify_rectangle(triangles, aggregate_work, path)? else {
+            let Some(bounds) = charge_and_certify_rectangle(triangles, aggregate_work, path)?
+            else {
                 return Ok(None);
             };
             // Four divisions, finite checks, four abs/max updates and one copy.
@@ -4625,7 +4626,11 @@ mod tests {
         let mut work = 0;
         let mut host = PreparationHostBudget::new();
         let output = certified_separated_rectangles_erosion_mesh(
-            &source, 0.5, &[8, 1], &mut work, &mut host,
+            &source,
+            0.5,
+            &[8, 1],
+            &mut work,
+            &mut host,
         )
         .unwrap()
         .expect("two strictly separated rectangles are admitted");
@@ -4660,9 +4665,17 @@ mod tests {
         };
         let mut work = 0;
         let mut host = PreparationHostBudget::new();
-        assert!(certified_separated_rectangles_erosion_mesh(
-            &source, 0.5, &[8, 3], &mut work, &mut host,
-        ).unwrap().is_none());
+        assert!(
+            certified_separated_rectangles_erosion_mesh(
+                &source,
+                0.5,
+                &[8, 3],
+                &mut work,
+                &mut host,
+            )
+            .unwrap()
+            .is_none()
+        );
         assert_eq!(host.live(), 0, "disqualified proofs refund their scratch");
         assert!(work > 0);
     }
@@ -4689,9 +4702,15 @@ mod tests {
             bounds: [10.0, 10.0, 26.0, 14.0],
         };
         let mut work = 0;
-        let exact = certified_separated_rectangles_erosion_mesh(&mesh, 0.5, &[0, 0], &mut work, &mut PreparationHostBudget::new())
-            .unwrap()
-            .expect("separated original rectangles admit exact erosion");
+        let exact = certified_separated_rectangles_erosion_mesh(
+            &mesh,
+            0.5,
+            &[0, 0],
+            &mut work,
+            &mut PreparationHostBudget::new(),
+        )
+        .unwrap()
+        .expect("separated original rectangles admit exact erosion");
         assert!(work > 0);
         assert_eq!(exact.triangles.len(), 12);
         assert_eq!(neutral_union_distance(&exact.triangles, [11.0, 11.0]), 0.0);
@@ -4710,9 +4729,15 @@ mod tests {
         };
         let mut budget = 0;
         assert!(
-            certified_separated_rectangles_erosion_mesh(&touching, 0.5, &[0, 1], &mut budget, &mut PreparationHostBudget::new())
-                .unwrap()
-                .is_none()
+            certified_separated_rectangles_erosion_mesh(
+                &touching,
+                0.5,
+                &[0, 1],
+                &mut budget,
+                &mut PreparationHostBudget::new()
+            )
+            .unwrap()
+            .is_none()
         );
 
         // The 16M scene-work limit is retained with atomic rejection.
@@ -4755,9 +4780,15 @@ mod tests {
         };
         let mut work = 0;
         assert!(
-            certified_separated_rectangles_erosion_mesh(&mesh, 0.5, &[7, 2], &mut work, &mut PreparationHostBudget::new())
-                .unwrap()
-                .is_none()
+            certified_separated_rectangles_erosion_mesh(
+                &mesh,
+                0.5,
+                &[7, 2],
+                &mut work,
+                &mut PreparationHostBudget::new()
+            )
+            .unwrap()
+            .is_none()
         );
         assert_eq!(work, 0, "a noncandidate must not pay pairwise admission");
     }
