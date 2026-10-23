@@ -2195,11 +2195,19 @@ impl NeutralRegionBuilder {
                             host: &mut self.host,
                         },
                     )?;
-                    shadow::charge_vertices(
+                    if let Err(error) = shadow::charge_vertices(
                         &mut self.retained_vertices,
                         clipped.triangles.len(),
                         path,
-                    )?;
+                    ) {
+                        // The clipped output was preadmitted by its factory,
+                        // but no failed result becomes retained graph state.
+                        self.host.release(
+                            clipped.triangles.capacity() * size_of::<[f64; 2]>(),
+                        );
+                        return Err(error);
+                    }
+                    output_admitted = true;
                     Arc::new(clipped)
                 }
                 Kind::Effect {
