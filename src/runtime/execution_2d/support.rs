@@ -2338,6 +2338,25 @@ fn sort_erosion_intervals(
     Ok(())
 }
 
+/// An open edge interval needs an actual *interior* witness. With adjacent
+/// f64 intersection parameters, the rounded midpoint can be an endpoint,
+/// whose crossing topology need not describe the interval's outward side.
+/// Fail closed rather than certifying an exterior segment from that vertex.
+fn strict_exterior_interval_midpoint(
+    interval: [f64; 2],
+    path: &[usize],
+) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
+    let midpoint = (interval[0] + interval[1]) * 0.5;
+    if !midpoint.is_finite() || !(interval[0] < midpoint && midpoint < interval[1]) {
+        return Err(mask_failure(
+            path,
+            crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+            "continuous erosion exterior interval has no representable interior witness",
+        ));
+    }
+    Ok(midpoint)
+}
+
 /// Extract the exact exposed line segments of a bounded triangle union.
 /// Every source edge is split at triangle-edge crossings, including collinear
 /// overlaps. A segment is retained precisely when infinitesimal motion to
@@ -2511,7 +2530,7 @@ fn union_exterior_boundary_with_host(
                     // At most one area and three side/derivative orientations
                     // per source, including indexed loads and short-circuit tests.
                     charge_shadow_preparation_work(aggregate_work, 64 + 192 * tris.len(), path)?;
-                    let t = (interval[0] + interval[1]) * 0.5;
+                    let t = strict_exterior_interval_midpoint([interval[0], interval[1]], path)?;
                     let p = [edge[0].mul_add(t, a[0]), edge[1].mul_add(t, a[1])];
                     if tris.iter().enumerate().any(|(j, other)| {
                         j != i && oriented_triangle_contains_outward(other, p, outward)
@@ -5732,6 +5751,29 @@ mod tests {
         )
         .unwrap();
         assert!((interior - 1.0).abs() < 1.0 / 2048.0);
+    }
+
+    #[test]
+    fn exterior_boundary_classification_requires_strict_open_interval_witness() {
+        // The classification is about the OPEN interval, not a shared
+        // crossing vertex. Adjacent f64 endpoints have no representable
+        // interior point; accepting either endpoint could invent a boundary.
+        let one = 0.5_f64;
+        let next = f64::from_bits(one.to_bits() + 1);
+        assert_eq!(
+            strict_exterior_interval_midpoint([0.25, 0.75], &[8, 4]).unwrap(),
+            0.5
+        );
+        for interval in [[one, next], [0.0, f64::from_bits(1)]] {
+            assert!(matches!(
+                strict_exterior_interval_midpoint(interval, &[8, 4]),
+                Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                    kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+                    path: Some(path),
+                    ..
+                }) if path == [8, 4]
+            ));
+        }
     }
 
     #[test]
