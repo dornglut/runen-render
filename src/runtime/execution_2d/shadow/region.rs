@@ -4507,6 +4507,66 @@ mod tests {
     }
 
     #[test]
+    fn original_vector_source_factory_owns_and_retires_concurrent_clip_copy() {
+        use crate::composition_2d::Render2dResourceBindings;
+        let item = provenance_rectangle_item();
+        let path = [7, 4];
+        let prepare =
+            |item: &Render2dItem, path: &[usize], work: &mut shadow::NeutralPreparationWork<'_>| {
+                shadow::neutral_item(
+                    item,
+                    path,
+                    &Render2dResourceBindings::default(),
+                    &std::collections::BTreeMap::new(),
+                    shadow::NeutralPreparationScale {
+                        field_raster_scale: 1.0,
+                        geometry_sample_scale: 4.0,
+                    },
+                    1_048_576,
+                    work,
+                )
+            };
+        // Bypass the historical registration peak: the observed maximum
+        // must belong to the simultaneous vector factory and clip-copy stage.
+        const SEED: usize = 1024 * 1024;
+        let mut reference = builder();
+        let source = reference.register_source(&item, &path).unwrap().unwrap();
+        reference.host.reserve(SEED, &path).unwrap();
+        reference.prepare_registered_source(&source, prepare).unwrap();
+        let mesh = reference.materialize(&source).unwrap();
+        assert_eq!(mesh.triangles.len(), 6);
+        assert_eq!(mesh.triangles.capacity() * size_of::<[f64; 2]>(), 96);
+        let stage_peak = reference.host.peak() - SEED;
+        let retained = reference.host.live() - SEED;
+        assert!(stage_peak >= retained + 96); // factory source and normalized copy overlap
+        let filler = support::MAX_SHADOW_HOST_BYTES - stage_peak;
+
+        let mut exact = builder();
+        let source = exact.register_source(&item, &path).unwrap().unwrap();
+        exact.host.reserve(filler, &path).unwrap();
+        exact.prepare_registered_source(&source, prepare).unwrap();
+        assert_eq!(exact.host.peak(), support::MAX_SHADOW_HOST_BYTES);
+        assert_eq!(exact.materialize(&source).unwrap().triangles.len(), 6);
+
+        let mut short = builder();
+        let source = short.register_source(&item, &path).unwrap().unwrap();
+        short.host.reserve(filler + 1, &path).unwrap();
+        let paid = short.graph_work;
+        let live = short.host.live();
+        assert!(matches!(
+            short.prepare_registered_source(&source, prepare),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(owner),
+                ..
+            }) if owner == path
+        ));
+        assert_eq!(short.host.live(), live);
+        assert!(short.graph_work > paid);
+        assert_eq!(short.retained_vertices, 0);
+    }
+
+    #[test]
     fn image_factory_transfers_retained_capacity_and_refunds_only_failed_storage() {
         let item = factory_image_item(4.0);
         let mut graph = builder();

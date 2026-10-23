@@ -278,11 +278,13 @@ fn neutral_item(
     let root_index = path[0];
     let result = match item.primitive() {
         Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => {
-            vector::neutral_support(
+            vector::neutral_support_admitted(
                 item,
                 root_index,
                 scales.geometry_sample_scale,
                 max_buffer_bytes,
+                work,
+                path,
             )
             .map_err(|error| neutral_source_error(error, path))?
         }
@@ -368,8 +370,20 @@ fn neutral_item(
         scales.geometry_sample_scale,
         max_buffer_bytes,
         work,
-    )?;
-    Ok(Some(clipped))
+    );
+    // The original vector/image factory output and the newly constructed
+    // clipped mesh coexist during intersection. Retire the input lease on
+    // success or failure; only the clipped result transfers to the region.
+    // Shaped glyph assembly still has its own separately unqualified lease.
+    if matches!(
+        item.primitive(),
+        Render2dPrimitive::Fill { .. }
+            | Render2dPrimitive::Stroke { .. }
+            | Render2dPrimitive::Image(_)
+    ) {
+        work.release_bytes(mesh.triangles.capacity() * size_of::<[f64; 2]>());
+    }
+    clipped.map(Some)
 }
 
 /// An exact geometric Minkowski sum of a triangle UNION with the finite
