@@ -2204,16 +2204,6 @@ fn oriented_triangle_contains_outward(tri: &[[f64; 2]; 3], p: [f64; 2], outward:
 /// Erosion owns bounded fallible buffers. Reallocation can copy the entire
 /// old allocation, including spare capacity, so admit that relocation first.
 /// The element types here contain only fixed-size scalar words.
-fn reserve_erosion_buffer<T: Copy>(
-    buffer: &mut Vec<T>,
-    required: usize,
-    maximum: usize,
-    work: &mut dyn PreparationWork,
-    path: &[usize],
-) -> Result<(), crate::execution_2d::Render2dExecutionError> {
-    reserve_erosion_buffer_with_host(buffer, required, maximum, work, path, None)
-}
-
 fn reserve_erosion_buffer_with_host<T: Copy>(
     buffer: &mut Vec<T>,
     required: usize,
@@ -2264,16 +2254,6 @@ fn reserve_erosion_buffer_with_host<T: Copy>(
         }
     }
     Ok(())
-}
-
-fn push_erosion_buffer<T: Copy>(
-    buffer: &mut Vec<T>,
-    value: T,
-    maximum: usize,
-    work: &mut dyn PreparationWork,
-    path: &[usize],
-) -> Result<(), crate::execution_2d::Render2dExecutionError> {
-    push_erosion_buffer_with_host(buffer, value, maximum, work, path, None)
 }
 
 fn push_erosion_buffer_with_host<T: Copy>(
