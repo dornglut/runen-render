@@ -1797,18 +1797,22 @@ mod tests {
             image_format: true,
             clip_format: true,
         };
-        let (plan, sources) = before_plan(&composition).plan().unwrap();
+        // Source construction can have a larger historical peak than shadow
+        // preparation. Seed the SAME owner after source planning so the
+        // observed maximum belongs to this concrete consuming stage.
+        const SEED: usize = 1024 * 1024;
+        let (plan, mut sources) = before_plan(&composition).plan().unwrap();
         let source_bytes = sources.sources.host.live();
+        sources.sources.host.reserve(SEED, &[]).unwrap();
         let prepared = prepare(&plan, &target, sources).unwrap();
-        let admission = prepared.admission.as_ref().unwrap();
-        let peak = admission.host.peak();
-        assert!(peak > source_bytes);
-        assert!(admission.host.live() < peak);
+        assert!(prepared.values().any(|effects| !effects.is_empty()));
+        let stage_peak = prepared.admission.as_ref().unwrap().host.peak() - SEED;
+        assert!(stage_peak > source_bytes);
 
-        // An artificial prior owner reservation consumes only budget, not
-        // physical memory. The same complete scene must fit at the observed
-        // simultaneous peak and reject one byte below it.
-        let filler = support::MAX_SHADOW_HOST_BYTES - peak;
+        // Artificial pre-existing storage changes the accounting peak but
+        // allocates no physical bytes. Exactly the measured stage requirement
+        // remains admitted; one byte less must reject structurally.
+        let filler = support::MAX_SHADOW_HOST_BYTES - stage_peak;
         let (plan, mut sources) = before_plan(&composition).plan().unwrap();
         sources.sources.host.reserve(filler, &[]).unwrap();
         let exact = prepare(&plan, &target, sources).unwrap();
