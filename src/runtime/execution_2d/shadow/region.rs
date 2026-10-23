@@ -3798,6 +3798,51 @@ mod tests {
     }
 
     #[test]
+    fn rejected_empty_disposable_clip_refunds_prepaid_output_storage() {
+        use crate::composition_2d::{
+            Render2dBrush, Render2dClip, Render2dItem, Render2dOpacity, Render2dPrimitive,
+            Render2dRect, Render2dShape,
+        };
+        let item = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        // Nonempty original F1 rectangle with a disposable triangle that
+        // collapses physically. Its empty clip result is NOT original absence.
+        let physical = support::NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let clips = [Render2dClip::new(
+            Render2dShape::rect(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
+            Render2dAffineTransform::IDENTITY,
+        )];
+        let mut graph = builder();
+        graph
+            .host
+            .reserve_vector(&mut graph.materialized, 8, &[4, 1])
+            .unwrap();
+        let source = graph.source_from_item(physical, &item, &[4, 0]).unwrap();
+        graph.materialize(&source).unwrap();
+        let clipped = graph.clip(source, &clips, &[4, 1]).unwrap();
+        let before = graph.host.live();
+        for _ in 0..2 {
+            assert!(matches!(
+                graph.materialize(&clipped),
+                Err(Render2dExecutionError::UnsupportedEntry { path, .. }) if path == [4, 1]
+            ));
+            assert_eq!(graph.host.live(), before);
+            assert!(graph.materialized[clipped.id].is_none());
+        }
+    }
+
+    #[test]
     fn affine_materialization_transfers_its_vector_lease_exactly_once() {
         let mut graph = builder();
         // Prevent unrelated receipt-vector relocation from obscuring the
