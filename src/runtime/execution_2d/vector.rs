@@ -11,7 +11,7 @@ use lyon_tessellation::{
         FillGeometryBuilder, GeometryBuilder, GeometryBuilderError, StrokeGeometryBuilder,
     },
     math::{Point, point},
-    path::{Path, iterator::PathIterator},
+    path::{Path, PathEvent, iterator::PathIterator},
 };
 
 const PHYSICAL_TOLERANCE: f64 = 1.0 / 64.0;
@@ -45,12 +45,37 @@ fn tessellate_shape(
     if !tolerance.is_finite() || tolerance < f64::from(f32::MIN_POSITIVE) {
         return Err(fail(Render2dVectorError::PrecisionLimit));
     }
-    let path = build_path(shape, tolerance).map_err(fail)?;
+    if let Some(path) = shape.as_path() {
+        let events = AuthoredEvents::new(path, tolerance).map_err(fail)?;
+        return tessellate_events(events, shape, stroke, root_index, tolerance, admitted);
+    }
+    let lyon_path = build_path(shape, tolerance).map_err(fail)?;
+    tessellate_events(
+        lyon_path.iter(),
+        shape,
+        stroke,
+        root_index,
+        tolerance,
+        admitted,
+    )
+}
+
+/// All authored path data is immutable and borrowed; this preserves the exact
+/// Lyon event stream without materializing a duplicate Path point/verb buffer.
+fn tessellate_events(
+    events: impl Iterator<Item = PathEvent> + Clone,
+    shape: &Render2dShape,
+    stroke: Option<Render2dStrokeStyle>,
+    root_index: usize,
+    tolerance: f64,
+    mut admitted: Option<(&mut super::shadow::NeutralPreparationWork<'_>, &[usize])>,
+) -> Result<BoundedGeometry, Render2dExecutionError> {
+    let fail = |kind| error(root_index, kind);
     // Bound flattened input before the sweep allocates internal edge storage.
     // Each observed flattened event is real CPU work owned by the same
     // invocation as the later index scan. Charge it before requesting the
     // next event or allocating tessellation output; failed work is not refunded.
-    for (index, _) in path.iter().flattened(tolerance as f32).enumerate() {
+    for (index, _) in events.clone().flattened(tolerance as f32).enumerate() {
         if index >= MAX_ELEMENTS {
             return Err(fail(Render2dVectorError::ResourceLimit));
         }
@@ -74,8 +99,8 @@ fn tessellate_shape(
             Render2dStrokeJoin::Bevel => LineJoin::Bevel,
             Render2dStrokeJoin::Round => LineJoin::Round,
         };
-        StrokeTessellator::new().tessellate_path(
-            &path,
+        StrokeTessellator::new().tessellate(
+            events,
             &StrokeOptions::default()
                 .with_tolerance(tolerance as f32)
                 .with_line_width(width)
@@ -93,8 +118,8 @@ fn tessellate_shape(
             Render2dFillRule::NonZero => FillRule::NonZero,
             Render2dFillRule::EvenOdd => FillRule::EvenOdd,
         };
-        FillTessellator::new().tessellate_path(
-            &path,
+        FillTessellator::new().tessellate(
+            events,
             &FillOptions::default()
                 .with_fill_rule(rule)
                 .with_tolerance(tolerance as f32),
@@ -523,6 +548,143 @@ fn narrow(value: f64, tolerance: f64) -> Result<f32, Render2dVectorError> {
         return Err(Render2dVectorError::PrecisionLimit);
     }
     Ok(narrowed)
+}
+
+/// The F1 structural commands are already validated. Numeric conversion is
+/// preflighted over the whole source before any Lyon sweep or callback is run.
+#[derive(Clone)]
+struct AuthoredEvents<'a> {
+    commands: &'a [Render2dPathCommand],
+    cursor: usize,
+    first: Point,
+    current: Point,
+    open: bool,
+    pending_begin: Option<Point>,
+}
+
+impl<'a> AuthoredEvents<'a> {
+    fn new(path: &'a Render2dPath, tolerance: f64) -> Result<Self, Render2dVectorError> {
+        let commands = path.commands();
+        if commands.len() > MAX_ELEMENTS {
+            return Err(Render2dVectorError::ResourceLimit);
+        }
+        let verify = |p: Render2dPoint| -> Result<(), Render2dVectorError> {
+            narrow(p.x(), tolerance)?;
+            narrow(p.y(), tolerance)?;
+            Ok(())
+        };
+        for &command in commands {
+            match command {
+                Render2dPathCommand::MoveTo(p) | Render2dPathCommand::LineTo(p) => verify(p)?,
+                Render2dPathCommand::QuadraticTo { control, to } => {
+                    verify(control)?;
+                    verify(to)?;
+                }
+                Render2dPathCommand::CubicTo {
+                    control1,
+                    control2,
+                    to,
+                } => {
+                    verify(control1)?;
+                    verify(control2)?;
+                    verify(to)?;
+                }
+                Render2dPathCommand::Close => {}
+            }
+        }
+        Ok(Self {
+            commands,
+            cursor: 0,
+            first: point(0.0, 0.0),
+            current: point(0.0, 0.0),
+            open: false,
+            pending_begin: None,
+        })
+    }
+}
+
+impl Iterator for AuthoredEvents<'_> {
+    type Item = PathEvent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(at) = self.pending_begin.take() {
+            self.current = at;
+            self.first = at;
+            self.open = true;
+            return Some(PathEvent::Begin { at });
+        }
+        let Some(command) = self.commands.get(self.cursor).copied() else {
+            if self.open {
+                self.open = false;
+                return Some(PathEvent::End {
+                    last: self.current,
+                    first: self.first,
+                    close: false,
+                });
+            }
+            return None;
+        };
+        self.cursor += 1;
+        let pt = |p: Render2dPoint| point(p.x() as f32, p.y() as f32);
+        Some(match command {
+            Render2dPathCommand::MoveTo(to) => {
+                let at = pt(to);
+                if self.open {
+                    self.open = false;
+                    self.pending_begin = Some(at);
+                    PathEvent::End {
+                        last: self.current,
+                        first: self.first,
+                        close: false,
+                    }
+                } else {
+                    self.first = at;
+                    self.current = at;
+                    self.open = true;
+                    PathEvent::Begin { at }
+                }
+            }
+            Render2dPathCommand::LineTo(to) => {
+                let from = self.current;
+                self.current = pt(to);
+                PathEvent::Line {
+                    from,
+                    to: self.current,
+                }
+            }
+            Render2dPathCommand::QuadraticTo { control, to } => {
+                let from = self.current;
+                self.current = pt(to);
+                PathEvent::Quadratic {
+                    from,
+                    ctrl: pt(control),
+                    to: self.current,
+                }
+            }
+            Render2dPathCommand::CubicTo {
+                control1,
+                control2,
+                to,
+            } => {
+                let from = self.current;
+                self.current = pt(to);
+                PathEvent::Cubic {
+                    from,
+                    ctrl1: pt(control1),
+                    ctrl2: pt(control2),
+                    to: self.current,
+                }
+            }
+            Render2dPathCommand::Close => {
+                self.open = false;
+                PathEvent::End {
+                    last: self.current,
+                    first: self.first,
+                    close: true,
+                }
+            }
+        })
+    }
 }
 
 fn build_path(shape: &Render2dShape, tolerance: f64) -> Result<Path, Render2dVectorError> {
@@ -969,6 +1131,83 @@ mod tests {
             clip_into(&excessive, &mut output, 0, 1.0, true),
             Err(Render2dVectorError::ResourceLimit)
         ));
+    }
+
+    #[test]
+    fn borrowed_authored_events_match_former_lyon_path_and_geometry() {
+        let p = |x, y| Render2dPoint::new(x, y).unwrap();
+        let paths = [
+            vec![],
+            vec![Render2dPathCommand::MoveTo(p(1.0, 1.0))],
+            vec![
+                Render2dPathCommand::MoveTo(p(1.0, 2.0)),
+                Render2dPathCommand::LineTo(p(3.0, 2.0)),
+                Render2dPathCommand::Close,
+                Render2dPathCommand::MoveTo(p(-2.0, 4.0)),
+                Render2dPathCommand::LineTo(p(0.0, 5.0)),
+            ],
+            vec![
+                Render2dPathCommand::MoveTo(p(0.0, 0.0)),
+                Render2dPathCommand::QuadraticTo {
+                    control: p(2.0, -2.0),
+                    to: p(4.0, 0.0),
+                },
+                Render2dPathCommand::CubicTo {
+                    control1: p(5.0, 3.0),
+                    control2: p(3.0, 5.0),
+                    to: p(0.0, 4.0),
+                },
+                Render2dPathCommand::Close,
+                Render2dPathCommand::MoveTo(p(2.0, 2.0)),
+                Render2dPathCommand::LineTo(p(2.0, 2.0)),
+            ],
+        ];
+        let tolerance = PHYSICAL_TOLERANCE;
+        for commands in paths {
+            for rule in [Render2dFillRule::NonZero, Render2dFillRule::EvenOdd] {
+                let shape = Render2dShape::path(Render2dPath::new(rule, commands.clone()).unwrap());
+                let old_path = build_path(&shape, tolerance).unwrap();
+                let events = AuthoredEvents::new(shape.as_path().unwrap(), tolerance).unwrap();
+                let original = old_path.iter().collect::<Vec<_>>();
+                assert_eq!(events.clone().collect::<Vec<_>>(), original);
+                assert_eq!(
+                    events.clone().flattened(tolerance as f32).collect::<Vec<_>>(),
+                    old_path.iter().flattened(tolerance as f32).collect::<Vec<_>>()
+                );
+                for stroke in [None, Some(Render2dStrokeStyle::new(2.0, Render2dStrokeCap::Butt, Render2dStrokeJoin::Miter, 4.0).unwrap())] {
+                    let new = tessellate_shape(&shape, stroke, 3, 1.0, None);
+                    let mut old = TessellationSink::new(None);
+                    let result = if let Some(style) = stroke {
+                        StrokeTessellator::new().tessellate_path(
+                            &old_path,
+                            &StrokeOptions::default()
+                                .with_tolerance(tolerance as f32)
+                                .with_line_width(style.width() as f32)
+                                .with_line_cap(LineCap::Butt)
+                                .with_line_join(LineJoin::Miter)
+                                .with_miter_limit(style.miter_limit() as f32),
+                            &mut old,
+                        )
+                    } else {
+                        FillTessellator::new().tessellate_path(
+                            &old_path,
+                            &FillOptions::default()
+                                .with_fill_rule(match rule {
+                                    Render2dFillRule::NonZero => FillRule::NonZero,
+                                    Render2dFillRule::EvenOdd => FillRule::EvenOdd,
+                                })
+                                .with_tolerance(tolerance as f32),
+                            &mut old,
+                        )
+                    };
+                    assert_eq!(new.is_ok(), result.is_ok());
+                    if let Ok(new) = new {
+                        assert_eq!(new.vertices, old.geometry.vertices);
+                        assert_eq!(new.indices, old.geometry.indices);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
