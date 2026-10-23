@@ -511,74 +511,86 @@ fn build_path(shape: &Render2dShape, tolerance: f64) -> Result<Path, Render2dVec
             builder.end(false);
         }
     } else {
-        let mut contour = Vec::new();
-        if let Some(rect) = shape.as_rect() {
-            if rect.is_empty() {
-                return Ok(builder.build());
-            }
-            contour.extend_from_slice(&[
-                [rect.x(), rect.y()],
-                [rect.x() + rect.width(), rect.y()],
-                [rect.x() + rect.width(), rect.y() + rect.height()],
-                [rect.x(), rect.y() + rect.height()],
-            ]);
-        } else if let Some(rect) = shape.as_ellipse() {
-            if rect.is_empty() {
-                return Ok(builder.build());
-            }
-            arc(
-                &mut contour,
-                [
-                    rect.x() + rect.width() / 2.0,
-                    rect.y() + rect.height() / 2.0,
-                ],
-                [rect.width() / 2.0, rect.height() / 2.0],
-                0.0,
-                std::f64::consts::TAU,
-                tolerance,
-            )?;
-        } else if let Some((rect, radii)) = shape.as_rounded_rect() {
-            if rect.is_empty() {
-                return Ok(builder.build());
-            }
-            let [x, y, w, h] = [rect.x(), rect.y(), rect.width(), rect.height()];
-            for (center, radius, start) in [
-                (
-                    [x + w - radii.top_right(), y + radii.top_right()],
-                    radii.top_right(),
-                    -std::f64::consts::FRAC_PI_2,
-                ),
-                (
-                    [x + w - radii.bottom_right(), y + h - radii.bottom_right()],
-                    radii.bottom_right(),
-                    0.0,
-                ),
-                (
-                    [x + radii.bottom_left(), y + h - radii.bottom_left()],
-                    radii.bottom_left(),
-                    std::f64::consts::FRAC_PI_2,
-                ),
-                (
-                    [x + radii.top_left(), y + radii.top_left()],
-                    radii.top_left(),
-                    std::f64::consts::PI,
-                ),
-            ] {
-                arc(
-                    &mut contour,
-                    center,
-                    [radius, radius],
-                    start,
-                    std::f64::consts::FRAC_PI_2,
-                    tolerance,
-                )?;
+        // Generate Lyon path events directly. A separately allocated contour
+        // used to coexist with the path and later tessellator scratch.
+        let mut open = false;
+        {
+            let mut emit = |[x, y]: [f64; 2]| -> Result<(), Render2dVectorError> {
+                let to = p(x, y)?;
+                if open {
+                    builder.line_to(to);
+                } else {
+                    builder.begin(to);
+                    open = true;
+                }
+                Ok(())
+            };
+            let mut emitted = 0_usize;
+            if let Some(rect) = shape.as_rect() {
+                if !rect.is_empty() {
+                    for point in [
+                        [rect.x(), rect.y()],
+                        [rect.x() + rect.width(), rect.y()],
+                        [rect.x() + rect.width(), rect.y() + rect.height()],
+                        [rect.x(), rect.y() + rect.height()],
+                    ] {
+                        emit(point)?;
+                    }
+                }
+            } else if let Some(rect) = shape.as_ellipse() {
+                if !rect.is_empty() {
+                    arc(
+                        &mut emit,
+                        &mut emitted,
+                        [
+                            rect.x() + rect.width() / 2.0,
+                            rect.y() + rect.height() / 2.0,
+                        ],
+                        [rect.width() / 2.0, rect.height() / 2.0],
+                        0.0,
+                        std::f64::consts::TAU,
+                        tolerance,
+                    )?;
+                }
+            } else if let Some((rect, radii)) = shape.as_rounded_rect() {
+                if !rect.is_empty() {
+                    let [x, y, w, h] = [rect.x(), rect.y(), rect.width(), rect.height()];
+                    for (center, radius, start) in [
+                        (
+                            [x + w - radii.top_right(), y + radii.top_right()],
+                            radii.top_right(),
+                            -std::f64::consts::FRAC_PI_2,
+                        ),
+                        (
+                            [x + w - radii.bottom_right(), y + h - radii.bottom_right()],
+                            radii.bottom_right(),
+                            0.0,
+                        ),
+                        (
+                            [x + radii.bottom_left(), y + h - radii.bottom_left()],
+                            radii.bottom_left(),
+                            std::f64::consts::FRAC_PI_2,
+                        ),
+                        (
+                            [x + radii.top_left(), y + radii.top_left()],
+                            radii.top_left(),
+                            std::f64::consts::PI,
+                        ),
+                    ] {
+                        arc(
+                            &mut emit,
+                            &mut emitted,
+                            center,
+                            [radius, radius],
+                            start,
+                            std::f64::consts::FRAC_PI_2,
+                            tolerance,
+                        )?;
+                    }
+                }
             }
         }
-        if let Some(first) = contour.first() {
-            builder.begin(p(first[0], first[1])?);
-            for point in &contour[1..] {
-                builder.line_to(p(point[0], point[1])?);
-            }
+        if open {
             builder.end(true);
         }
     }
@@ -586,7 +598,8 @@ fn build_path(shape: &Render2dShape, tolerance: f64) -> Result<Path, Render2dVec
 }
 
 fn arc(
-    points: &mut Vec<[f64; 2]>,
+    emit: &mut impl FnMut([f64; 2]) -> Result<(), Render2dVectorError>,
+    emitted: &mut usize,
     center: [f64; 2],
     radii: [f64; 2],
     start: f64,
@@ -595,25 +608,29 @@ fn arc(
 ) -> Result<(), Render2dVectorError> {
     let radius = radii[0].max(radii[1]);
     if radius == 0.0 {
-        points.push(center);
-        return Ok(());
+        *emitted = emitted
+            .checked_add(1)
+            .filter(|&count| count <= MAX_ELEMENTS)
+            .ok_or(Render2dVectorError::ResourceLimit)?;
+        return emit(center);
     }
-    // Sagitta <= tolerance/2; the larger ellipse radius bounds both axes.
+    // Preserve the same sagitta step count, including shared arc endpoints.
     let angle = 2.0 * (1.0 - (tolerance / (2.0 * radius)).min(1.0)).acos();
     let count = (sweep / angle).ceil().max(1.0);
-    if !count.is_finite()
-        || count > MAX_ELEMENTS as f64
-        || points.len() + count as usize + 1 > MAX_ELEMENTS
-    {
+    if !count.is_finite() || count > MAX_ELEMENTS as f64 {
         return Err(Render2dVectorError::ResourceLimit);
     }
     let count = count as usize;
+    *emitted = emitted
+        .checked_add(count + 1)
+        .filter(|&total| total <= MAX_ELEMENTS)
+        .ok_or(Render2dVectorError::ResourceLimit)?;
     for index in 0..=count {
         let angle = start + sweep * index as f64 / count as f64;
-        points.push([
+        emit([
             center[0] + radii[0] * angle.cos(),
             center[1] + radii[1] * angle.sin(),
-        ]);
+        ])?;
     }
     Ok(())
 }
@@ -697,6 +714,44 @@ impl StrokeGeometryBuilder for BoundedGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_ellipse_events_match_reference_contour_and_reject_excess() {
+        let shape = Render2dShape::ellipse(Render2dRect::new(1.0, 2.0, 4.0, 6.0).unwrap());
+        let tolerance = 0.125;
+        let actual = build_path(&shape, tolerance).unwrap();
+        // Independent reference retains the former temporary contour only
+        // in this test. Position arithmetic, event order and closure must
+        // remain byte-for-byte equivalent under the production refactor.
+        let center = [3.0, 5.0];
+        let radii = [2.0, 3.0];
+        let angle = 2.0 * (1.0 - tolerance / (2.0 * radii[1])).acos();
+        let segments = (std::f64::consts::TAU / angle).ceil().max(1.0) as usize;
+        let mut points = Vec::new();
+        for index in 0..=segments {
+            let theta = std::f64::consts::TAU * index as f64 / segments as f64;
+            points.push(point(
+                narrow(center[0] + radii[0] * theta.cos(), tolerance).unwrap(),
+                narrow(center[1] + radii[1] * theta.sin(), tolerance).unwrap(),
+            ));
+        }
+        let mut reference = Path::builder();
+        reference.begin(points[0]);
+        for &p in &points[1..] {
+            reference.line_to(p);
+        }
+        reference.end(true);
+        assert_eq!(
+            actual.iter().collect::<Vec<_>>(),
+            reference.build().iter().collect::<Vec<_>>(),
+        );
+        // An event count above the existing hard cap rejects before any
+        // contour-length allocation, not as a successfully drawn ellipse.
+        assert!(matches!(
+            build_path(&shape, 1.0e-14),
+            Err(Render2dVectorError::ResourceLimit)
+        ));
+    }
 
     #[test]
     fn neutral_support_preserves_transparent_offscreen_fill_and_signed_bounds() {
