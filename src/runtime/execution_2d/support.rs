@@ -2338,23 +2338,42 @@ fn sort_erosion_intervals(
     Ok(())
 }
 
-/// An open edge interval needs an actual *interior* witness. With adjacent
-/// f64 intersection parameters, the rounded midpoint can be an endpoint,
-/// whose crossing topology need not describe the interval's outward side.
-/// Fail closed rather than certifying an exterior segment from that vertex.
-fn strict_exterior_interval_midpoint(
+/// Exterior classification requires a strict interior witness in both the
+/// source-edge parameter AND its rounded physical coordinates. Even a strict
+/// parameter midpoint can map back to a crossing endpoint on a very short
+/// finite edge; testing its outward topology would then invent a boundary.
+/// Fail closed rather than using an endpoint as evidence for an open interval.
+fn strict_exterior_interval_point(
     interval: [f64; 2],
+    origin: [f64; 2],
+    edge: [f64; 2],
     path: &[usize],
-) -> Result<f64, crate::execution_2d::Render2dExecutionError> {
-    let midpoint = (interval[0] + interval[1]) * 0.5;
-    if !midpoint.is_finite() || !(interval[0] < midpoint && midpoint < interval[1]) {
-        return Err(mask_failure(
+) -> Result<[f64; 2], crate::execution_2d::Render2dExecutionError> {
+    let invalid = || {
+        mask_failure(
             path,
             crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
             "continuous erosion exterior interval has no representable interior witness",
-        ));
+        )
+    };
+    let midpoint = (interval[0] + interval[1]) * 0.5;
+    if !midpoint.is_finite() || !(interval[0] < midpoint && midpoint < interval[1]) {
+        return Err(invalid());
     }
-    Ok(midpoint)
+    let at = |t| {
+        [
+            edge[0].mul_add(t, origin[0]),
+            edge[1].mul_add(t, origin[1]),
+        ]
+    };
+    let point = at(midpoint);
+    if !point.iter().all(|v| v.is_finite())
+        || point == at(interval[0])
+        || point == at(interval[1])
+    {
+        return Err(invalid());
+    }
+    Ok(point)
 }
 
 /// Extract the exact exposed line segments of a bounded triangle union.
@@ -2530,8 +2549,12 @@ fn union_exterior_boundary_with_host(
                     // At most one area and three side/derivative orientations
                     // per source, including indexed loads and short-circuit tests.
                     charge_shadow_preparation_work(aggregate_work, 64 + 192 * tris.len(), path)?;
-                    let t = strict_exterior_interval_midpoint([interval[0], interval[1]], path)?;
-                    let p = [edge[0].mul_add(t, a[0]), edge[1].mul_add(t, a[1])];
+                    let p = strict_exterior_interval_point(
+                        [interval[0], interval[1]],
+                        a,
+                        edge,
+                        path,
+                    )?;
                     if tris.iter().enumerate().any(|(j, other)| {
                         j != i && oriented_triangle_contains_outward(other, p, outward)
                     }) {
@@ -5761,12 +5784,20 @@ mod tests {
         let one = 0.5_f64;
         let next = f64::from_bits(one.to_bits() + 1);
         assert_eq!(
-            strict_exterior_interval_midpoint([0.25, 0.75], &[8, 4]).unwrap(),
-            0.5
+            strict_exterior_interval_point([0.25, 0.75], [0.0, 0.0], [4.0, 0.0], &[8, 4])
+                .unwrap(),
+            [2.0, 0.0]
+        );
+        // A constant coordinate is fine if the witness differs from both
+        // endpoint vectors along the edge's nonconstant coordinate.
+        assert_eq!(
+            strict_exterior_interval_point([0.25, 0.75], [1.0, 0.0], [0.0, 4.0], &[8, 4])
+                .unwrap(),
+            [1.0, 2.0]
         );
         for interval in [[one, next], [0.0, f64::from_bits(1)]] {
             assert!(matches!(
-                strict_exterior_interval_midpoint(interval, &[8, 4]),
+                strict_exterior_interval_point(interval, [0.0, 0.0], [4.0, 0.0], &[8, 4]),
                 Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
                     kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
                     path: Some(path),
@@ -5774,6 +5805,23 @@ mod tests {
                 }) if path == [8, 4]
             ));
         }
+        // A strictly interior f64 parameter can still round to the start
+        // vertex: 1 + 2*EPSILON*0.25 is halfway to the next f64 number.
+        // The old strict-parameter-only guard incorrectly admitted this
+        // crossing vertex as the open-interval classification witness.
+        assert!(matches!(
+            strict_exterior_interval_point(
+                [0.0, 0.5],
+                [1.0, 0.0],
+                [2.0 * f64::EPSILON, 0.0],
+                &[8, 4],
+            ),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [8, 4]
+        ));
     }
 
     #[test]
