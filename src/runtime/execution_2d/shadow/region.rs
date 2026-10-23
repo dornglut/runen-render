@@ -2173,16 +2173,13 @@ impl NeutralRegionBuilder {
                     )?;
                     let mut output = shadow::empty_mesh();
                     self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
-                    if let Err(error) = shadow::append_admitted(
+                    shadow::append_admitted(
                         &mut output,
                         &mesh,
                         *to_parent,
                         path,
                         &mut self.host,
-                    ) {
-                        // The surrounding scope refunds the unpublished header.
-                        return Err(error);
-                    }
+                    )?;
                     output_admitted = true;
                     Arc::new(output)
                 }
