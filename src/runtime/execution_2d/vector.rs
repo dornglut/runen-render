@@ -151,18 +151,26 @@ pub(super) fn realize(
         else {
             continue;
         };
-        let mut polygon = Vec::from(triangle);
-        // Clip in f64 before the GPU ABI narrowing. Continuous canvas edges, including
-        // a fractional final pixel, participate in coverage rather than a rounded scissor.
+        // Each clipped triangle is a convex polygon with at most seven
+        // vertices after four half-planes. Keep both intermediate buffers
+        // on the stack rather than allocating five Vecs per triangle.
+        let mut polygon = [[0.0; 2]; 8];
+        polygon[..3].copy_from_slice(&triangle);
+        let mut count = 3;
+        let mut scratch = [[0.0; 2]; 8];
+        // Clip in f64 before the GPU ABI narrowing. Continuous canvas edges,
+        // including a fractional final pixel, participate in coverage.
         for (axis, edge, greater) in [
             (0, 0.0, true),
             (1, 0.0, true),
             (0, canvas[0], false),
             (1, canvas[1], false),
         ] {
-            polygon = clip(&polygon, axis, edge, greater);
+            count = clip_into(&polygon[..count], &mut scratch, axis, edge, greater)
+                .map_err(fail)?;
+            std::mem::swap(&mut polygon, &mut scratch);
         }
-        for index in 1..polygon.len().saturating_sub(1) {
+        for index in 1..count.saturating_sub(1) {
             if triangles.len() + 3 > MAX_ELEMENTS
                 || (triangles.len() as u64 + 3)
                     * crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE
@@ -652,10 +660,17 @@ fn arc(
     Ok(())
 }
 
-fn clip(points: &[[f64; 2]], axis: usize, edge: f64, greater: bool) -> Vec<[f64; 2]> {
-    let mut output = Vec::with_capacity(7);
+/// The four half-plane passes on a convex triangle produce at most seven
+/// vertices. A capacity violation fails closed rather than allocating scratch.
+fn clip_into(
+    points: &[[f64; 2]],
+    output: &mut [[f64; 2]; 8],
+    axis: usize,
+    edge: f64,
+    greater: bool,
+) -> Result<usize, Render2dVectorError> {
     let Some(mut previous) = points.last().copied() else {
-        return output;
+        return Ok(0);
     };
     let inside = |p: [f64; 2]| {
         if greater {
@@ -664,6 +679,7 @@ fn clip(points: &[[f64; 2]], axis: usize, edge: f64, greater: bool) -> Vec<[f64;
             p[axis] <= edge
         }
     };
+    let mut count = 0;
     for current in points.iter().copied() {
         if inside(previous) != inside(current) {
             let fraction = (edge - previous[axis]) / (current[axis] - previous[axis]);
@@ -671,14 +687,22 @@ fn clip(points: &[[f64; 2]], axis: usize, edge: f64, greater: bool) -> Vec<[f64;
             let mut intersection = [0.0; 2];
             intersection[axis] = edge;
             intersection[other] = previous[other] + fraction * (current[other] - previous[other]);
-            output.push(intersection);
+            if count == output.len() {
+                return Err(Render2dVectorError::ResourceLimit);
+            }
+            output[count] = intersection;
+            count += 1;
         }
         if inside(current) {
-            output.push(current);
+            if count == output.len() {
+                return Err(Render2dVectorError::ResourceLimit);
+            }
+            output[count] = current;
+            count += 1;
         }
         previous = current;
     }
-    output
+    Ok(count)
 }
 
 #[derive(Default)]
@@ -731,6 +755,87 @@ impl StrokeGeometryBuilder for BoundedGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stack_canvas_clipping_preserves_prior_polygon_events() {
+        // Independent former Vec clipping sequence, retained only as an
+        // oracle. Compare ordered vertices, duplicates and fractional edges.
+        fn reference(
+            points: &[[f64; 2]],
+            axis: usize,
+            edge: f64,
+            greater: bool,
+        ) -> Vec<[f64; 2]> {
+            let mut out = Vec::with_capacity(7);
+            let Some(mut prev) = points.last().copied() else {
+                return out;
+            };
+            let inside = |p: [f64; 2]| {
+                if greater {
+                    p[axis] >= edge
+                } else {
+                    p[axis] <= edge
+                }
+            };
+            for curr in points.iter().copied() {
+                if inside(prev) != inside(curr) {
+                    let fraction = (edge - prev[axis]) / (curr[axis] - prev[axis]);
+                    let other = 1 - axis;
+                    let mut intersection = [0.0; 2];
+                    intersection[axis] = edge;
+                    intersection[other] = prev[other] + fraction * (curr[other] - prev[other]);
+                    out.push(intersection);
+                }
+                if inside(curr) {
+                    out.push(curr);
+                }
+                prev = curr;
+            }
+            out
+        }
+        for triangle in [
+            [[-2.0, -1.0], [3.0, 0.75], [0.25, 4.0]],
+            [[0.0, 0.0], [2.5, 0.0], [0.0, 2.5]],
+            [[4.0, 4.0], [5.0, 4.0], [4.0, 5.0]],
+            [[-1.0, 0.0], [-1.0, 1.0], [0.0, 0.0]],
+            [[0.5, 0.5], [0.5, 0.5], [1.5, 1.5]],
+        ] {
+            let mut actual = [[0.0; 2]; 8];
+            actual[..3].copy_from_slice(&triangle);
+            let mut len = 3;
+            let mut scratch = [[0.0; 2]; 8];
+            let mut expected = triangle.to_vec();
+            for (axis, edge, greater) in [
+                (0, 0.0, true),
+                (1, 0.0, true),
+                (0, 2.25, false),
+                (1, 1.75, false),
+            ] {
+                len = clip_into(&actual[..len], &mut scratch, axis, edge, greater).unwrap();
+                std::mem::swap(&mut actual, &mut scratch);
+                expected = reference(&expected, axis, edge, greater);
+                assert_eq!(&actual[..len], expected.as_slice());
+            }
+        }
+        let mut output = [[0.0; 2]; 8];
+        assert_eq!(clip_into(&[], &mut output, 0, 1.0, true).unwrap(), 0);
+        // This artificial non-convex event stream violates the capacity
+        // contract; it must reject without heap fallback.
+        let excessive = [
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [0.0, 1.0],
+            [2.0, 1.0],
+            [0.0, 2.0],
+            [2.0, 2.0],
+            [0.0, 3.0],
+            [2.0, 3.0],
+        ];
+        assert!(matches!(
+            clip_into(&excessive, &mut output, 0, 1.0, true),
+            Err(Render2dVectorError::ResourceLimit)
+        ));
+    }
 
     #[test]
     fn streamed_ellipse_events_match_reference_contour_and_reject_excess() {
