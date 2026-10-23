@@ -103,7 +103,13 @@ impl NeutralPreparationWork<'_> {
         path: &[usize],
     ) -> Result<(), Render2dExecutionError> {
         self.charge(append_work(output, source, path)?, path)?;
-        append_admitted(output, source, Render2dAffineTransform::IDENTITY, path, self.host)
+        append_admitted(
+            output,
+            source,
+            Render2dAffineTransform::IDENTITY,
+            path,
+            self.host,
+        )
     }
 }
 
@@ -2191,7 +2197,8 @@ pub(super) fn intersect_clips(
                     .map_err(|error| neutral_source_error(error, path))?
             else {
                 let discarded = std::mem::replace(&mut current, empty_mesh());
-                work.host.release(discarded.triangles.capacity() * vertex_bytes);
+                work.host
+                    .release(discarded.triangles.capacity() * vertex_bytes);
                 break;
             };
             let mut clip_local = empty_mesh();
@@ -2204,8 +2211,7 @@ pub(super) fn intersect_clips(
                 charge_clip_work(work.clip_pairs, cost, path)?;
                 for source_triangle in current.triangles.as_chunks::<3>().0 {
                     for clipping in clip_local.triangles.as_chunks::<3>().0 {
-                        let polygon =
-                            triangle_intersection(source_triangle, clipping, path, work)?;
+                        let polygon = triangle_intersection(source_triangle, clipping, path, work)?;
                         if polygon.len() < 3 {
                             continue;
                         }
@@ -2223,20 +2229,22 @@ pub(super) fn intersect_clips(
                                 1.0,
                                 Render2dAffineTransform::IDENTITY,
                                 path,
-                                Some(work.host),
+                                Some(&mut *work.host),
                             )?;
                         }
                     }
                 }
                 Ok(())
             })();
-            work.host.release(clip_local.triangles.capacity() * vertex_bytes);
+            work.host
+                .release(clip_local.triangles.capacity() * vertex_bytes);
             if let Err(error) = step {
                 work.host.release(next.triangles.capacity() * vertex_bytes);
                 return Err(error);
             }
             let discarded = std::mem::replace(&mut current, next);
-            work.host.release(discarded.triangles.capacity() * vertex_bytes);
+            work.host
+                .release(discarded.triangles.capacity() * vertex_bytes);
             if current.triangles.is_empty() {
                 break;
             }
@@ -2244,7 +2252,8 @@ pub(super) fn intersect_clips(
         Ok(())
     })();
     if assembled.is_err() {
-        work.host.release(current.triangles.capacity() * vertex_bytes);
+        work.host
+            .release(current.triangles.capacity() * vertex_bytes);
     }
     assembled.map(|()| current)
 }
@@ -3517,7 +3526,10 @@ mod tests {
         assert!(!clipped.triangles.is_empty());
         let retained = clipped.triangles.capacity() * std::mem::size_of::<[f64; 2]>();
         assert_eq!(host.live(), retained);
-        assert!(host.peak() > host.live(), "source and clipped scratch overlap");
+        assert!(
+            host.peak() > host.live(),
+            "source and clipped scratch overlap"
+        );
     }
 
     #[test]
