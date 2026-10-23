@@ -3698,7 +3698,8 @@ fn microscopic_gap_changes_union_erosion_and_finite_gaussian_on_vulkan() {
         "F3F exact touching rectangle union under erosion and Gaussian",
     );
     pixel_near(pixel(&touching, 10, 10), [205, 0, 0, 157]);
-    assert_eq!(pixel(&touching, 9, 10), [0, 0, 0, 0]);
+    // Outside [10.1, 10.9] expanded by the full finite 3-sigma halo .375.
+    assert_eq!(pixel(&touching, 8, 10), [0, 0, 0, 0]);
 
     // The exact same executor must not retain a previous union topology as
     // derived support when the next immutable source has a real 1e-6 gap.
