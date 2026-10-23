@@ -2202,9 +2202,8 @@ impl NeutralRegionBuilder {
                     ) {
                         // The clipped output was preadmitted by its factory,
                         // but no failed result becomes retained graph state.
-                        self.host.release(
-                            clipped.triangles.capacity() * size_of::<[f64; 2]>(),
-                        );
+                        self.host
+                            .release(clipped.triangles.capacity() * size_of::<[f64; 2]>());
                         return Err(error);
                     }
                     output_admitted = true;
