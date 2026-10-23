@@ -255,7 +255,7 @@ impl Error for Render2dTargetAdmissionError {}
 /// Bounded semantic class rejected by the Counter-critical F2 admission gate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Render2dUnsupportedContent {
-    /// Ordinary group shadows are not admitted before F3F.
+    /// A group-shadow request not supported by the current physical renderer.
     Shadows {
         /// Root painter-order index.
         root_index: usize,
