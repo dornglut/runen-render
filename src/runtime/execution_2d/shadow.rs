@@ -1780,6 +1780,26 @@ pub(super) fn append(
         source.units_per_parent_logical_unit,
         source_to_parent,
         path,
+        None,
+    )
+}
+
+/// Region-owned transform: charge output vector growth with the same host
+/// owner BEFORE allocation. Its lease transfers to the retained mesh.
+pub(super) fn append_admitted(
+    output: &mut NeutralMesh,
+    source: &NeutralMesh,
+    source_to_parent: Render2dAffineTransform,
+    path: &[usize],
+    host: &mut support::PreparationHostBudget,
+) -> Result<(), Render2dExecutionError> {
+    append_triangles(
+        output,
+        &source.triangles,
+        source.units_per_parent_logical_unit,
+        source_to_parent,
+        path,
+        Some(host),
     )
 }
 
@@ -1789,6 +1809,7 @@ fn append_triangles(
     scale: f64,
     source_to_parent: Render2dAffineTransform,
     path: &[usize],
+    host: Option<&mut support::PreparationHostBudget>,
 ) -> Result<(), Render2dExecutionError> {
     if triangles.is_empty() {
         return Ok(());
@@ -1841,10 +1862,14 @@ fn append_triangles(
             ));
         }
     }
-    output
-        .triangles
-        .try_reserve(triangles.len())
-        .map_err(|_| resource(path, "neutral destination geometry allocation failed"))?;
+    if let Some(host) = host {
+        host.reserve_vector(&mut output.triangles, required, path)?;
+    } else {
+        output
+            .triangles
+            .try_reserve(triangles.len())
+            .map_err(|_| resource(path, "neutral destination geometry allocation failed"))?;
+    }
     // No further fallible work: all source vertices have passed the exact
     // same floating-point conversion, and the destination has reserved room.
     for triangle in triangles.as_chunks::<3>().0 {
@@ -2144,6 +2169,7 @@ pub(super) fn intersect_clips(
                         1.0,
                         Render2dAffineTransform::IDENTITY,
                         path,
+                        None,
                     )?;
                 }
             }
