@@ -3487,6 +3487,81 @@ mod tests {
     }
 
     #[test]
+    fn structural_clip_factory_transfers_only_finished_mesh_storage() {
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let clip = Render2dClip::new(
+            Render2dShape::rect(Render2dRect::new(0.0, 0.0, 1.0, 1.0).unwrap()),
+            Render2dAffineTransform::IDENTITY,
+        );
+        let mut graph = 0;
+        let mut clip_pairs = 0;
+        let mut host = super::super::support::PreparationHostBudget::new();
+        let clipped = intersect_clips(
+            &source,
+            &[clip],
+            0,
+            &[6, 1],
+            4.0,
+            1_048_576,
+            &mut NeutralPreparationWork {
+                graph: &mut graph,
+                clip_pairs: &mut clip_pairs,
+                host: &mut host,
+            },
+        )
+        .unwrap();
+        assert!(!clipped.triangles.is_empty());
+        let retained = clipped.triangles.capacity() * std::mem::size_of::<[f64; 2]>();
+        assert_eq!(host.live(), retained);
+        assert!(host.peak() > host.live(), "source and clipped scratch overlap");
+    }
+
+    #[test]
+    fn structural_clip_rejection_refunds_all_its_owned_intermediates() {
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let clip = Render2dClip::new(
+            Render2dShape::rect(Render2dRect::new(0.0, 0.0, 1.0, 1.0).unwrap()),
+            Render2dAffineTransform::IDENTITY,
+        );
+        let mut graph = 0;
+        let mut clip_pairs = 0;
+        let mut host = super::super::support::PreparationHostBudget::new();
+        host.reserve(super::super::support::MAX_SHADOW_HOST_BYTES - 160, &[6, 2])
+            .unwrap();
+        let before = host.live();
+        assert!(matches!(
+            intersect_clips(
+                &source,
+                &[clip],
+                0,
+                &[6, 2],
+                4.0,
+                1_048_576,
+                &mut NeutralPreparationWork {
+                    graph: &mut graph,
+                    clip_pairs: &mut clip_pairs,
+                    host: &mut host,
+                },
+            ),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [6, 2]
+        ));
+        assert_eq!(host.live(), before);
+        assert!(graph > 0, "failed clipping still charges executed work");
+    }
+
+    #[test]
     fn clip_intersection_admission_is_contribution_wide_and_failure_is_atomic() {
         let source = NeutralMesh {
             units_per_parent_logical_unit: 1.0,
