@@ -2282,41 +2282,61 @@ impl NeutralRegionBuilder {
                         .map_err(|_| {
                             precision(path, "neutral effect offset cannot be represented")
                         })?;
+                        // A rejected effect cannot retain its provisional caster
+                        // or Gaussian vertices; already materialized children stay.
+                        let mut completed_vertices = self.retained_vertices;
                         shadow::charge_vertices(
-                            &mut self.retained_vertices,
+                            &mut completed_vertices,
                             caster.triangles.len(),
                             path,
                         )?;
                         let mut shifted = shadow::empty_mesh();
                         self.charge_graph_work(shadow::append_work(&shifted, caster, path)?, path)?;
-                        shadow::append(&mut shifted, caster, offset, path)?;
+                        shadow::append_admitted(&mut shifted, caster, offset, path, &mut self.host)?;
                         if effect.sigma() > 0.0 && !shifted.triangles.is_empty() {
-                            // Twelve translated vertices; at most 12² comparison/
-                            // movement steps in the small sort; deduplication;
-                            // at most 48 orientation steps across both monotone
-                            // hull passes; at most thirty emitted vertices. The
-                            // 8192 bound includes all primitive guards and copies.
-                            let hull_work = (shifted.triangles.len() / 3)
-                                .checked_mul(8_192)
-                                .and_then(|cost| cost.checked_add(256))
-                                .ok_or_else(|| {
-                                    resource(path, "neutral Gaussian hull work overflow")
-                                })?;
-                            self.charge_graph_work(hull_work, path)?;
-                            let square = shadow::gaussian_square_support(
-                                &shifted,
-                                effect.sigma() * 3.0,
-                                path,
-                                &mut self.host,
-                            )?;
+                            let shifted_bytes =
+                                shifted.triangles.capacity() * size_of::<[f64; 2]>();
+                            // Gaussian preparation overlaps the retained shifted
+                            // vertices. Refund that temporary on either outcome;
+                            // only the completed square can become a region receipt.
+                            let expanded: Result<_, Render2dExecutionError> = (|| {
+                                    // Twelve translated vertices; at most 12² comparison/
+                                    // movement steps in the small sort; deduplication;
+                                    // at most 48 orientation steps across both monotone
+                                    // hull passes; at most thirty emitted vertices. The
+                                    // 8192 bound includes all primitive guards and copies.
+                                    let hull_work = (shifted.triangles.len() / 3)
+                                        .checked_mul(8_192)
+                                        .and_then(|cost| cost.checked_add(256))
+                                        .ok_or_else(|| {
+                                            resource(path, "neutral Gaussian hull work overflow")
+                                        })?;
+                                    self.charge_graph_work(hull_work, path)?;
+                                    let square = shadow::gaussian_square_support(
+                                        &shifted,
+                                        effect.sigma() * 3.0,
+                                        path,
+                                        &mut self.host,
+                                    )?;
+                                    if let Err(error) = shadow::charge_vertices(
+                                        &mut completed_vertices,
+                                        square.triangles.len(),
+                                        path,
+                                    ) {
+                                        self.host
+                                            .release(square.triangles.capacity() * size_of::<[f64; 2]>());
+                                        return Err(error);
+                                    }
+                                    Ok(square)
+                            })();
+                            self.host.release(shifted_bytes);
+                            let square = expanded?;
+                            self.retained_vertices = completed_vertices;
                             output_admitted = true;
-                            shadow::charge_vertices(
-                                &mut self.retained_vertices,
-                                square.triangles.len(),
-                                path,
-                            )?;
                             Arc::new(square)
                         } else {
+                            self.retained_vertices = completed_vertices;
+                            output_admitted = true;
                             Arc::new(shifted)
                         }
                     }
@@ -3841,6 +3861,137 @@ mod tests {
         assert_eq!(graph.graph_work, MAX_REGION_GRAPH_WORK - copy + 1);
         assert!(graph.materialized[source.id].is_some());
         assert!(graph.materialized[parent.id].is_none());
+    }
+
+    #[test]
+    fn effect_shift_transfers_prepaid_output_and_refunds_on_one_short() {
+        let setup = || {
+            let mut graph = builder();
+            graph
+                .host
+                .reserve_vector(&mut graph.materialized, 8, &[5])
+                .unwrap();
+            let source = graph.source(triangle(), &[5, 0]).unwrap();
+            graph.materialize(&source).unwrap();
+            let effect = graph
+                .effect(
+                    source,
+                    Render2dDropShadow::new(1.0, 0.0, 0.0, 0.0, Render2dColorRgba8::TRANSPARENT)
+                        .unwrap(),
+                    &[5, 1],
+                )
+                .unwrap();
+            (graph, effect)
+        };
+        let (mut accepted, effect) = setup();
+        let before = accepted.host.live();
+        let before_vertices = accepted.retained_vertices;
+        let result = accepted.materialize(&effect).unwrap();
+        let header = size_of::<support::NeutralMesh>() + 2 * size_of::<usize>();
+        let vertices = result.triangles.capacity() * size_of::<[f64; 2]>();
+        assert_eq!(result.triangles.len(), 3);
+        assert_eq!(accepted.host.live() - before, header + vertices);
+        assert_eq!(accepted.retained_vertices - before_vertices, 3);
+        assert!(Arc::ptr_eq(&result, &accepted.materialize(&effect).unwrap()));
+        assert_eq!(accepted.host.live() - before, header + vertices);
+
+        let (mut rejected, effect) = setup();
+        let required = header + 3 * size_of::<[f64; 2]>();
+        rejected
+            .host
+            .reserve(
+                support::MAX_SHADOW_HOST_BYTES - rejected.host.live() - required + 1,
+                &[5, 1],
+            )
+            .unwrap();
+        let before = rejected.host.live();
+        let before_vertices = rejected.retained_vertices;
+        assert!(matches!(
+            rejected.materialize(&effect),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [5, 1]
+        ));
+        assert_eq!(rejected.host.live(), before);
+        assert_eq!(rejected.retained_vertices, before_vertices);
+        assert!(rejected.materialized[effect.id].is_none());
+    }
+
+    #[test]
+    fn gaussian_effect_accounts_for_simultaneous_shift_and_output() {
+        let mut graph = builder();
+        graph
+            .host
+            .reserve_vector(&mut graph.materialized, 8, &[6])
+            .unwrap();
+        let source = graph.source(triangle(), &[6, 0]).unwrap();
+        graph.materialize(&source).unwrap();
+        let effect = graph
+            .effect(
+                source,
+                Render2dDropShadow::new(1.0, 0.0, 0.25, 0.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+                &[6, 1],
+            )
+            .unwrap();
+        let before = graph.host.live();
+        let result = graph.materialize(&effect).unwrap();
+        let header = size_of::<support::NeutralMesh>() + 2 * size_of::<usize>();
+        let retained = header + result.triangles.capacity() * size_of::<[f64; 2]>();
+        assert!(result.triangles.len() > 3);
+        assert_eq!(graph.host.live() - before, retained);
+        // At the Gaussian output allocation the 3-vertex translated caster
+        // still owns its separate host reservation.
+        assert!(graph.host.peak() >= graph.host.live() + 3 * size_of::<[f64; 2]>());
+        assert!(Arc::ptr_eq(&result, &graph.materialize(&effect).unwrap()));
+        assert_eq!(graph.host.live() - before, retained);
+    }
+
+    #[test]
+    fn gaussian_effect_peak_one_short_refunds_translated_caster_and_header() {
+        let mut graph = builder();
+        graph
+            .host
+            .reserve_vector(&mut graph.materialized, 8, &[7])
+            .unwrap();
+        let source = graph.source(triangle(), &[7, 0]).unwrap();
+        graph.materialize(&source).unwrap();
+        let effect = graph
+            .effect(
+                source,
+                Render2dDropShadow::new(1.0, 0.0, 0.25, 0.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+                &[7, 1],
+            )
+            .unwrap();
+        let header = size_of::<support::NeutralMesh>() + 2 * size_of::<usize>();
+        let shifted = 3 * size_of::<[f64; 2]>();
+        let gaussian = 30 * size_of::<[f64; 2]>();
+        // Each allocation fits independently, but not while translated caster
+        // and final Gaussian output coexist at their actual peak.
+        let required = header + shifted + gaussian;
+        graph
+            .host
+            .reserve(
+                support::MAX_SHADOW_HOST_BYTES - graph.host.live() - required + 1,
+                &[7, 1],
+            )
+            .unwrap();
+        let before = graph.host.live();
+        let vertices = graph.retained_vertices;
+        assert!(matches!(
+            graph.materialize(&effect),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [7, 1]
+        ));
+        assert_eq!(graph.host.live(), before);
+        assert_eq!(graph.retained_vertices, vertices);
+        assert!(graph.materialized[effect.id].is_none());
     }
 
     #[test]
