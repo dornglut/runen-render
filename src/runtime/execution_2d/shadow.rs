@@ -93,6 +93,18 @@ impl NeutralPreparationWork<'_> {
         self.charge(append_work(output, source, path)?, path)?;
         append(output, source, Render2dAffineTransform::IDENTITY, path)
     }
+
+    /// Only use for buffers whose retained capacity is tracked by this same
+    /// host owner and transferred or released at the construction boundary.
+    fn append_admitted(
+        &mut self,
+        output: &mut NeutralMesh,
+        source: &NeutralMesh,
+        path: &[usize],
+    ) -> Result<(), Render2dExecutionError> {
+        self.charge(append_work(output, source, path)?, path)?;
+        append_admitted(output, source, Render2dAffineTransform::IDENTITY, path, self.host)
+    }
 }
 
 fn failed(
@@ -2153,71 +2165,89 @@ pub(super) fn intersect_clips(
     max_buffer_bytes: u64,
     work: &mut NeutralPreparationWork<'_>,
 ) -> Result<NeutralMesh, Render2dExecutionError> {
-    if clips.is_empty() || source.triangles.is_empty() {
-        let mut result = empty_mesh();
-        work.append(&mut result, source, path)?;
-        return Ok(result);
-    }
+    // The current, clip-local and next meshes are distinct live allocations.
+    // Admit each destination BEFORE allocation; transfer only the completed
+    // current result to its caller. The external Lyon clip-source factory has
+    // separately owned scratch and is not certified by these receipts.
+    let vertex_bytes = std::mem::size_of::<[f64; 2]>();
     let mut current = empty_mesh();
-    work.append(&mut current, source, path)?;
-    for clip in clips {
-        let item = Render2dItem::new(
-            Render2dPrimitive::Fill {
-                shape: clip.shape().clone(),
-                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
-            },
-            clip.clip_to_parent(),
-            Vec::new(),
-            Render2dOpacity::TRANSPARENT,
-        );
-        let Some(clip_mesh) =
-            vector::neutral_support(&item, root_index, resolution, max_buffer_bytes)
-                .map_err(|error| neutral_source_error(error, path))?
-        else {
-            return Ok(empty_mesh());
-        };
-        let mut clip_local = empty_mesh();
-        work.append(&mut clip_local, &clip_mesh, path)?;
-        let mut next = empty_mesh();
-        let cost = (current.triangles.len() / 3)
-            .checked_mul(clip_local.triangles.len() / 3)
-            .ok_or_else(|| resource(path, "neutral conjunctive clip work overflow"))?;
-        charge_clip_work(work.clip_pairs, cost, path)?;
-        for source in current.triangles.as_chunks::<3>().0 {
-            for clipping in clip_local.triangles.as_chunks::<3>().0 {
-                let polygon = triangle_intersection(source, clipping, path, work)?;
-                if polygon.len() < 3 {
-                    continue;
-                }
-                for index in 1..polygon.len() - 1 {
-                    // Fan lookup/copy, orientation and loop bookkeeping precede
-                    // the separately charged transform/copy of an emitted fan.
-                    work.charge(64, path)?;
-                    let points = polygon.points();
-                    let triangle = [points[0], points[index], points[index + 1]];
-                    if orient(triangle[0], triangle[1], triangle[2]) == 0.0 {
-                        continue;
+    let assembled = (|| -> Result<(), Render2dExecutionError> {
+        work.append_admitted(&mut current, source, path)?;
+        if current.triangles.is_empty() {
+            return Ok(());
+        }
+        for clip in clips {
+            let item = Render2dItem::new(
+                Render2dPrimitive::Fill {
+                    shape: clip.shape().clone(),
+                    brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+                },
+                clip.clip_to_parent(),
+                Vec::new(),
+                Render2dOpacity::TRANSPARENT,
+            );
+            let Some(clip_mesh) =
+                vector::neutral_support(&item, root_index, resolution, max_buffer_bytes)
+                    .map_err(|error| neutral_source_error(error, path))?
+            else {
+                let discarded = std::mem::replace(&mut current, empty_mesh());
+                work.host.release(discarded.triangles.capacity() * vertex_bytes);
+                break;
+            };
+            let mut clip_local = empty_mesh();
+            let mut next = empty_mesh();
+            let step = (|| -> Result<(), Render2dExecutionError> {
+                work.append_admitted(&mut clip_local, &clip_mesh, path)?;
+                let cost = (current.triangles.len() / 3)
+                    .checked_mul(clip_local.triangles.len() / 3)
+                    .ok_or_else(|| resource(path, "neutral conjunctive clip work overflow"))?;
+                charge_clip_work(work.clip_pairs, cost, path)?;
+                for source_triangle in current.triangles.as_chunks::<3>().0 {
+                    for clipping in clip_local.triangles.as_chunks::<3>().0 {
+                        let polygon =
+                            triangle_intersection(source_triangle, clipping, path, work)?;
+                        if polygon.len() < 3 {
+                            continue;
+                        }
+                        for index in 1..polygon.len() - 1 {
+                            work.charge(64, path)?;
+                            let points = polygon.points();
+                            let triangle = [points[0], points[index], points[index + 1]];
+                            if orient(triangle[0], triangle[1], triangle[2]) == 0.0 {
+                                continue;
+                            }
+                            work.charge(append_vertices_work(&next, 3, path)?, path)?;
+                            append_triangles(
+                                &mut next,
+                                &triangle,
+                                1.0,
+                                Render2dAffineTransform::IDENTITY,
+                                path,
+                                Some(work.host),
+                            )?;
+                        }
                     }
-                    work.charge(append_vertices_work(&next, 3, path)?, path)?;
-                    append_triangles(
-                        &mut next,
-                        &triangle,
-                        1.0,
-                        Render2dAffineTransform::IDENTITY,
-                        path,
-                        None,
-                    )?;
                 }
+                Ok(())
+            })();
+            work.host.release(clip_local.triangles.capacity() * vertex_bytes);
+            if let Err(error) = step {
+                work.host.release(next.triangles.capacity() * vertex_bytes);
+                return Err(error);
+            }
+            let discarded = std::mem::replace(&mut current, next);
+            work.host.release(discarded.triangles.capacity() * vertex_bytes);
+            if current.triangles.is_empty() {
+                break;
             }
         }
-        current = next;
-        if current.triangles.is_empty() {
-            break;
-        }
+        Ok(())
+    })();
+    if assembled.is_err() {
+        work.host.release(current.triangles.capacity() * vertex_bytes);
     }
-    Ok(current)
+    assembled.map(|()| current)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
