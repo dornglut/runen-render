@@ -2360,16 +2360,9 @@ fn strict_exterior_interval_point(
     if !midpoint.is_finite() || !(interval[0] < midpoint && midpoint < interval[1]) {
         return Err(invalid());
     }
-    let at = |t| {
-        [
-            edge[0].mul_add(t, origin[0]),
-            edge[1].mul_add(t, origin[1]),
-        ]
-    };
+    let at = |t| [edge[0].mul_add(t, origin[0]), edge[1].mul_add(t, origin[1])];
     let point = at(midpoint);
-    if !point.iter().all(|v| v.is_finite())
-        || point == at(interval[0])
-        || point == at(interval[1])
+    if !point.iter().all(|v| v.is_finite()) || point == at(interval[0]) || point == at(interval[1])
     {
         return Err(invalid());
     }
@@ -2549,12 +2542,8 @@ fn union_exterior_boundary_with_host(
                     // At most one area and three side/derivative orientations
                     // per source, including indexed loads and short-circuit tests.
                     charge_shadow_preparation_work(aggregate_work, 64 + 192 * tris.len(), path)?;
-                    let p = strict_exterior_interval_point(
-                        [interval[0], interval[1]],
-                        a,
-                        edge,
-                        path,
-                    )?;
+                    let p =
+                        strict_exterior_interval_point([interval[0], interval[1]], a, edge, path)?;
                     if tris.iter().enumerate().any(|(j, other)| {
                         j != i && oriented_triangle_contains_outward(other, p, outward)
                     }) {
@@ -5784,15 +5773,13 @@ mod tests {
         let one = 0.5_f64;
         let next = f64::from_bits(one.to_bits() + 1);
         assert_eq!(
-            strict_exterior_interval_point([0.25, 0.75], [0.0, 0.0], [4.0, 0.0], &[8, 4])
-                .unwrap(),
+            strict_exterior_interval_point([0.25, 0.75], [0.0, 0.0], [4.0, 0.0], &[8, 4]).unwrap(),
             [2.0, 0.0]
         );
         // A constant coordinate is fine if the witness differs from both
         // endpoint vectors along the edge's nonconstant coordinate.
         assert_eq!(
-            strict_exterior_interval_point([0.25, 0.75], [1.0, 0.0], [0.0, 4.0], &[8, 4])
-                .unwrap(),
+            strict_exterior_interval_point([0.25, 0.75], [1.0, 0.0], [0.0, 4.0], &[8, 4]).unwrap(),
             [1.0, 2.0]
         );
         for interval in [[one, next], [0.0, f64::from_bits(1)]] {
