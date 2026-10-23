@@ -4023,7 +4023,7 @@ mod tests {
             )
             .unwrap();
         let original_vertices = graph.retained_vertices;
-        graph.retained_vertices = MAX_NEUTRAL_VERTICES - 3;
+        graph.retained_vertices = shadow::MAX_NEUTRAL_VERTICES - 3;
         let before = graph.host.live();
         assert!(matches!(
             graph.materialize(&effect),
@@ -4034,7 +4034,7 @@ mod tests {
             }) if path == [4, 1]
         ));
         assert_eq!(graph.host.live(), before);
-        assert_eq!(graph.retained_vertices, MAX_NEUTRAL_VERTICES - 3);
+        assert_eq!(graph.retained_vertices, shadow::MAX_NEUTRAL_VERTICES - 3);
         assert!(graph.materialized[effect.id].is_none());
         // The Gaussian output was allocated, while the translated caster
         // remained live. Neither temporary becomes a receipt on rejection.
