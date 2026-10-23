@@ -2151,7 +2151,16 @@ impl NeutralRegionBuilder {
                 shadow::charge_vertices(&mut self.retained_vertices, mesh.triangles.len(), path)?;
                 let mut output = shadow::empty_mesh();
                 self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
-                shadow::append_admitted(&mut output, &mesh, *to_parent, path, &mut self.host)?;
+                if let Err(error) =
+                    shadow::append_admitted(&mut output, &mesh, *to_parent, path, &mut self.host)
+                {
+                    // The incomplete affine mesh is never retained. Its
+                    // previously reserved header has no ownership to transfer.
+                    self.host.release(
+                        size_of::<support::NeutralMesh>() + 2 * size_of::<usize>(),
+                    );
+                    return Err(error);
+                }
                 output_admitted = true;
                 Arc::new(output)
             }
@@ -3589,6 +3598,77 @@ mod tests {
         assert_eq!(graph.retained_path_units, paths);
         assert_eq!(graph.graph_work - before, 64);
         assert!(Arc::ptr_eq(&mesh, &graph.materialize(&projected).unwrap()));
+    }
+
+    #[test]
+    fn affine_materialization_transfers_its_vector_lease_exactly_once() {
+        let mut graph = builder();
+        // Prevent unrelated receipt-vector relocation from obscuring the
+        // affine output's actual retained allocation charge.
+        graph
+            .host
+            .reserve_vector(&mut graph.materialized, 8, &[4, 1])
+            .unwrap();
+        let source = graph.source(triangle(), &[4, 0]).unwrap();
+        graph.materialize(&source).unwrap();
+        let affine = graph
+            .affine(
+                Arc::clone(&source),
+                Render2dAffineTransform::translation(2.0, 0.0).unwrap(),
+                &[4, 1],
+            )
+            .unwrap();
+        let before = graph.host.live();
+        let output = graph.materialize(&affine).unwrap();
+        let bytes = size_of::<support::NeutralMesh>()
+            + 2 * size_of::<usize>()
+            + output.triangles.capacity() * size_of::<[f64; 2]>();
+        assert_eq!(output.triangles.len(), 3);
+        assert_eq!(graph.host.live() - before, bytes);
+        assert!(Arc::ptr_eq(
+            &output,
+            &graph.materialize(&affine).unwrap()
+        ));
+        assert_eq!(graph.host.live() - before, bytes);
+    }
+
+    #[test]
+    fn affine_destination_one_short_does_not_commit_or_leak_header() {
+        let mut graph = builder();
+        graph
+            .host
+            .reserve_vector(&mut graph.materialized, 8, &[6, 1])
+            .unwrap();
+        let source = graph.source(triangle(), &[6, 0]).unwrap();
+        graph.materialize(&source).unwrap();
+        let affine = graph
+            .affine(
+                Arc::clone(&source),
+                Render2dAffineTransform::translation(2.0, 0.0).unwrap(),
+                &[6, 1],
+            )
+            .unwrap();
+        let header = size_of::<support::NeutralMesh>() + 2 * size_of::<usize>();
+        let vertex_bytes = 3 * size_of::<[f64; 2]>();
+        let remaining = header + vertex_bytes - 1;
+        graph
+            .host
+            .reserve(
+                support::MAX_SHADOW_HOST_BYTES - graph.host.live() - remaining,
+                &[6, 1],
+            )
+            .unwrap();
+        let before = graph.host.live();
+        assert!(matches!(
+            graph.materialize(&affine),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [6, 1]
+        ));
+        assert_eq!(graph.host.live(), before);
+        assert!(graph.materialized[affine.id].is_none());
     }
 
     #[test]
