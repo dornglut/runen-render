@@ -1256,7 +1256,10 @@ mod tests {
                 ..
             }) if path == owner
         ));
-        assert_eq!(work_used, super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 3);
+        assert_eq!(
+            work_used,
+            super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 3
+        );
         assert_eq!((host.live(), host.peak()), (0, 0));
         // With all four path commands admitted, the same source reaches
         // actual Lyon construction and its genuine physical precision error.
