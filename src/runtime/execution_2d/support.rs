@@ -5428,7 +5428,9 @@ mod tests {
         assert!(buffer.capacity() <= 8);
         let capacity = buffer.capacity();
         let mut paid = 0;
-        assert!(push_erosion_buffer_with_host(&mut buffer, 5.0, 4, &mut paid, &[6, 4], None).is_err());
+        assert!(
+            push_erosion_buffer_with_host(&mut buffer, 5.0, 4, &mut paid, &[6, 4], None).is_err()
+        );
         assert_eq!(
             buffer.len(),
             4,
