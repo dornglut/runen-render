@@ -316,12 +316,42 @@ fn transformed_triangle(
 /// This private geometry retains the same bounded tessellation and precision
 /// admission as visible vectors. Shadow-specific morphology, clips, halo, and
 /// group support are derived by the F3F composition compiler, not by this leaf.
-#[allow(dead_code, reason = "awaiting F3F group lowering")]
 pub(super) fn neutral_support(
     item: &Render2dItem,
     root_index: usize,
     scale: f64,
     max_buffer_bytes: u64,
+) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
+    neutral_support_impl(item, root_index, scale, max_buffer_bytes, None)
+}
+
+/// The clip compiler owns the same result buffer throughout construction and
+/// subsequent intersection. Admit its exact emitted-vertex capacity before
+/// allocation; the caller releases that lease when clip source storage dies.
+/// Lyon's private sweep/path allocations are separate, still-open obligations.
+pub(super) fn neutral_support_admitted(
+    item: &Render2dItem,
+    root_index: usize,
+    scale: f64,
+    max_buffer_bytes: u64,
+    host: &mut super::support::PreparationHostBudget,
+    path: &[usize],
+) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
+    neutral_support_impl(
+        item,
+        root_index,
+        scale,
+        max_buffer_bytes,
+        Some((host, path)),
+    )
+}
+
+fn neutral_support_impl(
+    item: &Render2dItem,
+    root_index: usize,
+    scale: f64,
+    max_buffer_bytes: u64,
+    mut admitted: Option<(&mut super::support::PreparationHostBudget, &[usize])>,
 ) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
     let (shape, stroke) = match item.primitive() {
         Render2dPrimitive::Fill { shape, .. } => (shape, None),
@@ -338,36 +368,77 @@ pub(super) fn neutral_support(
     }
     let geometry = tessellate_shape(shape, stroke, root_index, stretch)?;
     let mut triangles = Vec::new();
+    if let Some((host, path)) = admitted.as_mut() {
+        // Preflight all *actual* emitted triangles before committing a host
+        // lease, rather than reserving tessellator triangles later rejected
+        // by a singular transform. This source is immutable and the second
+        // pass uses the identical deterministic conversion.
+        let mut required = 0_usize;
+        for indices in geometry.indices.as_chunks::<3>().0 {
+            if transformed_triangle(
+                &geometry,
+                indices,
+                [a, b, c, d, tx, ty],
+                scale,
+                root_index,
+            )?
+            .is_some()
+            {
+                required = required
+                    .checked_add(3)
+                    .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
+                let bytes = u64::try_from(required)
+                    .ok()
+                    .and_then(|n| {
+                        n.checked_mul(crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE)
+                    })
+                    .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
+                if required > MAX_ELEMENTS || bytes > max_buffer_bytes {
+                    return Err(error(root_index, Render2dVectorError::ResourceLimit));
+                }
+            }
+        }
+        host.reserve_vector(&mut triangles, required, path)?;
+    }
     let mut bounds = [
         f64::INFINITY,
         f64::INFINITY,
         f64::NEG_INFINITY,
         f64::NEG_INFINITY,
     ];
-    for indices in geometry.indices.as_chunks::<3>().0 {
-        let Some(triangle) =
-            transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
-        else {
-            continue;
-        };
-        let count = triangles
-            .len()
-            .checked_add(3)
-            .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
-        let bytes = u64::try_from(count)
-            .ok()
-            .and_then(|n| n.checked_mul(crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE))
-            .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
-        if count > MAX_ELEMENTS || bytes > max_buffer_bytes {
-            return Err(error(root_index, Render2dVectorError::ResourceLimit));
+    let emitted = (|| -> Result<(), Render2dExecutionError> {
+        for indices in geometry.indices.as_chunks::<3>().0 {
+            let Some(triangle) =
+                transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
+            else {
+                continue;
+            };
+            let count = triangles
+                .len()
+                .checked_add(3)
+                .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
+            let bytes = u64::try_from(count)
+                .ok()
+                .and_then(|n| n.checked_mul(crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE))
+                .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
+            if count > MAX_ELEMENTS || bytes > max_buffer_bytes {
+                return Err(error(root_index, Render2dVectorError::ResourceLimit));
+            }
+            for [x, y] in triangle {
+                bounds[0] = bounds[0].min(x);
+                bounds[1] = bounds[1].min(y);
+                bounds[2] = bounds[2].max(x);
+                bounds[3] = bounds[3].max(y);
+                triangles.push([x, y]);
+            }
         }
-        for [x, y] in triangle {
-            bounds[0] = bounds[0].min(x);
-            bounds[1] = bounds[1].min(y);
-            bounds[2] = bounds[2].max(x);
-            bounds[3] = bounds[3].max(y);
-            triangles.push([x, y]);
+        Ok(())
+    })();
+    if let Err(err) = emitted {
+        if let Some((host, _)) = admitted {
+            host.release(triangles.capacity() * std::mem::size_of::<[f64; 2]>());
         }
+        return Err(err);
     }
     Ok((!triangles.is_empty()).then_some(NeutralMesh {
         units_per_parent_logical_unit: scale,
