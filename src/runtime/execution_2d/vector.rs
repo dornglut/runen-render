@@ -411,8 +411,14 @@ fn neutral_support_impl(
             // pass uses the identical deterministic conversion.
             let mut required = 0_usize;
             for indices in geometry.indices.as_chunks::<3>().0 {
-                if transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
-                    .is_some()
+                if transformed_triangle(
+                    &geometry,
+                    indices,
+                    [a, b, c, d, tx, ty],
+                    scale,
+                    root_index,
+                )?
+                .is_some()
                 {
                     required = required
                         .checked_add(3)
@@ -438,8 +444,13 @@ fn neutral_support_impl(
         ];
         let emitted = (|| -> Result<(), Render2dExecutionError> {
             for indices in geometry.indices.as_chunks::<3>().0 {
-                let Some(triangle) =
-                    transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
+                let Some(triangle) = transformed_triangle(
+                    &geometry,
+                    indices,
+                    [a, b, c, d, tx, ty],
+                    scale,
+                    root_index,
+                )?
                 else {
                     continue;
                 };
