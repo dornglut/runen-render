@@ -151,27 +151,164 @@ fn validate_required_files(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_product_identity(root: &Path) -> Result<(), String> {
-    let manifest = read_file(root, "Cargo.toml")?;
-    for required in [
-        "name = \"runen-render\"",
-        "version = \"0.1.0\"",
-        "edition = \"2024\"",
-        "rust-version = \"1.97.1\"",
-        "license.workspace = true",
-        "repository = \"https://github.com/dornglut/runen-render\"",
-        "description = \"Reusable semantic rendering and maintained image-formation framework\"",
-        "publish = false",
-        "[workspace.package]",
-        "license = \"GPL-3.0-only\"",
-        "[features]\ndefault = []",
-    ] {
-        require_contains("Cargo.toml", &manifest, required)?;
-    }
+fn parse_manifest(contents: &str) -> Result<toml::Value, String> {
+    contents
+        .parse::<toml::Table>()
+        .map(toml::Value::Table)
+        .map_err(|error| format!("Cargo.toml is not valid TOML: {error}"))
+}
 
-    if manifest.contains("unsafe_code = \"forbid\"") {
-        return Err("Cargo.toml contains the unaccepted template unsafe-code policy".to_owned());
+fn manifest_value<'a>(manifest: &'a toml::Value, path: &[&str]) -> Option<&'a toml::Value> {
+    path.iter().try_fold(manifest, |value, key| value.get(*key))
+}
+
+fn require_manifest_value(
+    manifest: &toml::Value,
+    path: &[&str],
+    expected: toml::Value,
+) -> Result<(), String> {
+    let actual = manifest_value(manifest, path);
+    if actual == Some(&expected) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Cargo.toml {} must equal {expected}, found {}",
+            path.join("."),
+            actual.map_or_else(|| "<missing>".to_owned(), ToString::to_string),
+        ))
     }
+}
+
+fn expect_manifest_string(
+    manifest: &toml::Value,
+    path: &[&str],
+    expected: &str,
+) -> Result<(), String> {
+    require_manifest_value(manifest, path, toml::Value::String(expected.to_owned()))
+}
+
+fn expect_manifest_bool(
+    manifest: &toml::Value,
+    path: &[&str],
+    expected: bool,
+) -> Result<(), String> {
+    require_manifest_value(manifest, path, toml::Value::Boolean(expected))
+}
+
+fn expect_manifest_strings(
+    manifest: &toml::Value,
+    path: &[&str],
+    expected: &[&str],
+) -> Result<(), String> {
+    require_manifest_value(
+        manifest,
+        path,
+        toml::Value::Array(
+            expected
+                .iter()
+                .map(|item| toml::Value::String((*item).to_owned()))
+                .collect(),
+        ),
+    )
+}
+
+fn validate_manifest_identity(manifest: &toml::Value) -> Result<(), String> {
+    for (path, value) in [
+        (&["package", "name"][..], "runen-render"),
+        (&["package", "version"][..], "0.1.0"),
+        (&["package", "edition"][..], "2024"),
+        (&["package", "rust-version"][..], "1.97.1"),
+        (
+            &["package", "repository"][..],
+            "https://github.com/dornglut/runen-render",
+        ),
+        (
+            &["package", "description"][..],
+            "Reusable semantic rendering and maintained image-formation framework",
+        ),
+        (&["workspace", "package", "license"][..], "GPL-3.0-only"),
+    ] {
+        expect_manifest_string(manifest, path, value)?;
+    }
+    expect_manifest_bool(manifest, &["package", "publish"], false)?;
+    expect_manifest_bool(manifest, &["package", "license", "workspace"], true)?;
+    expect_manifest_strings(manifest, &["features", "default"], &[])?;
+
+    // Local or inherited workspace lints are active policy; comments are not.
+    for path in [
+        &["lints", "rust", "unsafe_code"][..],
+        &["workspace", "lints", "rust", "unsafe_code"][..],
+    ] {
+        let unsafe_code = manifest_value(manifest, path);
+        if unsafe_code.is_some_and(|value| {
+            value.as_str() == Some("forbid")
+                || value.get("level").and_then(toml::Value::as_str) == Some("forbid")
+        }) {
+            return Err("Cargo.toml enables the unaccepted template unsafe-code policy".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn reject_moving_git_refs(value: &toml::Value, location: &str) -> Result<(), String> {
+    match value {
+        toml::Value::Table(table) => {
+            if table.contains_key("git") {
+                for moving in ["branch", "tag"] {
+                    if table.contains_key(moving) {
+                        return Err(format!(
+                            "Cargo.toml {location} has moving git dependency authority: {moving}"
+                        ));
+                    }
+                }
+            }
+            for (key, nested) in table {
+                reject_moving_git_refs(nested, &format!("{location}.{key}"))?;
+            }
+        }
+        toml::Value::Array(items) => {
+            for (index, nested) in items.iter().enumerate() {
+                reject_moving_git_refs(nested, &format!("{location}[{index}]"))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_manifest_dependencies(manifest: &toml::Value) -> Result<(), String> {
+    for (name, version, default_features, features) in [
+        ("bymsdfgen-core", "=0.1.1", false, &[][..]),
+        ("lyon_tessellation", "=1.0.22", false, &["std"][..]),
+        ("skrifa", "=0.44.0", false, &["std"][..]),
+    ] {
+        expect_manifest_string(manifest, &["dependencies", name, "version"], version)?;
+        expect_manifest_bool(
+            manifest,
+            &["dependencies", name, "default-features"],
+            default_features,
+        )?;
+        if !features.is_empty() {
+            expect_manifest_strings(manifest, &["dependencies", name, "features"], features)?;
+        }
+    }
+    for (name, revision) in [
+        ("runen-gpu", "f967356c9ca55df6c9d99381850a88bf3695bf81"),
+        ("runen-shader", "406f8165da92caa2d296b3a2f774ba534279870d"),
+    ] {
+        expect_manifest_string(
+            manifest,
+            &["dependencies", name, "git"],
+            &format!("https://github.com/dornglut/{name}"),
+        )?;
+        expect_manifest_string(manifest, &["dependencies", name, "rev"], revision)?;
+    }
+    reject_moving_git_refs(manifest, "root")
+}
+
+fn validate_product_identity(root: &Path) -> Result<(), String> {
+    let manifest = parse_manifest(&read_file(root, "Cargo.toml")?)?;
+    validate_manifest_identity(&manifest)?;
 
     let lockfile = read_file(root, "Cargo.lock")?;
     require_contains("Cargo.lock", &lockfile, "name = \"runen-render\"")?;
@@ -207,23 +344,8 @@ fn validate_product_identity(root: &Path) -> Result<(), String> {
 }
 
 fn validate_source_contract(root: &Path) -> Result<(), String> {
-    let manifest = read_file(root, "Cargo.toml")?;
-    for required in [
-        "bymsdfgen-core = { version = \"=0.1.1\", default-features = false }",
-        "runen-gpu = { git = \"https://github.com/dornglut/runen-gpu\", rev = \"f967356c9ca55df6c9d99381850a88bf3695bf81\" }",
-        "runen-shader = { git = \"https://github.com/dornglut/runen-shader\", rev = \"406f8165da92caa2d296b3a2f774ba534279870d\" }",
-        "lyon_tessellation = { version = \"=1.0.22\", default-features = false, features = [\"std\"] }",
-        "skrifa = { version = \"=0.44.0\", default-features = false, features = [\"std\"] }",
-    ] {
-        require_contains("Cargo.toml", &manifest, required)?;
-    }
-    for moving in ["branch =", "tag ="] {
-        if manifest.contains(moving) {
-            return Err(format!(
-                "Cargo.toml contains moving sibling dependency authority: {moving}"
-            ));
-        }
-    }
+    let manifest = parse_manifest(&read_file(root, "Cargo.toml")?)?;
+    validate_manifest_dependencies(&manifest)?;
 
     for relative_path in maintained_source_files(root)? {
         let contents = fs::read_to_string(root.join(&relative_path)).map_err(|error| {
@@ -592,4 +714,85 @@ fn output(root: &Path, program: &str, args: &[&str]) -> Result<String, String> {
 
     String::from_utf8(result.stdout)
         .map_err(|error| format!("{program} produced invalid UTF-8: {error}"))
+}
+
+#[cfg(test)]
+mod manifest_policy_tests {
+    use super::*;
+
+    const CURRENT: &str = include_str!("../../Cargo.toml");
+
+    #[test]
+    fn accepted_manifest_is_recognized_semantically() {
+        let manifest = parse_manifest(CURRENT).expect("tracked manifest must parse");
+        validate_manifest_identity(&manifest).expect("current package identity");
+        validate_manifest_dependencies(&manifest).expect("current dependency policy");
+    }
+
+    #[test]
+    fn commented_out_publish_false_cannot_pass() {
+        let changed = CURRENT.replace("publish = false", "# publish = false");
+        assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
+        assert!(
+            changed.contains("publish = false"),
+            "the old substring check still finds the commented-out marker",
+        );
+        let manifest = parse_manifest(&changed).expect("comment remains valid TOML");
+        assert!(validate_manifest_identity(&manifest).is_err());
+    }
+
+    #[test]
+    fn commented_old_version_does_not_hide_changed_package_version() {
+        let changed = CURRENT.replace(
+            "version = \"0.1.0\"",
+            "version = \"0.2.0\" # version = \"0.1.0\"",
+        );
+        assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
+        let manifest = parse_manifest(&changed).expect("mutation remains valid TOML");
+        assert!(validate_manifest_identity(&manifest).is_err());
+    }
+
+    #[test]
+    fn altered_git_revision_with_original_in_comment_cannot_pass() {
+        let mut changed = CURRENT.replace(
+            "rev = \"f967356c9ca55df6c9d99381850a88bf3695bf81\"",
+            "rev = \"0000000000000000000000000000000000000000\"",
+        );
+        assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
+        changed.push_str("# rev = \"f967356c9ca55df6c9d99381850a88bf3695bf81\"\n");
+        assert!(
+            changed.contains("rev = \"f967356c9ca55df6c9d99381850a88bf3695bf81\""),
+            "old dependency pin remains visible only in a comment",
+        );
+        let manifest = parse_manifest(&changed).expect("mutation remains valid TOML");
+        assert!(validate_manifest_dependencies(&manifest).is_err());
+    }
+
+    #[test]
+    fn moving_dependency_ref_is_not_hidden_by_immutable_revision() {
+        let changed = CURRENT.replace(
+            "rev = \"f967356c9ca55df6c9d99381850a88bf3695bf81\"",
+            "rev = \"f967356c9ca55df6c9d99381850a88bf3695bf81\", branch = \"main\"",
+        );
+        assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
+        let manifest = parse_manifest(&changed).expect("mutation remains valid TOML");
+        assert!(validate_manifest_dependencies(&manifest).is_err());
+    }
+
+    #[test]
+    fn inherited_workspace_unsafe_lint_is_rejected() {
+        let mut changed = CURRENT.to_owned();
+        changed.push_str("\n[workspace.lints.rust]\nunsafe_code = \"forbid\"\n");
+        let manifest = parse_manifest(&changed).expect("workspace lint must be valid TOML");
+        assert!(validate_manifest_identity(&manifest).is_err());
+    }
+
+    #[test]
+    fn equivalent_toml_quoting_is_allowed() {
+        let changed = CURRENT.replace("publish = false", "publish=false");
+        assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
+        let manifest = parse_manifest(&changed).expect("TOML whitespace is immaterial");
+        validate_manifest_identity(&manifest)
+            .expect("semantic identity must not depend on spacing");
+    }
 }
