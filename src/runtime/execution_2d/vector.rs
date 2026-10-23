@@ -269,11 +269,13 @@ pub(super) fn neutral_shaped_glyph(
         Vec::new(),
         Render2dOpacity::TRANSPARENT,
     );
-    let result = neutral_support(
+    let result = neutral_support_admitted(
         &item,
         path[0],
         samples_per_parent_logical_unit,
         max_buffer_bytes,
+        work,
+        path,
     );
     drop(item);
     work.release_bytes(command_bytes);

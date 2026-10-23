@@ -84,16 +84,6 @@ impl NeutralPreparationWork<'_> {
         self.host.release(bytes);
     }
 
-    fn append(
-        &mut self,
-        output: &mut NeutralMesh,
-        source: &NeutralMesh,
-        path: &[usize],
-    ) -> Result<(), Render2dExecutionError> {
-        self.charge(append_work(output, source, path)?, path)?;
-        append(output, source, Render2dAffineTransform::IDENTITY, path)
-    }
-
     /// Only use for buffers whose retained capacity is tracked by this same
     /// host owner and transferred or released at the construction boundary.
     fn append_admitted(
@@ -338,7 +328,9 @@ fn neutral_item(
                     max_buffer_bytes,
                     work,
                 )? {
-                    work.append(&mut result, &mesh, path)?;
+                    let appended = work.append_admitted(&mut result, &mesh, path);
+                    work.release_bytes(mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
+                    appended?;
                 }
             }
             if !has_original_outline {
@@ -354,6 +346,7 @@ fn neutral_item(
     // materialization must independently prove emptiness or stay symbolic.
     let mesh = result.unwrap_or_else(empty_mesh);
     if region::trivially_empty_original_source(item) {
+        work.release_bytes(mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
         return Ok(None);
     }
     // An image factory already emits the complete destination triangles. With
@@ -371,18 +364,10 @@ fn neutral_item(
         max_buffer_bytes,
         work,
     );
-    // The original vector/image factory output and the newly constructed
-    // clipped mesh coexist during intersection. Retire the input lease on
-    // success or failure; only the clipped result transfers to the region.
-    // Shaped glyph assembly still has its own separately unqualified lease.
-    if matches!(
-        item.primitive(),
-        Render2dPrimitive::Fill { .. }
-            | Render2dPrimitive::Stroke { .. }
-            | Render2dPrimitive::Image(_)
-    ) {
-        work.release_bytes(mesh.triangles.capacity() * size_of::<[f64; 2]>());
-    }
+    // Every leaf factory, including assembled shaped glyphs, owns its mesh
+    // output under this invocation's host lease. Only the completed clipped
+    // result transfers onward; release the source after either outcome.
+    work.release_bytes(mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
     clipped.map(Some)
 }
 
@@ -3650,6 +3635,48 @@ mod tests {
             used, MAX_NEUTRAL_CLIP_WORK,
             "failed admission never consumes further work budget"
         );
+    }
+
+    #[test]
+    fn original_glyph_mesh_copy_obeys_exact_shared_host_peak() {
+        let mut source = empty_mesh();
+        source.triangles = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        source.bounds = [0.0, 0.0, 1.0, 1.0];
+        let source_bytes = source.triangles.capacity() * std::mem::size_of::<[f64; 2]>();
+        assert_eq!(source_bytes, 48);
+        for one_short in [false, true] {
+            let mut graph_work = 0;
+            let mut clip_work = 0;
+            let mut host = super::super::support::PreparationHostBudget::new();
+            let mut output = empty_mesh();
+            let filler = super::super::support::MAX_SHADOW_HOST_BYTES
+                - 2 * source_bytes
+                + usize::from(one_short);
+            let mut work = NeutralPreparationWork::new(&mut graph_work, &mut clip_work, &mut host);
+            work.reserve_bytes(filler, &[2, 3]).unwrap();
+            work.reserve_bytes(source_bytes, &[2, 3]).unwrap();
+            let result = work.append_admitted(&mut output, &source, &[2, 3]);
+            work.release_bytes(source_bytes);
+            if one_short {
+                assert!(matches!(
+                    result,
+                    Err(Render2dExecutionError::SampleSpace {
+                        kind: Render2dSampleSpaceError::ResourceLimit,
+                        path: Some(path),
+                        ..
+                    }) if path == [2, 3]
+                ));
+                assert!(output.triangles.is_empty());
+                assert_eq!(output.triangles.capacity(), 0);
+                assert_eq!(host.live(), filler);
+            } else {
+                result.unwrap();
+                assert_eq!(output.triangles, source.triangles);
+                assert_eq!(host.peak(), super::super::support::MAX_SHADOW_HOST_BYTES);
+                assert_eq!(host.live(), filler + source_bytes);
+            }
+            assert!(graph_work > 0);
+        }
     }
 
     #[test]
