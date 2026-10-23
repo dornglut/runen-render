@@ -2889,7 +2889,13 @@ pub(super) fn certified_convex_erosion_mesh(
         return Err(resource("nested convex output capacity exceeds admission"));
     }
     for triangle in derived.as_chunks::<3>().0 {
-        if orient(triangle[0], triangle[1], triangle[2]) == 0.0 {
+        let area = orient(triangle[0], triangle[1], triangle[2]);
+        if !area.is_finite() {
+            return Err(precision(
+                "nested convex erosion output triangle orientation lost precision",
+            ));
+        }
+        if area == 0.0 {
             continue;
         }
         for &point in triangle {
@@ -3069,6 +3075,16 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
             continue;
         }
         let [left, top, right, bottom] = inset;
+        // Certified finite corners are not enough: the supporting triangle
+        // determinant can still overflow. Never publish invalid neutral
+        // triangles for a consuming ancestor to interpret as exact support.
+        let first = orient([left, top], [right, top], [left, bottom]);
+        let second = orient([right, top], [right, bottom], [left, bottom]);
+        if !first.is_finite() || !second.is_finite() {
+            return Err(precision(
+                "separated rectangle erosion triangle orientation lost precision",
+            ));
+        }
         for point in [
             [left, top],
             [right, top],
@@ -4495,6 +4511,61 @@ mod tests {
         }
         assert_eq!(local, paid, "rejected admission executes no geometry phase");
         assert_eq!(graph, MAX_COMPOSITIONAL_SHADOW_WORK - 1);
+    }
+
+    #[test]
+    fn finite_erosion_corners_with_overflowed_triangle_turn_reject_at_factory() {
+        let large = 1.0e155;
+        let radius = 1.0e142;
+        let rectangle = |left: f64| -> Vec<[f64; 2]> {
+            let right = left + large;
+            vec![
+                [left, 0.0],
+                [right, 0.0],
+                [left, large],
+                [right, 0.0],
+                [right, large],
+                [left, large],
+            ]
+        };
+        let one = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: rectangle(0.0),
+            bounds: [0.0, 0.0, large, large],
+        };
+        let mut work = 0;
+        assert!(matches!(
+            certified_convex_erosion_mesh(&one, radius, &[3, 1], &mut work),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [3, 1]
+        ));
+        assert!(work > 0, "the failed proof retains its actual CPU debit");
+
+        let mut triangles = rectangle(0.0);
+        triangles.extend(rectangle(2.0 * large));
+        let separate = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles,
+            bounds: [0.0, 0.0, 3.0 * large, large],
+        };
+        let mut work = 0;
+        assert!(matches!(
+            certified_separated_rectangles_erosion_mesh(
+                &separate,
+                radius,
+                &[3, 2],
+                &mut work,
+            ),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [3, 2]
+        ));
+        assert!(work > 0);
     }
 
     #[test]
