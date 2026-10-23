@@ -576,6 +576,7 @@ pub(super) fn prepare(
                     -effect.spread(),
                     path,
                     &mut aggregate_coverage_work,
+                    &mut host,
                 )? {
                     Some(convex) => Some(convex),
                     None if original_polygons && axis_isometry => {
@@ -605,6 +606,9 @@ pub(super) fn prepare(
             };
             let caster = erosion.as_ref().unwrap_or(&shifted);
             if caster.triangles.is_empty() {
+                if let Some(eroded) = &erosion {
+                    host.release(eroded.triangles.capacity() * size_of::<[f64; 2]>());
+                }
                 continue;
             }
             let remaining_spread = if erosion.is_some() {
@@ -645,6 +649,9 @@ pub(super) fn prepare(
                         // Rank-deficient ancestor transforms collapse 2D
                         // painted area; the source-neutral propagation pass
                         // separately discards degenerate affine triangles.
+                        if let Some(eroded) = &erosion {
+                            host.release(eroded.triangles.capacity() * size_of::<[f64; 2]>());
+                        }
                         continue;
                     }
                     support::affine_parent_effect_coverage_admitted(
@@ -692,6 +699,12 @@ pub(super) fn prepare(
                     remaining_coverage_samples,
                 )?
             };
+            // Exact convex erosion output was admitted in the SAME scene
+            // host owner while coverage was built. It is now disposable;
+            // only the returned coverage is retained across effects.
+            if let Some(eroded) = &erosion {
+                host.release(eroded.triangles.capacity() * size_of::<[f64; 2]>());
+            }
             let Some(coverage) = coverage else {
                 continue;
             };

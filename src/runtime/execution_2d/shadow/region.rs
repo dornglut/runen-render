@@ -5379,6 +5379,7 @@ mod tests {
                 radius,
                 &erosion.path,
                 &mut expected_local,
+                &mut support::PreparationHostBudget::new(),
             )
             .unwrap()
             .unwrap();
