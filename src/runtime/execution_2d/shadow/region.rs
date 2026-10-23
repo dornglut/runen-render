@@ -2126,6 +2126,9 @@ impl NeutralRegionBuilder {
                 path,
             )?;
         }
+        // A Gaussian factory reserves its output vector before allocation.
+        // That lease becomes the retained region mesh; do not charge it twice.
+        let mut gaussian_output_admitted = false;
         let mesh = match &region.kind {
             Kind::Source(mesh) => Arc::clone(mesh.get().ok_or_else(|| unsupported(path))?),
             Kind::Union(children) => {
@@ -2269,8 +2272,13 @@ impl NeutralRegionBuilder {
                             .and_then(|cost| cost.checked_add(256))
                             .ok_or_else(|| resource(path, "neutral Gaussian hull work overflow"))?;
                         self.charge_graph_work(hull_work, path)?;
-                        let square =
-                            shadow::gaussian_square_support(&shifted, effect.sigma() * 3.0, path)?;
+                        let square = shadow::gaussian_square_support(
+                            &shifted,
+                            effect.sigma() * 3.0,
+                            path,
+                            &mut self.host,
+                        )?;
+                        gaussian_output_admitted = true;
                         shadow::charge_vertices(
                             &mut self.retained_vertices,
                             square.triangles.len(),
@@ -2283,9 +2291,9 @@ impl NeutralRegionBuilder {
                 }
             }
         };
-        if new_mesh {
-            // Materialization factories still own their physical scratch.
-            // Only their actual returned vertex capacity is retained here.
+        if new_mesh && !gaussian_output_admitted {
+            // Other materializers still transfer their returned capacities
+            // here. Gaussian result storage was reserved inside its factory.
             self.host.reserve(
                 mesh.triangles
                     .capacity()
