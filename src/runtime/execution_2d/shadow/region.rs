@@ -2241,7 +2241,7 @@ impl NeutralRegionBuilder {
                         if effect.spread() > 0.0 {
                             return Err(unsupported(path));
                         }
-                        let erased = if effect.spread() < 0.0 {
+                        let (erased, eroded_admitted) = if effect.spread() < 0.0 {
                             // Erosion retains its evaluator-wide local ceiling,
                             // but every executed preparation phase also spends
                             // this invocation's graph fuel. Keep one live borrow
@@ -2259,101 +2259,117 @@ impl NeutralRegionBuilder {
                                 -effect.spread(),
                                 path,
                                 &mut erosion_work,
+                                &mut self.host,
                             )?;
                             if let Some(separated) = separated {
-                                separated
+                                (separated, true)
                             } else {
                                 // Touching, overlapping, rotated or otherwise
                                 // unqualified sources retain the existing exact
                                 // convex proof and its typed fallback.
-                                support::certified_convex_erosion_mesh(
-                                    &mesh,
-                                    -effect.spread(),
-                                    path,
-                                    &mut erosion_work,
-                                )?
-                                .ok_or_else(|| unsupported(path))?
+                                (
+                                    support::certified_convex_erosion_mesh(
+                                        &mesh,
+                                        -effect.spread(),
+                                        path,
+                                        &mut erosion_work,
+                                    )?
+                                    .ok_or_else(|| unsupported(path))?,
+                                    false,
+                                )
                             }
                         } else {
-                            shadow::empty_mesh()
+                            (shadow::empty_mesh(), false)
                         };
-                        let caster: &support::NeutralMesh = if effect.spread() < 0.0 {
-                            &erased
+                        // Factory-owned separated erosion output is live through
+                        // subsequent shifted/blurred allocation. Its temporary
+                        // owner ends only after a completed or rejected copy.
+                        let erased_bytes = if eroded_admitted {
+                            erased.triangles.capacity() * size_of::<[f64; 2]>()
                         } else {
-                            mesh.as_ref()
+                            0
                         };
-                        let offset = Render2dAffineTransform::translation(
-                            effect.offset_x(),
-                            effect.offset_y(),
-                        )
-                        .map_err(|_| {
-                            precision(path, "neutral effect offset cannot be represented")
-                        })?;
-                        // A rejected effect cannot retain its provisional caster
-                        // or Gaussian vertices; already materialized children stay.
-                        let mut completed_vertices = self.retained_vertices;
-                        shadow::charge_vertices(
-                            &mut completed_vertices,
-                            caster.triangles.len(),
-                            path,
-                        )?;
-                        let mut shifted = shadow::empty_mesh();
-                        self.charge_graph_work(shadow::append_work(&shifted, caster, path)?, path)?;
-                        shadow::append_admitted(
-                            &mut shifted,
-                            caster,
-                            offset,
-                            path,
-                            &mut self.host,
-                        )?;
-                        if effect.sigma() > 0.0 && !shifted.triangles.is_empty() {
-                            let shifted_bytes =
-                                shifted.triangles.capacity() * size_of::<[f64; 2]>();
-                            // Gaussian preparation overlaps the retained shifted
-                            // vertices. Refund that temporary on either outcome;
-                            // only the completed square can become a region receipt.
-                            let expanded: Result<_, Render2dExecutionError> = (|| {
-                                // Twelve translated vertices; at most 12² comparison/
-                                // movement steps in the small sort; deduplication;
-                                // at most 48 orientation steps across both monotone
-                                // hull passes; at most thirty emitted vertices. The
-                                // 8192 bound includes all primitive guards and copies.
-                                let hull_work = (shifted.triangles.len() / 3)
-                                    .checked_mul(8_192)
-                                    .and_then(|cost| cost.checked_add(256))
-                                    .ok_or_else(|| {
-                                        resource(path, "neutral Gaussian hull work overflow")
-                                    })?;
-                                self.charge_graph_work(hull_work, path)?;
-                                let square = shadow::gaussian_square_support(
-                                    &shifted,
-                                    effect.sigma() * 3.0,
-                                    path,
-                                    &mut self.host,
-                                )?;
-                                if let Err(error) = shadow::charge_vertices(
-                                    &mut completed_vertices,
-                                    square.triangles.len(),
-                                    path,
-                                ) {
-                                    self.host.release(
-                                        square.triangles.capacity() * size_of::<[f64; 2]>(),
-                                    );
-                                    return Err(error);
-                                }
-                                Ok(square)
-                            })(
-                            );
-                            self.host.release(shifted_bytes);
-                            let square = expanded?;
-                            self.retained_vertices = completed_vertices;
-                            output_admitted = true;
-                            Arc::new(square)
-                        } else {
-                            self.retained_vertices = completed_vertices;
-                            output_admitted = true;
-                            Arc::new(shifted)
-                        }
+                        let constructed = (|| -> Result<_, Render2dExecutionError> {
+                            let caster: &support::NeutralMesh = if effect.spread() < 0.0 {
+                                &erased
+                            } else {
+                                mesh.as_ref()
+                            };
+                            let offset = Render2dAffineTransform::translation(
+                                effect.offset_x(),
+                                effect.offset_y(),
+                            )
+                            .map_err(|_| {
+                                precision(path, "neutral effect offset cannot be represented")
+                            })?;
+                            // A rejected effect cannot retain its provisional caster
+                            // or Gaussian vertices; already materialized children stay.
+                            let mut completed_vertices = self.retained_vertices;
+                            shadow::charge_vertices(
+                                &mut completed_vertices,
+                                caster.triangles.len(),
+                                path,
+                            )?;
+                            let mut shifted = shadow::empty_mesh();
+                            self.charge_graph_work(shadow::append_work(&shifted, caster, path)?, path)?;
+                            shadow::append_admitted(
+                                &mut shifted,
+                                caster,
+                                offset,
+                                path,
+                                &mut self.host,
+                            )?;
+                            if effect.sigma() > 0.0 && !shifted.triangles.is_empty() {
+                                let shifted_bytes =
+                                    shifted.triangles.capacity() * size_of::<[f64; 2]>();
+                                // Gaussian preparation overlaps the retained shifted
+                                // vertices. Refund that temporary on either outcome;
+                                // only the completed square can become a region receipt.
+                                let expanded: Result<_, Render2dExecutionError> = (|| {
+                                    // Twelve translated vertices; at most 12² comparison/
+                                    // movement steps in the small sort; deduplication;
+                                    // at most 48 orientation steps across both monotone
+                                    // hull passes; at most thirty emitted vertices. The
+                                    // 8192 bound includes all primitive guards and copies.
+                                    let hull_work = (shifted.triangles.len() / 3)
+                                        .checked_mul(8_192)
+                                        .and_then(|cost| cost.checked_add(256))
+                                        .ok_or_else(|| {
+                                            resource(path, "neutral Gaussian hull work overflow")
+                                        })?;
+                                    self.charge_graph_work(hull_work, path)?;
+                                    let square = shadow::gaussian_square_support(
+                                        &shifted,
+                                        effect.sigma() * 3.0,
+                                        path,
+                                        &mut self.host,
+                                    )?;
+                                    if let Err(error) = shadow::charge_vertices(
+                                        &mut completed_vertices,
+                                        square.triangles.len(),
+                                        path,
+                                    ) {
+                                        self.host.release(
+                                            square.triangles.capacity() * size_of::<[f64; 2]>(),
+                                        );
+                                        return Err(error);
+                                    }
+                                    Ok(square)
+                                })(
+                                );
+                                self.host.release(shifted_bytes);
+                                let square = expanded?;
+                                self.retained_vertices = completed_vertices;
+                                output_admitted = true;
+                                Ok(Arc::new(square))
+                            } else {
+                                self.retained_vertices = completed_vertices;
+                                output_admitted = true;
+                                Ok(Arc::new(shifted))
+                            }
+                        })();
+                        self.host.release(erased_bytes);
+                        constructed?
                     }
                 }
             };
@@ -5157,15 +5173,22 @@ mod tests {
         // doing work, then the convex whole-union proof must run normally.
         let mesh = provenance_rectangle_mesh(2);
         let mut expected_local = 0;
+        let mut expected_host = support::PreparationHostBudget::new();
         assert!(
             support::certified_separated_rectangles_erosion_mesh(
                 &mesh,
                 0.25,
                 &[8, 1],
                 &mut expected_local,
+                &mut expected_host,
             )
             .unwrap()
             .is_none()
+        );
+        assert_eq!(
+            expected_host.live(),
+            0,
+            "disqualified component proofs cannot retain host storage"
         );
         let failed_candidate = expected_local;
         assert!(failed_candidate > 0);
