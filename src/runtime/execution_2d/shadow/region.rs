@@ -2134,16 +2134,36 @@ impl NeutralRegionBuilder {
             Kind::Source(mesh) => Arc::clone(mesh.get().ok_or_else(|| unsupported(path))?),
             Kind::Union(children) => {
                 let mut output = shadow::empty_mesh();
-                for child in children {
-                    let mesh = self.materialize(child)?;
-                    shadow::charge_vertices(
-                        &mut self.retained_vertices,
-                        mesh.triangles.len(),
-                        path,
-                    )?;
-                    self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
-                    shadow::append(&mut output, &mesh, Render2dAffineTransform::IDENTITY, path)?;
+                let assembled = (|| -> Result<(), Render2dExecutionError> {
+                    for child in children {
+                        let mesh = self.materialize(child)?;
+                        shadow::charge_vertices(
+                            &mut self.retained_vertices,
+                            mesh.triangles.len(),
+                            path,
+                        )?;
+                        self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
+                        shadow::append_admitted(
+                            &mut output,
+                            &mesh,
+                            Render2dAffineTransform::IDENTITY,
+                            path,
+                            &mut self.host,
+                        )?;
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = assembled {
+                    // Incomplete union geometry is dropped; refund only its
+                    // own result and header, not child receipts or paid work.
+                    self.host.release(
+                        size_of::<support::NeutralMesh>()
+                            + 2 * size_of::<usize>()
+                            + output.triangles.capacity() * size_of::<[f64; 2]>(),
+                    );
+                    return Err(error);
                 }
+                output_admitted = true;
                 Arc::new(output)
             }
             Kind::Affine { source, to_parent } => {
