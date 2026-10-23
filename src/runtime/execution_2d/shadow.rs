@@ -2071,7 +2071,11 @@ fn triangle_intersection(
     // and enclosing iterator/bookkeeping work fit this fixed setup bound.
     work.charge(256, path)?;
     let winding = orient(clip[0], clip[1], clip[2]);
-    if winding == 0.0 || orient(source[0], source[1], source[2]) == 0.0 {
+    let source_turn = orient(source[0], source[1], source[2]);
+    if !winding.is_finite() || !source_turn.is_finite() {
+        return Err(precision(path, "neutral clip triangle orientation loses precision"));
+    }
+    if winding == 0.0 || source_turn == 0.0 {
         return Ok(ClipPolygon::empty());
     }
     let mut polygon = ClipPolygon::empty();
@@ -2093,17 +2097,23 @@ fn triangle_intersection(
             let q = polygon.points()[(j + 1) % polygon.len()];
             let d0 = orient(a, b, p) * winding.signum();
             let d1 = orient(a, b, q) * winding.signum();
+            if !d0.is_finite() || !d1.is_finite() {
+                return Err(precision(path, "neutral clip half-plane loses precision"));
+            }
             let inside_p = d0 >= 0.0;
             let inside_q = d1 >= 0.0;
             if inside_p != inside_q {
                 let denominator = d0 - d1;
-                if denominator == 0.0 {
+                if !denominator.is_finite() || denominator == 0.0 {
                     return Err(precision(
                         path,
                         "neutral clip edge intersection is singular",
                     ));
                 }
                 let t = d0 / denominator;
+                if !t.is_finite() {
+                    return Err(precision(path, "neutral clip intersection factor lost precision"));
+                }
                 let intersection = [
                     (q[0] - p[0]).mul_add(t, p[0]),
                     (q[1] - p[1]).mul_add(t, p[1]),
@@ -3324,6 +3334,68 @@ mod tests {
             assert!(point[0] >= 0.0 && point[1] >= 0.0);
             assert!(point[0] + point[1] <= 2.0 + 1.0e-12);
         }
+    }
+
+    #[test]
+    fn clip_rejects_nonfinite_triangle_and_half_plane_orientations() {
+        let ordinary = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let huge = [[0.0, 0.0], [1.0e155, 0.0], [0.0, 1.0e155]];
+        for (source, clipping) in [(&ordinary, &huge), (&huge, &ordinary)] {
+            let mut graph = 0;
+            let mut clip_pairs = 0;
+            let mut host = super::super::support::PreparationHostBudget::new();
+            assert!(matches!(
+                triangle_intersection(
+                    source,
+                    clipping,
+                    &[5, 2],
+                    &mut NeutralPreparationWork {
+                        graph: &mut graph,
+                        clip_pairs: &mut clip_pairs,
+                        host: &mut host,
+                    }
+                ),
+                Err(Render2dExecutionError::SampleSpace {
+                    kind: Render2dSampleSpaceError::PrecisionLimit,
+                    path: Some(path),
+                    ..
+                }) if path == [5, 2]
+            ));
+            assert_eq!((host.live(), host.peak()), (0, 0));
+            assert_eq!(clip_pairs, 0);
+            assert!(graph > 0, "failure must retain charged comparison work");
+        }
+
+        // Both triangle orientations are finite, but evaluating the long
+        // clip edge against a far-away triangle overflows its half-plane
+        // distance. A NaN/inf must never silently classify as outside.
+        let narrow_clip = [[0.0, 0.0], [1.0e154, 0.0], [0.0, 1.0e-154]];
+        let far_source = [
+            [1.0e155, 1.0e155],
+            [1.0e155 + 1.0e141, 1.0e155],
+            [1.0e155, 1.0e155 + 1.0e141],
+        ];
+        let mut graph = 0;
+        let mut clip_pairs = 0;
+        let mut host = super::super::support::PreparationHostBudget::new();
+        assert!(matches!(
+            triangle_intersection(
+                &far_source,
+                &narrow_clip,
+                &[5, 3],
+                &mut NeutralPreparationWork {
+                    graph: &mut graph,
+                    clip_pairs: &mut clip_pairs,
+                    host: &mut host,
+                }
+            ),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [5, 3]
+        ));
+        assert_eq!((host.live(), host.peak()), (0, 0));
     }
 
     #[test]
