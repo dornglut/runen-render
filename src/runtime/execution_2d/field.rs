@@ -1185,10 +1185,10 @@ mod tests {
             "glyph path drops after late physical failure"
         );
         assert_eq!(host.peak(), peak);
-        // The one-triangle glyph now pays its three-index original-vector
-        // preflight before the late transform rejects. Executed work is not
-        // refunded, while the temporary command and mesh bytes are retired.
-        assert_eq!(work, cost + 512 + 256 + 3 * 64);
+        // The one-triangle glyph pays four flattened path events and its
+        // three-index original-vector scan before the late transform rejects.
+        // Executed work is not refunded; temporary geometry is retired.
+        assert_eq!(work, cost + 512 + 256 + 4 + 3 * 64);
     }
 
     #[test]
