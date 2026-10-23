@@ -3657,7 +3657,7 @@ fn wholly_offscreen_curved_root_effects_preserve_actual_vulkan_child_paint() {
 }
 
 #[test]
-fn microscopic_gap_changes_union_erosion_and_finite_gaussian_on_vulkan() {
+fn touching_union_gaussian_renders_and_microscopic_gap_fails_closed_on_vulkan() {
     let Some(context) = context() else { return };
     // Independent F1 set/topology oracle, not a disposable mesh or alpha
     // mask: two exactly touching 1x2 rectangles form a 2x2 rectangle.
@@ -3701,15 +3701,25 @@ fn microscopic_gap_changes_union_erosion_and_finite_gaussian_on_vulkan() {
     // Outside [10.1, 10.9] expanded by the full finite 3-sigma halo .375.
     assert_eq!(pixel(&touching, 8, 10), [0, 0, 0, 0]);
 
-    // The exact same executor must not retain a previous union topology as
-    // derived support when the next immutable source has a real 1e-6 gap.
-    let separated = execute(
+    // Unlike the connected union, each separated width-1 component erodes
+    // completely. The current root union selector does not certify this
+    // near-contact case, so its canonical typed rejection is expected. Do
+    // not substitute a zero alpha mask or silently claim positive support.
+    let (_, target) = target("F3F microscopic gap unsupported root union");
+    let rejected = executor.prepare(&context, &scene(0.000_001), &bindings, &target);
+    assert!(matches!(
+        rejected,
+        Err(Render2dExecutionError::UnsupportedContent(
+            runen_render::execution_2d::Render2dUnsupportedContent::Shadows { root_index: 0 },
+        ))
+    ));
+    // Rejection must not poison the already supported exact-contact scene.
+    let recovered = execute(
         &context,
         &mut executor,
-        &scene(0.000_001),
+        &scene(0.0),
         &bindings,
-        "F3F microscopic gap eliminates eroded support",
+        "F3F supported touching union after unsupported gap",
     );
-    assert_eq!(pixel(&separated, 10, 10), [0, 0, 0, 0]);
-    assert_eq!(pixel(&separated, 9, 10), [0, 0, 0, 0]);
+    assert_eq!(recovered.as_bytes(), touching.as_bytes());
 }
