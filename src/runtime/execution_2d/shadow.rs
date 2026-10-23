@@ -2612,7 +2612,13 @@ mod tests {
             bounds: [0.0, 0.0, 1.0, 1.0],
         };
         let mut retained = empty_mesh();
-        append(&mut retained, &base, Render2dAffineTransform::IDENTITY, &[6]).unwrap();
+        append(
+            &mut retained,
+            &base,
+            Render2dAffineTransform::IDENTITY,
+            &[6],
+        )
+        .unwrap();
         let vertices = retained.triangles.clone();
         let bounds = retained.bounds;
         let capacity = retained.triangles.capacity();
@@ -2632,8 +2638,7 @@ mod tests {
             ],
             bounds: [0.0, 0.0, 11.0, 1.0],
         };
-        let huge = Render2dAffineTransform::new(1.0e308, 0.0, 0.0, 1.0, 0.0, 0.0)
-            .unwrap();
+        let huge = Render2dAffineTransform::new(1.0e308, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap();
         assert!(matches!(
             append(&mut retained, &source, huge, &[6, 2]),
             Err(Render2dExecutionError::SampleSpace {
