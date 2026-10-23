@@ -2,7 +2,8 @@
 //!
 //! The single admitted F1 color path covers root and nested vectors, image
 //! patches and retained F2 text with conjunctive clips and atomic opacity.
-//! Effects remain fail-closed until their separately owned F3F delivery.
+//! Qualified F3F shadows use this same compositor; unsupported combinations
+//! still fail closed during preparation.
 //! Source colors share one correlated 4x4 plane and resolve only at the
 //! caller-owned target boundary.
 pub(in crate::runtime::execution_2d) mod gaussian;
@@ -153,7 +154,7 @@ fn prepare_clip(
 
 /// Compiles a real F1 group tree through one
 /// globally-phased sample plane. This is an admitted *staging subset* of the
-/// same future mixed-content F3E compiler, not a second persistent renderer.
+/// the same mixed-content F3E compiler, not a second persistent renderer.
 /// All nonadmitted semantics reject before an external target is modified.
 /// All painting scenes use this one compositor. Missing private physical roles
 /// are a typed admission failure rather than a second pixel-formation law.
