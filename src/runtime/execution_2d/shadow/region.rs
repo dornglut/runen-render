@@ -2273,15 +2273,16 @@ impl NeutralRegionBuilder {
                                         -effect.spread(),
                                         path,
                                         &mut erosion_work,
+                                        &mut self.host,
                                     )?
                                     .ok_or_else(|| unsupported(path))?,
-                                    false,
+                                    true,
                                 )
                             }
                         } else {
                             (shadow::empty_mesh(), false)
                         };
-                        // Factory-owned separated erosion output is live through
+                        // Factory-owned eroded output is live through
                         // subsequent shifted/blurred allocation. Its temporary
                         // owner ends only after a completed or rejected copy.
                         let erased_bytes = if eroded_admitted {
@@ -5277,7 +5278,13 @@ mod tests {
         let failed_candidate = expected_local;
         assert!(failed_candidate > 0);
         let expected =
-            support::certified_convex_erosion_mesh(&mesh, 0.25, &[8, 1], &mut expected_local)
+            support::certified_convex_erosion_mesh(
+                &mesh,
+                0.25,
+                &[8, 1],
+                &mut expected_local,
+                &mut support::PreparationHostBudget::new(),
+            )
                 .unwrap()
                 .unwrap();
         assert!(expected_local > failed_candidate);

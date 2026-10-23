@@ -2771,6 +2771,7 @@ pub(super) fn certified_convex_erosion_mesh(
     radius: f64,
     path: &[usize],
     aggregate_work: &mut dyn PreparationWork,
+    host: &mut PreparationHostBudget,
 ) -> Result<Option<NeutralMesh>, crate::execution_2d::Render2dExecutionError> {
     use crate::execution_2d::Render2dSampleSpaceError;
     let precision = |detail| mask_failure(path, Render2dSampleSpaceError::PrecisionLimit, detail);
@@ -2799,123 +2800,140 @@ pub(super) fn certified_convex_erosion_mesh(
     if source.triangles.is_empty() {
         return Ok(Some(result));
     }
-    // Charge contribution-wide inspection and normalization BEFORE another
-    // potentially large temporary triangle payload is materialized.
-    // Per vertex: zero initialization, two divisions, finite checks, two
-    // stores and the later two abs/max reductions, including loop control.
-    let normalization = source
-        .triangles
-        .len()
-        .checked_mul(32)
-        .and_then(|cost| cost.checked_add(64))
-        .ok_or_else(|| resource("nested convex normalization work overflow"))?;
-    charge_shadow_preparation_work(aggregate_work, normalization, path)?;
-    let mut triangles = filled(source.triangles.len(), [0.0_f64; 2], path)?;
-    for (out, &[x, y]) in triangles.iter_mut().zip(&source.triangles) {
-        *out = [
-            x / source.units_per_parent_logical_unit,
-            y / source.units_per_parent_logical_unit,
-        ];
-        if !out.iter().all(|coord| coord.is_finite()) {
-            return Err(precision(
-                "nested convex erosion normalization lost precision",
-            ));
-        }
-    }
-    // A nonzero radius smaller than the owner-frame coordinate ULP cannot
-    // reliably shift supporting planes. Reject such an invocation rather
-    // than accidentally reproducing the un-eroded source as exact support.
-    let largest_coordinate = triangles
-        .iter()
-        .flat_map(|point| point.iter())
-        .fold(0.0_f64, |largest, value| largest.max(value.abs()));
-    if radius <= largest_coordinate * (16.0 * f64::EPSILON) {
-        return Err(precision(
-            "nested convex erosion radius is below parent-coordinate precision",
-        ));
-    }
-    // A rectangle is certified from the WHOLE triangle union, not its AABB.
-    // Its Euclidean disk erosion is exactly an inset rectangle. This common
-    // class avoids an otherwise redundant quadratic exposed-edge arrangement.
-    let derived =
-        if let Some(rect) = charge_and_certify_rectangle(&triangles, aggregate_work, path)? {
-            // Inset arithmetic, finite/empty guards and six generated vertices.
-            charge_shadow_preparation_work(aggregate_work, 160, path)?;
-            let [x0, y0, x1, y1] = rect;
-            let bounds = [x0 + radius, y0 + radius, x1 - radius, y1 - radius];
-            if !bounds.iter().all(|coordinate| coordinate.is_finite()) {
+    let mut triangles = Vec::<[f64; 2]>::new();
+    let mut rectangle_derived = Vec::<[f64; 2]>::new();
+    let completed: Result<Option<()>, crate::execution_2d::Render2dExecutionError> = (|| {
+        // Charge contribution-wide inspection and normalization BEFORE another
+        // potentially large temporary triangle payload is materialized.
+        // Per vertex: zero initialization, two divisions, finite checks, two
+        // stores and the later two abs/max reductions, including loop control.
+        let normalization = source
+            .triangles
+            .len()
+            .checked_mul(32)
+            .and_then(|cost| cost.checked_add(64))
+            .ok_or_else(|| resource("nested convex normalization work overflow"))?;
+        charge_shadow_preparation_work(aggregate_work, normalization, path)?;
+        host.reserve_vector(&mut triangles, source.triangles.len(), path)?;
+        triangles.resize(source.triangles.len(), [0.0_f64; 2]);
+        for (out, &[x, y]) in triangles.iter_mut().zip(&source.triangles) {
+            *out = [
+                x / source.units_per_parent_logical_unit,
+                y / source.units_per_parent_logical_unit,
+            ];
+            if !out.iter().all(|coord| coord.is_finite()) {
                 return Err(precision(
-                    "nested certified rectangle erosion lost precision",
+                    "nested convex erosion normalization lost precision",
                 ));
             }
-            if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
-                Vec::new()
-            } else {
-                let [x0, y0, x1, y1] = bounds;
-                // A strictly nonempty original rectangle must not turn into
-                // an empty caster just because its f64 determinant underflows.
-                // An invalid inset cannot certify complete signed erosion.
-                let area = orient([x0, y0], [x1, y0], [x0, y1]);
-                if !area.is_finite() || area == 0.0 {
-                    return Err(precision(
-                        "nested certified rectangle inset area lost precision",
-                    ));
-                }
-                vec![[x0, y0], [x1, y0], [x0, y1], [x1, y0], [x1, y1], [x0, y1]]
-            }
-        } else {
-            let boundary = union_exterior_boundary(&triangles, path, Some(aggregate_work))?;
-            let Some(derived) = certified_convex_eroded_union(
-                &triangles,
-                &boundary,
-                radius,
-                path,
-                Some(aggregate_work),
-            )?
-            else {
-                return Ok(None);
-            };
-            derived
-        };
-    if derived.len() > MAX_NEUTRAL_MASK_SAMPLES {
-        return Err(resource(
-            "nested convex erosion mesh exceeds bounded vertices",
-        ));
-    }
-    // Each triangle orientation and each retained point's four bounds updates,
-    // coordinate copies and push are paid before output allocation or scans.
-    let output_work = derived
-        .len()
-        .checked_mul(24)
-        .and_then(|cost| cost.checked_add(64))
-        .ok_or_else(|| resource("nested convex output work overflow"))?;
-    charge_shadow_preparation_work(aggregate_work, output_work, path)?;
-    result
-        .triangles
-        .try_reserve_exact(derived.len())
-        .map_err(|_| resource("nested convex erosion output allocation failed"))?;
-    if result.triangles.capacity() > derived.len() {
-        return Err(resource("nested convex output capacity exceeds admission"));
-    }
-    for triangle in derived.as_chunks::<3>().0 {
-        let area = orient(triangle[0], triangle[1], triangle[2]);
-        if !area.is_finite() {
+        }
+        // A nonzero radius smaller than the owner-frame coordinate ULP cannot
+        // reliably shift supporting planes. Reject such an invocation rather
+        // than accidentally reproducing the un-eroded source as exact support.
+        let largest_coordinate = triangles
+            .iter()
+            .flat_map(|point| point.iter())
+            .fold(0.0_f64, |largest, value| largest.max(value.abs()));
+        if radius <= largest_coordinate * (16.0 * f64::EPSILON) {
             return Err(precision(
-                "nested convex erosion output triangle orientation lost precision",
+                "nested convex erosion radius is below parent-coordinate precision",
             ));
         }
-        if area == 0.0 {
-            continue;
+        // A rectangle is certified from the WHOLE triangle union, not its AABB.
+        // Its Euclidean disk erosion is exactly an inset rectangle. This common
+        // class avoids an otherwise redundant quadratic exposed-edge arrangement.
+        let derived: std::borrow::Cow<'_, [[f64; 2]]> =
+            if let Some(rect) = charge_and_certify_rectangle(&triangles, aggregate_work, path)? {
+                // Inset arithmetic, finite/empty guards and six generated vertices.
+                charge_shadow_preparation_work(aggregate_work, 160, path)?;
+                let [x0, y0, x1, y1] = rect;
+                let bounds = [x0 + radius, y0 + radius, x1 - radius, y1 - radius];
+                if !bounds.iter().all(|coordinate| coordinate.is_finite()) {
+                    return Err(precision(
+                        "nested certified rectangle erosion lost precision",
+                    ));
+                }
+                if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
+                    std::borrow::Cow::Borrowed(&rectangle_derived)
+                } else {
+                    let [x0, y0, x1, y1] = bounds;
+                    // A strictly nonempty original rectangle must not turn into
+                    // an empty caster just because its f64 determinant underflows.
+                    // An invalid inset cannot certify complete signed erosion.
+                    let area = orient([x0, y0], [x1, y0], [x0, y1]);
+                    if !area.is_finite() || area == 0.0 {
+                        return Err(precision(
+                            "nested certified rectangle inset area lost precision",
+                        ));
+                    }
+                    host.reserve_vector(&mut rectangle_derived, 6, path)?;
+                    rectangle_derived.extend([
+                        [x0, y0],
+                        [x1, y0],
+                        [x0, y1],
+                        [x1, y0],
+                        [x1, y1],
+                        [x0, y1],
+                    ]);
+                    std::borrow::Cow::Borrowed(&rectangle_derived)
+                }
+            } else {
+                let boundary = union_exterior_boundary(&triangles, path, Some(aggregate_work))?;
+                let Some(derived) = certified_convex_eroded_union(
+                    &triangles,
+                    &boundary,
+                    radius,
+                    path,
+                    Some(aggregate_work),
+                )?
+                else {
+                    return Ok(None);
+                };
+                std::borrow::Cow::Owned(derived)
+            };
+        if derived.len() > MAX_NEUTRAL_MASK_SAMPLES {
+            return Err(resource(
+                "nested convex erosion mesh exceeds bounded vertices",
+            ));
         }
-        for &point in triangle {
-            result.bounds[0] = result.bounds[0].min(point[0]);
-            result.bounds[1] = result.bounds[1].min(point[1]);
-            result.bounds[2] = result.bounds[2].max(point[0]);
-            result.bounds[3] = result.bounds[3].max(point[1]);
-            result.triangles.push(point);
+        // Each triangle orientation and each retained point's four bounds updates,
+        // coordinate copies and push are paid before output allocation or scans.
+        let output_work = derived
+            .len()
+            .checked_mul(24)
+            .and_then(|cost| cost.checked_add(64))
+            .ok_or_else(|| resource("nested convex output work overflow"))?;
+        charge_shadow_preparation_work(aggregate_work, output_work, path)?;
+        host.reserve_vector(&mut result.triangles, derived.len(), path)?;
+        for triangle in derived.as_chunks::<3>().0 {
+            let area = orient(triangle[0], triangle[1], triangle[2]);
+            if !area.is_finite() {
+                return Err(precision(
+                    "nested convex erosion output triangle orientation lost precision",
+                ));
+            }
+            if area == 0.0 {
+                continue;
+            }
+            for &point in triangle {
+                result.bounds[0] = result.bounds[0].min(point[0]);
+                result.bounds[1] = result.bounds[1].min(point[1]);
+                result.bounds[2] = result.bounds[2].max(point[0]);
+                result.bounds[3] = result.bounds[3].max(point[1]);
+                result.triangles.push(point);
+            }
         }
+        Ok(Some(()))
+    })();
+    // Normalize/rectangle scratch end before the consumer can retire the
+    // separately preadmitted output. Actual heap capacities, not lengths,
+    // are the accounting units for both successful and failed attempts.
+    host.release(rectangle_derived.capacity() * size_of::<[f64; 2]>());
+    host.release(triangles.capacity() * size_of::<[f64; 2]>());
+    if !matches!(&completed, Ok(Some(()))) {
+        host.release(result.triangles.capacity() * size_of::<[f64; 2]>());
     }
-    Ok(Some(result))
+    completed.map(|outcome| outcome.map(|()| result))
 }
 
 /// Qualify an exact signed Euclidean erosion of multiple disconnected,
@@ -4362,6 +4380,48 @@ mod tests {
     }
 
     #[test]
+    fn convex_rectangle_erosion_owns_normalization_derived_and_final_peak() {
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [0.0, 0.0],
+                [4.0, 0.0],
+                [0.0, 4.0],
+                [4.0, 0.0],
+                [4.0, 4.0],
+                [0.0, 4.0],
+            ],
+            bounds: [0.0, 0.0, 4.0, 4.0],
+        };
+        let bytes = 6 * size_of::<[f64; 2]>();
+        let mut host = PreparationHostBudget::new();
+        let mut work = 0;
+        let mesh = certified_convex_erosion_mesh(&source, 0.25, &[3, 7], &mut work, &mut host)
+            .unwrap()
+            .expect("certified rectangle admits exact inset");
+        assert_eq!(mesh.triangles.len(), 6);
+        assert_eq!(mesh.bounds, [0.25, 0.25, 3.75, 3.75]);
+        assert_eq!(host.live(), bytes);
+        assert_eq!(host.peak(), 3 * bytes);
+        assert!(work > 0);
+
+        let mut host = PreparationHostBudget::new();
+        host.reserve(MAX_SHADOW_HOST_BYTES - 3 * bytes + 1, &[3, 8])
+            .unwrap();
+        let before = host.live();
+        let mut work = 0;
+        assert!(matches!(
+            certified_convex_erosion_mesh(&source, 0.25, &[3, 8], &mut work, &mut host),
+            Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [3, 8]
+        ));
+        assert_eq!(host.live(), before);
+        assert!(work > 0, "failed peak allocation keeps paid arithmetic");
+    }
+
+    #[test]
     fn certified_nested_convex_erosion_uses_true_sheared_halfplanes_not_aabb() {
         // The caster is a sheared parallelogram, NOT its [10,25]x[10,20]
         // enclosing rectangle. Its exact inward Euclidean disk offset
@@ -4379,7 +4439,13 @@ mod tests {
             bounds: [10.0, 10.0, 25.0, 20.0],
         };
         let mut work = 0_usize;
-        let region = certified_convex_erosion_mesh(&source, 1.0, &[0, 0], &mut work)
+        let region = certified_convex_erosion_mesh(
+            &source,
+            1.0,
+            &[0, 0],
+            &mut work,
+            &mut PreparationHostBudget::new(),
+        )
             .unwrap()
             .expect("a sheared convex union has a certified exact erosion");
         assert!(work > 0);
@@ -4408,7 +4474,13 @@ mod tests {
         };
         let mut work = 0;
         assert!(matches!(
-            certified_convex_erosion_mesh(&source, 1.0e-6, &[7], &mut work),
+            certified_convex_erosion_mesh(
+                &source,
+                1.0e-6,
+                &[7],
+                &mut work,
+                &mut PreparationHostBudget::new(),
+            ),
             Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
                 kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
                 path: Some(path),
@@ -4536,7 +4608,13 @@ mod tests {
         };
         let mut work = 0;
         assert!(matches!(
-            certified_convex_erosion_mesh(&source, 1.0e-201, &[5, 1], &mut work),
+            certified_convex_erosion_mesh(
+                &source,
+                1.0e-201,
+                &[5, 1],
+                &mut work,
+                &mut PreparationHostBudget::new(),
+            ),
             Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
                 kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
                 path: Some(path),
@@ -4568,7 +4646,13 @@ mod tests {
         };
         let mut work = 0;
         assert!(matches!(
-            certified_convex_erosion_mesh(&one, radius, &[3, 1], &mut work),
+            certified_convex_erosion_mesh(
+                &one,
+                radius,
+                &[3, 1],
+                &mut work,
+                &mut PreparationHostBudget::new(),
+            ),
             Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
                 kind: crate::execution_2d::Render2dSampleSpaceError::PrecisionLimit,
                 path: Some(path),
@@ -4816,7 +4900,13 @@ mod tests {
             bounds: [10.0, 10.0, 14.0, 14.0],
         };
         assert!(
-            certified_convex_erosion_mesh(&source, 0.25, &[0, 0], &mut 0)
+            certified_convex_erosion_mesh(
+                &source,
+                0.25,
+                &[0, 0],
+                &mut 0,
+                &mut PreparationHostBudget::new(),
+            )
                 .unwrap()
                 .is_none(),
             "nonconvex union must remain unsupported, never treated as empty"
