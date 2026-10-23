@@ -993,15 +993,9 @@ mod tests {
                     Render2dPath::new(
                         Render2dFillRule::NonZero,
                         vec![
-                            Render2dPathCommand::MoveTo(
-                                Render2dPoint::new(0.0, 0.0).unwrap(),
-                            ),
-                            Render2dPathCommand::LineTo(
-                                Render2dPoint::new(1.0e20, 0.0).unwrap(),
-                            ),
-                            Render2dPathCommand::LineTo(
-                                Render2dPoint::new(0.0, 1.0).unwrap(),
-                            ),
+                            Render2dPathCommand::MoveTo(Render2dPoint::new(0.0, 0.0).unwrap()),
+                            Render2dPathCommand::LineTo(Render2dPoint::new(1.0e20, 0.0).unwrap()),
+                            Render2dPathCommand::LineTo(Render2dPoint::new(0.0, 1.0).unwrap()),
                             Render2dPathCommand::Close,
                         ],
                     )
@@ -1038,7 +1032,10 @@ mod tests {
                 ..
             }) if path == owner
         ));
-        assert_eq!(work_used, super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 255);
+        assert_eq!(
+            work_used,
+            super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 255
+        );
         assert_eq!((host.live(), host.peak()), (0, 0));
         // At the exact setup threshold the same F1 input now reaches
         // physical construction and is correctly rejected for precision.
@@ -1061,7 +1058,10 @@ mod tests {
                 kind: Render2dVectorError::PrecisionLimit
             })
         ));
-        assert_eq!(work_used, super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK);
+        assert_eq!(
+            work_used,
+            super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK
+        );
         assert_eq!((host.live(), host.peak()), (0, 0));
     }
 
