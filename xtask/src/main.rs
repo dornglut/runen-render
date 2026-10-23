@@ -458,14 +458,95 @@ fn validate_source_contract(root: &Path) -> Result<(), String> {
         "RUNEN_RENDER_REQUIRE_GPU: '1'",
         "mesa-vulkan-drivers",
         "WGPU_BACKEND=vulkan",
-        "cargo +stable test -p runen-render",
-        "--test ordinary_public_api",
-        "--test execution_2d_public_api",
-        "cargo +stable run -p runen-render --example ordinary_render --locked",
     ] {
         require_contains(".github/workflows/validation.yml", &workflow, required)?;
     }
+    validate_vulkan_execution_commands(&workflow)?;
 
+    Ok(())
+}
+
+// This is a fail-closed check for the maintained Vulkan step shape, not a
+// general YAML or shell interpreter. Other workflow semantics remain CI-owned.
+fn validate_vulkan_execution_commands(workflow: &str) -> Result<(), String> {
+    const JOB: &str = "  runenrender-vulkan-conformance:";
+    const STEP: &str = "      - name: Run standalone RunenRender GPU conformance";
+    const SCRIPT: &str = "        run: |";
+
+    let lines = workflow.lines().collect::<Vec<_>>();
+    let job_index = lines
+        .iter()
+        .position(|line| *line == JOB)
+        .ok_or_else(|| "Vulkan conformance job is missing".to_owned())?;
+    let job_lines = lines[job_index + 1..]
+        .iter()
+        .take_while(|line| {
+            line.trim().is_empty()
+                || line.trim_start().starts_with('#')
+                || line.len() - line.trim_start_matches(' ').len() > 2
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    let step_index = job_lines
+        .iter()
+        .position(|line| *line == STEP)
+        .ok_or_else(|| "Vulkan GPU conformance step is missing".to_owned())?;
+    let step_lines = job_lines[step_index + 1..]
+        .iter()
+        .take_while(|line| {
+            line.trim().is_empty()
+                || line.len() - line.trim_start_matches(' ').len() > 6
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    let script_index = step_lines
+        .iter()
+        .position(|line| *line == SCRIPT)
+        .ok_or_else(|| "Vulkan GPU conformance step needs a literal run script".to_owned())?;
+    let commands = step_lines[script_index + 1..]
+        .iter()
+        .take_while(|line| {
+            line.trim().is_empty()
+                || line.len() - line.trim_start_matches(' ').len() > 8
+        })
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| line.split_whitespace().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    // Only an executable cargo line at the beginning of a shell command can
+    // satisfy a required proof. Echoed strings and commented-out lines cannot.
+    let required: &[(&str, &[&str])] = &[
+        (
+            "cold library proof",
+            &["test", "--lib", "--skip", "camera_history_proof"],
+        ),
+        ("isolated camera history", &["test", "--lib", "camera_history_proof"]),
+        (
+            "GPU-only sample-space proof",
+            &["test", "--lib", "sample_space_gpu_proof", "--ignored"],
+        ),
+        ("ordinary API consumer", &["test", "--test", "ordinary_public_api"]),
+        (
+            "2D execution consumer",
+            &["test", "--test", "execution_2d_public_api"],
+        ),
+        ("retained scene inspector", &["test", "--example", "headless_scene"]),
+        (
+            "ordinary executable",
+            &["run", "--example", "ordinary_render", "--locked"],
+        ),
+    ];
+    for (description, args) in required {
+        if !commands.iter().any(|line| {
+            line.starts_with(&["cargo", "+stable", args[0], "-p", "runen-render"])
+                && args[1..].iter().all(|arg| line.contains(arg))
+        }) {
+            return Err(format!(
+                "Vulkan conformance step does not execute required {description} command"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -747,6 +828,64 @@ fn output(root: &Path, program: &str, args: &[&str]) -> Result<String, String> {
 
     String::from_utf8(result.stdout)
         .map_err(|error| format!("{program} produced invalid UTF-8: {error}"))
+}
+
+#[cfg(test)]
+mod vulkan_workflow_tests {
+    use super::*;
+
+    const CURRENT: &str = include_str!("../../.github/workflows/validation.yml");
+    const ORDINARY_RUN: &str =
+        "cargo +stable run -p runen-render --example ordinary_render --locked";
+
+    #[test]
+    fn accepted_vulkan_workflow_has_active_required_commands() {
+        validate_vulkan_execution_commands(CURRENT).expect("all conformance commands execute");
+    }
+
+    #[test]
+    fn commented_out_example_cannot_pass_a_text_marker_guard() {
+        let changed = CURRENT.replacen(ORDINARY_RUN, &format!("# {ORDINARY_RUN}"), 1);
+        assert_ne!(changed, CURRENT, "fixture must modify an existing active command");
+        assert!(changed.contains(ORDINARY_RUN), "old text marker remains satisfied");
+        assert!(validate_vulkan_execution_commands(&changed).is_err());
+    }
+
+    #[test]
+    fn echoed_command_does_not_count_as_execution() {
+        let changed = CURRENT.replacen(ORDINARY_RUN, &format!("echo '{ORDINARY_RUN}'"), 1);
+        assert_ne!(changed, CURRENT, "fixture must replace the original command");
+        assert!(validate_vulkan_execution_commands(&changed).is_err());
+    }
+
+    #[test]
+    fn command_in_a_different_step_does_not_count() {
+        let changed = CURRENT.replacen(
+            ORDINARY_RUN,
+            &format!("# {ORDINARY_RUN}"),
+            1,
+        );
+        let changed = changed.replacen(
+            "        run: vulkaninfo --summary",
+            &format!("        run: {ORDINARY_RUN}"),
+            1,
+        );
+        assert_ne!(changed, CURRENT, "fixture must change executable step ownership");
+        assert!(validate_vulkan_execution_commands(&changed).is_err());
+    }
+
+    #[test]
+    fn harmless_additional_vulkan_proof_is_allowed() {
+        let changed = CURRENT.replacen(
+            ORDINARY_RUN,
+            &format!(
+                "cargo +stable test -p runen-render --lib on_vulkan --locked -- --ignored\n          {ORDINARY_RUN}"
+            ),
+            1,
+        );
+        assert_ne!(changed, CURRENT, "fixture must insert an additional conformance command");
+        validate_vulkan_execution_commands(&changed).expect("extra conformance is permitted");
+    }
 }
 
 #[cfg(test)]
