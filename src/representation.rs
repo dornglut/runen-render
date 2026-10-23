@@ -1,4 +1,4 @@
-//! R3 renderer-visible representation contracts and narrow semantic query protocols.
+//! Renderer-visible representation contracts and narrow semantic query protocols.
 //!
 //! A representation is not classified by a closed `Mesh | Sdf | Volume | ...` root enum. It is a
 //! renderer-owned record with intrinsic coverage/refinement evidence and the small typed protocols

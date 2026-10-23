@@ -1,4 +1,4 @@
-//! Private proof numerics for RR566-EVAL-001.
+//! Private conservative arithmetic for maintained semantic-result verification.
 //!
 //! This is not a renderer, a public interval package, or semantic authority. It only provides the
 //! bounded conservative arithmetic needed by the maintained deterministic verifier. Every helper

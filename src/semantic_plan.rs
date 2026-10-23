@@ -1,4 +1,4 @@
-//! R4 device-independent conditional semantic planning.
+//! Device-independent conditional renderer-semantic planning.
 //!
 //! This module consumes only accepted renderer-semantic scene/request/method/representation facts.
 //! It does not inspect current availability/residency, output bindings, device capabilities, GPU

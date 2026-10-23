@@ -1,4 +1,4 @@
-//! R2 renderer-semantic space and time conventions.
+//! Renderer-semantic space and time conventions.
 //!
 //! Renderer scene coordinates are a canonical right-handed Cartesian frame measured in metres.
 //! The scene axes carry no product/world policy such as gravity or world-up; those remain outside

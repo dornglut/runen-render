@@ -120,7 +120,7 @@ runen-shader:
 406f8165da92caa2d296b3a2f774ba534279870d
 ```
 
-Current full-file blob census against the frozen 32-file R8 production set:
+At RX acceptance, the full-file blob census against the frozen 32-file R8 production set was:
 
 ```text
 byte-identical full files: 14

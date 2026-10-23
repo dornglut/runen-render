@@ -1,10 +1,10 @@
-//! Query-relative result semantics for the R3 surface protocols.
+//! Query-relative results for the renderer's surface protocols.
 //!
 //! Plain surface results own only hit/miss meaning. An oriented-surface result adds one
 //! representation-defined geometric front-side normal in canonical scene coordinates. Hit position
 //! remains derived from the canonicalized query ray and non-negative distance, so neither protocol
 //! can publish a hit whose position contradicts the query. Orientation is never implicitly flipped
-//! toward the query ray. Dispatch/provider topology remains outside R3.
+//! toward the query ray. Dispatch/provider topology remains outside these result contracts.
 
 use super::representation::{RenderRepresentationValidationError, RenderSurfaceQuery};
 use super::space_time::CanonicalF64;

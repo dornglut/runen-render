@@ -1,6 +1,6 @@
-//! R3 object-local renderer participation semantics.
+//! Object-local renderer participation semantics.
 //!
-//! Participation is distinct from the R2 spatial/temporal object state so that either layer can be
+//! Participation is distinct from object spatial/temporal state so that either layer can be
 //! replaced without reconstructing or erasing the other.
 
 use super::appearance::{RenderDiffuseMaterial, RenderDirectionalEmitter};

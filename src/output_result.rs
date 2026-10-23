@@ -1,7 +1,7 @@
-//! R2 per-output-sample result-definedness semantics.
+//! Per-output-sample result-definedness semantics.
 //!
 //! This module owns only whether one logical requested-output sample has a renderer-semantic value
-//! and how the current R2 output-value families interpret the absence of a represented surface hit.
+//! and how output-value families interpret the absence of a represented surface hit.
 //! It deliberately does not introduce a `RenderResult` container, numeric payload/storage format,
 //! validity mask, reserved object identity, background/environment policy, readback/session state, or
 //! another physical result-binding authority.

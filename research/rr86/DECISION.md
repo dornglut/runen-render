@@ -1,8 +1,8 @@
-# RR86 — Decision proposal: retain replaceable geometry; reject universal SDF
+# RR86 — Historical decision proposal: retain replaceable geometry; reject universal SDF
 
-**Status:** proposed negative architecture-migration disposition, subject to independent owner acceptance. Investigation authority: RunenRender #86. This is not a public API amendment, production implementation, or accepted ADR.
+**Accepted outcome (2026-10-10):** [RunenRender #86](https://github.com/dornglut/runen-render/issues/86) accepted the negative SDF-wide migration decision. The proposal and research text below remain **dated review evidence**, not a live decision proposal, public API amendment, production implementation or accepted ADR.
 
-**Live reviewed refs (2026-10-10):** accepted main 0dd4f09978578a374d1c91c62254987c659a4f16; F3F production draft #85 head fe6d6ccb3c15e2172214cdb28525049f82f8e866; research draft #87 base still unchanged. Recheck refs before promotion.
+**Research snapshot refs (2026-10-10):** accepted main 0dd4f09978578a374d1c91c62254987c659a4f16; F3F production draft #85 head fe6d6ccb3c15e2172214cdb28525049f82f8e866; research draft #87 base still unchanged. These are historical review refs, not current branch state.
 
 ## Decision and rationale
 
@@ -90,4 +90,4 @@ At PR #85 head fe6d6ccb, source-neutral group traversal in src/runtime/execution
 
 ## Decision review / explicit boundary
 
-This document is a **proposed negative migration decision** to be independently reviewed and accepted in #86. It authorizes **no production changes**, is not a RunenSDF dependency proposal, and cannot close F3F #81 or parent #38. It rejects performance-motivated SDF-wide replatforming *without* inventing a matched GPU benchmark. #86 can close as a decision-complete **reject/defer SDF-wide adoption** investigation once its owner accepts the reviewed negative decision and the research evidence, even though a positive second backend remains unproved. Native GPU equivalence/peak-live measurements are not 'passed'; they are a gate to any later **positive** second-realization proposal and are a **separate, still-blocking #81** production obligation.
+At review time, this was a **proposed negative migration decision** submitted for independent acceptance in #86. The decision was subsequently accepted as recorded in that issue. It authorizes **no production changes**, is not a RunenSDF dependency proposal, and cannot close F3F #81 or parent #38. It rejects performance-motivated SDF-wide replatforming *without* inventing a matched GPU benchmark. #86 closed as a decision-complete **reject/defer SDF-wide adoption** investigation after owner acceptance of the reviewed negative decision and research evidence; a positive second backend remains unproved. Native GPU equivalence/peak-live measurements are not 'passed'; they are a gate to any later **positive** second-realization proposal and are a **separate, still-blocking #81** production obligation.

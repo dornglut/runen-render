@@ -35,25 +35,7 @@ implementation authority.
 - Keep tracked-content contributions `owner-only` until accepted inbound terms
   preserve required relicensing rights.
 
-## Historical RX sequence
-
-Engineering ADR 0008 completed this authority sequence:
-
-```text
-accepted Runenwerk R8
-    -> predecessor semantic source authority
-source-free runen-render bootstrap
-    -> repository authority only
-accepted runen-render successor on main
-    -> semantic authority switched
-Runenwerk predecessor transfer boundary
-    -> frozen and deletion-bound
-accepted Runenwerk exact-revision cutover
-    -> predecessor authority removed
-```
-
-Do not use this completed sequence as a reason to block current standalone work
-or to reopen transfer-era ownership.
+The completed RX transfer is recorded in [BOOTSTRAP.md](BOOTSTRAP.md); it is not a current work gate.
 
 ## Validation and evidence
 

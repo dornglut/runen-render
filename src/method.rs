@@ -1,4 +1,4 @@
-//! R4 coherent renderer-method contracts.
+//! Renderer-method compatibility and abstract execution contracts.
 //!
 //! A method contract describes semantic compatibility and abstract future execution requirements.
 //! It deliberately contains no current device capabilities, GPU handles, residency, surfaces,
