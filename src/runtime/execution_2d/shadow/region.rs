@@ -2140,7 +2140,10 @@ impl NeutralRegionBuilder {
                                 mesh.triangles.len(),
                                 path,
                             )?;
-                            self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
+                            self.charge_graph_work(
+                                shadow::append_work(&output, &mesh, path)?,
+                                path,
+                            )?;
                             shadow::append_admitted(
                                 &mut output,
                                 &mesh,
@@ -2163,12 +2166,20 @@ impl NeutralRegionBuilder {
                 }
                 Kind::Affine { source, to_parent } => {
                     let mesh = self.materialize(source)?;
-                    shadow::charge_vertices(&mut self.retained_vertices, mesh.triangles.len(), path)?;
+                    shadow::charge_vertices(
+                        &mut self.retained_vertices,
+                        mesh.triangles.len(),
+                        path,
+                    )?;
                     let mut output = shadow::empty_mesh();
                     self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
-                    if let Err(error) =
-                        shadow::append_admitted(&mut output, &mesh, *to_parent, path, &mut self.host)
-                    {
+                    if let Err(error) = shadow::append_admitted(
+                        &mut output,
+                        &mesh,
+                        *to_parent,
+                        path,
+                        &mut self.host,
+                    ) {
                         // The surrounding scope refunds the unpublished header.
                         return Err(error);
                     }
@@ -2270,11 +2281,13 @@ impl NeutralRegionBuilder {
                         } else {
                             mesh.as_ref()
                         };
-                        let offset =
-                            Render2dAffineTransform::translation(effect.offset_x(), effect.offset_y())
-                                .map_err(|_| {
-                                    precision(path, "neutral effect offset cannot be represented")
-                                })?;
+                        let offset = Render2dAffineTransform::translation(
+                            effect.offset_x(),
+                            effect.offset_y(),
+                        )
+                        .map_err(|_| {
+                            precision(path, "neutral effect offset cannot be represented")
+                        })?;
                         shadow::charge_vertices(
                             &mut self.retained_vertices,
                             caster.triangles.len(),
@@ -2292,7 +2305,9 @@ impl NeutralRegionBuilder {
                             let hull_work = (shifted.triangles.len() / 3)
                                 .checked_mul(8_192)
                                 .and_then(|cost| cost.checked_add(256))
-                                .ok_or_else(|| resource(path, "neutral Gaussian hull work overflow"))?;
+                                .ok_or_else(|| {
+                                    resource(path, "neutral Gaussian hull work overflow")
+                                })?;
                             self.charge_graph_work(hull_work, path)?;
                             let square = shadow::gaussian_square_support(
                                 &shifted,
@@ -3716,14 +3731,8 @@ mod tests {
         let effect = graph
             .effect(
                 source,
-                Render2dDropShadow::new(
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0,
-                    Render2dColorRgba8::TRANSPARENT,
-                )
-                .unwrap(),
+                Render2dDropShadow::new(0.0, 0.0, 0.0, 1.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
                 &[2, 1],
             )
             .unwrap();
