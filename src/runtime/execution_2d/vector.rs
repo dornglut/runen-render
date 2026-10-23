@@ -552,41 +552,53 @@ fn build_path(shape: &Render2dShape, tolerance: f64) -> Result<Path, Render2dVec
                         tolerance,
                     )?;
                 }
-            } else if let Some((rect, radii)) = shape.as_rounded_rect() {
-                if !rect.is_empty() {
-                    let [x, y, w, h] = [rect.x(), rect.y(), rect.width(), rect.height()];
-                    for (center, radius, start) in [
-                        (
-                            [x + w - radii.top_right(), y + radii.top_right()],
-                            radii.top_right(),
-                            -std::f64::consts::FRAC_PI_2,
-                        ),
-                        (
-                            [x + w - radii.bottom_right(), y + h - radii.bottom_right()],
-                            radii.bottom_right(),
-                            0.0,
-                        ),
-                        (
-                            [x + radii.bottom_left(), y + h - radii.bottom_left()],
-                            radii.bottom_left(),
-                            std::f64::consts::FRAC_PI_2,
-                        ),
-                        (
-                            [x + radii.top_left(), y + radii.top_left()],
-                            radii.top_left(),
-                            std::f64::consts::PI,
-                        ),
-                    ] {
-                        arc(
-                            &mut emit,
-                            &mut emitted,
-                            center,
-                            [radius, radius],
-                            start,
-                            std::f64::consts::FRAC_PI_2,
-                            tolerance,
-                        )?;
-                    }
+            } else if let Some((rect, radii)) = shape.as_rounded_rect()
+                && !rect.is_empty()
+            {
+                let [x, y, w, h] = [rect.x(), rect.y(), rect.width(), rect.height()];
+                let arcs = [
+                    (
+                        [x + w - radii.top_right(), y + radii.top_right()],
+                        radii.top_right(),
+                        -std::f64::consts::FRAC_PI_2,
+                    ),
+                    (
+                        [x + w - radii.bottom_right(), y + h - radii.bottom_right()],
+                        radii.bottom_right(),
+                        0.0,
+                    ),
+                    (
+                        [x + radii.bottom_left(), y + h - radii.bottom_left()],
+                        radii.bottom_left(),
+                        std::f64::consts::FRAC_PI_2,
+                    ),
+                    (
+                        [x + radii.top_left(), y + radii.top_left()],
+                        radii.top_left(),
+                        std::f64::consts::PI,
+                    ),
+                ];
+                // All four authored corner arcs previously finished counting
+                // before any point was narrowed into the Lyon path. Preserve
+                // that resource-before-precision failure priority without a Vec.
+                let mut total = 0_usize;
+                for (_, radius, _) in arcs {
+                    let steps = arc_count([radius, radius], std::f64::consts::FRAC_PI_2, tolerance)?;
+                    total = total
+                        .checked_add(steps)
+                        .filter(|&count| count <= MAX_ELEMENTS)
+                        .ok_or(Render2dVectorError::ResourceLimit)?;
+                }
+                for (center, radius, start) in arcs {
+                    arc(
+                        &mut emit,
+                        &mut emitted,
+                        center,
+                        [radius, radius],
+                        start,
+                        std::f64::consts::FRAC_PI_2,
+                        tolerance,
+                    )?;
                 }
             }
         }
@@ -595,6 +607,24 @@ fn build_path(shape: &Render2dShape, tolerance: f64) -> Result<Path, Render2dVec
         }
     }
     Ok(builder.build())
+}
+
+fn arc_count(
+    radii: [f64; 2],
+    sweep: f64,
+    tolerance: f64,
+) -> Result<usize, Render2dVectorError> {
+    let radius = radii[0].max(radii[1]);
+    if radius == 0.0 {
+        return Ok(1);
+    }
+    // Sagitta <= tolerance/2; preserve every endpoint of each authored arc.
+    let angle = 2.0 * (1.0 - (tolerance / (2.0 * radius)).min(1.0)).acos();
+    let count = (sweep / angle).ceil().max(1.0);
+    if !count.is_finite() || count > MAX_ELEMENTS as f64 {
+        return Err(Render2dVectorError::ResourceLimit);
+    }
+    Ok(count as usize + 1)
 }
 
 fn arc(
@@ -606,25 +636,15 @@ fn arc(
     sweep: f64,
     tolerance: f64,
 ) -> Result<(), Render2dVectorError> {
-    let radius = radii[0].max(radii[1]);
-    if radius == 0.0 {
-        *emitted = emitted
-            .checked_add(1)
-            .filter(|&count| count <= MAX_ELEMENTS)
-            .ok_or(Render2dVectorError::ResourceLimit)?;
-        return emit(center);
-    }
-    // Preserve the same sagitta step count, including shared arc endpoints.
-    let angle = 2.0 * (1.0 - (tolerance / (2.0 * radius)).min(1.0)).acos();
-    let count = (sweep / angle).ceil().max(1.0);
-    if !count.is_finite() || count > MAX_ELEMENTS as f64 {
-        return Err(Render2dVectorError::ResourceLimit);
-    }
-    let count = count as usize;
+    let steps = arc_count(radii, sweep, tolerance)?;
     *emitted = emitted
-        .checked_add(count + 1)
+        .checked_add(steps)
         .filter(|&total| total <= MAX_ELEMENTS)
         .ok_or(Render2dVectorError::ResourceLimit)?;
+    if radii[0].max(radii[1]) == 0.0 {
+        return emit(center);
+    }
+    let count = steps - 1;
     for index in 0..=count {
         let angle = start + sweep * index as f64 / count as f64;
         emit([
@@ -749,6 +769,21 @@ mod tests {
         // contour-length allocation, not as a successfully drawn ellipse.
         assert!(matches!(
             build_path(&shape, 1.0e-14),
+            Err(Render2dVectorError::ResourceLimit)
+        ));
+    }
+
+    #[test]
+    fn rounded_contour_resource_preflight_precedes_point_precision() {
+        // Each quarter arc is individually within the event cap, but all
+        // four combined exceed it. The large X would fail f32 precision
+        // during the first arc if we emitted before counting the full path.
+        let shape = Render2dShape::rounded_rect(
+            Render2dRect::new(1.0e12, 0.0, 20.0, 20.0).unwrap(),
+            Render2dCornerRadii::new(3.0, 3.0, 3.0, 3.0).unwrap(),
+        );
+        assert!(matches!(
+            build_path(&shape, 1.0e-11),
             Err(Render2dVectorError::ResourceLimit)
         ));
     }
