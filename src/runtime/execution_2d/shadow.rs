@@ -2197,7 +2197,7 @@ pub(super) fn intersect_clips(
                 root_index,
                 resolution,
                 max_buffer_bytes,
-                &mut *work.host,
+                work,
                 path,
             )
             .map_err(|error| neutral_source_error(error, path))?
