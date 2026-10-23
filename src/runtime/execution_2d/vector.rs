@@ -38,7 +38,7 @@ fn tessellate_shape(
     stroke: Option<Render2dStrokeStyle>,
     root_index: usize,
     stretch: f64,
-    admitted: Option<(&mut super::shadow::NeutralPreparationWork<'_>, &[usize])>,
+    mut admitted: Option<(&mut super::shadow::NeutralPreparationWork<'_>, &[usize])>,
 ) -> Result<BoundedGeometry, Render2dExecutionError> {
     let fail = |kind| error(root_index, kind);
     let tolerance = PHYSICAL_TOLERANCE / stretch;
@@ -47,9 +47,15 @@ fn tessellate_shape(
     }
     let path = build_path(shape, tolerance).map_err(fail)?;
     // Bound flattened input before the sweep allocates internal edge storage.
+    // Each observed flattened event is real CPU work owned by the same
+    // invocation as the later index scan. Charge it before requesting the
+    // next event or allocating tessellation output; failed work is not refunded.
     for (index, _) in path.iter().flattened(tolerance as f32).enumerate() {
         if index >= MAX_ELEMENTS {
             return Err(fail(Render2dVectorError::ResourceLimit));
+        }
+        if let Some((work, path)) = admitted.as_mut() {
+            work.charge(1, path)?;
         }
     }
     // Keep authored curves for stroke endpoint tangents; the probe above bounds
@@ -1100,6 +1106,66 @@ mod tests {
             .expect("transparent offscreen source has semantic geometry");
         assert_eq!(support.bounds, [-10.0, -2.0, -1.0, 2.0]);
         assert_eq!(support.triangles.len(), 6);
+    }
+
+    #[test]
+    fn flattened_input_scan_spends_shared_work_before_lyon_sweep() {
+        let source = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let path = [4, 7];
+        let mut graph = super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 256 - 2;
+        let mut clip_pairs = 0;
+        let mut host = super::super::support::PreparationHostBudget::new();
+        // Two flatten events are admitted after setup. The third event
+        // fails before any Lyon callback output is allocated.
+        let result = neutral_support_admitted(
+            &source,
+            4,
+            1.0,
+            4096,
+            &mut super::super::shadow::NeutralPreparationWork::new(
+                &mut graph,
+                &mut clip_pairs,
+                &mut host,
+            ),
+            &path,
+        );
+        assert!(matches!(
+            result,
+            Err(Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(owner),
+                ..
+            }) if owner == path
+        ));
+        assert_eq!(graph, super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK);
+        assert_eq!((host.live(), host.peak()), (0, 0));
+        // A separate invocation owns its own complete receipt.
+        let mut graph = 0;
+        let mesh = neutral_support_admitted(
+            &source,
+            4,
+            1.0,
+            4096,
+            &mut super::super::shadow::NeutralPreparationWork::new(
+                &mut graph,
+                &mut clip_pairs,
+                &mut host,
+            ),
+            &path,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(mesh.triangles.len(), 6);
+        assert!(graph > 256 + 6 * 64);
+        assert_eq!(host.live(), mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
     }
 
     #[test]
