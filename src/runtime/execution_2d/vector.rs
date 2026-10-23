@@ -334,7 +334,7 @@ pub(super) fn neutral_support_admitted(
     root_index: usize,
     scale: f64,
     max_buffer_bytes: u64,
-    host: &mut super::support::PreparationHostBudget,
+    work: &mut super::shadow::NeutralPreparationWork<'_>,
     path: &[usize],
 ) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
     neutral_support_impl(
@@ -342,7 +342,7 @@ pub(super) fn neutral_support_admitted(
         root_index,
         scale,
         max_buffer_bytes,
-        Some((host, path)),
+        Some((work, path)),
     )
 }
 
@@ -351,7 +351,7 @@ fn neutral_support_impl(
     root_index: usize,
     scale: f64,
     max_buffer_bytes: u64,
-    mut admitted: Option<(&mut super::support::PreparationHostBudget, &[usize])>,
+    mut admitted: Option<(&mut super::shadow::NeutralPreparationWork<'_>, &[usize])>,
 ) -> Result<Option<NeutralMesh>, Render2dExecutionError> {
     let (shape, stroke) = match item.primitive() {
         Render2dPrimitive::Fill { shape, .. } => (shape, None),
@@ -368,21 +368,24 @@ fn neutral_support_impl(
     }
     let geometry = tessellate_shape(shape, stroke, root_index, stretch)?;
     let mut triangles = Vec::new();
-    if let Some((host, path)) = admitted.as_mut() {
+    if let Some((work, path)) = admitted.as_mut() {
+        // Charge the added triangle scan to the SAME invocation work ceiling.
+        // The Lyon preprocessing/sweep remains a separate unproved owner.
+        let scan_cost = geometry
+            .indices
+            .len()
+            .checked_mul(64)
+            .and_then(|cost| cost.checked_add(256))
+            .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
+        work.charge(scan_cost, path)?;
         // Preflight all *actual* emitted triangles before committing a host
         // lease, rather than reserving tessellator triangles later rejected
         // by a singular transform. This source is immutable and the second
         // pass uses the identical deterministic conversion.
         let mut required = 0_usize;
         for indices in geometry.indices.as_chunks::<3>().0 {
-            if transformed_triangle(
-                &geometry,
-                indices,
-                [a, b, c, d, tx, ty],
-                scale,
-                root_index,
-            )?
-            .is_some()
+            if transformed_triangle(&geometry, indices, [a, b, c, d, tx, ty], scale, root_index)?
+                .is_some()
             {
                 required = required
                     .checked_add(3)
@@ -398,7 +401,7 @@ fn neutral_support_impl(
                 }
             }
         }
-        host.reserve_vector(&mut triangles, required, path)?;
+        work.reserve_vector(&mut triangles, required, path)?;
     }
     let mut bounds = [
         f64::INFINITY,
@@ -419,7 +422,9 @@ fn neutral_support_impl(
                 .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
             let bytes = u64::try_from(count)
                 .ok()
-                .and_then(|n| n.checked_mul(crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE))
+                .and_then(|n| {
+                    n.checked_mul(crate::runtime::program::abi::COMPOSITION_VERTEX_STRIDE)
+                })
                 .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
             if count > MAX_ELEMENTS || bytes > max_buffer_bytes {
                 return Err(error(root_index, Render2dVectorError::ResourceLimit));
@@ -435,8 +440,8 @@ fn neutral_support_impl(
         Ok(())
     })();
     if let Err(err) = emitted {
-        if let Some((host, _)) = admitted {
-            host.release(triangles.capacity() * std::mem::size_of::<[f64; 2]>());
+        if let Some((work, _)) = admitted {
+            work.release_bytes(triangles.capacity() * std::mem::size_of::<[f64; 2]>());
         }
         return Err(err);
     }
@@ -717,9 +722,7 @@ mod tests {
     fn admitted_clip_source_output_owns_exact_host_receipt() {
         let source = Render2dItem::new(
             Render2dPrimitive::Fill {
-                shape: Render2dShape::rect(
-                    Render2dRect::new(-10.0, -2.0, 9.0, 4.0).unwrap(),
-                ),
+                shape: Render2dShape::rect(Render2dRect::new(-10.0, -2.0, 9.0, 4.0).unwrap()),
                 brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
             },
             Render2dAffineTransform::IDENTITY,
@@ -729,12 +732,21 @@ mod tests {
         let bytes = 6 * std::mem::size_of::<[f64; 2]>();
         let mut owner = super::super::support::PreparationHostBudget::new();
         owner
-            .reserve(super::super::support::MAX_SHADOW_HOST_BYTES - bytes, &[7, 2])
+            .reserve(
+                super::super::support::MAX_SHADOW_HOST_BYTES - bytes,
+                &[7, 2],
+            )
             .unwrap();
-        let mesh =
-            neutral_support_admitted(&source, 7, 1.0, 4096, &mut owner, &[7, 2])
-                .unwrap()
-                .unwrap();
+        let mut graph_work = 0;
+        let mut clip_pairs = 0;
+        let mut work = super::super::shadow::NeutralPreparationWork::new(
+            &mut graph_work,
+            &mut clip_pairs,
+            &mut owner,
+        );
+        let mesh = neutral_support_admitted(&source, 7, 1.0, 4096, &mut work, &[7, 2])
+            .unwrap()
+            .unwrap();
         assert_eq!(mesh.triangles.len(), 6);
         assert_eq!(mesh.triangles.capacity(), 6);
         assert_eq!(mesh.bounds, [-10.0, -2.0, -1.0, 2.0]);
@@ -762,15 +774,21 @@ mod tests {
         let mut owner = super::super::support::PreparationHostBudget::new();
         let prior = super::super::support::MAX_SHADOW_HOST_BYTES - bytes + 1;
         owner.reserve(prior, &[9, 3]).unwrap();
+        let mut graph_work = 0;
+        let mut clip_pairs = 0;
+        let mut work = super::super::shadow::NeutralPreparationWork::new(
+            &mut graph_work,
+            &mut clip_pairs,
+            &mut owner,
+        );
         assert!(matches!(
-            neutral_support_admitted(&source, 9, 1.0, 4096, &mut owner, &[9, 3]),
+            neutral_support_admitted(&source, 9, 1.0, 4096, &mut work, &[9, 3]),
             Err(Render2dExecutionError::SampleSpace {
                 kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
                 path: Some(path),
                 ..
             }) if path == [9, 3]
         ));
-        assert_eq!((owner.live(), owner.peak()), (prior, prior));
         // A source with no physical support does not lease an output vector.
         let collapsed = Render2dItem::new(
             source.primitive().clone(),
@@ -778,16 +796,11 @@ mod tests {
             vec![],
             Render2dOpacity::OPAQUE,
         );
-        assert!(neutral_support_admitted(
-            &collapsed,
-            9,
-            1.0,
-            4096,
-            &mut owner,
-            &[9, 3],
-        )
-        .unwrap()
-        .is_none());
+        assert!(
+            neutral_support_admitted(&collapsed, 9, 1.0, 4096, &mut work, &[9, 3])
+                .unwrap()
+                .is_none()
+        );
         assert_eq!((owner.live(), owner.peak()), (prior, prior));
     }
 
