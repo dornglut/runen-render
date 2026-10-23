@@ -318,6 +318,7 @@ fn transformed_triangle(
 /// This private geometry retains the same bounded tessellation and precision
 /// admission as visible vectors. Shadow-specific morphology, clips, halo, and
 /// group support are derived by the F3F composition compiler, not by this leaf.
+#[cfg(test)]
 pub(super) fn neutral_support(
     item: &Render2dItem,
     root_index: usize,
