@@ -1853,9 +1853,15 @@ fn append_triangles(
                 "neutral parent-space transform lost precision",
             ));
         }
-        if orient(after[0], after[1], after[2]) == 0.0
-            && orient(triangle[0], triangle[1], triangle[2]) != 0.0
-        {
+        let transformed_turn = orient(after[0], after[1], after[2]);
+        let source_turn = orient(triangle[0], triangle[1], triangle[2]);
+        if !transformed_turn.is_finite() || !source_turn.is_finite() {
+            return Err(precision(
+                path,
+                "neutral triangle orientation loses precision",
+            ));
+        }
+        if transformed_turn == 0.0 && source_turn != 0.0 {
             return Err(precision(
                 path,
                 "full-rank parent affine loses positive-area neutral geometry",
@@ -2690,6 +2696,43 @@ mod tests {
         assert_eq!(retained.triangles, vertices);
         assert_eq!(retained.bounds, bounds);
         assert_eq!(retained.triangles.capacity(), capacity);
+    }
+
+    #[test]
+    fn nonfinite_neutral_orientation_rejects_before_destination_reservation() {
+        // Both inputs and all transformed vertices are finite. The first
+        // triangle's determinant nevertheless overflows to infinity; the
+        // second is exactly collinear but produces infinity minus infinity,
+        // i.e. NaN, with ordinary floating-point orientation.
+        for vertices in [
+            [[0.0, 0.0], [1.0e155, 0.0], [0.0, 1.0e155]],
+            [[0.0, 0.0], [1.0e155, 1.0e155], [2.0e155, 2.0e155]],
+        ] {
+            let source = NeutralMesh {
+                units_per_parent_logical_unit: 1.0,
+                triangles: vertices.to_vec(),
+                bounds: [0.0, 0.0, 2.0e155, 2.0e155],
+            };
+            let mut retained = empty_mesh();
+            let mut host = super::super::support::PreparationHostBudget::new();
+            assert!(matches!(
+                append_admitted(
+                    &mut retained,
+                    &source,
+                    Render2dAffineTransform::IDENTITY,
+                    &[8, 2],
+                    &mut host,
+                ),
+                Err(Render2dExecutionError::SampleSpace {
+                    kind: Render2dSampleSpaceError::PrecisionLimit,
+                    path: Some(path),
+                    ..
+                }) if path == [8, 2]
+            ));
+            assert!(retained.triangles.is_empty());
+            assert_eq!(retained.triangles.capacity(), 0);
+            assert_eq!((host.live(), host.peak()), (0, 0));
+        }
     }
 
     #[test]
