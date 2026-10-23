@@ -2903,7 +2903,13 @@ mod tests {
             triangles: vec![[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
             bounds: [0.0, 0.0, 2.0, 2.0],
         };
-        let expanded = gaussian_square_support(&source, 0.5, &[1, 2]).unwrap();
+        let mut host = super::support::PreparationHostBudget::new();
+        let result_bytes = 30 * size_of::<[f64; 2]>();
+        host.reserve(super::support::MAX_SHADOW_HOST_BYTES - result_bytes, &[1, 2])
+            .unwrap();
+        let expanded = gaussian_square_support(&source, 0.5, &[1, 2], &mut host).unwrap();
+        assert_eq!(host.live(), super::support::MAX_SHADOW_HOST_BYTES);
+        assert_eq!(host.peak(), super::support::MAX_SHADOW_HOST_BYTES);
         assert_eq!(expanded.bounds, [-0.5, -0.5, 2.5, 2.5]);
         let contains = |p: [f64; 2]| {
             expanded.triangles.as_chunks::<3>().0.iter().any(|tri| {
@@ -2921,6 +2927,49 @@ mod tests {
             !contains([2.4, 2.4]),
             "the extent is not geometric membership"
         );
+    }
+
+    #[test]
+    fn gaussian_square_factory_rejects_one_short_before_result_allocation() {
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+            bounds: [0.0, 0.0, 2.0, 2.0],
+        };
+        let bytes = 30 * size_of::<[f64; 2]>();
+        let mut host = super::support::PreparationHostBudget::new();
+        let previous = super::support::MAX_SHADOW_HOST_BYTES - bytes + 1;
+        host.reserve(previous, &[1, 2]).unwrap();
+        assert!(matches!(
+            gaussian_square_support(&source, 0.5, &[1, 2], &mut host),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
+        assert_eq!((host.live(), host.peak()), (previous, previous));
+    }
+
+    #[test]
+    fn gaussian_square_factory_refunds_failed_result_storage() {
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[1.0e308, 0.0], [0.0, 1.0], [0.0, 0.0]],
+            bounds: [0.0, 0.0, 1.0e308, 1.0],
+        };
+        let mut host = super::support::PreparationHostBudget::new();
+        let before = host.live();
+        let error = gaussian_square_support(&source, f64::MAX, &[1, 2], &mut host)
+            .expect_err("overflowing translated vertex must fail after reservation");
+        assert!(matches!(
+            error,
+            Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                ..
+            }
+        ));
+        assert_eq!(host.live(), before);
+        assert_eq!(host.peak(), 30 * size_of::<[f64; 2]>());
     }
 
     #[test]
