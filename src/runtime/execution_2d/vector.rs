@@ -771,6 +771,77 @@ mod tests {
     }
 
     #[test]
+    fn streamed_rounded_contours_match_independent_prior_event_order() {
+        // The old factory first collected all four arcs, including shared
+        // endpoints and zero-radius corners, then emitted a single closed path.
+        // Preserve exactly those events without retaining its heap contour.
+        let tolerance = 0.125;
+        for radii in [
+            Render2dCornerRadii::new(1.0, 2.0, 1.5, 0.5).unwrap(),
+            Render2dCornerRadii::new(0.0, 2.0, 1.5, 0.0).unwrap(),
+        ] {
+            let shape = Render2dShape::rounded_rect(
+                Render2dRect::new(-2.0, 1.0, 9.0, 8.0).unwrap(),
+                radii,
+            );
+            let actual = build_path(&shape, tolerance).unwrap();
+            let (rect, radii) = shape.as_rounded_rect().unwrap();
+            let [x, y, w, h] = [rect.x(), rect.y(), rect.width(), rect.height()];
+            let arcs = [
+                (
+                    [x + w - radii.top_right(), y + radii.top_right()],
+                    radii.top_right(),
+                    -std::f64::consts::FRAC_PI_2,
+                ),
+                (
+                    [x + w - radii.bottom_right(), y + h - radii.bottom_right()],
+                    radii.bottom_right(),
+                    0.0,
+                ),
+                (
+                    [x + radii.bottom_left(), y + h - radii.bottom_left()],
+                    radii.bottom_left(),
+                    std::f64::consts::FRAC_PI_2,
+                ),
+                (
+                    [x + radii.top_left(), y + radii.top_left()],
+                    radii.top_left(),
+                    std::f64::consts::PI,
+                ),
+            ];
+            let mut points = Vec::new();
+            for (center, radius, start) in arcs {
+                if radius == 0.0 {
+                    points.push(point(
+                        narrow(center[0], tolerance).unwrap(),
+                        narrow(center[1], tolerance).unwrap(),
+                    ));
+                    continue;
+                }
+                let angle = 2.0 * (1.0 - (tolerance / (2.0 * radius)).min(1.0)).acos();
+                let segments = (std::f64::consts::FRAC_PI_2 / angle).ceil().max(1.0) as usize;
+                for index in 0..=segments {
+                    let theta = start + std::f64::consts::FRAC_PI_2 * index as f64 / segments as f64;
+                    points.push(point(
+                        narrow(center[0] + radius * theta.cos(), tolerance).unwrap(),
+                        narrow(center[1] + radius * theta.sin(), tolerance).unwrap(),
+                    ));
+                }
+            }
+            let mut reference = Path::builder();
+            reference.begin(points[0]);
+            for &point in &points[1..] {
+                reference.line_to(point);
+            }
+            reference.end(true);
+            assert_eq!(
+                actual.iter().collect::<Vec<_>>(),
+                reference.build().iter().collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
     fn rounded_contour_resource_preflight_precedes_point_precision() {
         // Each quarter arc is individually within the event cap, but all
         // four combined exceed it. The large X would fail f32 precision
