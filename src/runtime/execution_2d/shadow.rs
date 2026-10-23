@@ -3649,8 +3649,7 @@ mod tests {
             let mut clip_work = 0;
             let mut host = super::super::support::PreparationHostBudget::new();
             let mut output = empty_mesh();
-            let filler = super::super::support::MAX_SHADOW_HOST_BYTES
-                - 2 * source_bytes
+            let filler = super::super::support::MAX_SHADOW_HOST_BYTES - 2 * source_bytes
                 + usize::from(one_short);
             let mut work = NeutralPreparationWork::new(&mut graph_work, &mut clip_work, &mut host);
             work.reserve_bytes(filler, &[2, 3]).unwrap();
