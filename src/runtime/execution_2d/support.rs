@@ -5411,7 +5411,7 @@ mod tests {
         {
             let mut work = SharedPreparationWork::new(&mut local, &mut graph);
             assert!(
-                matches!(reserve_erosion_buffer(&mut buffer, 5, 8, &mut work, &[6, 3]),
+                matches!(reserve_erosion_buffer_with_host(&mut buffer, 5, 8, &mut work, &[6, 3], None),
                 Err(crate::execution_2d::Render2dExecutionError::SampleSpace {
                     kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
                     path: Some(path), ..
@@ -5424,11 +5424,11 @@ mod tests {
         assert_eq!(local, 0);
         assert_eq!(graph, MAX_COMPOSITIONAL_SHADOW_WORK - 71);
 
-        reserve_erosion_buffer(&mut buffer, 8, 8, &mut 0, &[6, 3]).unwrap();
+        reserve_erosion_buffer_with_host(&mut buffer, 8, 8, &mut 0, &[6, 3], None).unwrap();
         assert!(buffer.capacity() <= 8);
         let capacity = buffer.capacity();
         let mut paid = 0;
-        assert!(push_erosion_buffer(&mut buffer, 5.0, 4, &mut paid, &[6, 4]).is_err());
+        assert!(push_erosion_buffer_with_host(&mut buffer, 5.0, 4, &mut paid, &[6, 4], None).is_err());
         assert_eq!(
             buffer.len(),
             4,
@@ -5436,7 +5436,7 @@ mod tests {
         );
         assert_eq!(buffer.capacity(), capacity);
         assert!(paid > 0, "executed failed push guards remain paid");
-        push_erosion_buffer(&mut buffer, 5.0, 5, &mut paid, &[6, 5]).unwrap();
+        push_erosion_buffer_with_host(&mut buffer, 5.0, 5, &mut paid, &[6, 5], None).unwrap();
         assert_eq!(buffer, [1.0, 2.0, 3.0, 4.0, 5.0]);
         assert_eq!(buffer.capacity(), capacity);
     }
