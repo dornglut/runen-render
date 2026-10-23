@@ -3655,3 +3655,66 @@ fn wholly_offscreen_curved_root_effects_preserve_actual_vulkan_child_paint() {
     );
     assert_eq!(recovered.as_bytes(), reference.as_bytes());
 }
+
+#[test]
+fn microscopic_gap_changes_union_erosion_and_finite_gaussian_on_vulkan() {
+    let Some(context) = context() else { return };
+    // Independent F1 set/topology oracle, not a disposable mesh or alpha
+    // mask: two exactly touching 1x2 rectangles form a 2x2 rectangle.
+    // Negative Euclidean spread -.6 leaves [.6,1.4]^2 in source-relative
+    // coordinates. Any positive gap separates the two width-1 components;
+    // neither can contain a disk of diameter 1.2, so erosion is EMPTY.
+    //
+    // At sigma=.125 (finite normalized 3-sigma cutoff), integrate the
+    // eroded touching square analytically using its separable Gaussian CDF
+    // at the 16 globally correlated sites of pixel [10,11]x[10,11].
+    // Independent 85-digit reference: mean coverage .6137835144011853;
+    // linear-premultiplied red + sRGB encode -> [205,0,0,157].
+    // A point-center or near-equal-coordinate shortcut cannot substitute
+    // for the original F1 touching-vs-separated topology.
+    let scene = |gap: f64| {
+        group(
+            vec![
+                caster(Render2dColorRgba8::TRANSPARENT, 9.5, 9.5, 1.0, 2.0),
+                caster(
+                    Render2dColorRgba8::TRANSPARENT,
+                    10.5 + gap,
+                    9.5,
+                    1.0,
+                    2.0,
+                ),
+            ],
+            vec![effect(
+                0.0,
+                0.0,
+                0.125,
+                -0.6,
+                Render2dColorRgba8::new(255, 0, 0, 255),
+            )],
+            1.0,
+        )
+    };
+    let mut executor = Render2dExecutor::new();
+    let bindings = Render2dResourceBindings::default();
+    let touching = execute(
+        &context,
+        &mut executor,
+        &scene(0.0),
+        &bindings,
+        "F3F exact touching rectangle union under erosion and Gaussian",
+    );
+    pixel_near(pixel(&touching, 10, 10), [205, 0, 0, 157]);
+    assert_eq!(pixel(&touching, 9, 10), [0, 0, 0, 0]);
+
+    // The exact same executor must not retain a previous union topology as
+    // derived support when the next immutable source has a real 1e-6 gap.
+    let separated = execute(
+        &context,
+        &mut executor,
+        &scene(0.000_001),
+        &bindings,
+        "F3F microscopic gap eliminates eroded support",
+    );
+    assert_eq!(pixel(&separated, 10, 10), [0, 0, 0, 0]);
+    assert_eq!(pixel(&separated, 9, 10), [0, 0, 0, 0]);
+}
