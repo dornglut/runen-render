@@ -548,7 +548,8 @@ pub(super) fn prepare(
                 path,
                 "shadow offset preparation exceeds invocation work",
             )?;
-            geometry_support::append(&mut shifted, mesh, offset, path)?;
+            geometry_support::append_admitted(&mut shifted, mesh, offset, path, &mut host)?;
+            let shifted_bytes = shifted.triangles.capacity() * size_of::<[f64; 2]>();
             // A certified negative Euclidean disk erosion has EXACT convex
             // polygonal geometry, so carry that into the already-owned
             // parent-frame continuous Gaussian / identity evaluator.
@@ -609,6 +610,7 @@ pub(super) fn prepare(
                 if let Some(eroded) = &erosion {
                     host.release(eroded.triangles.capacity() * size_of::<[f64; 2]>());
                 }
+                host.release(shifted_bytes);
                 continue;
             }
             let remaining_spread = if erosion.is_some() {
@@ -652,6 +654,7 @@ pub(super) fn prepare(
                         if let Some(eroded) = &erosion {
                             host.release(eroded.triangles.capacity() * size_of::<[f64; 2]>());
                         }
+                        host.release(shifted_bytes);
                         continue;
                     }
                     support::affine_parent_effect_coverage_admitted(
@@ -677,8 +680,16 @@ pub(super) fn prepare(
                         path,
                         "shadow ancestor preparation exceeds invocation work",
                     )?;
-                    geometry_support::append(&mut projected, caster, ancestor, path)?;
-                    support::prepare_shadow_coverage_admitted(
+                    geometry_support::append_admitted(
+                        &mut projected,
+                        caster,
+                        ancestor,
+                        path,
+                        &mut host,
+                    )?;
+                    let projected_bytes =
+                        projected.triangles.capacity() * size_of::<[f64; 2]>();
+                    let coverage = support::prepare_shadow_coverage_admitted(
                         &projected,
                         remaining_spread,
                         effect.sigma(),
@@ -686,7 +697,9 @@ pub(super) fn prepare(
                         path,
                         &mut aggregate_coverage_work,
                         remaining_coverage_samples,
-                    )?
+                    );
+                    host.release(projected_bytes);
+                    coverage?
                 }
             } else {
                 support::prepare_shadow_coverage_admitted(
@@ -699,12 +712,14 @@ pub(super) fn prepare(
                     remaining_coverage_samples,
                 )?
             };
-            // Exact convex erosion output was admitted in the SAME scene
-            // host owner while coverage was built. It is now disposable;
-            // only the returned coverage is retained across effects.
+            // All disposable transformed meshes coexist with the original
+            // source and any eroded caster until coverage construction ends.
+            // Retire only their own capacities; successful coverage is retained
+            // and charged separately.
             if let Some(eroded) = &erosion {
                 host.release(eroded.triangles.capacity() * size_of::<[f64; 2]>());
             }
+            host.release(shifted_bytes);
             let Some(coverage) = coverage else {
                 continue;
             };
@@ -1734,4 +1749,85 @@ mod tests {
         assert!(sources.work.used() > paid);
         assert!((coverage.values.iter().sum::<f64>() - 16.0).abs() < 1.0e-12);
     }
+
+    #[test]
+    fn nested_shadow_transform_copies_obey_exact_shared_host_peak() {
+        let composition = Render2dComposition::new([Render2dEntry::group(
+            Render2dGroup::new(
+                [legacy_group()],
+                Render2dAffineTransform::IDENTITY,
+                Vec::new(),
+                Render2dOpacity::OPAQUE,
+                Vec::new(),
+            ),
+        )])
+        .unwrap();
+        let mut resources = GpuResourceScope::new();
+        let texture = resources
+            .texture(
+                GpuTextureDescriptor::ordinary_owned_2d(
+                    "nested shadow host peak target",
+                    GpuResourceLifetime::Transient,
+                    GpuReconstruction::SourceBacked,
+                    64,
+                    64,
+                    GpuTextureFormat::Rgba8UnormSrgb,
+                    [GpuTextureUsage::ColorAttachment],
+                    GpuTextureInitialization::Zeroed,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let view = resources
+            .texture_view(
+                GpuTextureViewDescriptor::ordinary_full_owned(
+                    "nested shadow host peak view",
+                    &texture,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let target = AdmittedTarget {
+            view,
+            format: GpuTextureFormat::Rgba8UnormSrgb,
+            physical_width: 64,
+            physical_height: 64,
+            continuous_width: 64.0,
+            continuous_height: 64.0,
+            raster_scale: 1.0,
+            max_texture_dimension_2d: 8192,
+            max_buffer_bytes: MAX_SHADOW_COVERAGE_BYTES,
+            image_format: true,
+            clip_format: true,
+        };
+        let (plan, sources) = before_plan(&composition).plan().unwrap();
+        let source_bytes = sources.sources.host.live();
+        let prepared = prepare(&plan, &target, sources).unwrap();
+        let admission = prepared.admission.as_ref().unwrap();
+        let peak = admission.host.peak();
+        assert!(peak > source_bytes);
+        assert!(admission.host.live() < peak);
+
+        // An artificial prior owner reservation consumes only budget, not
+        // physical memory. The same complete scene must fit at the observed
+        // simultaneous peak and reject one byte below it.
+        let filler = support::MAX_SHADOW_HOST_BYTES - peak;
+        let (plan, mut sources) = before_plan(&composition).plan().unwrap();
+        sources.sources.host.reserve(filler, &[]).unwrap();
+        let exact = prepare(&plan, &target, sources).unwrap();
+        assert_eq!(
+            exact.admission.as_ref().unwrap().host.peak(),
+            support::MAX_SHADOW_HOST_BYTES,
+        );
+        let (plan, mut sources) = before_plan(&composition).plan().unwrap();
+        sources.sources.host.reserve(filler + 1, &[]).unwrap();
+        assert!(matches!(
+            prepare(&plan, &target, sources),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                ..
+            })
+        ));
+    }
+
 }
