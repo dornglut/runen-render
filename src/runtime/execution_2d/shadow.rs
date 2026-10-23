@@ -2905,8 +2905,11 @@ mod tests {
         };
         let mut host = super::super::support::PreparationHostBudget::new();
         let result_bytes = 30 * size_of::<[f64; 2]>();
-        host.reserve(super::super::support::MAX_SHADOW_HOST_BYTES - result_bytes, &[1, 2])
-            .unwrap();
+        host.reserve(
+            super::super::support::MAX_SHADOW_HOST_BYTES - result_bytes,
+            &[1, 2],
+        )
+        .unwrap();
         let expanded = gaussian_square_support(&source, 0.5, &[1, 2], &mut host).unwrap();
         assert_eq!(host.live(), super::super::support::MAX_SHADOW_HOST_BYTES);
         assert_eq!(host.peak(), super::super::support::MAX_SHADOW_HOST_BYTES);
