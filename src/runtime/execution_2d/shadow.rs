@@ -2605,6 +2605,49 @@ mod tests {
     }
 
     #[test]
+    fn late_neutral_transform_overflow_preserves_destination_before_allocation() {
+        let base = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            bounds: [0.0, 0.0, 1.0, 1.0],
+        };
+        let mut retained = empty_mesh();
+        append(&mut retained, &base, Render2dAffineTransform::IDENTITY, &[6]).unwrap();
+        let vertices = retained.triangles.clone();
+        let bounds = retained.bounds;
+        let capacity = retained.triangles.capacity();
+
+        // The first triangle transforms to finite noncollapsed geometry.
+        // Only a later triangle overflows the authored full-rank affine.
+        // A partial destination write would violate prepare atomicity.
+        let source = NeutralMesh {
+            units_per_parent_logical_unit: 1.0,
+            triangles: vec![
+                [0.0, 0.0],
+                [1.0e-300, 0.0],
+                [0.0, 1.0],
+                [10.0, 0.0],
+                [11.0, 0.0],
+                [10.0, 1.0],
+            ],
+            bounds: [0.0, 0.0, 11.0, 1.0],
+        };
+        let huge = Render2dAffineTransform::new(1.0e308, 0.0, 0.0, 1.0, 0.0, 0.0)
+            .unwrap();
+        assert!(matches!(
+            append(&mut retained, &source, huge, &[6, 2]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [6, 2]
+        ));
+        assert_eq!(retained.triangles, vertices);
+        assert_eq!(retained.bounds, bounds);
+        assert_eq!(retained.triangles.capacity(), capacity);
+    }
+
+    #[test]
     fn parent_effect_precedes_ancestor_affine_even_under_shear_and_anisotropy() {
         let source = NeutralMesh {
             units_per_parent_logical_unit: 1.0,
