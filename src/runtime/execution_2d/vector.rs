@@ -377,16 +377,22 @@ fn neutral_support_impl(
     if stretch == 0.0 || stroke.is_some_and(|style| style.width() == 0.0) {
         return Ok(None);
     }
+    // Move the existing scan setup admission ahead of any original Lyon path
+    // construction. An exhausted shared invocation must not allocate a path
+    // or enter tessellation before paying the same required setup work.
+    if let Some((work, path)) = admitted.as_mut() {
+        work.charge(256, path)?;
+    }
     let geometry = tessellate_shape(shape, stroke, root_index, stretch)?;
     let mut triangles = Vec::new();
     if let Some((work, path)) = admitted.as_mut() {
-        // Charge the added triangle scan to the SAME invocation work ceiling.
-        // The Lyon preprocessing/sweep remains a separate unproved owner.
+        // Only the per-index scan work remains: the 256 setup was paid before
+        // Lyon allocation. Do not double-charge successful source work.
+        // Lyon preprocessing/sweep remain separate unproved owners.
         let scan_cost = geometry
             .indices
             .len()
             .checked_mul(64)
-            .and_then(|cost| cost.checked_add(256))
             .ok_or_else(|| error(root_index, Render2dVectorError::ResourceLimit))?;
         work.charge(scan_cost, path)?;
         // Preflight all *actual* emitted triangles before committing a host
@@ -976,6 +982,87 @@ mod tests {
             .expect("transparent offscreen source has semantic geometry");
         assert_eq!(support.bounds, [-10.0, -2.0, -1.0, 2.0]);
         assert_eq!(support.triangles.len(), 6);
+    }
+
+    #[test]
+    fn original_vector_setup_is_charged_before_lyon_path_construction() {
+        let owner = [7, 3];
+        let badly_narrowed = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::path(
+                    Render2dPath::new(
+                        Render2dFillRule::NonZero,
+                        vec![
+                            Render2dPathCommand::MoveTo(
+                                Render2dPoint::new(0.0, 0.0).unwrap(),
+                            ),
+                            Render2dPathCommand::LineTo(
+                                Render2dPoint::new(1.0e20, 0.0).unwrap(),
+                            ),
+                            Render2dPathCommand::LineTo(
+                                Render2dPoint::new(0.0, 1.0).unwrap(),
+                            ),
+                            Render2dPathCommand::Close,
+                        ],
+                    )
+                    .unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        // A one-short work receipt beats physical f32 source precision, and
+        // neither consumes fuel nor allocates admitted source output.
+        let mut work_used = super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 255;
+        let mut clips = 0;
+        let mut host = super::super::support::PreparationHostBudget::new();
+        let rejected = neutral_support_admitted(
+            &badly_narrowed,
+            7,
+            1.0,
+            4096,
+            &mut super::super::shadow::NeutralPreparationWork::new(
+                &mut work_used,
+                &mut clips,
+                &mut host,
+            ),
+            &owner,
+        );
+        assert!(matches!(
+            rejected,
+            Err(Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == owner
+        ));
+        assert_eq!(work_used, super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 255);
+        assert_eq!((host.live(), host.peak()), (0, 0));
+        // At the exact setup threshold the same F1 input now reaches
+        // physical construction and is correctly rejected for precision.
+        work_used -= 1;
+        assert!(matches!(
+            neutral_support_admitted(
+                &badly_narrowed,
+                7,
+                1.0,
+                4096,
+                &mut super::super::shadow::NeutralPreparationWork::new(
+                    &mut work_used,
+                    &mut clips,
+                    &mut host,
+                ),
+                &owner,
+            ),
+            Err(Render2dExecutionError::Vector {
+                root_index: 7,
+                kind: Render2dVectorError::PrecisionLimit
+            })
+        ));
+        assert_eq!(work_used, super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK);
+        assert_eq!((host.live(), host.peak()), (0, 0));
     }
 
     #[test]
