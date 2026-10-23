@@ -2292,7 +2292,13 @@ impl NeutralRegionBuilder {
                         )?;
                         let mut shifted = shadow::empty_mesh();
                         self.charge_graph_work(shadow::append_work(&shifted, caster, path)?, path)?;
-                        shadow::append_admitted(&mut shifted, caster, offset, path, &mut self.host)?;
+                        shadow::append_admitted(
+                            &mut shifted,
+                            caster,
+                            offset,
+                            path,
+                            &mut self.host,
+                        )?;
                         if effect.sigma() > 0.0 && !shifted.triangles.is_empty() {
                             let shifted_bytes =
                                 shifted.triangles.capacity() * size_of::<[f64; 2]>();
@@ -2323,12 +2329,14 @@ impl NeutralRegionBuilder {
                                     square.triangles.len(),
                                     path,
                                 ) {
-                                    self.host
-                                        .release(square.triangles.capacity() * size_of::<[f64; 2]>());
+                                    self.host.release(
+                                        square.triangles.capacity() * size_of::<[f64; 2]>(),
+                                    );
                                     return Err(error);
                                 }
                                 Ok(square)
-                            })();
+                            })(
+                            );
                             self.host.release(shifted_bytes);
                             let square = expanded?;
                             self.retained_vertices = completed_vertices;
@@ -3892,7 +3900,10 @@ mod tests {
         assert_eq!(result.triangles.len(), 3);
         assert_eq!(accepted.host.live() - before, header + vertices);
         assert_eq!(accepted.retained_vertices - before_vertices, 3);
-        assert!(Arc::ptr_eq(&result, &accepted.materialize(&effect).unwrap()));
+        assert!(Arc::ptr_eq(
+            &result,
+            &accepted.materialize(&effect).unwrap()
+        ));
         assert_eq!(accepted.host.live() - before, header + vertices);
 
         let (mut rejected, effect) = setup();
@@ -3992,6 +4003,50 @@ mod tests {
         assert_eq!(graph.host.live(), before);
         assert_eq!(graph.retained_vertices, vertices);
         assert!(graph.materialized[effect.id].is_none());
+    }
+
+    #[test]
+    fn gaussian_late_vertex_rejection_releases_both_outputs_and_can_retry() {
+        let mut graph = builder();
+        graph
+            .host
+            .reserve_vector(&mut graph.materialized, 8, &[4])
+            .unwrap();
+        let source = graph.source(triangle(), &[4, 0]).unwrap();
+        graph.materialize(&source).unwrap();
+        let effect = graph
+            .effect(
+                source,
+                Render2dDropShadow::new(1.0, 0.0, 0.25, 0.0, Render2dColorRgba8::TRANSPARENT)
+                    .unwrap(),
+                &[4, 1],
+            )
+            .unwrap();
+        let original_vertices = graph.retained_vertices;
+        graph.retained_vertices = MAX_NEUTRAL_VERTICES - 3;
+        let before = graph.host.live();
+        assert!(matches!(
+            graph.materialize(&effect),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [4, 1]
+        ));
+        assert_eq!(graph.host.live(), before);
+        assert_eq!(graph.retained_vertices, MAX_NEUTRAL_VERTICES - 3);
+        assert!(graph.materialized[effect.id].is_none());
+        // The Gaussian output was allocated, while the translated caster
+        // remained live. Neither temporary becomes a receipt on rejection.
+        let header = size_of::<support::NeutralMesh>() + 2 * size_of::<usize>();
+        let simultaneously_live = (3 + 30) * size_of::<[f64; 2]>();
+        assert!(graph.host.peak() >= before + header + simultaneously_live);
+
+        // Reset only the test-induced artificial vertex occupancy. Paid CPU
+        // work, child receipts and the normal host owner are reused.
+        graph.retained_vertices = original_vertices;
+        assert!(graph.materialize(&effect).unwrap().triangles.len() > 3);
+        assert!(graph.materialized[effect.id].is_some());
     }
 
     #[test]
