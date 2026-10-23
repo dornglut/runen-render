@@ -5196,19 +5196,17 @@ mod tests {
                 .source_from_item(second_mesh, &right, &[4, 1])
                 .unwrap();
             let union = graph.union(vec![first, second], &[4, 2]).unwrap();
-            assert!(graph.proven_original_straight_polygon_union(&union).unwrap());
+            assert!(
+                graph
+                    .proven_original_straight_polygon_union(&union)
+                    .unwrap()
+            );
             graph.materialize(&union).unwrap();
             let effect = graph
                 .effect(
                     union,
-                    Render2dDropShadow::new(
-                        0.0,
-                        0.0,
-                        0.0,
-                        -0.25,
-                        Render2dColorRgba8::TRANSPARENT,
-                    )
-                    .unwrap(),
+                    Render2dDropShadow::new(0.0, 0.0, 0.0, -0.25, Render2dColorRgba8::TRANSPARENT)
+                        .unwrap(),
                     &[4, 3],
                 )
                 .unwrap();
