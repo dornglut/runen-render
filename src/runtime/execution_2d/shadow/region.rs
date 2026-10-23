@@ -2132,6 +2132,7 @@ impl NeutralRegionBuilder {
                 Kind::Source(mesh) => Arc::clone(mesh.get().ok_or_else(|| unsupported(path))?),
                 Kind::Union(children) => {
                     let mut output = shadow::empty_mesh();
+                    let mut provisional_vertices = 0;
                     let assembled = (|| -> Result<(), Render2dExecutionError> {
                         for child in children {
                             let mesh = self.materialize(child)?;
@@ -2140,6 +2141,7 @@ impl NeutralRegionBuilder {
                                 mesh.triangles.len(),
                                 path,
                             )?;
+                            provisional_vertices += mesh.triangles.len();
                             self.charge_graph_work(
                                 shadow::append_work(&output, &mesh, path)?,
                                 path,
@@ -2155,25 +2157,30 @@ impl NeutralRegionBuilder {
                         Ok(())
                     })();
                     if let Err(error) = assembled {
-                        // Incomplete union geometry is dropped; refund only its
-                        // own result and header, not child receipts or paid work.
+                        // Cached child receipts persist, but the failed union
+                        // cannot retain its own provisional copied vertices.
+                        self.retained_vertices -= provisional_vertices;
                         self.host
                             .release(output.triangles.capacity() * size_of::<[f64; 2]>());
                         return Err(error);
                     }
+                    // All source copies were admitted before append. Commit
+                    // only the successfully retained union output.
                     output_admitted = true;
                     Arc::new(output)
                 }
                 Kind::Affine { source, to_parent } => {
                     let mesh = self.materialize(source)?;
+                    let mut candidate_vertices = self.retained_vertices;
                     shadow::charge_vertices(
-                        &mut self.retained_vertices,
+                        &mut candidate_vertices,
                         mesh.triangles.len(),
                         path,
                     )?;
                     let mut output = shadow::empty_mesh();
                     self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
                     shadow::append_admitted(&mut output, &mesh, *to_parent, path, &mut self.host)?;
+                    self.retained_vertices = candidate_vertices;
                     output_admitted = true;
                     Arc::new(output)
                 }
@@ -3698,6 +3705,7 @@ mod tests {
             )
             .unwrap();
         let before = graph.host.live();
+        let vertices_before = graph.retained_vertices;
         assert!(matches!(
             graph.materialize(&union),
             Err(Render2dExecutionError::SampleSpace {
@@ -3707,6 +3715,7 @@ mod tests {
             }) if path == [9]
         ));
         assert_eq!(graph.host.live(), before);
+        assert_eq!(graph.retained_vertices, vertices_before);
         assert!(graph.materialized[union.id].is_none());
     }
 
@@ -3797,6 +3806,7 @@ mod tests {
             )
             .unwrap();
         let before = graph.host.live();
+        let vertices_before = graph.retained_vertices;
         assert!(matches!(
             graph.materialize(&affine),
             Err(Render2dExecutionError::SampleSpace {
@@ -3806,6 +3816,7 @@ mod tests {
             }) if path == [6, 1]
         ));
         assert_eq!(graph.host.live(), before);
+        assert_eq!(graph.retained_vertices, vertices_before);
         assert!(graph.materialized[affine.id].is_none());
     }
 
