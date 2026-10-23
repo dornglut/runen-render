@@ -1809,7 +1809,7 @@ fn append_triangles(
     scale: f64,
     source_to_parent: Render2dAffineTransform,
     path: &[usize],
-    host: Option<&mut support::PreparationHostBudget>,
+    host: Option<&mut super::support::PreparationHostBudget>,
 ) -> Result<(), Render2dExecutionError> {
     if triangles.is_empty() {
         return Ok(());
