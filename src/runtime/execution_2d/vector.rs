@@ -714,6 +714,84 @@ mod tests {
     }
 
     #[test]
+    fn admitted_clip_source_output_owns_exact_host_receipt() {
+        let source = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(
+                    Render2dRect::new(-10.0, -2.0, 9.0, 4.0).unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let bytes = 6 * std::mem::size_of::<[f64; 2]>();
+        let mut owner = super::super::support::PreparationHostBudget::new();
+        owner
+            .reserve(super::super::support::MAX_SHADOW_HOST_BYTES - bytes, &[7, 2])
+            .unwrap();
+        let mesh =
+            neutral_support_admitted(&source, 7, 1.0, 4096, &mut owner, &[7, 2])
+                .unwrap()
+                .unwrap();
+        assert_eq!(mesh.triangles.len(), 6);
+        assert_eq!(mesh.triangles.capacity(), 6);
+        assert_eq!(mesh.bounds, [-10.0, -2.0, -1.0, 2.0]);
+        assert_eq!(owner.live(), super::super::support::MAX_SHADOW_HOST_BYTES);
+        assert_eq!(owner.peak(), super::super::support::MAX_SHADOW_HOST_BYTES);
+        owner.release(mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
+        assert_eq!(
+            owner.live(),
+            super::super::support::MAX_SHADOW_HOST_BYTES - bytes
+        );
+    }
+
+    #[test]
+    fn admitted_clip_source_rejects_one_short_before_output_allocation() {
+        let source = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            vec![],
+            Render2dOpacity::TRANSPARENT,
+        );
+        let bytes = 6 * std::mem::size_of::<[f64; 2]>();
+        let mut owner = super::super::support::PreparationHostBudget::new();
+        let prior = super::super::support::MAX_SHADOW_HOST_BYTES - bytes + 1;
+        owner.reserve(prior, &[9, 3]).unwrap();
+        assert!(matches!(
+            neutral_support_admitted(&source, 9, 1.0, 4096, &mut owner, &[9, 3]),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [9, 3]
+        ));
+        assert_eq!((owner.live(), owner.peak()), (prior, prior));
+        // A source with no physical support does not lease an output vector.
+        let collapsed = Render2dItem::new(
+            source.primitive().clone(),
+            Render2dAffineTransform::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0).unwrap(),
+            vec![],
+            Render2dOpacity::OPAQUE,
+        );
+        assert!(neutral_support_admitted(
+            &collapsed,
+            9,
+            1.0,
+            4096,
+            &mut owner,
+            &[9, 3],
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!((owner.live(), owner.peak()), (prior, prior));
+    }
+
+    #[test]
     fn neutral_support_applies_local_to_parent_before_parent_frame_effects() {
         let item = Render2dItem::new(
             Render2dPrimitive::Fill {
