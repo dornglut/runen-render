@@ -2188,7 +2188,7 @@ mod tests {
         let source = graph
             .source_from_item(empty_mesh(), &item, &[3, 2])
             .unwrap();
-        let fill = super::super::support::MAX_SHADOW_HOST_BYTES - graph.host.live();
+        let fill = super::super::super::support::MAX_SHADOW_HOST_BYTES - graph.host.live();
         graph.host.reserve(fill, &[]).unwrap();
         let before = graph.host.live();
         assert!(
@@ -2213,7 +2213,7 @@ mod tests {
         let fields = BTreeMap::new();
         let result = build_group_sources(
             &composition,
-            super::super::support::MAX_SHADOW_HOST_BYTES,
+            super::super::super::support::MAX_SHADOW_HOST_BYTES,
             &bindings,
             &fields,
             SourcePreparation::new(
@@ -2903,13 +2903,13 @@ mod tests {
             triangles: vec![[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
             bounds: [0.0, 0.0, 2.0, 2.0],
         };
-        let mut host = super::support::PreparationHostBudget::new();
+        let mut host = super::super::support::PreparationHostBudget::new();
         let result_bytes = 30 * size_of::<[f64; 2]>();
-        host.reserve(super::support::MAX_SHADOW_HOST_BYTES - result_bytes, &[1, 2])
+        host.reserve(super::super::support::MAX_SHADOW_HOST_BYTES - result_bytes, &[1, 2])
             .unwrap();
         let expanded = gaussian_square_support(&source, 0.5, &[1, 2], &mut host).unwrap();
-        assert_eq!(host.live(), super::support::MAX_SHADOW_HOST_BYTES);
-        assert_eq!(host.peak(), super::support::MAX_SHADOW_HOST_BYTES);
+        assert_eq!(host.live(), super::super::support::MAX_SHADOW_HOST_BYTES);
+        assert_eq!(host.peak(), super::super::support::MAX_SHADOW_HOST_BYTES);
         assert_eq!(expanded.bounds, [-0.5, -0.5, 2.5, 2.5]);
         let contains = |p: [f64; 2]| {
             expanded.triangles.as_chunks::<3>().0.iter().any(|tri| {
@@ -2937,8 +2937,8 @@ mod tests {
             bounds: [0.0, 0.0, 2.0, 2.0],
         };
         let bytes = 30 * size_of::<[f64; 2]>();
-        let mut host = super::support::PreparationHostBudget::new();
-        let previous = super::support::MAX_SHADOW_HOST_BYTES - bytes + 1;
+        let mut host = super::super::support::PreparationHostBudget::new();
+        let previous = super::super::support::MAX_SHADOW_HOST_BYTES - bytes + 1;
         host.reserve(previous, &[1, 2]).unwrap();
         assert!(matches!(
             gaussian_square_support(&source, 0.5, &[1, 2], &mut host),
@@ -2957,7 +2957,7 @@ mod tests {
             triangles: vec![[1.0e308, 0.0], [0.0, 1.0], [0.0, 0.0]],
             bounds: [0.0, 0.0, 1.0e308, 1.0],
         };
-        let mut host = super::support::PreparationHostBudget::new();
+        let mut host = super::super::support::PreparationHostBudget::new();
         let before = host.live();
         let error = gaussian_square_support(&source, f64::MAX, &[1, 2], &mut host)
             .expect_err("overflowing translated vertex must fail after reservation");
@@ -3335,7 +3335,7 @@ mod tests {
             },
         )
         .unwrap();
-        let coverage = super::super::support::prepare_untranslated_shadow_coverage(
+        let coverage = super::super::super::support::prepare_untranslated_shadow_coverage(
             &clipped,
             0.0,
             0.0,
