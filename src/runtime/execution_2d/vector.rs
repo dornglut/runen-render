@@ -38,7 +38,7 @@ fn tessellate_shape(
     stroke: Option<Render2dStrokeStyle>,
     root_index: usize,
     stretch: f64,
-    mut admitted: Option<(&mut super::shadow::NeutralPreparationWork<'_>, &[usize])>,
+    admitted: Option<(&mut super::shadow::NeutralPreparationWork<'_>, &[usize])>,
 ) -> Result<BoundedGeometry, Render2dExecutionError> {
     let fail = |kind| error(root_index, kind);
     let tolerance = PHYSICAL_TOLERANCE / stretch;
