@@ -3645,6 +3645,33 @@ mod tests {
     }
 
     #[test]
+    fn union_destination_growth_is_amortized_and_peak_admitted() {
+        let mut graph = builder();
+        graph
+            .host
+            .reserve_vector(&mut graph.materialized, 16, &[7])
+            .unwrap();
+        let mut children = Vec::new();
+        for index in 0..5 {
+            let child = graph.source(triangle(), &[7, index]).unwrap();
+            graph.materialize(&child).unwrap();
+            children.push(child);
+        }
+        let union = graph.union(children, &[7]).unwrap();
+        let before = graph.host.live();
+        let result = graph.materialize(&union).unwrap();
+        // 3, 6, 12, 12, 24 capacity, rather than five exact relocations.
+        assert_eq!(result.triangles.len(), 15);
+        assert_eq!(result.triangles.capacity(), 24);
+        let header = size_of::<support::NeutralMesh>() + 2 * size_of::<usize>();
+        assert_eq!(
+            graph.host.live() - before,
+            header + 24 * size_of::<[f64; 2]>()
+        );
+        assert!(graph.host.peak() >= graph.host.live() + 12 * size_of::<[f64; 2]>());
+    }
+
+    #[test]
     fn union_growth_one_short_refunds_partial_mesh_and_header() {
         let mut graph = builder();
         graph
