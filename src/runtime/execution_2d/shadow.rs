@@ -1811,37 +1811,29 @@ fn append_triangles(
     if region::interval::exact_products_equal(a, d, b, c) == Some(true) {
         return Ok(());
     }
-    let mut prepared = Vec::new();
-    prepared
-        .try_reserve_exact(triangles.len())
-        .map_err(|_| resource(path, "neutral geometry allocation failed"))?;
-    for &[x, y] in triangles {
+    // This first pass is a complete, allocation-free precision preflight.
+    // The destination must not change if a late vertex overflows or a
+    // full-rank affine numerically collapses an authored positive triangle.
+    // Repeating the same finite transform below avoids retaining a second,
+    // invocation-unaccounted heap vector for all prepared vertices.
+    let transform = |[x, y]: [f64; 2]| {
         let x = x / scale;
         let y = y / scale;
-        let transformed = [
+        [
             a.mul_add(x, c.mul_add(y, tx)),
             b.mul_add(x, d.mul_add(y, ty)),
-        ];
-        if !transformed.iter().all(|v| v.is_finite()) {
+        ]
+    };
+    for triangle in triangles.as_chunks::<3>().0 {
+        let after = triangle.map(transform);
+        if !after.iter().flatten().all(|v| v.is_finite()) {
             return Err(precision(
                 path,
                 "neutral parent-space transform lost precision",
             ));
         }
-        prepared.push(transformed);
-    }
-    // A rank-deficient authored affine truly maps positive-area 2D support
-    // to no filled area. A FULL-RANK affine whose triangles *numerically*
-    // collapse instead is a representability failure, never an empty caster.
-    // Complete the precision preflight before changing the output mesh.
-    for (before, after) in triangles
-        .as_chunks::<3>()
-        .0
-        .iter()
-        .zip(prepared.as_chunks::<3>().0)
-    {
         if orient(after[0], after[1], after[2]) == 0.0
-            && orient(before[0], before[1], before[2]) != 0.0
+            && orient(triangle[0], triangle[1], triangle[2]) != 0.0
         {
             return Err(precision(
                 path,
@@ -1851,13 +1843,16 @@ fn append_triangles(
     }
     output
         .triangles
-        .try_reserve(prepared.len())
+        .try_reserve(triangles.len())
         .map_err(|_| resource(path, "neutral destination geometry allocation failed"))?;
-    for triangle in prepared.as_chunks::<3>().0 {
-        if orient(triangle[0], triangle[1], triangle[2]) == 0.0 {
+    // No further fallible work: all source vertices have passed the exact
+    // same floating-point conversion, and the destination has reserved room.
+    for triangle in triangles.as_chunks::<3>().0 {
+        let after = triangle.map(transform);
+        if orient(after[0], after[1], after[2]) == 0.0 {
             continue;
         }
-        for &point in triangle {
+        for point in after {
             output.bounds[0] = output.bounds[0].min(point[0]);
             output.bounds[1] = output.bounds[1].min(point[1]);
             output.bounds[2] = output.bounds[2].max(point[0]);
