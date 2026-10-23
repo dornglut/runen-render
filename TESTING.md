@@ -101,136 +101,82 @@ This lane owns reusable framework evidence only. It deliberately excludes
 Runenwerk native-window, Present, Render Lab image/JSON artifact, product
 surface-routing, and product diagnostic policy.
 
-## Accepted standalone baseline evidence
+## Current execution proof coverage
 
-The completed RX authority transition established the initial standalone
-baseline through unchanged reviewed-head and accepted-main evidence. The
-retained proof surface establishes:
+These are **capability checks**, not implementation stages. Accepted standalone
+behavior is tested on `main`; additional F3F cases below are **draft evidence**
+until [#81](https://github.com/dornglut/runen-render/issues/81) is accepted.
+A passing narrow proof or a typed unsupported result does not establish support
+for the entire semantic class.
 
-- package-level ordinary public conformance;
-- exact maintained-program RunenShader artifact -> RunenGPU admission,
-  including shaped text and solid vector coverage/composition;
-- successful maintained-program compilation/admission retained across both
-  one-shot and stateful renderer resource-cache lifetimes rather than per-frame
-  compilation;
-- headless/offscreen maintained execution;
-- same-submission semantic result formation and requested tolerance;
-- ordinary submission with no implicit CPU readback;
-- temporal reconstruction, camera-history, field, and requested-lattice behavior;
-- no proof-private camera diagnostic seam promoted into public API;
-- exact frozen transfer/adaptation/provenance evidence;
-- no predecessor mirror/forwarder/private sibling reach-through.
+| Boundary | Evidence and source of tests |
+| --- | --- |
+| Ordinary maintained rendering | Package-level ordinary public API; RunenShader artifacts admitted through RunenGPU; one-shot and retained resource-cache lifetimes; headless/offscreen execution, request-owned results, no implicit CPU readback, same-submission formation, camera history and reconstruction (`src/proofs/`, `tests/ordinary_public_api.rs`, `examples/headless_scene.rs`, `examples/ordinary_render.rs`) |
+| 2D vectors and shaped text | Public execution, winding/fill rules, centered strokes/caps/joins, raster scaling and affine coverage; stable tiny OpenType fixtures; immutable glyph identities/outlines, error and cache recovery (`tests/execution_2d_public_api.rs`, `tests/execution_2d/`) |
+| Gradients and image patches | Linear-light gradient interpolation and hard stops; immutable RGBA8 source-to-destination patches, nearest texels, affine transforms, translucent painter order, cache reconstruction and invalid inputs (`tests/execution_2d/`) |
+| Clips | Conjunctive item/group clips, shape/fill rules, rounded regions, transformed masks, subpixel intersections, empty/invalid masks, no sibling leakage and preallocation rejection (`tests/execution_2d/`) |
+| Correlated group compositor | One 4×4 linear-premultiplied sample plane across vectors/images/text, nested group opacity once, exact painter ordering, source-over and final resolve over caller-owned prior color, fractional canvas and multiple tiles, no-work, resource identity, failure atomicity and completed GPU work (`tests/execution_2d_public_api.rs`, `src/runtime/execution_2d/lowering/sample_space.rs`) |
+| Ordinary shadows — **draft** | Selected transparent-source, straight-boundary unions/holes, finite signed spread/Gaussian, nested ancestor charts, clips, tiles, color order and cache discard; independent Vulkan pixel readbacks and typed unsupported cases (`tests/execution_2d/shadow.rs`, `src/runtime/execution_2d/shadow/`) |
 
-These are accepted baseline properties, not a claim that one physical
-implementation layout is permanently frozen. The post-RX structural program
-replaced transfer-era path authority with durable source-boundary guards,
-grouped private maintained realization under `runtime`, grouped conformance
-proofs under `src/proofs`, made the host/WGSL ABI explicit, decomposed
-execution and the ordinary façade by responsibility, and isolated persistent
-scene storage behind `scene::storage`.
+The completed standalone authority transfer is a provenance fact, **not** an
+active migration gate. Preserve ordinary retained-program/cache and temporal
+behavior, with no predecessor mirror, private sibling reach-through or
+proof-only camera diagnostic promoted into the public API. Exact reviewed-head
+and accepted-main validation remain necessary; these proofs do not freeze one
+physical implementation layout. The F2 tiny-font generator pins FontTools
+4.63.0 and verifies fixture SHA-256 hashes, independent of installed host fonts.
 
-The F2 execution consumer uses repository-owned tiny OpenType fixtures. Their
-generator fixes FontTools 4.63.0 and asserts exact SHA-256 outputs so proof
-content does not depend on host fonts or opaque downstream assets.
+## F3F draft evidence and limitations
 
-Future changes must preserve or deliberately replace the relevant evidence
-under their owning issue and must be validated on the exact reviewed head.
+[PR #85](https://github.com/dornglut/runen-render/pull/85) extends the
+existing compositor rather than introducing another painter or geometric
+authority. Its registered Gaussian tests cover the **qualified**
+straight-boundary original-source family: transparent holed fills or image
+destination unions, negative child effects, consuming ancestor shear,
+normalized finite Gaussian, independently checked 16-site/boundary pixels,
+authored shadow order, group opacity, clipped and reflected parent charts,
+cache reconstruction and tile/cutoff equivalence. Missing compute capability
+fails before contribution creation; the executor remains reusable.
+Supported parent-chart numerical selection is deliberately limited to proven
+row-preserving cases, not arbitrary transforms.
 
-Runenwerk downstream native/product integration remains downstream consumer
-evidence. Its predecessor cutover is complete and is no longer an activation
-gate for ordinary standalone RunenRender evolution.
+Finite-cutoff tests additionally cover constant-coordinate separability,
+tangent/reduced-degree cutoff equations, adjacent floating endpoints,
+uncertain mass, empty runs and bounded numerical-record reuse. Root-event
+reuse does not reuse original-region occupancy. The same-executor
+touching-vs-microscopic-gap test renders the exact contact union and **rejects**
+the positive-gap case as unsupported: typed rejection is **not** successful
+shadow rendering.
 
+### Resource and precision evidence
 
-F3C GPU-required public image tests exercise immutable source-neutral RGBA8
-resource binding, exact continuous source/destination patches, private
-nearest-texel sampling, affine geometry, four-by-four physical edge coverage,
-linear-light premultiplication/source-over, patch and mixed painter ordering,
-no-work outcomes, typed format/precision/resource failures and reconstruction
-after cache discard. The image path must not depend on direct wgpu rendering.
+- The compiler admits aggregate clip/geometry/tile replay, 4×4 scratch-depth
+  and peak allocations, text MSDF fields, image/gradient payloads, work-node
+  counts and preflight failures before appending caller-owned RunenGPU work.
+  Private budgets are **physical policies**, not F1 source meaning or native
+  frame-time guarantees; safe retained-field residency does not imply a
+  persistent shadow-mask or native GPU performance promise.
+- Draft F3F source construction, original-region numerical work, affine
+  planning and physical setup share one CPU invocation budget. Encoded GPU
+  lookup visits and bounded Q48 arithmetic use the **separate** aggregate
+  tile-work budget; a GPU operation must not be double-counted as a CPU loop.
+  Immutable uploads and retained fields coexist in host accounting, and
+  numerical tile lookup contributes to compositor peak scratch. Exact/one-short
+  work, byte, canvas-phase and Vulkan tests prove their specific paths.
+- Neutral image destination factories debit source work/capacity before
+  emitting exact triangles and transfer accepted storage without duplicate
+  retention. Glyph command conversion separately admits traversal and
+  coexisting immutable F1 outline paths, including failure cleanup and
+  owner-attributed diagnostics.
+- **Open F3F obligations:** full original curved fill/stroke/glyph signed
+  morphology and general nested consumption; 256-effect compositional
+  accuracy and complete work/peak/in-flight accounting. Lyon's opaque vector/
+  clip tessellation sweep, glyph mesh assembly and other unobserved
+  construction scratch are **not** certified by current mesh-output receipts.
+  A failed wide/nonnumeric chart or unsupported source is safe rejection, not
+  a completed source-family proof.
 
-F3D GPU-required public proof cases exercise cropped packed 16-bit conjunctive
-item masks, parent-space clip transforms, rounded corners, radial gradients,
-nonzero/even-odd winding paths, ellipses, translucent overlapping image-patch
-source-over, text coverage and reconstruction,
-fractional intersections that differ from products
-of pixel-averaged clip alphas, typed unadmitted-format failure, empty intersection
-no-work and no leakage across unclipped siblings. CPU mask triangle-sample
-work is bounded across the complete prepared contribution rather than resetting
-at each item. Aggregate clip-mask allocation is rejected before new mask storage
-is reserved. Retained tessellated clip geometry is independently bounded per item;
-no native-GPU performance claim or persistent GPU mask cache follows.
-
-F3E canonical and Vulkan-required tests extend all accepted F2/F3A–D proofs
-to one correlated 4×4 premultiplied sample-space renderer for direct roots and
-nested groups. Independent public D1–D4 and F3E-R1 oracles prove identity-group
-invariance, source-over disjoint coverage, once-only item/image-patch/group
-opacity, parent-space binary-conjunctive item and group clipping, and the final
-resolve over caller-owned nontransparent target contents. Conformance also
-covers retained shaped-text pixel-center coverage, gradient brush mapping,
-affine nesting, source-neutral immutable images, multiple tiles, resource
-identity, cache reconstruction, full work-node completion, valid no-work,
-typed missing sample-plane roles, and transactional failed preparation.
-
-The private F3E compiler constrains scratch depth/peak bytes, cumulative
-clip/geometry/tile replay, image and gradient payloads, and work-node counts
-before appending caller-owned RunenGPU work. Per-invocation MSDF field generation
-charges cached and new RGBA field extents against one bounded budget before
-CPU bitmap allocation; successful derived-cache residency keeps only the
-last completed preparation's needed field working set. These bounds are
-implementation policies, not a public source semantics or native-performance
-claim. Issue #72 separately owns safe long-lived immutable identity retirement.
-
-F3F original-region Gaussian proofs include ordinary public rendering of a
-transparent holed path or image destination union, its finite negative child
-effect, an ancestor shear, and a later finite Gaussian effect. Independent
-boundary pixels require exact alpha and zero channels, with the existing
-two-code sRGB tolerance. Shared fields preserve authored shadow color order;
-cache discard reproduces identical bytes. An integer translation across output
-tiles must reproduce the complete single-tile image, including the seam and
-cutoff. A missing compute capability rejects before contribution creation and
-leaves the executor usable for the existing non-compute family. These cases
-qualify the selected straight-boundary family, not all F3F source classes.
-
-Nested Gaussian consumers also qualify exact row-preserving parent charts
-with unchanged vertical scale. Independent sixteen-phase references bind the
-original finite negative-effect source to the consuming shear; ordinary final
-pixels additionally cover horizontal compression, reflection, post-blur group
-clipping and once-only nested opacity. Exact ancestry excludes the consumer's
-own transform; an unavailable chart receipt does not invalidate F1 geometry.
-The larger 96×64 expanded-scale workload remains an explicit owner-attributed
-resource rejection followed by successful reuse. Its rejection is not positive
-conformance or a claim that all chart workloads fit the invocation ceiling.
-
-Finite-cutoff regressions cover constant-coordinate separability, tangent and
-reduced-degree circular cutoff equations, adjacent representable endpoints,
-signed uncertain mass, empty runs and complete error rejection. Root-event
-reuse is keyed only by numerical coefficients and query center; it never
-reuses original-region occupancy. Its fixed event records and bounded index
-are included in the numerical compiler's existing reservation.
-
-Source construction, numerical integration, affine planning, CPU data copies
-and physical descriptor preparation use one invocation preparation budget.
-Encoded GPU lookup sample visits and the expanded Q48 multiply-accumulate
-extent use the existing aggregate tile-work ceiling; those shader-only counts
-are not also charged as CPU loops. The arithmetic extent does not claim to
-count every shader load or instruction. Immutable upload payloads coexist with
-retained numerical planes in host admission, and the lookup tile participates
-in the compositor's existing peak scratch admission. Focused exact/one-short
-work, host and canvas-phase proofs accompany actual Vulkan readbacks.
-
-Neutral image factories use the same invocation CPU and host owners before
-destination counting, complete triangle emission and exact-capacity allocation.
-An unclipped image transfers its existing scaled mesh directly into retained
-source admission. Exact/one-short work and byte tests, a late precision failure,
-and once-only source reconstruction check paid failure work, released temporary
-storage and reservation transfer without duplicate retention charges. These
-proofs cover owned image emission; Lyon's internal vector/clip factory work,
-glyph assembly and other unobserved construction scratch remain unfinished F3F
-accounting obligations.
-
-Glyph command conversion separately admits its full traversal and the
-coexisting command Vec and immutable F1 path Arc before construction. Tests
-cover exact/one-short work and peak bytes, unchanged outline commands, invalid
-outline diagnostics, and path-storage release after a later physical failure.
-The original F2 outline remains the source; these conversion receipts do not
-certify Lyon's internal fill sweep or the accumulated glyph mesh assembly.
+Runenwerk native-window, Present, Render Lab and product policy remain
+downstream consumer evidence, not standalone renderer validation. Future
+changes must preserve or deliberately supersede the relevant evidence under
+its owning issue and validate the exact reviewed revision.
