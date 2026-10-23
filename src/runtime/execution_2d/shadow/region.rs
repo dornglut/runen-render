@@ -2126,9 +2126,10 @@ impl NeutralRegionBuilder {
                 path,
             )?;
         }
-        // A Gaussian factory reserves its output vector before allocation.
-        // That lease becomes the retained region mesh; do not charge it twice.
-        let mut gaussian_output_admitted = false;
+        // Some materializers reserve their output vector before allocation;
+        // transfer that lease into the cached region instead of charging
+        // the returned capacity a second time.
+        let mut output_admitted = false;
         let mesh = match &region.kind {
             Kind::Source(mesh) => Arc::clone(mesh.get().ok_or_else(|| unsupported(path))?),
             Kind::Union(children) => {
@@ -2150,7 +2151,8 @@ impl NeutralRegionBuilder {
                 shadow::charge_vertices(&mut self.retained_vertices, mesh.triangles.len(), path)?;
                 let mut output = shadow::empty_mesh();
                 self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
-                shadow::append(&mut output, &mesh, *to_parent, path)?;
+                shadow::append_admitted(&mut output, &mesh, *to_parent, path, &mut self.host)?;
+                output_admitted = true;
                 Arc::new(output)
             }
             Kind::Clip { source, clips } => {
@@ -2278,7 +2280,7 @@ impl NeutralRegionBuilder {
                             path,
                             &mut self.host,
                         )?;
-                        gaussian_output_admitted = true;
+                        output_admitted = true;
                         shadow::charge_vertices(
                             &mut self.retained_vertices,
                             square.triangles.len(),
@@ -2291,9 +2293,9 @@ impl NeutralRegionBuilder {
                 }
             }
         };
-        if new_mesh && !gaussian_output_admitted {
+        if new_mesh && !output_admitted {
             // Other materializers still transfer their returned capacities
-            // here. Gaussian result storage was reserved inside its factory.
+            // here. Affine and Gaussian results were reserved in their factories.
             self.host.reserve(
                 mesh.triangles
                     .capacity()
