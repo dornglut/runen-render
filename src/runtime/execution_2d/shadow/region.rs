@@ -2300,34 +2300,34 @@ impl NeutralRegionBuilder {
                             // vertices. Refund that temporary on either outcome;
                             // only the completed square can become a region receipt.
                             let expanded: Result<_, Render2dExecutionError> = (|| {
-                                    // Twelve translated vertices; at most 12² comparison/
-                                    // movement steps in the small sort; deduplication;
-                                    // at most 48 orientation steps across both monotone
-                                    // hull passes; at most thirty emitted vertices. The
-                                    // 8192 bound includes all primitive guards and copies.
-                                    let hull_work = (shifted.triangles.len() / 3)
-                                        .checked_mul(8_192)
-                                        .and_then(|cost| cost.checked_add(256))
-                                        .ok_or_else(|| {
-                                            resource(path, "neutral Gaussian hull work overflow")
-                                        })?;
-                                    self.charge_graph_work(hull_work, path)?;
-                                    let square = shadow::gaussian_square_support(
-                                        &shifted,
-                                        effect.sigma() * 3.0,
-                                        path,
-                                        &mut self.host,
-                                    )?;
-                                    if let Err(error) = shadow::charge_vertices(
-                                        &mut completed_vertices,
-                                        square.triangles.len(),
-                                        path,
-                                    ) {
-                                        self.host
-                                            .release(square.triangles.capacity() * size_of::<[f64; 2]>());
-                                        return Err(error);
-                                    }
-                                    Ok(square)
+                                // Twelve translated vertices; at most 12² comparison/
+                                // movement steps in the small sort; deduplication;
+                                // at most 48 orientation steps across both monotone
+                                // hull passes; at most thirty emitted vertices. The
+                                // 8192 bound includes all primitive guards and copies.
+                                let hull_work = (shifted.triangles.len() / 3)
+                                    .checked_mul(8_192)
+                                    .and_then(|cost| cost.checked_add(256))
+                                    .ok_or_else(|| {
+                                        resource(path, "neutral Gaussian hull work overflow")
+                                    })?;
+                                self.charge_graph_work(hull_work, path)?;
+                                let square = shadow::gaussian_square_support(
+                                    &shifted,
+                                    effect.sigma() * 3.0,
+                                    path,
+                                    &mut self.host,
+                                )?;
+                                if let Err(error) = shadow::charge_vertices(
+                                    &mut completed_vertices,
+                                    square.triangles.len(),
+                                    path,
+                                ) {
+                                    self.host
+                                        .release(square.triangles.capacity() * size_of::<[f64; 2]>());
+                                    return Err(error);
+                                }
+                                Ok(square)
                             })();
                             self.host.release(shifted_bytes);
                             let square = expanded?;
