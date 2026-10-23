@@ -300,38 +300,51 @@ fn neutral_item(
             let mut result = empty_mesh();
             let mut has_original_outline = false;
             let lookup_work = fields.outline_lookup_work();
-            for glyph in resource.glyphs() {
-                work.charge(lookup_work, path)?;
-                let Some(field) = fields
-                    .admitted_outline(glyph.id())
-                    .map_err(|()| precision(path, "missing validated glyph outline record"))?
-                else {
-                    // An admitted empty glyph outline has no neutral area.
-                    continue;
-                };
-                has_original_outline = true;
-                let origin = [
-                    primitive.origin().x() + glyph.x(),
-                    primitive.origin().y() + glyph.y(),
-                ];
-                let instance = vector::NeutralGlyphInstance {
-                    field,
-                    resource_id: primitive.resource_id(),
-                    origin,
-                    font_size: resource.font_size(),
-                    to_parent: item.local_to_parent(),
-                };
-                if let Some(mesh) = vector::neutral_shaped_glyph(
-                    instance,
-                    path,
-                    scales.geometry_sample_scale,
-                    max_buffer_bytes,
-                    work,
-                )? {
-                    let appended = work.append_admitted(&mut result, &mesh, path);
-                    work.release_bytes(mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
-                    appended?;
+            // The accumulated neutral caster is a host-leased output. A later
+            // glyph may fail lookup, reconstruction or vector admission after
+            // earlier glyphs were copied into it. Release that unpublished
+            // accumulation on every error; paid numerical work persists.
+            let assembled = (|| -> Result<(), Render2dExecutionError> {
+                for glyph in resource.glyphs() {
+                    work.charge(lookup_work, path)?;
+                    let Some(field) = fields
+                        .admitted_outline(glyph.id())
+                        .map_err(|()| precision(path, "missing validated glyph outline record"))?
+                    else {
+                        // An admitted empty glyph outline has no neutral area.
+                        continue;
+                    };
+                    has_original_outline = true;
+                    let origin = [
+                        primitive.origin().x() + glyph.x(),
+                        primitive.origin().y() + glyph.y(),
+                    ];
+                    let instance = vector::NeutralGlyphInstance {
+                        field,
+                        resource_id: primitive.resource_id(),
+                        origin,
+                        font_size: resource.font_size(),
+                        to_parent: item.local_to_parent(),
+                    };
+                    if let Some(mesh) = vector::neutral_shaped_glyph(
+                        instance,
+                        path,
+                        scales.geometry_sample_scale,
+                        max_buffer_bytes,
+                        work,
+                    )? {
+                        let appended = work.append_admitted(&mut result, &mesh, path);
+                        work.release_bytes(
+                            mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>(),
+                        );
+                        appended?;
+                    }
                 }
+                Ok(())
+            })();
+            if let Err(error) = assembled {
+                work.release_bytes(result.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
+                return Err(error);
             }
             if !has_original_outline {
                 // The immutable admitted glyph facts prove absence. An empty
@@ -3634,6 +3647,86 @@ mod tests {
         assert_eq!(
             used, MAX_NEUTRAL_CLIP_WORK,
             "failed admission never consumes further work budget"
+        );
+    }
+
+    #[test]
+    fn later_shaped_glyph_precision_failure_refunds_accumulated_host_mesh() {
+        use crate::composition_2d::{
+            Render2dFontBinding, Render2dGlyph, Render2dPoint, Render2dResourceBinding,
+            Render2dResourceId, Render2dShapedTextPrimitive, Render2dShapedTextResource,
+        };
+        const FONT: &[u8] = include_bytes!("../../../tests/fixtures/f2_outline.ttf");
+        let id = Render2dResourceId::new(94).unwrap();
+        let resource = Render2dShapedTextResource::new(
+            Render2dFontBinding::new(FONT.to_vec(), 0, Vec::new(), false, None).unwrap(),
+            24.0,
+            vec![
+                Render2dGlyph::new(2, 0.0, 0.0, 24.0).unwrap(),
+                // A valid immutable glyph occurrence whose transformed mesh
+                // cannot fit the physical f32-constrained geometry tolerance.
+                Render2dGlyph::new(2, 1.0e15, 0.0, 24.0).unwrap(),
+            ],
+        )
+        .unwrap();
+        let tier = QualityTier::select(24.0, 1.0).unwrap();
+        let fields = super::super::field::realize(
+            id,
+            &resource,
+            tier,
+            4096,
+            &mut super::super::field::FieldBudget::default(),
+        )
+        .unwrap();
+        let mut cache = BTreeMap::new();
+        cache.insert(FieldSetKey::new(id, tier), Arc::new(fields));
+        let bindings = Render2dResourceBindings::new(vec![Render2dResourceBinding::new(
+            id,
+            Render2dResourceValue::ShapedText(resource),
+        )])
+        .unwrap();
+        let item = Render2dItem::new(
+            Render2dPrimitive::ShapedText(Render2dShapedTextPrimitive::new(
+                id,
+                Render2dPoint::new(0.0, 0.0).unwrap(),
+                Render2dColorRgba8::TRANSPARENT,
+            )),
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let mut graph_work = 0;
+        let mut clip_work = 0;
+        let mut host = super::super::support::PreparationHostBudget::new();
+        let outcome = neutral_item(
+            &item,
+            &[4, 2],
+            &bindings,
+            &cache,
+            NeutralPreparationScale {
+                field_raster_scale: 1.0,
+                geometry_sample_scale: 4.0,
+            },
+            1_048_576,
+            &mut NeutralPreparationWork::new(&mut graph_work, &mut clip_work, &mut host),
+        );
+        assert!(matches!(
+            outcome,
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::PrecisionLimit,
+                path: Some(path),
+                ..
+            }) if path == [4, 2]
+        ));
+        assert!(host.peak() > 0, "earlier glyph storage must be leased");
+        assert_eq!(
+            host.live(),
+            0,
+            "failed caster assembly must release its output"
+        );
+        assert!(
+            graph_work > 0,
+            "failed preparation cannot refund executed work"
         );
     }
 
