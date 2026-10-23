@@ -494,8 +494,7 @@ fn validate_vulkan_execution_commands(workflow: &str) -> Result<(), String> {
     let step_lines = job_lines[step_index + 1..]
         .iter()
         .take_while(|line| {
-            line.trim().is_empty()
-                || line.len() - line.trim_start_matches(' ').len() > 6
+            line.trim().is_empty() || line.len() - line.trim_start_matches(' ').len() > 6
         })
         .copied()
         .collect::<Vec<_>>();
@@ -506,8 +505,7 @@ fn validate_vulkan_execution_commands(workflow: &str) -> Result<(), String> {
     let commands = step_lines[script_index + 1..]
         .iter()
         .take_while(|line| {
-            line.trim().is_empty()
-                || line.len() - line.trim_start_matches(' ').len() > 8
+            line.trim().is_empty() || line.len() - line.trim_start_matches(' ').len() > 8
         })
         .map(|line| line.trim())
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
@@ -521,17 +519,26 @@ fn validate_vulkan_execution_commands(workflow: &str) -> Result<(), String> {
             "cold library proof",
             &["test", "--lib", "--skip", "camera_history_proof"],
         ),
-        ("isolated camera history", &["test", "--lib", "camera_history_proof"]),
+        (
+            "isolated camera history",
+            &["test", "--lib", "camera_history_proof"],
+        ),
         (
             "GPU-only sample-space proof",
             &["test", "--lib", "sample_space_gpu_proof", "--ignored"],
         ),
-        ("ordinary API consumer", &["test", "--test", "ordinary_public_api"]),
+        (
+            "ordinary API consumer",
+            &["test", "--test", "ordinary_public_api"],
+        ),
         (
             "2D execution consumer",
             &["test", "--test", "execution_2d_public_api"],
         ),
-        ("retained scene inspector", &["test", "--example", "headless_scene"]),
+        (
+            "retained scene inspector",
+            &["test", "--example", "headless_scene"],
+        ),
         (
             "ordinary executable",
             &["run", "--example", "ordinary_render", "--locked"],
@@ -846,31 +853,39 @@ mod vulkan_workflow_tests {
     #[test]
     fn commented_out_example_cannot_pass_a_text_marker_guard() {
         let changed = CURRENT.replacen(ORDINARY_RUN, &format!("# {ORDINARY_RUN}"), 1);
-        assert_ne!(changed, CURRENT, "fixture must modify an existing active command");
-        assert!(changed.contains(ORDINARY_RUN), "old text marker remains satisfied");
+        assert_ne!(
+            changed, CURRENT,
+            "fixture must modify an existing active command"
+        );
+        assert!(
+            changed.contains(ORDINARY_RUN),
+            "old text marker remains satisfied"
+        );
         assert!(validate_vulkan_execution_commands(&changed).is_err());
     }
 
     #[test]
     fn echoed_command_does_not_count_as_execution() {
         let changed = CURRENT.replacen(ORDINARY_RUN, &format!("echo '{ORDINARY_RUN}'"), 1);
-        assert_ne!(changed, CURRENT, "fixture must replace the original command");
+        assert_ne!(
+            changed, CURRENT,
+            "fixture must replace the original command"
+        );
         assert!(validate_vulkan_execution_commands(&changed).is_err());
     }
 
     #[test]
     fn command_in_a_different_step_does_not_count() {
-        let changed = CURRENT.replacen(
-            ORDINARY_RUN,
-            &format!("# {ORDINARY_RUN}"),
-            1,
-        );
+        let changed = CURRENT.replacen(ORDINARY_RUN, &format!("# {ORDINARY_RUN}"), 1);
         let changed = changed.replacen(
             "        run: vulkaninfo --summary",
             &format!("        run: {ORDINARY_RUN}"),
             1,
         );
-        assert_ne!(changed, CURRENT, "fixture must change executable step ownership");
+        assert_ne!(
+            changed, CURRENT,
+            "fixture must change executable step ownership"
+        );
         assert!(validate_vulkan_execution_commands(&changed).is_err());
     }
 
@@ -883,7 +898,10 @@ mod vulkan_workflow_tests {
             ),
             1,
         );
-        assert_ne!(changed, CURRENT, "fixture must insert an additional conformance command");
+        assert_ne!(
+            changed, CURRENT,
+            "fixture must insert an additional conformance command"
+        );
         validate_vulkan_execution_commands(&changed).expect("extra conformance is permitted");
     }
 }
