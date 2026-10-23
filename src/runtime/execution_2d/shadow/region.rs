@@ -5175,7 +5175,7 @@ mod tests {
             left.primitive().clone(),
             Render2dAffineTransform::translation(10.0, 0.0).unwrap(),
             Vec::new(),
-            Render2dOpacity::TRANSPARENT,
+            crate::composition_2d::Render2dOpacity::TRANSPARENT,
         );
         let build = || {
             let mut graph = builder();
