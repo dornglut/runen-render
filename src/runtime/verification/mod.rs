@@ -8,7 +8,7 @@
 //! submission proves renderer-private readbacks are correlated to one exact accepted RunenGPU
 //! submission; observation normalization then removes physical padding; the private semantic
 //! verifier finally consumes that exact submission and fails closed on unsupported/ambiguous
-//! arithmetic or branch evidence. FORM-001 result formation remains a later owner-controlled step.
+//! arithmetic or branch evidence. `RenderResult` formation remains a separate owner-controlled step.
 
 mod numeric;
 mod observation;
@@ -179,7 +179,7 @@ impl From<RenderDeterministicExecutionError> for RenderDeterministicVerifiedSubm
     }
 }
 
-/// Dynamic RR566-EVAL-001 failure after one exact verified submission has been authored.
+/// Dynamic semantic-verification failure after one exact verified submission has been authored.
 ///
 /// Static-domain rejection remains the eligibility error above. `Inconclusive` is reserved for a
 /// semantic branch the conservative interval proof cannot uniquely establish. Physical mismatch and
@@ -340,7 +340,7 @@ fn format_verification_location(
     }
 }
 
-/// Prove only the static RR566-EVAL-001 subset that is knowable before one verified submission.
+/// Check only the static verifier-eligible subset knowable before one verified submission.
 ///
 /// Instant shutters and ideal-ray sampling are already invariants of `AdmittedDeterministicRender`.
 /// This gate therefore adds only verifier-specific restrictions; failure here must never make the
@@ -394,7 +394,7 @@ fn validate_selected_observations(
 /// correlation resolves back into that exact returned `GpuSubmission`.
 ///
 /// This function intentionally stops before readback readiness or semantic comparison. A successful
-/// return proves only the static EVAL-001 domain gate plus same-submission correlation for canonical
+/// return proves only static verifier eligibility plus same-submission correlation for canonical
 /// payload, semantic-definedness, and evaluator-status observations.
 pub(crate) async fn submit_deterministic_render_for_verified_formation(
     maintained: AdmittedDeterministicRender,
@@ -458,7 +458,7 @@ pub(crate) async fn submit_deterministic_render_for_verified_formation(
 /// deterministic finite-evaluation witness.
 ///
 /// Success does not yet form `RenderResult`; it returns an execution-scoped owner-controlled witness
-/// that later FORM-001 wiring can consume without accepting detached output-index assertions.
+/// that later result-formation code can consume without accepting detached output-index assertions.
 pub(crate) fn verify_completed_deterministic_render(
     verification: DeterministicVerificationSubmission,
 ) -> Result<RenderResultFormationEvidence, RenderDeterministicVerificationError> {

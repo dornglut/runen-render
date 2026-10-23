@@ -1,7 +1,7 @@
-//! R5 request-scoped semantic binding admission for typed surface and field representations.
+//! Request-scoped semantic binding admission for typed surface and field representations.
 //!
 //! This module remains narrower than a dynamic-input registry or second planning graph. It
-//! normalizes one invocation's concrete typed bindings and specializes already-planned R4
+//! normalizes one invocation's concrete typed bindings and specializes already-planned
 //! representation alternatives without inspecting availability, GPU state, or physical outputs.
 
 use super::field_input::RenderFieldSemanticInputBinding;

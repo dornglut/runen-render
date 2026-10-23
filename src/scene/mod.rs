@@ -36,10 +36,10 @@ impl RenderSceneRevision {
     }
 }
 
-/// The concrete R2-owned semantic state of one renderer object.
+/// The spatial and temporal semantic state of one renderer object.
 ///
-/// Presence-only R1 objects remain valid and therefore have no `RenderObjectState`. This record
-/// begins same-identity replacement only for the spatial and temporal semantics R2 actually owns.
+/// Objects may exist without spatial or temporal state. This record permits same-identity
+/// replacement of those facets without recreating the renderer object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderObjectState {
     spatial: RenderObjectSpatialState,
@@ -279,7 +279,7 @@ impl RenderSceneChangeSet {
         }
     }
 
-    /// Objects whose existing R2 spatial state changed through same-identity replacement.
+    /// Objects whose existing spatial state changed through same-identity replacement.
     /// Stateful insertions are reported by `inserted()` rather than duplicated here.
     pub fn spatial_changed(&self) -> Option<&[RenderObjectId]> {
         match &self.kind {
@@ -290,7 +290,7 @@ impl RenderSceneChangeSet {
         }
     }
 
-    /// Objects whose existing R2 temporal state changed through same-identity replacement.
+    /// Objects whose existing temporal state changed through same-identity replacement.
     /// Stateful insertions are reported by `inserted()` rather than duplicated here.
     pub fn temporal_changed(&self) -> Option<&[RenderObjectId]> {
         match &self.kind {
