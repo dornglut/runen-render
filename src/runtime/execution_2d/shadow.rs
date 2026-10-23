@@ -2192,9 +2192,15 @@ pub(super) fn intersect_clips(
                 Vec::new(),
                 Render2dOpacity::TRANSPARENT,
             );
-            let Some(clip_mesh) =
-                vector::neutral_support(&item, root_index, resolution, max_buffer_bytes)
-                    .map_err(|error| neutral_source_error(error, path))?
+            let Some(clip_mesh) = vector::neutral_support_admitted(
+                &item,
+                root_index,
+                resolution,
+                max_buffer_bytes,
+                &mut *work.host,
+                path,
+            )
+            .map_err(|error| neutral_source_error(error, path))?
             else {
                 let discarded = std::mem::replace(&mut current, empty_mesh());
                 work.host
@@ -2236,6 +2242,12 @@ pub(super) fn intersect_clips(
                 }
                 Ok(())
             })();
+            // The original tessellated clip source stayed live alongside
+            // clip_local and next. Release its separate factory-owned lease
+            // only once no further clip triangles borrow it.
+            let source_bytes = clip_mesh.triangles.capacity() * vertex_bytes;
+            drop(clip_mesh);
+            work.host.release(source_bytes);
             work.host
                 .release(clip_local.triangles.capacity() * vertex_bytes);
             if let Err(error) = step {
