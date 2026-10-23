@@ -5169,6 +5169,89 @@ mod tests {
     }
 
     #[test]
+    fn separated_erosion_receipt_covers_consumer_peak_and_refunds_on_rejection() {
+        let left = provenance_rectangle_item();
+        let right = Render2dItem::new(
+            left.primitive().clone(),
+            Render2dAffineTransform::translation(10.0, 0.0).unwrap(),
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let build = || {
+            let mut graph = builder();
+            graph
+                .host
+                .reserve_vector(&mut graph.materialized, 16, &[4, 3])
+                .unwrap();
+            let first = graph
+                .source_from_item(provenance_rectangle_mesh(1), &left, &[4, 0])
+                .unwrap();
+            let mut second_mesh = provenance_rectangle_mesh(1);
+            for point in &mut second_mesh.triangles {
+                point[0] += 10.0;
+            }
+            second_mesh.bounds[0] += 10.0;
+            second_mesh.bounds[2] += 10.0;
+            let second = graph
+                .source_from_item(second_mesh, &right, &[4, 1])
+                .unwrap();
+            let union = graph.union(vec![first, second], &[4, 2]).unwrap();
+            assert!(graph.proven_original_straight_polygon_union(&union).unwrap());
+            graph.materialize(&union).unwrap();
+            let effect = graph
+                .effect(
+                    union,
+                    Render2dDropShadow::new(
+                        0.0,
+                        0.0,
+                        0.0,
+                        -0.25,
+                        Render2dColorRgba8::TRANSPARENT,
+                    )
+                    .unwrap(),
+                    &[4, 3],
+                )
+                .unwrap();
+            (graph, effect)
+        };
+
+        let (mut accepted, effect) = build();
+        let before = accepted.host.live();
+        let output = accepted.materialize(&effect).unwrap();
+        let header = size_of::<support::NeutralMesh>() + 2 * size_of::<usize>();
+        let output_bytes = output.triangles.capacity() * size_of::<[f64; 2]>();
+        assert_eq!(output.triangles.len(), 12);
+        assert_eq!(accepted.host.live() - before, header + output_bytes);
+        assert!(
+            accepted.host.peak() >= accepted.host.live() + output_bytes,
+            "the temporary erosion mesh must overlap the translated result"
+        );
+
+        let (mut rejected, effect) = build();
+        let required = header + 2 * 12 * size_of::<[f64; 2]>();
+        rejected
+            .host
+            .reserve(
+                support::MAX_SHADOW_HOST_BYTES - rejected.host.live() - required + 1,
+                &[4, 3],
+            )
+            .unwrap();
+        let before = rejected.host.live();
+        let vertices = rejected.retained_vertices;
+        assert!(matches!(
+            rejected.materialize(&effect),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path), ..
+            }) if path == [4, 3]
+        ));
+        assert_eq!(rejected.host.live(), before);
+        assert_eq!(rejected.retained_vertices, vertices);
+        assert!(rejected.materialized[effect.id].is_none());
+        assert!(rejected.erosion_work > 0, "executed erosion work persists");
+    }
+
+    #[test]
     fn failed_erosion_candidate_and_convex_fallback_keep_the_same_graph_debits() {
         let item = provenance_rectangle_item();
         // Duplicate exact rectangle triangles qualify as original support,
