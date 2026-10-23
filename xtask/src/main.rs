@@ -524,108 +524,141 @@ fn production_rust_source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
                 relative_path.display()
             )
         })?;
-        let lines = contents.lines().collect::<Vec<_>>();
-
-        for (line_index, line) in lines.iter().enumerate() {
-            let Some(module_name) = external_module_name(line) else {
-                continue;
-            };
-
-            let attributes = preceding_attributes(&lines, line_index);
-            if attributes
-                .iter()
-                .any(|attribute| attribute.replace(' ', "") == "#[cfg(test)]")
-            {
-                continue;
-            }
-
-            let explicit_path = attributes
-                .iter()
-                .find_map(|attribute| path_attribute_value(attribute));
-            let child = if let Some(explicit_path) = explicit_path {
-                relative_path
-                    .parent()
-                    .unwrap_or_else(|| Path::new(""))
-                    .join(explicit_path)
-            } else {
-                resolve_module_path(root, &relative_path, module_name)?
-            };
-            pending.push(child);
-        }
+        let parsed = syn::parse_file(&contents).map_err(|error| {
+            format!(
+                "failed to parse production Rust source {}: {error}",
+                relative_path.display()
+            )
+        })?;
+        let module_directory = rust_module_directory(&relative_path)?;
+        collect_production_modules(
+            root,
+            &relative_path,
+            &module_directory,
+            &parsed.items,
+            &mut pending,
+        )?;
     }
 
     Ok(visited.into_iter().collect())
 }
 
-fn external_module_name(line: &str) -> Option<&str> {
-    let line = line.trim();
-    if !line.ends_with(';') || !line.contains("mod ") {
-        return None;
+fn rust_module_directory(relative_path: &Path) -> Result<PathBuf, String> {
+    let name = relative_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("non-UTF-8 Rust module path: {}", relative_path.display()))?;
+    let parent = relative_path.parent().unwrap_or_else(|| Path::new(""));
+    if matches!(name, "lib.rs" | "main.rs" | "mod.rs") {
+        Ok(parent.to_path_buf())
+    } else {
+        let stem = relative_path
+            .file_stem()
+            .expect("Rust source filename must have a stem");
+        Ok(parent.join(stem))
     }
-
-    let tokens = line
-        .trim_end_matches(';')
-        .split_whitespace()
-        .collect::<Vec<_>>();
-    let module_index = tokens.iter().position(|token| *token == "mod")?;
-    let name = *tokens.get(module_index + 1)?;
-    name.chars()
-        .all(|character| character == '_' || character.is_ascii_alphanumeric())
-        .then_some(name)
 }
 
-fn preceding_attributes<'a>(lines: &'a [&'a str], line_index: usize) -> Vec<&'a str> {
-    let mut attributes = Vec::new();
-    let mut index = line_index;
-    while index > 0 {
-        let previous = lines[index - 1].trim();
-        if previous.starts_with("#[") && previous.ends_with(']') {
-            attributes.push(previous);
-            index -= 1;
-        } else {
-            break;
+fn is_test_only_module(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && matches!(
+                attr.parse_args::<syn::Meta>(),
+                Ok(syn::Meta::Path(path)) if path.is_ident("test")
+            )
+    })
+}
+
+fn module_path_attribute(attrs: &[syn::Attribute]) -> Result<Option<PathBuf>, String> {
+    let mut result = None;
+    for attr in attrs {
+        if attr.path().is_ident("cfg_attr") {
+            return Err("conditional module path attributes require explicit review".to_owned());
+        }
+        if !attr.path().is_ident("path") {
+            continue;
+        }
+        let syn::Meta::NameValue(value) = &attr.meta else {
+            return Err("unsupported Rust module path attribute".to_owned());
+        };
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(path),
+            ..
+        }) = &value.value
+        else {
+            return Err("Rust module path attribute must be a string literal".to_owned());
+        };
+        if result.replace(PathBuf::from(path.value())).is_some() {
+            return Err("multiple Rust module path attributes".to_owned());
         }
     }
-    attributes
+    Ok(result)
 }
 
-fn path_attribute_value(attribute: &str) -> Option<&str> {
-    let attribute = attribute.trim();
-    let body = attribute
-        .strip_prefix("#[path")?
-        .strip_suffix(']')?
-        .trim()
-        .strip_prefix('=')?
-        .trim();
-    body.strip_prefix('"')?.strip_suffix('"')
+fn collect_production_modules(
+    root: &Path,
+    declaring_file: &Path,
+    module_directory: &Path,
+    items: &[syn::Item],
+    pending: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    for item in items {
+        let module = match item {
+            syn::Item::Mod(module) => module,
+            syn::Item::Macro(invocation)
+                if invocation.mac.path.is_ident("include")
+                    && !is_test_only_module(&invocation.attrs) =>
+            {
+                return Err(format!(
+                    "production module {} uses include!; source coverage is not proven",
+                    declaring_file.display()
+                ));
+            }
+            _ => continue,
+        };
+
+        if is_test_only_module(&module.attrs) {
+            continue;
+        }
+
+        let explicit_path = module_path_attribute(&module.attrs)?;
+        if let Some((_, inline_items)) = &module.content {
+            if explicit_path.is_some() {
+                return Err(format!(
+                    "inline module {} in {} has unsupported path override",
+                    module.ident,
+                    declaring_file.display()
+                ));
+            }
+            let nested = module_directory.join(module.ident.to_string());
+            collect_production_modules(root, declaring_file, &nested, inline_items, pending)?;
+            continue;
+        }
+
+        let child = if let Some(path) = explicit_path {
+            let parent = declaring_file.parent().unwrap_or_else(|| Path::new(""));
+            parent.join(path)
+        } else {
+            resolve_module_path(root, module_directory, &module.ident.to_string())?
+        };
+        if !root.join(&child).is_file() {
+            return Err(format!(
+                "production module {} declared by {} has no source file: {}",
+                module.ident,
+                declaring_file.display(),
+                child.display()
+            ));
+        }
+        pending.push(child);
+    }
+    Ok(())
 }
 
 fn resolve_module_path(
     root: &Path,
-    parent_relative_path: &Path,
+    module_directory: &Path,
     module_name: &str,
 ) -> Result<PathBuf, String> {
-    let parent_file_name = parent_relative_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            format!(
-                "production module path is not valid UTF-8: {}",
-                parent_relative_path.display()
-            )
-        })?;
-    let parent_directory = parent_relative_path
-        .parent()
-        .unwrap_or_else(|| Path::new(""));
-    let module_directory = if matches!(parent_file_name, "lib.rs" | "main.rs" | "mod.rs") {
-        parent_directory.to_path_buf()
-    } else {
-        let stem = parent_relative_path
-            .file_stem()
-            .expect("Rust source file must have a stem");
-        parent_directory.join(stem)
-    };
-
     let flat = module_directory.join(format!("{module_name}.rs"));
     let nested = module_directory.join(module_name).join("mod.rs");
     match (root.join(&flat).is_file(), root.join(&nested).is_file()) {
@@ -637,8 +670,8 @@ fn resolve_module_path(
             nested.display()
         )),
         (false, false) => Err(format!(
-            "production module {module_name} declared by {} has no source file",
-            parent_relative_path.display()
+            "production module {module_name} has no source file under {}",
+            module_directory.display()
         )),
     }
 }
@@ -714,6 +747,96 @@ fn output(root: &Path, program: &str, args: &[&str]) -> Result<String, String> {
 
     String::from_utf8(result.stdout)
         .map_err(|error| format!("{program} produced invalid UTF-8: {error}"))
+}
+
+#[cfg(test)]
+mod module_discovery_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct Fixture {
+        root: PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let root = env::temp_dir().join(format!(
+                "runen-render-module-discovery-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(root.join("src")).expect("create test source directory");
+            Self { root }
+        }
+
+        fn write(&self, relative_path: &str, contents: &str) {
+            let path = self.root.join(relative_path);
+            fs::create_dir_all(path.parent().expect("test path has a parent"))
+                .expect("create fixture module directory");
+            fs::write(path, contents).expect("write fixture Rust module");
+        }
+
+        fn production_files(&self) -> Result<Vec<PathBuf>, String> {
+            production_rust_source_files(&self.root)
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn multiline_module_cannot_bypass_production_marker_scan() {
+        let fixture = Fixture::new();
+        fixture.write("src/lib.rs", "mod\n    hidden\n;\n#[cfg(test)]\nmod tests;\n");
+        fixture.write("src/hidden.rs", "pub fn used() { let _ = std::env::var(\"X\"); }\n");
+        // The test-only file deliberately does not exist: a production walk must exclude it.
+        let found = fixture.production_files().expect("parse compiler-valid module syntax");
+        assert!(found.contains(&PathBuf::from("src/hidden.rs")));
+        assert!(!found.contains(&PathBuf::from("src/tests.rs")));
+        let hidden = fs::read_to_string(fixture.root.join("src/hidden.rs")).unwrap();
+        assert!(FORBIDDEN_PRODUCTION_RUST_MARKERS.iter().any(|marker| hidden.contains(marker)));
+    }
+
+    #[test]
+    fn nested_inline_and_explicit_path_modules_are_traversed() {
+        let fixture = Fixture::new();
+        fixture.write(
+            "src/lib.rs",
+            "mod outer {\n    mod nested;\n}\n#[path = \"custom.rs\"]\nmod redirected;\n",
+        );
+        fixture.write("src/outer/nested.rs", "pub fn nested() {}\n");
+        fixture.write("src/custom.rs", "pub fn redirected() {}\n");
+        let found = fixture.production_files().expect("follow nested Rust modules");
+        assert_eq!(found.len(), 3);
+        assert!(found.contains(&PathBuf::from("src/outer/nested.rs")));
+        assert!(found.contains(&PathBuf::from("src/custom.rs")));
+    }
+
+    #[test]
+    fn comment_text_cannot_invent_production_modules() {
+        let fixture = Fixture::new();
+        fixture.write("src/lib.rs", "// mod nonexistent;\n/* mod absent; */\n");
+        let found = fixture.production_files().expect("comments are not AST items");
+        assert_eq!(found, vec![PathBuf::from("src/lib.rs")]);
+    }
+
+    #[test]
+    fn unsupported_include_module_generation_fails_closed() {
+        let fixture = Fixture::new();
+        fixture.write("src/lib.rs", "include!(\"generated_modules.rs\");\n");
+        assert!(fixture.production_files().is_err());
+    }
+
+    #[test]
+    fn invalid_rust_source_does_not_silently_skip_modules() {
+        let fixture = Fixture::new();
+        fixture.write("src/lib.rs", "mod (\n");
+        assert!(fixture.production_files().is_err());
+    }
 }
 
 #[cfg(test)]
