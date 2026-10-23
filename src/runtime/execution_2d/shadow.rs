@@ -2188,7 +2188,7 @@ mod tests {
         let source = graph
             .source_from_item(empty_mesh(), &item, &[3, 2])
             .unwrap();
-        let fill = super::super::super::support::MAX_SHADOW_HOST_BYTES - graph.host.live();
+        let fill = super::super::support::MAX_SHADOW_HOST_BYTES - graph.host.live();
         graph.host.reserve(fill, &[]).unwrap();
         let before = graph.host.live();
         assert!(
@@ -2213,7 +2213,7 @@ mod tests {
         let fields = BTreeMap::new();
         let result = build_group_sources(
             &composition,
-            super::super::super::support::MAX_SHADOW_HOST_BYTES,
+            super::super::support::MAX_SHADOW_HOST_BYTES,
             &bindings,
             &fields,
             SourcePreparation::new(
@@ -3338,7 +3338,7 @@ mod tests {
             },
         )
         .unwrap();
-        let coverage = super::super::super::support::prepare_untranslated_shadow_coverage(
+        let coverage = super::super::support::prepare_untranslated_shadow_coverage(
             &clipped,
             0.0,
             0.0,
