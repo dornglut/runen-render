@@ -791,14 +791,26 @@ mod module_discovery_tests {
     #[test]
     fn multiline_module_cannot_bypass_production_marker_scan() {
         let fixture = Fixture::new();
-        fixture.write("src/lib.rs", "mod\n    hidden\n;\n#[cfg(test)]\nmod tests;\n");
-        fixture.write("src/hidden.rs", "pub fn used() { let _ = std::env::var(\"X\"); }\n");
+        fixture.write(
+            "src/lib.rs",
+            "mod\n    hidden\n;\n#[cfg(test)]\nmod tests;\n",
+        );
+        fixture.write(
+            "src/hidden.rs",
+            "pub fn used() { let _ = std::env::var(\"X\"); }\n",
+        );
         // The test-only file deliberately does not exist: a production walk must exclude it.
-        let found = fixture.production_files().expect("parse compiler-valid module syntax");
+        let found = fixture
+            .production_files()
+            .expect("parse compiler-valid module syntax");
         assert!(found.contains(&PathBuf::from("src/hidden.rs")));
         assert!(!found.contains(&PathBuf::from("src/tests.rs")));
         let hidden = fs::read_to_string(fixture.root.join("src/hidden.rs")).unwrap();
-        assert!(FORBIDDEN_PRODUCTION_RUST_MARKERS.iter().any(|marker| hidden.contains(marker)));
+        assert!(
+            FORBIDDEN_PRODUCTION_RUST_MARKERS
+                .iter()
+                .any(|marker| hidden.contains(marker))
+        );
     }
 
     #[test]
@@ -810,7 +822,9 @@ mod module_discovery_tests {
         );
         fixture.write("src/outer/nested.rs", "pub fn nested() {}\n");
         fixture.write("src/custom.rs", "pub fn redirected() {}\n");
-        let found = fixture.production_files().expect("follow nested Rust modules");
+        let found = fixture
+            .production_files()
+            .expect("follow nested Rust modules");
         assert_eq!(found.len(), 3);
         assert!(found.contains(&PathBuf::from("src/outer/nested.rs")));
         assert!(found.contains(&PathBuf::from("src/custom.rs")));
@@ -820,7 +834,9 @@ mod module_discovery_tests {
     fn comment_text_cannot_invent_production_modules() {
         let fixture = Fixture::new();
         fixture.write("src/lib.rs", "// mod nonexistent;\n/* mod absent; */\n");
-        let found = fixture.production_files().expect("comments are not AST items");
+        let found = fixture
+            .production_files()
+            .expect("comments are not AST items");
         assert_eq!(found, vec![PathBuf::from("src/lib.rs")]);
     }
 
