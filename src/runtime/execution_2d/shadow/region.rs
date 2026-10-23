@@ -4533,7 +4533,10 @@ mod tests {
         let source = reference.register_source(&item, &path).unwrap().unwrap();
         reference.host.reserve(SEED, &path).unwrap();
         reference.prepare_registered_source(&source, prepare).unwrap();
-        let mesh = reference.materialize(&source).unwrap();
+        let Kind::Source(geometry) = &source.kind else {
+            panic!("original vector source");
+        };
+        let mesh = geometry.get().unwrap();
         assert_eq!(mesh.triangles.len(), 6);
         assert_eq!(mesh.triangles.capacity() * size_of::<[f64; 2]>(), 96);
         let stage_peak = reference.host.peak() - SEED;
@@ -4546,7 +4549,10 @@ mod tests {
         exact.host.reserve(filler, &path).unwrap();
         exact.prepare_registered_source(&source, prepare).unwrap();
         assert_eq!(exact.host.peak(), support::MAX_SHADOW_HOST_BYTES);
-        assert_eq!(exact.materialize(&source).unwrap().triangles.len(), 6);
+        let Kind::Source(geometry) = &source.kind else {
+            panic!("original vector source");
+        };
+        assert_eq!(geometry.get().unwrap().triangles.len(), 6);
 
         let mut short = builder();
         let source = short.register_source(&item, &path).unwrap().unwrap();
