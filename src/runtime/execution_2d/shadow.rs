@@ -2701,9 +2701,9 @@ mod tests {
     #[test]
     fn nonfinite_neutral_orientation_rejects_before_destination_reservation() {
         // Both inputs and all transformed vertices are finite. The first
-        // triangle's determinant nevertheless overflows to infinity; the
-        // second is exactly collinear but produces infinity minus infinity,
-        // i.e. NaN, with ordinary floating-point orientation.
+        // triangle's orientation overflows; the second is exactly collinear,
+        // yet the determinant's intermediate products overflow. Fused
+        // arithmetic can return infinity rather than reliable zero.
         for vertices in [
             [[0.0, 0.0], [1.0e155, 0.0], [0.0, 1.0e155]],
             [[0.0, 0.0], [1.0e155, 1.0e155], [2.0e155, 2.0e155]],
