@@ -2437,8 +2437,22 @@ fn union_exterior_boundary_with_host(
                     return Err(precision("continuous erosion has collapsed boundary edge"));
                 }
                 intervals.clear();
-                push_erosion_buffer_with_host(&mut intervals, 0.0, interval_limit, aggregate_work, path, host.as_deref_mut())?;
-                push_erosion_buffer_with_host(&mut intervals, 1.0, interval_limit, aggregate_work, path, host.as_deref_mut())?;
+                push_erosion_buffer_with_host(
+                    &mut intervals,
+                    0.0,
+                    interval_limit,
+                    aggregate_work,
+                    path,
+                    host.as_deref_mut(),
+                )?;
+                push_erosion_buffer_with_host(
+                    &mut intervals,
+                    1.0,
+                    interval_limit,
+                    aggregate_work,
+                    path,
+                    host.as_deref_mut(),
+                )?;
                 for (j, other) in tris.iter().enumerate() {
                     // Pair control, source orientation and indexed vertex loads.
                     charge_shadow_preparation_work(aggregate_work, 64, path)?;
@@ -2456,8 +2470,8 @@ fn union_exterior_boundary_with_host(
                         let difference = [c[0] - a[0], c[1] - a[1]];
                         if divisor != 0.0 {
                             let t = difference[0].mul_add(v[1], -(difference[1] * v[0])) / divisor;
-                            let u =
-                                difference[0].mul_add(edge[1], -(difference[1] * edge[0])) / divisor;
+                            let u = difference[0].mul_add(edge[1], -(difference[1] * edge[0]))
+                                / divisor;
                             if !t.is_finite() || !u.is_finite() {
                                 return Err(precision(
                                     "continuous erosion edge crossing lost precision",
@@ -2709,7 +2723,14 @@ fn certified_convex_eroded_union_with_host(
             if side == 0.0 {
                 return Ok(None);
             }
-            push_erosion_buffer_with_host(&mut planes, (a, b, side, length), m, aggregate_work, path, host.as_deref_mut())?;
+            push_erosion_buffer_with_host(
+                &mut planes,
+                (a, b, side, length),
+                m,
+                aggregate_work,
+                path,
+                host.as_deref_mut(),
+            )?;
         }
         let polygon_limit = m + 3;
         // Two bounded scratch buffers survive every triangle and plane. Neither
@@ -2737,7 +2758,14 @@ fn certified_convex_eroded_union_with_host(
             }
             polygon.clear();
             for &point in triangle {
-                push_erosion_buffer_with_host(&mut polygon, point, polygon_limit, aggregate_work, path, host.as_deref_mut())?;
+                push_erosion_buffer_with_host(
+                    &mut polygon,
+                    point,
+                    polygon_limit,
+                    aggregate_work,
+                    path,
+                    host.as_deref_mut(),
+                )?;
             }
             for &(a, b, side, length) in &planes {
                 charge_shadow_preparation_work(aggregate_work, 64, path)?;
@@ -2777,10 +2805,24 @@ fn certified_convex_eroded_union_with_host(
                         // A next polygon exceeding n+1 vertices invalidates the
                         // admitted convex clipping inventory. Reject before the
                         // push, even when an old scratch allocation is larger.
-                        push_erosion_buffer_with_host(&mut next, intersection, next_limit, aggregate_work, path, host.as_deref_mut())?;
+                        push_erosion_buffer_with_host(
+                            &mut next,
+                            intersection,
+                            next_limit,
+                            aggregate_work,
+                            path,
+                            host.as_deref_mut(),
+                        )?;
                     }
                     if dq >= 0.0 {
-                        push_erosion_buffer_with_host(&mut next, q, next_limit, aggregate_work, path, host.as_deref_mut())?;
+                        push_erosion_buffer_with_host(
+                            &mut next,
+                            q,
+                            next_limit,
+                            aggregate_work,
+                            path,
+                            host.as_deref_mut(),
+                        )?;
                     }
                 }
                 std::mem::swap(&mut polygon, &mut next);
@@ -2811,7 +2853,14 @@ fn certified_convex_eroded_union_with_host(
                         "convex erosion triangle retention exceeds admission",
                     ));
                 }
-                reserve_erosion_buffer_with_host(&mut output, size, retained_vertices, aggregate_work, path, host.as_deref_mut())?;
+                reserve_erosion_buffer_with_host(
+                    &mut output,
+                    size,
+                    retained_vertices,
+                    aggregate_work,
+                    path,
+                    host.as_deref_mut(),
+                )?;
                 output.extend(tri);
             }
         }
@@ -4518,11 +4567,9 @@ mod tests {
         };
         let mut host = PreparationHostBudget::new();
         let mut work = 0;
-        let output = certified_convex_erosion_mesh(
-            &source, 1.0, &[8, 1], &mut work, &mut host,
-        )
-        .unwrap()
-        .expect("sheared convex support has exact disk erosion");
+        let output = certified_convex_erosion_mesh(&source, 1.0, &[8, 1], &mut work, &mut host)
+            .unwrap()
+            .expect("sheared convex support has exact disk erosion");
         assert!(!output.triangles.is_empty());
         let output_bytes = output.triangles.capacity() * size_of::<[f64; 2]>();
         assert_eq!(host.live(), output_bytes, "all proof scratch must retire");
@@ -4534,7 +4581,9 @@ mod tests {
         assert!(work > 0);
 
         let mut rejected = PreparationHostBudget::new();
-        rejected.reserve(MAX_SHADOW_HOST_BYTES - peak + 1, &[8, 2]).unwrap();
+        rejected
+            .reserve(MAX_SHADOW_HOST_BYTES - peak + 1, &[8, 2])
+            .unwrap();
         let before = rejected.live();
         let mut failed_work = 0;
         assert!(matches!(
@@ -4552,21 +4601,33 @@ mod tests {
         let nonconvex = NeutralMesh {
             units_per_parent_logical_unit: 1.0,
             triangles: vec![
-                [10.0, 10.0], [14.0, 10.0], [10.0, 12.0],
-                [14.0, 10.0], [14.0, 12.0], [10.0, 12.0],
-                [10.0, 12.0], [12.0, 12.0], [10.0, 14.0],
-                [12.0, 12.0], [12.0, 14.0], [10.0, 14.0],
+                [10.0, 10.0],
+                [14.0, 10.0],
+                [10.0, 12.0],
+                [14.0, 10.0],
+                [14.0, 12.0],
+                [10.0, 12.0],
+                [10.0, 12.0],
+                [12.0, 12.0],
+                [10.0, 14.0],
+                [12.0, 12.0],
+                [12.0, 14.0],
+                [10.0, 14.0],
             ],
             bounds: [10.0, 10.0, 14.0, 14.0],
         };
         let mut unsupported = PreparationHostBudget::new();
         let mut work = 0;
-        assert!(certified_convex_erosion_mesh(
-            &nonconvex, 0.25, &[8, 3], &mut work, &mut unsupported,
-        )
-        .unwrap()
-        .is_none());
-        assert_eq!(unsupported.live(), 0, "false convex certificate refunds scratch");
+        assert!(
+            certified_convex_erosion_mesh(&nonconvex, 0.25, &[8, 3], &mut work, &mut unsupported,)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            unsupported.live(),
+            0,
+            "false convex certificate refunds scratch"
+        );
     }
 
     #[test]
