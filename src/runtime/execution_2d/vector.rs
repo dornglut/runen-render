@@ -166,8 +166,8 @@ pub(super) fn realize(
             (0, canvas[0], false),
             (1, canvas[1], false),
         ] {
-            count = clip_into(&polygon[..count], &mut scratch, axis, edge, greater)
-                .map_err(fail)?;
+            count =
+                clip_into(&polygon[..count], &mut scratch, axis, edge, greater).map_err(fail)?;
             std::mem::swap(&mut polygon, &mut scratch);
         }
         for index in 1..count.saturating_sub(1) {
@@ -760,12 +760,7 @@ mod tests {
     fn stack_canvas_clipping_preserves_prior_polygon_events() {
         // Independent former Vec clipping sequence, retained only as an
         // oracle. Compare ordered vertices, duplicates and fractional edges.
-        fn reference(
-            points: &[[f64; 2]],
-            axis: usize,
-            edge: f64,
-            greater: bool,
-        ) -> Vec<[f64; 2]> {
+        fn reference(points: &[[f64; 2]], axis: usize, edge: f64, greater: bool) -> Vec<[f64; 2]> {
             let mut out = Vec::with_capacity(7);
             let Some(mut prev) = points.last().copied() else {
                 return out;
