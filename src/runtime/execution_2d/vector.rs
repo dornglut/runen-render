@@ -583,7 +583,8 @@ fn build_path(shape: &Render2dShape, tolerance: f64) -> Result<Path, Render2dVec
                 // that resource-before-precision failure priority without a Vec.
                 let mut total = 0_usize;
                 for (_, radius, _) in arcs {
-                    let steps = arc_count([radius, radius], std::f64::consts::FRAC_PI_2, tolerance)?;
+                    let steps =
+                        arc_count([radius, radius], std::f64::consts::FRAC_PI_2, tolerance)?;
                     total = total
                         .checked_add(steps)
                         .filter(|&count| count <= MAX_ELEMENTS)
@@ -609,11 +610,7 @@ fn build_path(shape: &Render2dShape, tolerance: f64) -> Result<Path, Render2dVec
     Ok(builder.build())
 }
 
-fn arc_count(
-    radii: [f64; 2],
-    sweep: f64,
-    tolerance: f64,
-) -> Result<usize, Render2dVectorError> {
+fn arc_count(radii: [f64; 2], sweep: f64, tolerance: f64) -> Result<usize, Render2dVectorError> {
     let radius = radii[0].max(radii[1]);
     if radius == 0.0 {
         return Ok(1);
