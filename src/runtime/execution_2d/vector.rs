@@ -478,8 +478,11 @@ fn neutral_support_impl(
         bounds,
     }))
     })();
+    // The physical scratch is destroyed before its host lease is retired.
+    let scratch_bytes = geometry.leased_bytes();
+    drop(geometry);
     if let Some((work, _)) = admitted {
-        work.release_bytes(geometry.leased_bytes());
+        work.release_bytes(scratch_bytes);
     }
     prepared
 }
@@ -1151,6 +1154,79 @@ mod tests {
     }
 
     #[test]
+    fn tessellation_callback_buffers_share_host_and_refund_late_failure() {
+        let path = [7, 2];
+        let first_vertices = 8 * std::mem::size_of::<Point>();
+        let first_indices = 8 * std::mem::size_of::<u32>();
+        let scratch = first_vertices + first_indices;
+        let mut host = super::super::support::PreparationHostBudget::new();
+        let prior = super::super::support::MAX_SHADOW_HOST_BYTES - scratch;
+        host.reserve(prior, &path).unwrap();
+        let mut graph_work = 0;
+        let mut clip_work = 0;
+        {
+            let mut work = super::super::shadow::NeutralPreparationWork::new(
+                &mut graph_work,
+                &mut clip_work,
+                &mut host,
+            );
+            let mut sink = TessellationSink::new(Some((&mut work, &path)));
+            for index in 0..8 {
+                sink.vertex(point(index as f32, 0.0)).unwrap();
+            }
+            sink.add_triangle(VertexId(0), VertexId(1), VertexId(2));
+            assert_eq!(sink.geometry.vertices.capacity(), 8);
+            assert_eq!(sink.geometry.indices.capacity(), 8);
+            assert_eq!(sink.geometry.leased_bytes(), scratch);
+            // Growing the ninth vertex would relocate the old eight-vertex
+            // buffer. Admit the new allocation while the old one is live,
+            // reject at the exact host cap, and do not mutate the output.
+            assert!(matches!(
+                sink.vertex(point(8.0, 0.0)),
+                Err(GeometryBuilderError::TooManyVertices)
+            ));
+            assert!(sink.geometry.exceeded);
+            assert_eq!(sink.geometry.vertices.len(), 8);
+            assert_eq!(sink.geometry.indices.len(), 3);
+        }
+        assert_eq!(host.live(), prior);
+        assert_eq!(host.peak(), super::super::support::MAX_SHADOW_HOST_BYTES);
+        assert_eq!(graph_work, 0);
+    }
+
+    #[test]
+    fn tessellation_callback_index_growth_refunds_previous_vertex_output() {
+        let path = [8, 1];
+        let vertex_bytes = 8 * std::mem::size_of::<Point>();
+        let index_bytes = 8 * std::mem::size_of::<u32>();
+        let prior = super::super::support::MAX_SHADOW_HOST_BYTES - vertex_bytes - index_bytes;
+        let mut host = super::super::support::PreparationHostBudget::new();
+        host.reserve(prior, &path).unwrap();
+        let mut graph_work = 0;
+        let mut clip_work = 0;
+        {
+            let mut work = super::super::shadow::NeutralPreparationWork::new(
+                &mut graph_work,
+                &mut clip_work,
+                &mut host,
+            );
+            let mut sink = TessellationSink::new(Some((&mut work, &path)));
+            sink.vertex(point(0.0, 0.0)).unwrap();
+            sink.vertex(point(1.0, 0.0)).unwrap();
+            sink.vertex(point(0.0, 1.0)).unwrap();
+            sink.add_triangle(VertexId(0), VertexId(1), VertexId(2));
+            sink.add_triangle(VertexId(0), VertexId(1), VertexId(2));
+            assert_eq!(sink.geometry.indices.len(), 6);
+            // The third triangle crosses the admitted capacity of eight.
+            sink.add_triangle(VertexId(0), VertexId(1), VertexId(2));
+            assert!(sink.geometry.exceeded);
+            assert_eq!(sink.geometry.indices.len(), 6);
+        }
+        assert_eq!(host.live(), prior);
+        assert_eq!(host.peak(), super::super::support::MAX_SHADOW_HOST_BYTES);
+    }
+
+    #[test]
     fn admitted_clip_source_output_owns_exact_host_receipt() {
         let source = Render2dItem::new(
             Render2dPrimitive::Fill {
@@ -1162,10 +1238,13 @@ mod tests {
             Render2dOpacity::TRANSPARENT,
         );
         let bytes = 6 * std::mem::size_of::<[f64; 2]>();
+        // Four rectangle vertices and six indices fit in one eight-element
+        // callback reservation per buffer, overlapping the final output.
+        let scratch = 8 * std::mem::size_of::<Point>() + 8 * std::mem::size_of::<u32>();
         let mut owner = super::super::support::PreparationHostBudget::new();
         owner
             .reserve(
-                super::super::support::MAX_SHADOW_HOST_BYTES - bytes,
+                super::super::support::MAX_SHADOW_HOST_BYTES - bytes - scratch,
                 &[7, 2],
             )
             .unwrap();
@@ -1182,12 +1261,12 @@ mod tests {
         assert_eq!(mesh.triangles.len(), 6);
         assert_eq!(mesh.triangles.capacity(), 6);
         assert_eq!(mesh.bounds, [-10.0, -2.0, -1.0, 2.0]);
-        assert_eq!(owner.live(), super::super::support::MAX_SHADOW_HOST_BYTES);
+        assert_eq!(owner.live(), super::super::support::MAX_SHADOW_HOST_BYTES - scratch);
         assert_eq!(owner.peak(), super::super::support::MAX_SHADOW_HOST_BYTES);
         owner.release(mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
         assert_eq!(
             owner.live(),
-            super::super::support::MAX_SHADOW_HOST_BYTES - bytes
+            super::super::support::MAX_SHADOW_HOST_BYTES - bytes - scratch
         );
     }
 
@@ -1203,8 +1282,11 @@ mod tests {
             Render2dOpacity::TRANSPARENT,
         );
         let bytes = 6 * std::mem::size_of::<[f64; 2]>();
+        // Four rectangle vertices and six indices fit in one eight-element
+        // callback reservation per buffer, overlapping the final output.
+        let scratch = 8 * std::mem::size_of::<Point>() + 8 * std::mem::size_of::<u32>();
         let mut owner = super::super::support::PreparationHostBudget::new();
-        let prior = super::super::support::MAX_SHADOW_HOST_BYTES - bytes + 1;
+        let prior = super::super::support::MAX_SHADOW_HOST_BYTES - bytes - scratch + 1;
         owner.reserve(prior, &[9, 3]).unwrap();
         let mut graph_work = 0;
         let mut clip_pairs = 0;
@@ -1233,7 +1315,10 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!((owner.live(), owner.peak()), (prior, prior));
+        assert_eq!(
+            (owner.live(), owner.peak()),
+            (prior, prior + scratch)
+        );
     }
 
     #[test]
