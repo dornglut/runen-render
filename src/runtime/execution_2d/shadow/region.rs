@@ -2370,8 +2370,7 @@ impl NeutralRegionBuilder {
             }
             let absence = (|| -> Result<(), Render2dExecutionError> {
                 if mesh.triangles.is_empty()
-                    && (matches!(&region.kind, Kind::Clip { .. })
-                        || region.semantic_item.is_some())
+                    && (matches!(&region.kind, Kind::Clip { .. }) || region.semantic_item.is_some())
                 {
                     let mut fuel = MAX_REGION_GRAPH_WORK
                         .checked_sub(self.graph_work)
