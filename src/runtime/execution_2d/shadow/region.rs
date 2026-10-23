@@ -3620,6 +3620,67 @@ mod tests {
     }
 
     #[test]
+    fn union_materialization_reserves_growth_and_transfers_once() {
+        let mut graph = builder();
+        graph
+            .host
+            .reserve_vector(&mut graph.materialized, 8, &[8])
+            .unwrap();
+        let left = graph.source(triangle(), &[8, 0]).unwrap();
+        let right = graph.source(triangle(), &[8, 1]).unwrap();
+        graph.materialize(&left).unwrap();
+        graph.materialize(&right).unwrap();
+        let union = graph.union(vec![left, right], &[8]).unwrap();
+        let before = graph.host.live();
+        let result = graph.materialize(&union).unwrap();
+        assert_eq!(result.triangles.len(), 6);
+        let header = size_of::<support::NeutralMesh>() + 2 * size_of::<usize>();
+        let bytes = header + result.triangles.capacity() * size_of::<[f64; 2]>();
+        assert_eq!(graph.host.live() - before, bytes);
+        // The old 3-vertex vector and the new 6-vertex vector must both
+        // fit at relocation, not merely the final retained capacity.
+        assert!(graph.host.peak() >= graph.host.live() + 3 * size_of::<[f64; 2]>());
+        assert!(Arc::ptr_eq(&result, &graph.materialize(&union).unwrap()));
+        assert_eq!(graph.host.live() - before, bytes);
+    }
+
+    #[test]
+    fn union_growth_one_short_refunds_partial_mesh_and_header() {
+        let mut graph = builder();
+        graph
+            .host
+            .reserve_vector(&mut graph.materialized, 8, &[9])
+            .unwrap();
+        let left = graph.source(triangle(), &[9, 0]).unwrap();
+        let right = graph.source(triangle(), &[9, 1]).unwrap();
+        graph.materialize(&left).unwrap();
+        graph.materialize(&right).unwrap();
+        let union = graph.union(vec![left, right], &[9]).unwrap();
+        let header = size_of::<support::NeutralMesh>() + 2 * size_of::<usize>();
+        // After the first triangle, relocation temporarily owns BOTH the
+        // 3-vertex old buffer and the 6-vertex replacement allocation.
+        let peak_added = header + 9 * size_of::<[f64; 2]>();
+        graph
+            .host
+            .reserve(
+                support::MAX_SHADOW_HOST_BYTES - graph.host.live() - peak_added + 1,
+                &[9],
+            )
+            .unwrap();
+        let before = graph.host.live();
+        assert!(matches!(
+            graph.materialize(&union),
+            Err(Render2dExecutionError::SampleSpace {
+                kind: Render2dSampleSpaceError::ResourceLimit,
+                path: Some(path),
+                ..
+            }) if path == [9]
+        ));
+        assert_eq!(graph.host.live(), before);
+        assert!(graph.materialized[union.id].is_none());
+    }
+
+    #[test]
     fn affine_materialization_transfers_its_vector_lease_exactly_once() {
         let mut graph = builder();
         // Prevent unrelated receipt-vector relocation from obscuring the
