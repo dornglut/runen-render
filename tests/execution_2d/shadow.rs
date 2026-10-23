@@ -3676,13 +3676,7 @@ fn microscopic_gap_changes_union_erosion_and_finite_gaussian_on_vulkan() {
         group(
             vec![
                 caster(Render2dColorRgba8::TRANSPARENT, 9.5, 9.5, 1.0, 2.0),
-                caster(
-                    Render2dColorRgba8::TRANSPARENT,
-                    10.5 + gap,
-                    9.5,
-                    1.0,
-                    2.0,
-                ),
+                caster(Render2dColorRgba8::TRANSPARENT, 10.5 + gap, 9.5, 1.0, 2.0),
             ],
             vec![effect(
                 0.0,
