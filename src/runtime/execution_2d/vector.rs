@@ -1165,7 +1165,10 @@ mod tests {
         .unwrap();
         assert_eq!(mesh.triangles.len(), 6);
         assert!(graph > 256 + 6 * 64);
-        assert_eq!(host.live(), mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
+        assert_eq!(
+            host.live(),
+            mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>()
+        );
     }
 
     #[test]
