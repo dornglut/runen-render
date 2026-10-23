@@ -2368,20 +2368,36 @@ impl NeutralRegionBuilder {
                     path,
                 )?;
             }
-            if mesh.triangles.is_empty()
-                && (matches!(&region.kind, Kind::Clip { .. }) || region.semantic_item.is_some())
-            {
-                let mut fuel = MAX_REGION_GRAPH_WORK
-                    .checked_sub(self.graph_work)
-                    .ok_or_else(|| resource(path, "original absence proof work overflow"))?;
-                let empty = region.original_empty_certificate(&mut fuel);
-                self.graph_work = MAX_REGION_GRAPH_WORK - fuel;
-                if fuel == 0 {
-                    return Err(resource(path, "original absence proof exhausted work"));
+            let absence = (|| -> Result<(), Render2dExecutionError> {
+                if mesh.triangles.is_empty()
+                    && (matches!(&region.kind, Kind::Clip { .. })
+                        || region.semantic_item.is_some())
+                {
+                    let mut fuel = MAX_REGION_GRAPH_WORK
+                        .checked_sub(self.graph_work)
+                        .ok_or_else(|| resource(path, "original absence proof work overflow"))?;
+                    let empty = region.original_empty_certificate(&mut fuel);
+                    self.graph_work = MAX_REGION_GRAPH_WORK - fuel;
+                    if fuel == 0 {
+                        return Err(resource(path, "original absence proof exhausted work"));
+                    }
+                    if !empty {
+                        return Err(unsupported(path));
+                    }
                 }
-                if !empty {
-                    return Err(unsupported(path));
+                Ok(())
+            })();
+            if let Err(error) = absence {
+                // The result was already charged (by its factory or by the
+                // late legacy receipt) but never installed in the cache.
+                // Refund only its vector, leaving any completed children and
+                // all charged proof work intact. The outer guard owns header
+                // retirement for this failed parent.
+                if new_mesh {
+                    self.host
+                        .release(mesh.triangles.capacity() * size_of::<[f64; 2]>());
                 }
+                return Err(error);
             }
             self.materialized[region.id] = Some(Arc::clone(&mesh));
             Ok(mesh)
