@@ -1185,7 +1185,10 @@ mod tests {
             "glyph path drops after late physical failure"
         );
         assert_eq!(host.peak(), peak);
-        assert_eq!(work, cost + 512);
+        // The one-triangle glyph now pays its three-index original-vector
+        // preflight before the late transform rejects. Executed work is not
+        // refunded, while the temporary command and mesh bytes are retired.
+        assert_eq!(work, cost + 512 + 256 + 3 * 64);
     }
 
     #[test]
