@@ -2172,11 +2172,7 @@ impl NeutralRegionBuilder {
                 Kind::Affine { source, to_parent } => {
                     let mesh = self.materialize(source)?;
                     let mut candidate_vertices = self.retained_vertices;
-                    shadow::charge_vertices(
-                        &mut candidate_vertices,
-                        mesh.triangles.len(),
-                        path,
-                    )?;
+                    shadow::charge_vertices(&mut candidate_vertices, mesh.triangles.len(), path)?;
                     let mut output = shadow::empty_mesh();
                     self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
                     shadow::append_admitted(&mut output, &mesh, *to_parent, path, &mut self.host)?;
