@@ -359,10 +359,15 @@ fn neutral_item(
 /// Gaussian alpha remains the separate continuous normalized integral.
 /// A square dilated convex triangle is its 12 translated vertices' convex
 /// hull, so the resulting triangulated union is exact (not an AABB).
+///
+/// The result's retained vector is reserved on the invocation's host owner
+/// before allocation; its reservation transfers to the region materializer.
+/// Each triangle's 12 points and <=23 hull entries stay on the stack.
 fn gaussian_square_support(
     source: &NeutralMesh,
     radius: f64,
     path: &[usize],
+    host: &mut super::support::PreparationHostBudget,
 ) -> Result<NeutralMesh, Render2dExecutionError> {
     if !radius.is_finite() || radius <= 0.0 {
         return Err(precision(path, "nested Gaussian support radius invalid"));
@@ -385,73 +390,95 @@ fn gaussian_square_support(
         ));
     }
     let mut expanded = empty_mesh();
-    expanded
+    host.reserve_vector(&mut expanded.triangles, largest, path)?;
+    let reserved = expanded
         .triangles
-        .try_reserve(largest)
-        .map_err(|_| resource(path, "nested Gaussian support allocation failed"))?;
-    for tri in source.triangles.as_chunks::<3>().0 {
-        if orient(tri[0], tri[1], tri[2]) == 0.0 {
-            continue;
-        }
-        let mut points = Vec::with_capacity(12);
-        for &[x, y] in tri {
-            let x = x / source.units_per_parent_logical_unit;
-            let y = y / source.units_per_parent_logical_unit;
-            for dx in [-radius, radius] {
-                for dy in [-radius, radius] {
-                    let p = [x + dx, y + dy];
-                    if !p.iter().all(|n| n.is_finite()) {
-                        return Err(precision(path, "nested Gaussian square loses precision"));
+        .capacity()
+        .checked_mul(size_of::<[f64; 2]>())
+        .ok_or_else(|| resource(path, "nested Gaussian result storage overflow"))?;
+    let result = (|| -> Result<(), Render2dExecutionError> {
+        for tri in source.triangles.as_chunks::<3>().0 {
+            if orient(tri[0], tri[1], tri[2]) == 0.0 {
+                continue;
+            }
+            let mut points = [[0.0_f64; 2]; 12];
+            let mut point_count = 0;
+            for &[x, y] in tri {
+                let x = x / source.units_per_parent_logical_unit;
+                let y = y / source.units_per_parent_logical_unit;
+                for dx in [-radius, radius] {
+                    for dy in [-radius, radius] {
+                        let point = [x + dx, y + dy];
+                        if !point.iter().all(|n| n.is_finite()) {
+                            return Err(precision(path, "nested Gaussian square loses precision"));
+                        }
+                        points[point_count] = point;
+                        point_count += 1;
                     }
-                    points.push(p);
+                }
+            }
+            debug_assert_eq!(point_count, points.len());
+            points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+            let mut unique = 0;
+            for index in 0..points.len() {
+                let point = points[index];
+                if unique == 0 || point != points[unique - 1] {
+                    points[unique] = point;
+                    unique += 1;
+                }
+            }
+            let mut hull = [[0.0_f64; 2]; 24];
+            let mut len = 0;
+            for &point in &points[..unique] {
+                while len >= 2 {
+                    let turn = orient(hull[len - 2], hull[len - 1], point);
+                    if !turn.is_finite() {
+                        return Err(precision(path, "nested Gaussian hull orientation overflow"));
+                    }
+                    if turn > 0.0 {
+                        break;
+                    }
+                    len -= 1;
+                }
+                hull[len] = point;
+                len += 1;
+            }
+            let lower = len;
+            for &point in points[..unique].iter().rev().skip(1) {
+                while len > lower {
+                    let turn = orient(hull[len - 2], hull[len - 1], point);
+                    if !turn.is_finite() {
+                        return Err(precision(path, "nested Gaussian hull orientation overflow"));
+                    }
+                    if turn > 0.0 {
+                        break;
+                    }
+                    len -= 1;
+                }
+                hull[len] = point;
+                len += 1;
+            }
+            len -= 1;
+            if len < 3 {
+                return Err(precision(path, "nested Gaussian hull collapsed"));
+            }
+            for index in 1..len - 1 {
+                for point in [hull[0], hull[index], hull[index + 1]] {
+                    expanded.bounds[0] = expanded.bounds[0].min(point[0]);
+                    expanded.bounds[1] = expanded.bounds[1].min(point[1]);
+                    expanded.bounds[2] = expanded.bounds[2].max(point[0]);
+                    expanded.bounds[3] = expanded.bounds[3].max(point[1]);
+                    expanded.triangles.push(point);
                 }
             }
         }
-        points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
-        points.dedup();
-        let mut hull: Vec<[f64; 2]> = Vec::with_capacity(points.len() * 2);
-        for &point in &points {
-            while hull.len() >= 2 {
-                let n = hull.len();
-                let turn = orient(hull[n - 2], hull[n - 1], point);
-                if !turn.is_finite() {
-                    return Err(precision(path, "nested Gaussian hull orientation overflow"));
-                }
-                if turn > 0.0 {
-                    break;
-                }
-                hull.pop();
-            }
-            hull.push(point);
-        }
-        let lower = hull.len();
-        for &point in points.iter().rev().skip(1) {
-            while hull.len() > lower {
-                let n = hull.len();
-                let turn = orient(hull[n - 2], hull[n - 1], point);
-                if !turn.is_finite() {
-                    return Err(precision(path, "nested Gaussian hull orientation overflow"));
-                }
-                if turn > 0.0 {
-                    break;
-                }
-                hull.pop();
-            }
-            hull.push(point);
-        }
-        hull.pop();
-        if hull.len() < 3 {
-            return Err(precision(path, "nested Gaussian hull collapsed"));
-        }
-        for index in 1..hull.len() - 1 {
-            for point in [hull[0], hull[index], hull[index + 1]] {
-                expanded.bounds[0] = expanded.bounds[0].min(point[0]);
-                expanded.bounds[1] = expanded.bounds[1].min(point[1]);
-                expanded.bounds[2] = expanded.bounds[2].max(point[0]);
-                expanded.bounds[3] = expanded.bounds[3].max(point[1]);
-                expanded.triangles.push(point);
-            }
-        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        // The failed output is dropped on return; only its temporary storage
+        // lease is released. The invocation's already charged work remains.
+        host.release(reserved);
+        return Err(error);
     }
     Ok(expanded)
 }
