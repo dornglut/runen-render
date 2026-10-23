@@ -802,20 +802,20 @@ impl<'w, 'a> TessellationSink<'w, 'a> {
             return Err(GeometryBuilderError::TooManyVertices);
         }
         let id = VertexId(self.geometry.vertices.len() as u32);
-        if self.geometry.vertices.len() == self.geometry.vertices.capacity() {
-            if let Some((work, path)) = self.admitted.as_mut() {
-                let capacity =
-                    Self::next_capacity(self.geometry.vertices.capacity(), id.0 as usize + 1);
-                if work
-                    .reserve_vector(&mut self.geometry.vertices, capacity, path)
-                    .is_err()
-                {
-                    self.geometry.exceeded = true;
-                    return Err(GeometryBuilderError::TooManyVertices);
-                }
-                self.geometry.vertex_lease =
-                    self.geometry.vertices.capacity() * std::mem::size_of::<Point>();
+        if self.geometry.vertices.len() == self.geometry.vertices.capacity()
+            && let Some((work, path)) = self.admitted.as_mut()
+        {
+            let capacity =
+                Self::next_capacity(self.geometry.vertices.capacity(), id.0 as usize + 1);
+            if work
+                .reserve_vector(&mut self.geometry.vertices, capacity, path)
+                .is_err()
+            {
+                self.geometry.exceeded = true;
+                return Err(GeometryBuilderError::TooManyVertices);
             }
+            self.geometry.vertex_lease =
+                self.geometry.vertices.capacity() * std::mem::size_of::<Point>();
         }
         self.geometry.vertices.push(point);
         Ok(id)
@@ -840,19 +840,19 @@ impl GeometryBuilder for TessellationSink<'_, '_> {
             self.geometry.exceeded = true;
             return;
         }
-        if needed > self.geometry.indices.capacity() {
-            if let Some((work, path)) = self.admitted.as_mut() {
-                let capacity = Self::next_capacity(self.geometry.indices.capacity(), needed);
-                if work
-                    .reserve_vector(&mut self.geometry.indices, capacity, path)
-                    .is_err()
-                {
-                    self.geometry.exceeded = true;
-                    return;
-                }
-                self.geometry.index_lease =
-                    self.geometry.indices.capacity() * std::mem::size_of::<u32>();
+        if needed > self.geometry.indices.capacity()
+            && let Some((work, path)) = self.admitted.as_mut()
+        {
+            let capacity = Self::next_capacity(self.geometry.indices.capacity(), needed);
+            if work
+                .reserve_vector(&mut self.geometry.indices, capacity, path)
+                .is_err()
+            {
+                self.geometry.exceeded = true;
+                return;
             }
+            self.geometry.index_lease =
+                self.geometry.indices.capacity() * std::mem::size_of::<u32>();
         }
         self.geometry.indices.extend_from_slice(&[a.0, b.0, c.0]);
     }
