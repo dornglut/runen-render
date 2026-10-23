@@ -2120,235 +2120,232 @@ impl NeutralRegionBuilder {
             self.materialized.resize_with(needed, || None);
         }
         let new_mesh = !matches!(&region.kind, Kind::Source(_));
+        let mesh_header = size_of::<support::NeutralMesh>() + 2 * size_of::<usize>();
         if new_mesh {
-            self.host.reserve(
-                size_of::<support::NeutralMesh>() + 2 * size_of::<usize>(),
-                path,
-            )?;
+            self.host.reserve(mesh_header, path)?;
         }
-        // Some materializers reserve their output vector before allocation;
-        // transfer that lease into the cached region instead of charging
-        // the returned capacity a second time.
-        let mut output_admitted = false;
-        let mesh = match &region.kind {
-            Kind::Source(mesh) => Arc::clone(mesh.get().ok_or_else(|| unsupported(path))?),
-            Kind::Union(children) => {
-                let mut output = shadow::empty_mesh();
-                let assembled = (|| -> Result<(), Render2dExecutionError> {
-                    for child in children {
-                        let mesh = self.materialize(child)?;
-                        shadow::charge_vertices(
-                            &mut self.retained_vertices,
-                            mesh.triangles.len(),
-                            path,
-                        )?;
-                        self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
-                        shadow::append_admitted(
-                            &mut output,
-                            &mesh,
-                            Render2dAffineTransform::IDENTITY,
-                            path,
-                            &mut self.host,
-                        )?;
+        // Failed attempts retain completed child receipts and paid CPU work,
+        // but must release this unpublished parent's mesh-header lease.
+        let result = (|| -> Result<Arc<support::NeutralMesh>, Render2dExecutionError> {
+            let mut output_admitted = false;
+            let mesh = match &region.kind {
+                Kind::Source(mesh) => Arc::clone(mesh.get().ok_or_else(|| unsupported(path))?),
+                Kind::Union(children) => {
+                    let mut output = shadow::empty_mesh();
+                    let assembled = (|| -> Result<(), Render2dExecutionError> {
+                        for child in children {
+                            let mesh = self.materialize(child)?;
+                            shadow::charge_vertices(
+                                &mut self.retained_vertices,
+                                mesh.triangles.len(),
+                                path,
+                            )?;
+                            self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
+                            shadow::append_admitted(
+                                &mut output,
+                                &mesh,
+                                Render2dAffineTransform::IDENTITY,
+                                path,
+                                &mut self.host,
+                            )?;
+                        }
+                        Ok(())
+                    })();
+                    if let Err(error) = assembled {
+                        // Incomplete union geometry is dropped; refund only its
+                        // own result and header, not child receipts or paid work.
+                        self.host
+                            .release(output.triangles.capacity() * size_of::<[f64; 2]>());
+                        return Err(error);
                     }
-                    Ok(())
-                })();
-                if let Err(error) = assembled {
-                    // Incomplete union geometry is dropped; refund only its
-                    // own result and header, not child receipts or paid work.
-                    self.host.release(
-                        size_of::<support::NeutralMesh>()
-                            + 2 * size_of::<usize>()
-                            + output.triangles.capacity() * size_of::<[f64; 2]>(),
-                    );
-                    return Err(error);
+                    output_admitted = true;
+                    Arc::new(output)
                 }
-                output_admitted = true;
-                Arc::new(output)
-            }
-            Kind::Affine { source, to_parent } => {
-                let mesh = self.materialize(source)?;
-                shadow::charge_vertices(&mut self.retained_vertices, mesh.triangles.len(), path)?;
-                let mut output = shadow::empty_mesh();
-                self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
-                if let Err(error) =
-                    shadow::append_admitted(&mut output, &mesh, *to_parent, path, &mut self.host)
-                {
-                    // The incomplete affine mesh is never retained. Its
-                    // previously reserved header has no ownership to transfer.
-                    self.host
-                        .release(size_of::<support::NeutralMesh>() + 2 * size_of::<usize>());
-                    return Err(error);
-                }
-                output_admitted = true;
-                Arc::new(output)
-            }
-            Kind::Clip { source, clips } => {
-                let mesh = self.materialize(source)?;
-                let clipped = shadow::intersect_clips(
-                    &mesh,
-                    clips,
-                    path[0],
-                    path,
-                    self.scales.geometry_sample_scale,
-                    self.max_buffer_bytes,
-                    &mut shadow::NeutralPreparationWork {
-                        graph: &mut self.graph_work,
-                        clip_pairs: &mut self.clip_work,
-                        host: &mut self.host,
-                    },
-                )?;
-                shadow::charge_vertices(
-                    &mut self.retained_vertices,
-                    clipped.triangles.len(),
-                    path,
-                )?;
-                Arc::new(clipped)
-            }
-            Kind::Effect {
-                source,
-                shadow: effect,
-            } => {
-                // Prove truly complete erosion from original F1 *outer reach*
-                // BEFORE touching child polygons (which may be a curved
-                // symbolic effect). Blur of the empty eroded set remains
-                // empty; a near-threshold radius is never guessed empty.
-                // This is independent of disposable Lyon mesh fidelity.
-                // A leaf without original reach admission cannot infer
-                // emptiness OR signed erosion from sampled physical bounds.
-                if effect.spread() < 0.0 && !source.certified_source_reach {
-                    return Err(unsupported(path));
-                }
-                if certified_complete_disk_erosion(source.envelope, effect.spread()) {
-                    Arc::new(shadow::empty_mesh())
-                } else {
-                    // Physical convexity cannot certify F1 curved geometry.
-                    // Proven complete erosion above is independently exact,
-                    // but nonempty erosion must prove F1/mesh correspondence.
-                    if effect.spread() < 0.0
-                        && !self.proven_original_straight_polygon_union(source)?
-                    {
-                        return Err(unsupported(path));
-                    }
+                Kind::Affine { source, to_parent } => {
                     let mesh = self.materialize(source)?;
-                    // A positive disk is retained as a precise expression but
-                    // cannot be *polygonalized* as finite triangles. A consuming
-                    // ancestor needs certified curved-region evaluation.
-                    if effect.spread() > 0.0 {
+                    shadow::charge_vertices(&mut self.retained_vertices, mesh.triangles.len(), path)?;
+                    let mut output = shadow::empty_mesh();
+                    self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
+                    if let Err(error) =
+                        shadow::append_admitted(&mut output, &mesh, *to_parent, path, &mut self.host)
+                    {
+                        // The surrounding scope refunds the unpublished header.
+                        return Err(error);
+                    }
+                    output_admitted = true;
+                    Arc::new(output)
+                }
+                Kind::Clip { source, clips } => {
+                    let mesh = self.materialize(source)?;
+                    let clipped = shadow::intersect_clips(
+                        &mesh,
+                        clips,
+                        path[0],
+                        path,
+                        self.scales.geometry_sample_scale,
+                        self.max_buffer_bytes,
+                        &mut shadow::NeutralPreparationWork {
+                            graph: &mut self.graph_work,
+                            clip_pairs: &mut self.clip_work,
+                            host: &mut self.host,
+                        },
+                    )?;
+                    shadow::charge_vertices(
+                        &mut self.retained_vertices,
+                        clipped.triangles.len(),
+                        path,
+                    )?;
+                    Arc::new(clipped)
+                }
+                Kind::Effect {
+                    source,
+                    shadow: effect,
+                } => {
+                    // Prove truly complete erosion from original F1 *outer reach*
+                    // BEFORE touching child polygons (which may be a curved
+                    // symbolic effect). Blur of the empty eroded set remains
+                    // empty; a near-threshold radius is never guessed empty.
+                    // This is independent of disposable Lyon mesh fidelity.
+                    // A leaf without original reach admission cannot infer
+                    // emptiness OR signed erosion from sampled physical bounds.
+                    if effect.spread() < 0.0 && !source.certified_source_reach {
                         return Err(unsupported(path));
                     }
-                    let erased = if effect.spread() < 0.0 {
-                        // Erosion retains its evaluator-wide local ceiling,
-                        // but every executed preparation phase also spends
-                        // this invocation's graph fuel. Keep one live borrow
-                        // through qualification AND fallback: failed attempts
-                        // cannot refund work or start a fresh allowance.
-                        let mut erosion_work = support::SharedPreparationWork::new(
-                            &mut self.erosion_work,
-                            &mut self.graph_work,
-                        );
-                        // Source-proven, strictly disconnected rectangles
-                        // admit exact per-component disk erosion without
-                        // spending the general O(triangles^2) arrangement.
-                        let separated = support::certified_separated_rectangles_erosion_mesh(
-                            &mesh,
-                            -effect.spread(),
-                            path,
-                            &mut erosion_work,
-                        )?;
-                        if let Some(separated) = separated {
-                            separated
-                        } else {
-                            // Touching, overlapping, rotated or otherwise
-                            // unqualified sources retain the existing exact
-                            // convex proof and its typed fallback.
-                            support::certified_convex_erosion_mesh(
+                    if certified_complete_disk_erosion(source.envelope, effect.spread()) {
+                        Arc::new(shadow::empty_mesh())
+                    } else {
+                        // Physical convexity cannot certify F1 curved geometry.
+                        // Proven complete erosion above is independently exact,
+                        // but nonempty erosion must prove F1/mesh correspondence.
+                        if effect.spread() < 0.0
+                            && !self.proven_original_straight_polygon_union(source)?
+                        {
+                            return Err(unsupported(path));
+                        }
+                        let mesh = self.materialize(source)?;
+                        // A positive disk is retained as a precise expression but
+                        // cannot be *polygonalized* as finite triangles. A consuming
+                        // ancestor needs certified curved-region evaluation.
+                        if effect.spread() > 0.0 {
+                            return Err(unsupported(path));
+                        }
+                        let erased = if effect.spread() < 0.0 {
+                            // Erosion retains its evaluator-wide local ceiling,
+                            // but every executed preparation phase also spends
+                            // this invocation's graph fuel. Keep one live borrow
+                            // through qualification AND fallback: failed attempts
+                            // cannot refund work or start a fresh allowance.
+                            let mut erosion_work = support::SharedPreparationWork::new(
+                                &mut self.erosion_work,
+                                &mut self.graph_work,
+                            );
+                            // Source-proven, strictly disconnected rectangles
+                            // admit exact per-component disk erosion without
+                            // spending the general O(triangles^2) arrangement.
+                            let separated = support::certified_separated_rectangles_erosion_mesh(
                                 &mesh,
                                 -effect.spread(),
                                 path,
                                 &mut erosion_work,
-                            )?
-                            .ok_or_else(|| unsupported(path))?
-                        }
-                    } else {
-                        shadow::empty_mesh()
-                    };
-                    let caster: &support::NeutralMesh = if effect.spread() < 0.0 {
-                        &erased
-                    } else {
-                        mesh.as_ref()
-                    };
-                    let offset =
-                        Render2dAffineTransform::translation(effect.offset_x(), effect.offset_y())
-                            .map_err(|_| {
-                                precision(path, "neutral effect offset cannot be represented")
-                            })?;
-                    shadow::charge_vertices(
-                        &mut self.retained_vertices,
-                        caster.triangles.len(),
-                        path,
-                    )?;
-                    let mut shifted = shadow::empty_mesh();
-                    self.charge_graph_work(shadow::append_work(&shifted, caster, path)?, path)?;
-                    shadow::append(&mut shifted, caster, offset, path)?;
-                    if effect.sigma() > 0.0 && !shifted.triangles.is_empty() {
-                        // Twelve translated vertices; at most 12² comparison/
-                        // movement steps in the small sort; deduplication;
-                        // at most 48 orientation steps across both monotone
-                        // hull passes; at most thirty emitted vertices. The
-                        // 8192 bound includes all primitive guards and copies.
-                        let hull_work = (shifted.triangles.len() / 3)
-                            .checked_mul(8_192)
-                            .and_then(|cost| cost.checked_add(256))
-                            .ok_or_else(|| resource(path, "neutral Gaussian hull work overflow"))?;
-                        self.charge_graph_work(hull_work, path)?;
-                        let square = shadow::gaussian_square_support(
-                            &shifted,
-                            effect.sigma() * 3.0,
-                            path,
-                            &mut self.host,
-                        )?;
-                        output_admitted = true;
+                            )?;
+                            if let Some(separated) = separated {
+                                separated
+                            } else {
+                                // Touching, overlapping, rotated or otherwise
+                                // unqualified sources retain the existing exact
+                                // convex proof and its typed fallback.
+                                support::certified_convex_erosion_mesh(
+                                    &mesh,
+                                    -effect.spread(),
+                                    path,
+                                    &mut erosion_work,
+                                )?
+                                .ok_or_else(|| unsupported(path))?
+                            }
+                        } else {
+                            shadow::empty_mesh()
+                        };
+                        let caster: &support::NeutralMesh = if effect.spread() < 0.0 {
+                            &erased
+                        } else {
+                            mesh.as_ref()
+                        };
+                        let offset =
+                            Render2dAffineTransform::translation(effect.offset_x(), effect.offset_y())
+                                .map_err(|_| {
+                                    precision(path, "neutral effect offset cannot be represented")
+                                })?;
                         shadow::charge_vertices(
                             &mut self.retained_vertices,
-                            square.triangles.len(),
+                            caster.triangles.len(),
                             path,
                         )?;
-                        Arc::new(square)
-                    } else {
-                        Arc::new(shifted)
+                        let mut shifted = shadow::empty_mesh();
+                        self.charge_graph_work(shadow::append_work(&shifted, caster, path)?, path)?;
+                        shadow::append(&mut shifted, caster, offset, path)?;
+                        if effect.sigma() > 0.0 && !shifted.triangles.is_empty() {
+                            // Twelve translated vertices; at most 12² comparison/
+                            // movement steps in the small sort; deduplication;
+                            // at most 48 orientation steps across both monotone
+                            // hull passes; at most thirty emitted vertices. The
+                            // 8192 bound includes all primitive guards and copies.
+                            let hull_work = (shifted.triangles.len() / 3)
+                                .checked_mul(8_192)
+                                .and_then(|cost| cost.checked_add(256))
+                                .ok_or_else(|| resource(path, "neutral Gaussian hull work overflow"))?;
+                            self.charge_graph_work(hull_work, path)?;
+                            let square = shadow::gaussian_square_support(
+                                &shifted,
+                                effect.sigma() * 3.0,
+                                path,
+                                &mut self.host,
+                            )?;
+                            output_admitted = true;
+                            shadow::charge_vertices(
+                                &mut self.retained_vertices,
+                                square.triangles.len(),
+                                path,
+                            )?;
+                            Arc::new(square)
+                        } else {
+                            Arc::new(shifted)
+                        }
                     }
                 }
+            };
+            if new_mesh && !output_admitted {
+                // Other materializers still transfer their returned capacities
+                // here. Affine and Gaussian results were reserved in their factories.
+                self.host.reserve(
+                    mesh.triangles
+                        .capacity()
+                        .checked_mul(size_of::<[f64; 2]>())
+                        .ok_or_else(|| resource(path, "materialized mesh storage overflow"))?,
+                    path,
+                )?;
             }
-        };
-        if new_mesh && !output_admitted {
-            // Other materializers still transfer their returned capacities
-            // here. Affine and Gaussian results were reserved in their factories.
-            self.host.reserve(
-                mesh.triangles
-                    .capacity()
-                    .checked_mul(size_of::<[f64; 2]>())
-                    .ok_or_else(|| resource(path, "materialized mesh storage overflow"))?,
-                path,
-            )?;
+            if mesh.triangles.is_empty()
+                && (matches!(&region.kind, Kind::Clip { .. }) || region.semantic_item.is_some())
+            {
+                let mut fuel = MAX_REGION_GRAPH_WORK
+                    .checked_sub(self.graph_work)
+                    .ok_or_else(|| resource(path, "original absence proof work overflow"))?;
+                let empty = region.original_empty_certificate(&mut fuel);
+                self.graph_work = MAX_REGION_GRAPH_WORK - fuel;
+                if fuel == 0 {
+                    return Err(resource(path, "original absence proof exhausted work"));
+                }
+                if !empty {
+                    return Err(unsupported(path));
+                }
+            }
+            self.materialized[region.id] = Some(Arc::clone(&mesh));
+            Ok(mesh)
+        })();
+        if result.is_err() && new_mesh {
+            self.host.release(mesh_header);
         }
-        if mesh.triangles.is_empty()
-            && (matches!(&region.kind, Kind::Clip { .. }) || region.semantic_item.is_some())
-        {
-            let mut fuel = MAX_REGION_GRAPH_WORK
-                .checked_sub(self.graph_work)
-                .ok_or_else(|| resource(path, "original absence proof work overflow"))?;
-            let empty = region.original_empty_certificate(&mut fuel);
-            self.graph_work = MAX_REGION_GRAPH_WORK - fuel;
-            if fuel == 0 {
-                return Err(resource(path, "original absence proof exhausted work"));
-            }
-            if !empty {
-                return Err(unsupported(path));
-            }
-        }
-        self.materialized[region.id] = Some(Arc::clone(&mesh));
-        Ok(mesh)
+        result
     }
 }
 
@@ -3705,6 +3702,43 @@ mod tests {
         ));
         assert_eq!(graph.host.live(), before);
         assert!(graph.materialized[union.id].is_none());
+    }
+
+    #[test]
+    fn rejected_positive_disk_materialization_refunds_unpublished_header() {
+        let mut graph = builder();
+        graph
+            .host
+            .reserve_vector(&mut graph.materialized, 8, &[2])
+            .unwrap();
+        let source = graph.source(triangle(), &[2, 0]).unwrap();
+        graph.materialize(&source).unwrap();
+        let effect = graph
+            .effect(
+                source,
+                Render2dDropShadow::new(
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                    Render2dColorRgba8::TRANSPARENT,
+                )
+                .unwrap(),
+                &[2, 1],
+            )
+            .unwrap();
+        let before = graph.host.live();
+        for _ in 0..2 {
+            assert!(matches!(
+                graph.materialize(&effect),
+                Err(Render2dExecutionError::UnsupportedEntry {
+                    path,
+                    kind: Render2dUnsupportedContent::Shadows { root_index: 2 },
+                }) if path == [2, 1]
+            ));
+            assert_eq!(graph.host.live(), before);
+            assert!(graph.materialized[effect.id].is_none());
+        }
     }
 
     #[test]
