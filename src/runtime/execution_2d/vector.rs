@@ -38,6 +38,7 @@ fn tessellate_shape(
     stroke: Option<Render2dStrokeStyle>,
     root_index: usize,
     stretch: f64,
+    admitted: Option<(&mut super::shadow::NeutralPreparationWork<'_>, &[usize])>,
 ) -> Result<BoundedGeometry, Render2dExecutionError> {
     let fail = |kind| error(root_index, kind);
     let tolerance = PHYSICAL_TOLERANCE / stretch;
@@ -53,7 +54,7 @@ fn tessellate_shape(
     }
     // Keep authored curves for stroke endpoint tangents; the probe above bounds
     // preprocessing without replacing the path by a second flattened authority.
-    let mut geometry = BoundedGeometry::default();
+    let mut sink = TessellationSink::new(admitted);
     let result = if let Some(style) = stroke {
         let width = narrow(style.width(), tolerance).map_err(fail)?;
         let miter = narrow(style.miter_limit(), tolerance).map_err(fail)?;
@@ -75,7 +76,7 @@ fn tessellate_shape(
                 .with_line_cap(cap)
                 .with_line_join(join)
                 .with_miter_limit(miter),
-            &mut geometry,
+            &mut sink,
         )
     } else {
         let rule = match shape
@@ -91,14 +92,14 @@ fn tessellate_shape(
             &FillOptions::default()
                 .with_fill_rule(rule)
                 .with_tolerance(tolerance as f32),
-            &mut geometry,
+            &mut sink,
         )
     };
-    if geometry.exceeded {
+    if sink.geometry.exceeded {
         return Err(fail(Render2dVectorError::ResourceLimit));
     }
     result.map_err(|_| fail(Render2dVectorError::TessellationFailed))?;
-    Ok(geometry)
+    Ok(sink.into_geometry())
 }
 
 pub(super) fn realize(
@@ -143,7 +144,7 @@ pub(super) fn realize(
     {
         return Ok(None);
     }
-    let geometry = tessellate_shape(shape, stroke, root_index, stretch)?;
+    let geometry = tessellate_shape(shape, stroke, root_index, stretch, None)?;
     let mut triangles = Vec::new();
     for indices in geometry.indices.as_chunks::<3>().0 {
         let Some(triangle) =
@@ -383,7 +384,16 @@ fn neutral_support_impl(
     if let Some((work, path)) = admitted.as_mut() {
         work.charge(256, path)?;
     }
-    let geometry = tessellate_shape(shape, stroke, root_index, stretch)?;
+    let geometry = tessellate_shape(
+        shape,
+        stroke,
+        root_index,
+        stretch,
+        admitted.as_mut().map(|(work, path)| (&mut **work, *path)),
+    )?;
+    // Keep geometry output and final source storage under the same host owner
+    // until source conversion completes (including every error exit).
+    let prepared = (|| -> Result<Option<NeutralMesh>, Render2dExecutionError> {
     let mut triangles = Vec::new();
     if let Some((work, path)) = admitted.as_mut() {
         // Only the per-index scan work remains: the 256 setup was paid before
@@ -457,7 +467,7 @@ fn neutral_support_impl(
         Ok(())
     })();
     if let Err(err) = emitted {
-        if let Some((work, _)) = admitted {
+        if let Some((work, _)) = admitted.as_mut() {
             work.release_bytes(triangles.capacity() * std::mem::size_of::<[f64; 2]>());
         }
         return Err(err);
@@ -467,6 +477,11 @@ fn neutral_support_impl(
         triangles,
         bounds,
     }))
+    })();
+    if let Some((work, _)) = admitted {
+        work.release_bytes(geometry.leased_bytes());
+    }
+    prepared
 }
 
 fn narrow(value: f64, tolerance: f64) -> Result<f32, Render2dVectorError> {
@@ -716,32 +731,101 @@ struct BoundedGeometry {
     vertices: Vec<Point>,
     indices: Vec<u32>,
     exceeded: bool,
+    // Transferred output leases; root visible paint has no shadow lease.
+    vertex_lease: usize,
+    index_lease: usize,
 }
+
 impl BoundedGeometry {
+    fn leased_bytes(&self) -> usize {
+        self.vertex_lease + self.index_lease
+    }
+}
+
+/// Lyon owns geometry formation; the owning invocation admits the callback
+/// output Vecs before growth. Failure drops the sink and retires its leases.
+/// Success transfers both buffers and their leases through neutral conversion.
+struct TessellationSink<'w, 'a> {
+    geometry: BoundedGeometry,
+    admitted: Option<(&'w mut super::shadow::NeutralPreparationWork<'a>, &'w [usize])>,
+}
+
+impl<'w, 'a> TessellationSink<'w, 'a> {
+    fn new(admitted: Option<(&'w mut super::shadow::NeutralPreparationWork<'a>, &'w [usize])>) -> Self {
+        Self {
+            geometry: BoundedGeometry::default(),
+            admitted,
+        }
+    }
+
+    fn next_capacity(current: usize, needed: usize) -> usize {
+        current.max(4).saturating_mul(2).max(needed).min(MAX_ELEMENTS)
+    }
+
+    fn into_geometry(mut self) -> BoundedGeometry {
+        std::mem::take(&mut self.geometry)
+    }
+
     fn vertex(&mut self, point: Point) -> Result<VertexId, GeometryBuilderError> {
-        if self.vertices.len() >= MAX_ELEMENTS
-            || self.exceeded
+        if self.geometry.vertices.len() >= MAX_ELEMENTS
+            || self.geometry.exceeded
             || !point.x.is_finite()
             || !point.y.is_finite()
         {
-            self.exceeded = true;
+            self.geometry.exceeded = true;
             return Err(GeometryBuilderError::TooManyVertices);
         }
-        let id = VertexId(self.vertices.len() as u32);
-        self.vertices.push(point);
+        let id = VertexId(self.geometry.vertices.len() as u32);
+        if self.geometry.vertices.len() == self.geometry.vertices.capacity() {
+            if let Some((work, path)) = self.admitted.as_mut() {
+                let capacity = Self::next_capacity(self.geometry.vertices.capacity(), id.0 as usize + 1);
+                if work.reserve_vector(&mut self.geometry.vertices, capacity, path).is_err() {
+                    self.geometry.exceeded = true;
+                    return Err(GeometryBuilderError::TooManyVertices);
+                }
+                self.geometry.vertex_lease =
+                    self.geometry.vertices.capacity() * std::mem::size_of::<Point>();
+            }
+        }
+        self.geometry.vertices.push(point);
         Ok(id)
     }
 }
-impl GeometryBuilder for BoundedGeometry {
-    fn add_triangle(&mut self, a: VertexId, b: VertexId, c: VertexId) {
-        if self.indices.len() + 3 > MAX_ELEMENTS {
-            self.exceeded = true;
-            return;
+
+impl Drop for TessellationSink<'_, '_> {
+    fn drop(&mut self) {
+        if let Some((work, _)) = self.admitted.as_mut() {
+            work.release_bytes(self.geometry.leased_bytes());
         }
-        self.indices.extend_from_slice(&[a.0, b.0, c.0]);
     }
 }
-impl FillGeometryBuilder for BoundedGeometry {
+
+impl GeometryBuilder for TessellationSink<'_, '_> {
+    fn add_triangle(&mut self, a: VertexId, b: VertexId, c: VertexId) {
+        let Some(needed) = self.geometry.indices.len().checked_add(3) else {
+            self.geometry.exceeded = true;
+            return;
+        };
+        if self.geometry.exceeded || needed > MAX_ELEMENTS {
+            self.geometry.exceeded = true;
+            return;
+        }
+        if needed > self.geometry.indices.capacity() {
+            if let Some((work, path)) = self.admitted.as_mut() {
+                let capacity = Self::next_capacity(self.geometry.indices.capacity(), needed);
+                if work.reserve_vector(&mut self.geometry.indices, capacity, path).is_err() {
+                    self.geometry.exceeded = true;
+                    return;
+                }
+                self.geometry.index_lease =
+                    self.geometry.indices.capacity() * std::mem::size_of::<u32>();
+            }
+        }
+        self.geometry.indices.extend_from_slice(&[a.0, b.0, c.0]);
+    }
+}
+
+impl FillGeometryBuilder for TessellationSink<'_, '_> {
     fn add_fill_vertex(
         &mut self,
         vertex: FillVertex<'_>,
@@ -749,7 +833,8 @@ impl FillGeometryBuilder for BoundedGeometry {
         self.vertex(vertex.position())
     }
 }
-impl StrokeGeometryBuilder for BoundedGeometry {
+
+impl StrokeGeometryBuilder for TessellationSink<'_, '_> {
     fn add_stroke_vertex(
         &mut self,
         vertex: StrokeVertex<'_, '_>,
