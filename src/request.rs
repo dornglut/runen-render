@@ -331,8 +331,8 @@ impl RenderObservationSpec {
 
 /// Renderer-semantic radiometric representation independent of result topology and numeric storage.
 ///
-/// R2 deliberately starts with one precise founding domain rather than an underspecified RGB/color
-/// alias: spectral radiance at one explicit wavelength. The represented scalar is spectral radiance
+/// The supported radiometric domain is precise spectral radiance at one explicit wavelength,
+/// rather than an underspecified RGB/color alias. The represented scalar is spectral radiance
 /// per unit wavelength with units W·sr⁻¹·m⁻³. Colorimetric reconstruction, channel sets, and broader
 /// representation families remain later concerns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -434,7 +434,7 @@ impl RenderResultTopology {
 
 /// Semantic acceptance tolerance, independent of physical numeric storage and packing.
 ///
-/// For scalar R2 outputs, `Exact` permits no deviation from the exact semantic quantity;
+/// For scalar semantic outputs, `Exact` permits no deviation from the exact semantic quantity;
 /// `Absolute(max_error)` permits absolute error no greater than `max_error` in that output's
 /// semantic units; and `Relative(max_fraction)` permits absolute error no greater than
 /// `max_fraction * abs(exact_value)`. A zero exact value therefore requires zero absolute error
@@ -680,7 +680,7 @@ impl RenderRequestBuilder {
     }
 }
 
-/// R2 renderer-semantic request envelope.
+/// Renderer-semantic request envelope.
 ///
 /// All render/shutter times in one request are values on the same renderer-semantic timeline used
 /// by the paired scene snapshot's temporal state. Source clocks, simulation ticks, wall clocks, and
