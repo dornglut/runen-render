@@ -128,6 +128,11 @@ fn tessellate_events(
             &mut sink,
         )
     };
+    // Host admission failures retain the owning sample-space path. Lyon's
+    // callback error token cannot carry the renderer's typed resource error.
+    if let Some(error) = sink.admission_error.take() {
+        return Err(error);
+    }
     if sink.geometry.exceeded {
         return Err(fail(Render2dVectorError::ResourceLimit));
     }
@@ -520,8 +525,10 @@ fn neutral_support_impl(
             Ok(())
         })();
         if let Err(err) = emitted {
+            let bytes = triangles.capacity() * std::mem::size_of::<[f64; 2]>();
+            drop(triangles);
             if let Some((work, _)) = admitted.as_mut() {
-                work.release_bytes(triangles.capacity() * std::mem::size_of::<[f64; 2]>());
+                work.release_bytes(bytes);
             }
             return Err(err);
         }
@@ -1161,6 +1168,7 @@ impl BoundedGeometry {
 /// Success transfers both buffers and their leases through neutral conversion.
 struct TessellationSink<'w, 'a> {
     geometry: BoundedGeometry,
+    admission_error: Option<Render2dExecutionError>,
     admitted: Option<(
         &'w mut super::shadow::NeutralPreparationWork<'a>,
         &'w [usize],
@@ -1176,6 +1184,7 @@ impl<'w, 'a> TessellationSink<'w, 'a> {
     ) -> Self {
         Self {
             geometry: BoundedGeometry::default(),
+            admission_error: None,
             admitted,
         }
     }
@@ -1207,10 +1216,10 @@ impl<'w, 'a> TessellationSink<'w, 'a> {
         {
             let capacity =
                 Self::next_capacity(self.geometry.vertices.capacity(), id.0 as usize + 1);
-            if work
-                .reserve_vector(&mut self.geometry.vertices, capacity, path)
-                .is_err()
+            if let Err(error) =
+                work.reserve_vector(&mut self.geometry.vertices, capacity, path)
             {
+                self.admission_error = Some(error);
                 self.geometry.exceeded = true;
                 return Err(GeometryBuilderError::TooManyVertices);
             }
@@ -1224,8 +1233,13 @@ impl<'w, 'a> TessellationSink<'w, 'a> {
 
 impl Drop for TessellationSink<'_, '_> {
     fn drop(&mut self) {
+        // Release the host receipt only after the physical Vec buffers die.
+        // On successful transfer, into_geometry has already emptied this sink.
+        let geometry = std::mem::take(&mut self.geometry);
+        let leased = geometry.leased_bytes();
+        drop(geometry);
         if let Some((work, _)) = self.admitted.as_mut() {
-            work.release_bytes(self.geometry.leased_bytes());
+            work.release_bytes(leased);
         }
     }
 }
@@ -1244,10 +1258,10 @@ impl GeometryBuilder for TessellationSink<'_, '_> {
             && let Some((work, path)) = self.admitted.as_mut()
         {
             let capacity = Self::next_capacity(self.geometry.indices.capacity(), needed);
-            if work
-                .reserve_vector(&mut self.geometry.indices, capacity, path)
-                .is_err()
+            if let Err(error) =
+                work.reserve_vector(&mut self.geometry.indices, capacity, path)
             {
+                self.admission_error = Some(error);
                 self.geometry.exceeded = true;
                 return;
             }
@@ -1890,6 +1904,60 @@ mod tests {
             super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK
         );
         assert_eq!((host.live(), host.peak()), (0, 0));
+    }
+
+    #[test]
+    fn admitted_vector_lyon_callback_failures_preserve_source_owner() {
+        let source = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::rect(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let owner = [9, 3];
+        let vertex_bytes = 8 * std::mem::size_of::<Point>();
+        let index_bytes = 8 * std::mem::size_of::<u32>();
+        for (prior, expected_peak) in [
+            (
+                super::super::support::MAX_SHADOW_HOST_BYTES - vertex_bytes + 1,
+                super::super::support::MAX_SHADOW_HOST_BYTES - vertex_bytes + 1,
+            ),
+            (
+                super::super::support::MAX_SHADOW_HOST_BYTES - vertex_bytes - index_bytes + 1,
+                super::super::support::MAX_SHADOW_HOST_BYTES - index_bytes + 1,
+            ),
+        ] {
+            let mut host = super::super::support::PreparationHostBudget::new();
+            host.reserve(prior, &owner).unwrap();
+            let mut graph_work = 0;
+            let mut clip_work = 0;
+            let rejected = neutral_support_admitted(
+                &source,
+                9,
+                1.0,
+                4096,
+                &mut super::super::shadow::NeutralPreparationWork::new(
+                    &mut graph_work,
+                    &mut clip_work,
+                    &mut host,
+                ),
+                &owner,
+            );
+            assert!(matches!(
+                rejected,
+                Err(Render2dExecutionError::SampleSpace {
+                    kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                    path: Some(path),
+                    ..
+                }) if path == owner
+            ));
+            assert_eq!(graph_work, 256 + 4 + 5);
+            assert_eq!(host.live(), prior);
+            assert_eq!(host.peak(), expected_peak);
+        }
     }
 
     #[test]
