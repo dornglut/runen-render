@@ -1216,9 +1216,7 @@ impl<'w, 'a> TessellationSink<'w, 'a> {
         {
             let capacity =
                 Self::next_capacity(self.geometry.vertices.capacity(), id.0 as usize + 1);
-            if let Err(error) =
-                work.reserve_vector(&mut self.geometry.vertices, capacity, path)
-            {
+            if let Err(error) = work.reserve_vector(&mut self.geometry.vertices, capacity, path) {
                 self.admission_error = Some(error);
                 self.geometry.exceeded = true;
                 return Err(GeometryBuilderError::TooManyVertices);
@@ -1258,9 +1256,7 @@ impl GeometryBuilder for TessellationSink<'_, '_> {
             && let Some((work, path)) = self.admitted.as_mut()
         {
             let capacity = Self::next_capacity(self.geometry.indices.capacity(), needed);
-            if let Err(error) =
-                work.reserve_vector(&mut self.geometry.indices, capacity, path)
-            {
+            if let Err(error) = work.reserve_vector(&mut self.geometry.indices, capacity, path) {
                 self.admission_error = Some(error);
                 self.geometry.exceeded = true;
                 return;
