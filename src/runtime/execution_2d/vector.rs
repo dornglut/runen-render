@@ -41,7 +41,7 @@ fn tessellate_shape(
     stroke: Option<Render2dStrokeStyle>,
     root_index: usize,
     stretch: f64,
-    admitted: Option<(&mut super::shadow::NeutralPreparationWork<'_>, &[usize])>,
+    mut admitted: Option<(&mut super::shadow::NeutralPreparationWork<'_>, &[usize])>,
 ) -> Result<BoundedGeometry, Render2dExecutionError> {
     let fail = |kind| error(root_index, kind);
     let tolerance = PHYSICAL_TOLERANCE / stretch;
@@ -52,7 +52,13 @@ fn tessellate_shape(
         let events = AuthoredEvents::new(path, tolerance).map_err(fail)?;
         return tessellate_events(events, shape, stroke, root_index, tolerance, admitted);
     }
-    let events = GeneratedEvents::new(shape, tolerance).map_err(fail)?;
+    let events = GeneratedEvents::plan(shape, tolerance).map_err(fail)?;
+    // The generated contour's coordinate scan performs one real operation
+    // per planned point; admit it before evaluating expensive arc positions.
+    if let Some((work, path)) = admitted.as_mut() {
+        work.charge(events.total, path)?;
+    }
+    events.verify().map_err(fail)?;
     tessellate_events(events, shape, stroke, root_index, tolerance, admitted)
 }
 
@@ -749,7 +755,14 @@ struct GeneratedEvents {
 }
 
 impl GeneratedEvents {
+    #[cfg(test)]
     fn new(shape: &Render2dShape, tolerance: f64) -> Result<Self, Render2dVectorError> {
+        let candidate = Self::plan(shape, tolerance)?;
+        candidate.verify()?;
+        Ok(candidate)
+    }
+
+    fn plan(shape: &Render2dShape, tolerance: f64) -> Result<Self, Render2dVectorError> {
         let (outline, total) = if let Some(rect) = shape.as_rect() {
             if rect.is_empty() {
                 (GeneratedOutline::Empty, 0)
@@ -837,14 +850,6 @@ impl GeneratedEvents {
         } else {
             (GeneratedOutline::Empty, 0)
         };
-        // Numeric conversion must fail before Lyon consumes any event, as it
-        // did while constructing the previous intermediate Path. Replay is
-        // deterministic because outline descriptors and tolerance are fixed.
-        for index in 0..total {
-            let [x, y] = outline.at(index);
-            narrow(x, tolerance)?;
-            narrow(y, tolerance)?;
-        }
         Ok(Self {
             outline,
             tolerance,
@@ -854,6 +859,17 @@ impl GeneratedEvents {
             previous: point(0.0, 0.0),
             ended: false,
         })
+    }
+
+    fn verify(&self) -> Result<(), Render2dVectorError> {
+        // Every physical coordinate is checked before Lyon consumes a single
+        // event. Resource work is charged before this scan by the F3F caller.
+        for index in 0..self.total {
+            let [x, y] = self.outline.at(index);
+            narrow(x, self.tolerance)?;
+            narrow(y, self.tolerance)?;
+        }
+        Ok(())
     }
 }
 
@@ -1665,6 +1681,49 @@ mod tests {
     }
 
     #[test]
+    fn generated_numeric_preflight_rejects_work_shortfall_before_arc_scan() {
+        let source = Render2dItem::new(
+            Render2dPrimitive::Fill {
+                shape: Render2dShape::ellipse(
+                    Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap(),
+                ),
+                brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
+            },
+            Render2dAffineTransform::IDENTITY,
+            Vec::new(),
+            Render2dOpacity::TRANSPARENT,
+        );
+        let path = [6, 3];
+        let mut graph = super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 256;
+        let mut clips = 0;
+        let mut host = super::super::support::PreparationHostBudget::new();
+        let result = neutral_support_admitted(
+            &source,
+            6,
+            1.0,
+            4096,
+            &mut super::super::shadow::NeutralPreparationWork::new(
+                &mut graph,
+                &mut clips,
+                &mut host,
+            ),
+            &path,
+        );
+        assert!(matches!(
+            result,
+            Err(Render2dExecutionError::SampleSpace {
+                kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                path: Some(owner),
+                ..
+            }) if owner == path
+        ));
+        // Only existing 256 setup work was actually admitted. No curved
+        // coordinate scan, Lyon internal heap, or callback Vec was reached.
+        assert_eq!(graph, super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK);
+        assert_eq!((host.live(), host.peak()), (0, 0));
+    }
+
+    #[test]
     fn flattened_input_scan_spends_shared_work_before_lyon_sweep() {
         let source = Render2dItem::new(
             Render2dPrimitive::Fill {
@@ -1676,11 +1735,12 @@ mod tests {
             Render2dOpacity::TRANSPARENT,
         );
         let path = [4, 7];
-        let mut graph = super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 256 - 2;
+        let mut graph = super::super::support::MAX_COMPOSITIONAL_SHADOW_WORK - 256 - 4 - 2;
         let mut clip_pairs = 0;
         let mut host = super::super::support::PreparationHostBudget::new();
-        // Two flatten events are admitted after setup. The third event
-        // fails before any Lyon callback output is allocated.
+        // Four generated-point preflight operations and two flattened
+        // events are admitted after setup. The third flattened event fails
+        // before any Lyon callback output is allocated.
         let result = neutral_support_admitted(
             &source,
             4,
