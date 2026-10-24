@@ -2179,9 +2179,13 @@ impl NeutralRegionBuilder {
                     shadow::charge_vertices(&mut candidate_vertices, mesh.triangles.len(), path)?;
                     let mut output = shadow::empty_mesh();
                     self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
-                    if let Err(error) =
-                        shadow::append_admitted(&mut output, &mesh, *to_parent, path, &mut self.host)
-                    {
+                    if let Err(error) = shadow::append_admitted(
+                        &mut output,
+                        &mesh,
+                        *to_parent,
+                        path,
+                        &mut self.host,
+                    ) {
                         let bytes = output.triangles.capacity() * size_of::<[f64; 2]>();
                         drop(output);
                         self.host.release(bytes);
