@@ -259,10 +259,7 @@ fn shaped_source<'a>(
 /// A transferred neutral source keeps its host lease for the entire lifetime
 /// of its triangle Vec. Retire the receipt only after dropping the actual
 /// allocation, including every failed and discarded intermediate mesh.
-fn retire_admitted_mesh(
-    mesh: NeutralMesh,
-    host: &mut super::support::PreparationHostBudget,
-) {
+fn retire_admitted_mesh(mesh: NeutralMesh, host: &mut super::support::PreparationHostBudget) {
     let bytes = mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>();
     drop(mesh);
     host.release(bytes);
