@@ -803,8 +803,9 @@ impl NeutralRegionBuilder {
             .reserve_vector(&mut owner_path, path.len(), path)?;
         let node_bytes = size_of::<NeutralRegion<'_>>() + 2 * size_of::<usize>();
         if let Err(error) = self.host.reserve(node_bytes, path) {
-            self.host
-                .release(owner_path.capacity() * size_of::<usize>());
+            let bytes = owner_path.capacity() * size_of::<usize>();
+            drop(owner_path);
+            self.host.release(bytes);
             return Err(error);
         }
         owner_path.extend_from_slice(path);
@@ -1122,7 +1123,9 @@ impl NeutralRegionBuilder {
             Some((bytes, construction))
         })();
         self.graph_work = MAX_REGION_GRAPH_WORK - fuel;
-        self.host.release(seen.capacity() + MAX_REGION_DEPTH * 128);
+        let seen_bytes = seen.capacity();
+        drop(seen);
+        self.host.release(seen_bytes + MAX_REGION_DEPTH * 128);
         result.ok_or_else(|| resource(&[], "source storage inventory exceeds admission"))
     }
 
@@ -2160,8 +2163,9 @@ impl NeutralRegionBuilder {
                         // Cached child receipts persist, but the failed union
                         // cannot retain its own provisional copied vertices.
                         self.retained_vertices -= provisional_vertices;
-                        self.host
-                            .release(output.triangles.capacity() * size_of::<[f64; 2]>());
+                        let bytes = output.triangles.capacity() * size_of::<[f64; 2]>();
+                        drop(output);
+                        self.host.release(bytes);
                         return Err(error);
                     }
                     // All source copies were admitted before append. Commit
@@ -2175,7 +2179,14 @@ impl NeutralRegionBuilder {
                     shadow::charge_vertices(&mut candidate_vertices, mesh.triangles.len(), path)?;
                     let mut output = shadow::empty_mesh();
                     self.charge_graph_work(shadow::append_work(&output, &mesh, path)?, path)?;
-                    shadow::append_admitted(&mut output, &mesh, *to_parent, path, &mut self.host)?;
+                    if let Err(error) =
+                        shadow::append_admitted(&mut output, &mesh, *to_parent, path, &mut self.host)
+                    {
+                        let bytes = output.triangles.capacity() * size_of::<[f64; 2]>();
+                        drop(output);
+                        self.host.release(bytes);
+                        return Err(error);
+                    }
                     self.retained_vertices = candidate_vertices;
                     output_admitted = true;
                     Arc::new(output)
@@ -2202,8 +2213,9 @@ impl NeutralRegionBuilder {
                     ) {
                         // The clipped output was preadmitted by its factory,
                         // but no failed result becomes retained graph state.
-                        self.host
-                            .release(clipped.triangles.capacity() * size_of::<[f64; 2]>());
+                        let bytes = clipped.triangles.capacity() * size_of::<[f64; 2]>();
+                        drop(clipped);
+                        self.host.release(bytes);
                         return Err(error);
                     }
                     output_admitted = true;
@@ -2316,13 +2328,18 @@ impl NeutralRegionBuilder {
                                 shadow::append_work(&shifted, caster, path)?,
                                 path,
                             )?;
-                            shadow::append_admitted(
+                            if let Err(error) = shadow::append_admitted(
                                 &mut shifted,
                                 caster,
                                 offset,
                                 path,
                                 &mut self.host,
-                            )?;
+                            ) {
+                                let bytes = shifted.triangles.capacity() * size_of::<[f64; 2]>();
+                                drop(shifted);
+                                self.host.release(bytes);
+                                return Err(error);
+                            }
                             if effect.sigma() > 0.0 && !shifted.triangles.is_empty() {
                                 let shifted_bytes =
                                     shifted.triangles.capacity() * size_of::<[f64; 2]>();
@@ -2353,14 +2370,16 @@ impl NeutralRegionBuilder {
                                         square.triangles.len(),
                                         path,
                                     ) {
-                                        self.host.release(
-                                            square.triangles.capacity() * size_of::<[f64; 2]>(),
-                                        );
+                                        let bytes =
+                                            square.triangles.capacity() * size_of::<[f64; 2]>();
+                                        drop(square);
+                                        self.host.release(bytes);
                                         return Err(error);
                                     }
                                     Ok(square)
                                 })(
                                 );
+                                drop(shifted);
                                 self.host.release(shifted_bytes);
                                 let square = expanded?;
                                 self.retained_vertices = completed_vertices;
@@ -2372,6 +2391,7 @@ impl NeutralRegionBuilder {
                                 Ok(Arc::new(shifted))
                             }
                         })();
+                        drop(erased);
                         self.host.release(erased_bytes);
                         constructed?
                     }
@@ -2413,8 +2433,9 @@ impl NeutralRegionBuilder {
                 // all charged proof work intact. The outer guard owns header
                 // retirement for this failed parent.
                 if new_mesh {
-                    self.host
-                        .release(mesh.triangles.capacity() * size_of::<[f64; 2]>());
+                    let bytes = mesh.triangles.capacity() * size_of::<[f64; 2]>();
+                    drop(mesh);
+                    self.host.release(bytes);
                 }
                 return Err(error);
             }
