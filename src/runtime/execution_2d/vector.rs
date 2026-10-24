@@ -1458,8 +1458,14 @@ mod tests {
                 previous.iter().collect::<Vec<_>>()
             );
             assert_eq!(
-                events.clone().flattened(tolerance as f32).collect::<Vec<_>>(),
-                previous.iter().flattened(tolerance as f32).collect::<Vec<_>>()
+                events
+                    .clone()
+                    .flattened(tolerance as f32)
+                    .collect::<Vec<_>>(),
+                previous
+                    .iter()
+                    .flattened(tolerance as f32)
+                    .collect::<Vec<_>>()
             );
             for stroke in [
                 None,
