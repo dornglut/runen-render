@@ -11,8 +11,11 @@ use lyon_tessellation::{
         FillGeometryBuilder, GeometryBuilder, GeometryBuilderError, StrokeGeometryBuilder,
     },
     math::{Point, point},
-    path::{Path, PathEvent, iterator::PathIterator},
+    path::{PathEvent, iterator::PathIterator},
 };
+
+#[cfg(test)]
+use lyon_tessellation::path::Path;
 
 const PHYSICAL_TOLERANCE: f64 = 1.0 / 64.0;
 const MAX_ELEMENTS: usize = 1_048_576;
@@ -49,15 +52,8 @@ fn tessellate_shape(
         let events = AuthoredEvents::new(path, tolerance).map_err(fail)?;
         return tessellate_events(events, shape, stroke, root_index, tolerance, admitted);
     }
-    let lyon_path = build_path(shape, tolerance).map_err(fail)?;
-    tessellate_events(
-        lyon_path.iter(),
-        shape,
-        stroke,
-        root_index,
-        tolerance,
-        admitted,
-    )
+    let events = GeneratedEvents::new(shape, tolerance).map_err(fail)?;
+    tessellate_events(events, shape, stroke, root_index, tolerance, admitted)
 }
 
 /// All authored path data is immutable and borrowed; this preserves the exact
@@ -687,6 +683,216 @@ impl Iterator for AuthoredEvents<'_> {
     }
 }
 
+// Generated primitives contain at most four on-stack arc descriptors.
+// Replaying this iterator replaces Lyon's intermediate point and verb Vecs,
+// without faceting the authored F1 paths or creating another tessellator.
+#[derive(Clone, Copy)]
+struct GeneratedArc {
+    center: [f64; 2],
+    radii: [f64; 2],
+    start: f64,
+    sweep: f64,
+    steps: usize,
+}
+
+impl GeneratedArc {
+    fn at(self, index: usize) -> [f64; 2] {
+        if self.radii[0].max(self.radii[1]) == 0.0 {
+            return self.center;
+        }
+        let count = self.steps - 1;
+        let angle = self.start + self.sweep * index as f64 / count as f64;
+        [
+            self.center[0] + self.radii[0] * angle.cos(),
+            self.center[1] + self.radii[1] * angle.sin(),
+        ]
+    }
+}
+
+#[derive(Clone)]
+enum GeneratedOutline {
+    Empty,
+    Rectangle([[f64; 2]; 4]),
+    Ellipse(GeneratedArc),
+    Rounded([GeneratedArc; 4]),
+}
+
+impl GeneratedOutline {
+    fn at(&self, index: usize) -> [f64; 2] {
+        match self {
+            Self::Empty => unreachable!("empty outline has no points"),
+            Self::Rectangle(corners) => corners[index],
+            Self::Ellipse(arc) => arc.at(index),
+            Self::Rounded(arcs) => {
+                let mut remaining = index;
+                for arc in arcs {
+                    if remaining < arc.steps {
+                        return arc.at(remaining);
+                    }
+                    remaining -= arc.steps;
+                }
+                unreachable!("index admitted by generated contour preflight")
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct GeneratedEvents {
+    outline: GeneratedOutline,
+    tolerance: f64,
+    total: usize,
+    cursor: usize,
+    first: Point,
+    previous: Point,
+    ended: bool,
+}
+
+impl GeneratedEvents {
+    fn new(shape: &Render2dShape, tolerance: f64) -> Result<Self, Render2dVectorError> {
+        let (outline, total) = if let Some(rect) = shape.as_rect() {
+            if rect.is_empty() {
+                (GeneratedOutline::Empty, 0)
+            } else {
+                (
+                    GeneratedOutline::Rectangle([
+                        [rect.x(), rect.y()],
+                        [rect.x() + rect.width(), rect.y()],
+                        [rect.x() + rect.width(), rect.y() + rect.height()],
+                        [rect.x(), rect.y() + rect.height()],
+                    ]),
+                    4,
+                )
+            }
+        } else if let Some(rect) = shape.as_ellipse() {
+            if rect.is_empty() {
+                (GeneratedOutline::Empty, 0)
+            } else {
+                let radii = [rect.width() / 2.0, rect.height() / 2.0];
+                let steps = arc_count(radii, std::f64::consts::TAU, tolerance)?;
+                if steps > MAX_ELEMENTS {
+                    return Err(Render2dVectorError::ResourceLimit);
+                }
+                (
+                    GeneratedOutline::Ellipse(GeneratedArc {
+                        center: [
+                            rect.x() + rect.width() / 2.0,
+                            rect.y() + rect.height() / 2.0,
+                        ],
+                        radii,
+                        start: 0.0,
+                        sweep: std::f64::consts::TAU,
+                        steps,
+                    }),
+                    steps,
+                )
+            }
+        } else if let Some((rect, radii)) = shape.as_rounded_rect() {
+            if rect.is_empty() {
+                (GeneratedOutline::Empty, 0)
+            } else {
+                let [x, y, w, h] = [rect.x(), rect.y(), rect.width(), rect.height()];
+                let mut arcs = [
+                    GeneratedArc {
+                        center: [x + w - radii.top_right(), y + radii.top_right()],
+                        radii: [radii.top_right(); 2],
+                        start: -std::f64::consts::FRAC_PI_2,
+                        sweep: std::f64::consts::FRAC_PI_2,
+                        steps: 0,
+                    },
+                    GeneratedArc {
+                        center: [x + w - radii.bottom_right(), y + h - radii.bottom_right()],
+                        radii: [radii.bottom_right(); 2],
+                        start: 0.0,
+                        sweep: std::f64::consts::FRAC_PI_2,
+                        steps: 0,
+                    },
+                    GeneratedArc {
+                        center: [x + radii.bottom_left(), y + h - radii.bottom_left()],
+                        radii: [radii.bottom_left(); 2],
+                        start: std::f64::consts::FRAC_PI_2,
+                        sweep: std::f64::consts::FRAC_PI_2,
+                        steps: 0,
+                    },
+                    GeneratedArc {
+                        center: [x + radii.top_left(), y + radii.top_left()],
+                        radii: [radii.top_left(); 2],
+                        start: std::f64::consts::PI,
+                        sweep: std::f64::consts::FRAC_PI_2,
+                        steps: 0,
+                    },
+                ];
+                // As before, validate all four event counts before the
+                // first coordinate is narrowed into physical f32.
+                let mut total = 0_usize;
+                for arc in &mut arcs {
+                    arc.steps = arc_count(arc.radii, arc.sweep, tolerance)?;
+                    total = total
+                        .checked_add(arc.steps)
+                        .filter(|&count| count <= MAX_ELEMENTS)
+                        .ok_or(Render2dVectorError::ResourceLimit)?;
+                }
+                (GeneratedOutline::Rounded(arcs), total)
+            }
+        } else {
+            (GeneratedOutline::Empty, 0)
+        };
+        // Numeric conversion must fail before Lyon consumes any event, as it
+        // did while constructing the previous intermediate Path. Replay is
+        // deterministic because outline descriptors and tolerance are fixed.
+        for index in 0..total {
+            let [x, y] = outline.at(index);
+            narrow(x, tolerance)?;
+            narrow(y, tolerance)?;
+        }
+        Ok(Self {
+            outline,
+            tolerance,
+            total,
+            cursor: 0,
+            first: point(0.0, 0.0),
+            previous: point(0.0, 0.0),
+            ended: false,
+        })
+    }
+}
+
+impl Iterator for GeneratedEvents {
+    type Item = PathEvent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.cursor < self.total {
+            let [x, y] = self.outline.at(self.cursor);
+            let at = point(
+                narrow(x, self.tolerance).expect("preflighted generated point"),
+                narrow(y, self.tolerance).expect("preflighted generated point"),
+            );
+            let result = if self.cursor == 0 {
+                self.first = at;
+                PathEvent::Begin { at }
+            } else {
+                PathEvent::Line {
+                    from: self.previous,
+                    to: at,
+                }
+            };
+            self.previous = at;
+            self.cursor += 1;
+            Some(result)
+        } else if !self.ended && self.total > 0 {
+            self.ended = true;
+            Some(PathEvent::End {
+                last: self.previous,
+                first: self.first,
+                close: true,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
 fn build_path(shape: &Render2dShape, tolerance: f64) -> Result<Path, Render2dVectorError> {
     let mut builder = Path::builder();
     let p = |x, y| Ok(point(narrow(x, tolerance)?, narrow(y, tolerance)?));
@@ -844,6 +1050,7 @@ fn arc_count(radii: [f64; 2], sweep: f64, tolerance: f64) -> Result<usize, Rende
     Ok(count as usize + 1)
 }
 
+#[cfg(test)]
 fn arc(
     emit: &mut impl FnMut([f64; 2]) -> Result<(), Render2dVectorError>,
     emitted: &mut usize,
@@ -1225,6 +1432,84 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn generated_events_match_old_path_and_tessellated_geometry() {
+        let cases = [
+            Render2dShape::rect(Render2dRect::new(-2.0, 1.0, 5.0, 4.0).unwrap()),
+            Render2dShape::rect(Render2dRect::new(0.0, 0.0, 0.0, 4.0).unwrap()),
+            Render2dShape::ellipse(Render2dRect::new(1.0, 2.0, 4.0, 6.0).unwrap()),
+            Render2dShape::rounded_rect(
+                Render2dRect::new(-2.0, 1.0, 9.0, 8.0).unwrap(),
+                Render2dCornerRadii::new(1.0, 2.0, 1.5, 0.5).unwrap(),
+            ),
+            Render2dShape::rounded_rect(
+                Render2dRect::new(-2.0, 1.0, 9.0, 8.0).unwrap(),
+                Render2dCornerRadii::new(0.0, 2.0, 1.5, 0.0).unwrap(),
+            ),
+        ];
+        let tolerance = PHYSICAL_TOLERANCE;
+        for shape in cases {
+            let previous = build_path(&shape, tolerance).unwrap();
+            let events = GeneratedEvents::new(&shape, tolerance).unwrap();
+            assert_eq!(
+                events.clone().collect::<Vec<_>>(),
+                previous.iter().collect::<Vec<_>>()
+            );
+            assert_eq!(
+                events.clone().flattened(tolerance as f32).collect::<Vec<_>>(),
+                previous.iter().flattened(tolerance as f32).collect::<Vec<_>>()
+            );
+            for stroke in [
+                None,
+                Some(
+                    Render2dStrokeStyle::new(
+                        2.0,
+                        Render2dStrokeCap::Round,
+                        Render2dStrokeJoin::Round,
+                        4.0,
+                    )
+                    .unwrap(),
+                ),
+            ] {
+                let actual = tessellate_shape(&shape, stroke, 4, 1.0, None);
+                let mut old = TessellationSink::new(None);
+                let result = if let Some(style) = stroke {
+                    StrokeTessellator::new().tessellate_path(
+                        &previous,
+                        &StrokeOptions::default()
+                            .with_tolerance(tolerance as f32)
+                            .with_line_width(style.width() as f32)
+                            .with_line_cap(LineCap::Round)
+                            .with_line_join(LineJoin::Round)
+                            .with_miter_limit(style.miter_limit() as f32),
+                        &mut old,
+                    )
+                } else {
+                    FillTessellator::new().tessellate_path(
+                        &previous,
+                        &FillOptions::default()
+                            .with_fill_rule(FillRule::NonZero)
+                            .with_tolerance(tolerance as f32),
+                        &mut old,
+                    )
+                };
+                assert_eq!(actual.is_ok(), result.is_ok());
+                if let Ok(actual) = actual {
+                    assert_eq!(actual.vertices, old.geometry.vertices);
+                    assert_eq!(actual.indices, old.geometry.indices);
+                }
+            }
+        }
+        let oversized = Render2dShape::rounded_rect(
+            Render2dRect::new(1.0e12, 0.0, 20.0, 20.0).unwrap(),
+            Render2dCornerRadii::new(3.0, 3.0, 3.0, 3.0).unwrap(),
+        );
+        assert!(matches!(
+            GeneratedEvents::new(&oversized, 1.0e-11),
+            Err(Render2dVectorError::ResourceLimit)
+        ));
     }
 
     #[test]
