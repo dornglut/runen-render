@@ -2384,6 +2384,17 @@ fn union_exterior_boundary(
     union_exterior_boundary_with_host(triangles, path, aggregate_work, None)
 }
 
+/// Retire a factory-owned Vec only after its physical allocation has died.
+/// The invocation's host receipt must never be released while its bytes still
+/// coexist with a subsequent caller allocation.
+fn retire_owned_host_vector<T>(values: Vec<T>, host: Option<&mut PreparationHostBudget>) {
+    let bytes = values.capacity() * size_of::<T>();
+    drop(values);
+    if let Some(host) = host {
+        host.release(bytes);
+    }
+}
+
 fn union_exterior_boundary_with_host(
     triangles: &[[f64; 2]],
     path: &[usize],
@@ -2581,13 +2592,14 @@ fn union_exterior_boundary_with_host(
         }
         Ok(())
     })();
-    if let Some(host) = host {
-        host.release(intervals.capacity() * size_of::<f64>());
-        if completed.is_err() {
-            host.release(boundary.capacity() * size_of::<UnionBoundaryEdge>());
+    retire_owned_host_vector(intervals, host.as_deref_mut());
+    match completed {
+        Ok(()) => Ok(boundary),
+        Err(error) => {
+            retire_owned_host_vector(boundary, host);
+            Err(error)
         }
     }
-    completed.map(|()| boundary)
 }
 
 /// A conservative separation certificate for the exact union exterior.
@@ -2877,15 +2889,20 @@ fn certified_convex_eroded_union_with_host(
         }
         Ok(Some(()))
     })();
-    if let Some(host) = host {
-        host.release(planes.capacity() * size_of::<([f64; 2], [f64; 2], f64, f64)>());
-        host.release(polygon.capacity() * size_of::<[f64; 2]>());
-        host.release(next.capacity() * size_of::<[f64; 2]>());
-        if !matches!(&completed, Ok(Some(()))) {
-            host.release(output.capacity() * size_of::<[f64; 2]>());
+    retire_owned_host_vector(planes, host.as_deref_mut());
+    retire_owned_host_vector(polygon, host.as_deref_mut());
+    retire_owned_host_vector(next, host.as_deref_mut());
+    match completed {
+        Ok(Some(())) => Ok(Some(output)),
+        Ok(None) => {
+            retire_owned_host_vector(output, host);
+            Ok(None)
+        }
+        Err(error) => {
+            retire_owned_host_vector(output, host);
+            Err(error)
         }
     }
-    completed.map(|result| result.map(|()| output))
 }
 
 /// Certify a renderer-private nested *negative* Euclidean spread as exact
@@ -3024,7 +3041,7 @@ pub(super) fn certified_convex_erosion_mesh(
                     Some(aggregate_work),
                     Some(&mut *host),
                 );
-                host.release(boundary.capacity() * size_of::<UnionBoundaryEdge>());
+                retire_owned_host_vector(boundary, Some(&mut *host));
                 let Some(derived) = derived? else {
                     return Ok(None);
                 };
@@ -3068,11 +3085,11 @@ pub(super) fn certified_convex_erosion_mesh(
     // Normalize/rectangle scratch end before the consumer can retire the
     // separately preadmitted output. Actual heap capacities, not lengths,
     // are the accounting units for both successful and failed attempts.
-    host.release(convex_derived.capacity() * size_of::<[f64; 2]>());
-    host.release(rectangle_derived.capacity() * size_of::<[f64; 2]>());
-    host.release(triangles.capacity() * size_of::<[f64; 2]>());
+    retire_owned_host_vector(convex_derived, Some(&mut *host));
+    retire_owned_host_vector(rectangle_derived, Some(&mut *host));
+    retire_owned_host_vector(triangles, Some(&mut *host));
     if !matches!(&completed, Ok(Some(()))) {
-        host.release(result.triangles.capacity() * size_of::<[f64; 2]>());
+        retire_owned_host_vector(std::mem::take(&mut result.triangles), Some(host));
     }
     completed.map(|outcome| outcome.map(|()| result))
 }
@@ -3261,9 +3278,9 @@ pub(super) fn certified_separated_rectangles_erosion_mesh(
     })();
     // Rectangle proofs expire here on every path; the completed output
     // retains its own admitted vector capacity until its caller retires it.
-    host.release(rectangles.capacity() * size_of::<[f64; 4]>());
+    retire_owned_host_vector(rectangles, Some(&mut *host));
     if !matches!(&completed, Ok(Some(()))) {
-        host.release(result.triangles.capacity() * size_of::<[f64; 2]>());
+        retire_owned_host_vector(std::mem::take(&mut result.triangles), Some(host));
     }
     completed.map(|outcome| outcome.map(|()| result))
 }
