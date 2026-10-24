@@ -1684,9 +1684,7 @@ mod tests {
     fn generated_numeric_preflight_rejects_work_shortfall_before_arc_scan() {
         let source = Render2dItem::new(
             Render2dPrimitive::Fill {
-                shape: Render2dShape::ellipse(
-                    Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap(),
-                ),
+                shape: Render2dShape::ellipse(Render2dRect::new(0.0, 0.0, 2.0, 2.0).unwrap()),
                 brush: Render2dBrush::solid(Render2dColorRgba8::TRANSPARENT),
             },
             Render2dAffineTransform::IDENTITY,
@@ -1703,9 +1701,7 @@ mod tests {
             1.0,
             4096,
             &mut super::super::shadow::NeutralPreparationWork::new(
-                &mut graph,
-                &mut clips,
-                &mut host,
+                &mut graph, &mut clips, &mut host,
             ),
             &path,
         );
