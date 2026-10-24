@@ -256,6 +256,18 @@ fn shaped_source<'a>(
     Ok((resource, fields))
 }
 
+/// A transferred neutral source keeps its host lease for the entire lifetime
+/// of its triangle Vec. Retire the receipt only after dropping the actual
+/// allocation, including every failed and discarded intermediate mesh.
+fn retire_admitted_mesh(
+    mesh: NeutralMesh,
+    host: &mut super::support::PreparationHostBudget,
+) {
+    let bytes = mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>();
+    drop(mesh);
+    host.release(bytes);
+}
+
 fn neutral_item(
     item: &Render2dItem,
     path: &[usize],
@@ -336,16 +348,14 @@ fn neutral_item(
                     .map_err(|error| neutral_source_error(error, path))?
                     {
                         let appended = work.append_admitted(&mut result, &mesh, path);
-                        work.release_bytes(
-                            mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>(),
-                        );
+                        retire_admitted_mesh(mesh, &mut *work.host);
                         appended?;
                     }
                 }
                 Ok(())
             })();
             if let Err(error) = assembled {
-                work.release_bytes(result.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
+                retire_admitted_mesh(result, &mut *work.host);
                 return Err(error);
             }
             if !has_original_outline {
@@ -361,7 +371,7 @@ fn neutral_item(
     // materialization must independently prove emptiness or stay symbolic.
     let mesh = result.unwrap_or_else(empty_mesh);
     if region::trivially_empty_original_source(item) {
-        work.release_bytes(mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
+        retire_admitted_mesh(mesh, &mut *work.host);
         return Ok(None);
     }
     // An image factory already emits the complete destination triangles. With
@@ -382,7 +392,7 @@ fn neutral_item(
     // Every leaf factory, including assembled shaped glyphs, owns its mesh
     // output under this invocation's host lease. Only the completed clipped
     // result transfers onward; release the source after either outcome.
-    work.release_bytes(mesh.triangles.capacity() * std::mem::size_of::<[f64; 2]>());
+    retire_admitted_mesh(mesh, &mut *work.host);
     clipped.map(Some)
 }
 
@@ -507,8 +517,9 @@ fn gaussian_square_support(
         Ok(())
     })();
     if let Err(error) = result {
-        // The failed output is dropped on return; only its temporary storage
-        // lease is released. The invocation's already charged work remains.
+        // The failed output is physically destroyed before its reservation
+        // retires; previously executed numerical work is never refunded.
+        drop(expanded);
         host.release(reserved);
         return Err(error);
     }
@@ -2217,8 +2228,7 @@ pub(super) fn intersect_clips(
             .map_err(|error| neutral_source_error(error, path))?
             else {
                 let discarded = std::mem::replace(&mut current, empty_mesh());
-                work.host
-                    .release(discarded.triangles.capacity() * vertex_bytes);
+                retire_admitted_mesh(discarded, &mut *work.host);
                 break;
             };
             let mut clip_local = empty_mesh();
@@ -2262,26 +2272,26 @@ pub(super) fn intersect_clips(
             let source_bytes = clip_mesh.triangles.capacity() * vertex_bytes;
             drop(clip_mesh);
             work.host.release(source_bytes);
-            work.host
-                .release(clip_local.triangles.capacity() * vertex_bytes);
+            retire_admitted_mesh(clip_local, &mut *work.host);
             if let Err(error) = step {
-                work.host.release(next.triangles.capacity() * vertex_bytes);
+                retire_admitted_mesh(next, &mut *work.host);
                 return Err(error);
             }
             let discarded = std::mem::replace(&mut current, next);
-            work.host
-                .release(discarded.triangles.capacity() * vertex_bytes);
+            retire_admitted_mesh(discarded, &mut *work.host);
             if current.triangles.is_empty() {
                 break;
             }
         }
         Ok(())
     })();
-    if assembled.is_err() {
-        work.host
-            .release(current.triangles.capacity() * vertex_bytes);
+    match assembled {
+        Ok(()) => Ok(current),
+        Err(error) => {
+            retire_admitted_mesh(current, &mut *work.host);
+            Err(error)
+        }
     }
-    assembled.map(|()| current)
 }
 #[cfg(test)]
 mod tests {
