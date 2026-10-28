@@ -293,12 +293,9 @@ pub(super) fn shaped_text_pipeline() -> Result<GpuRenderPipelineDescriptor, Rend
         )
         .with_sampler_class(GpuSamplerClass::Filtering),
     ];
-    let program = retained_shaped_text_2d_descriptor(
-        source,
-        [vertex.clone(), fragment.clone()],
-        refinements,
-    )
-    .map_err(|error| gpu("shaped-text program descriptor", error))?;
+    let program =
+        retained_shaped_text_2d_descriptor(source, [vertex.clone(), fragment.clone()], refinements)
+            .map_err(|error| gpu("shaped-text program descriptor", error))?;
     let vertex_layout = GpuVertexBufferLayoutDescriptor::new(
         0,
         VERTEX_STRIDE,

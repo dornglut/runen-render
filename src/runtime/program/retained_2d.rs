@@ -82,9 +82,13 @@ fn retain(
     PROGRAMS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get_or_validate(slot, source, entry_points, refinements, |source, entries, bindings| {
-            GpuProgramDescriptor::new(source, entries, bindings)
-        })
+        .get_or_validate(
+            slot,
+            source,
+            entry_points,
+            refinements,
+            |source, entries, bindings| GpuProgramDescriptor::new(source, entries, bindings),
+        )
 }
 
 pub(crate) fn retained_vector_2d_descriptor(
@@ -125,12 +129,10 @@ mod tests {
         MaintainedShaderProgram, MaintainedShaderSpec, VECTOR_REVISION, VECTOR_WGSL,
         build_maintained_program, retained_vector_source,
     };
-    use runen_gpu::{
-        GpuBindingKey, GpuTextureSampleClass,
-    };
+    use runen_gpu::{GpuBindingKey, GpuTextureSampleClass};
     use std::cell::Cell;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn entries(fragment: &str) -> [GpuEntryPointName; 2] {
         [
@@ -203,13 +205,9 @@ mod tests {
         assert_eq!(calls.get(), 2);
 
         let other = cache
-            .get_or_validate(
-                2,
-                source,
-                entries("fs_coverage"),
-                Vec::new(),
-                |s, e, r| checked(&calls, s, e, r),
-            )
+            .get_or_validate(2, source, entries("fs_coverage"), Vec::new(), |s, e, r| {
+                checked(&calls, s, e, r)
+            })
             .expect("different selected entrypoint");
         assert!(!changed.is_same_record(&other));
         assert_eq!(calls.get(), 3);
@@ -290,13 +288,9 @@ mod tests {
             .expect_err("unknown entrypoint must fail with original GPU contract error");
         let _ = error;
         let again = cache
-            .get_or_validate(
-                0,
-                source,
-                entries("fs_coverage"),
-                Vec::new(),
-                |s, e, r| checked(&calls, s, e, r),
-            )
+            .get_or_validate(0, source, entries("fs_coverage"), Vec::new(), |s, e, r| {
+                checked(&calls, s, e, r)
+            })
             .expect("prior valid contract survived failed admission");
         assert!(first.is_same_record(&again));
         assert_eq!(calls.get(), 2, "failed contract is not cached");
