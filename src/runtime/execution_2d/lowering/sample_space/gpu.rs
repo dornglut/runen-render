@@ -41,9 +41,13 @@ pub(super) fn pipeline(
                 .with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable),
         );
     }
-    let program =
-        GpuProgramDescriptor::new(source, [vertex.clone(), fragment.clone()], refinements)
-            .map_err(|e| gpu("F3E sample program", e))?;
+    let program = retained_vector_2d_descriptor(
+        entry,
+        source,
+        [vertex.clone(), fragment.clone()],
+        refinements,
+    )
+    .map_err(|e| gpu("F3E sample program", e))?;
     let layout = GpuVertexBufferLayoutDescriptor::new(
         0,
         VERTEX_STRIDE,

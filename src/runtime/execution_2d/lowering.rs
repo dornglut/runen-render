@@ -10,7 +10,7 @@ use crate::composition_2d::{Render2dColorRgba8, Render2dResourceId};
 use crate::execution_2d::{
     Render2dExecutionError, Render2dTarget, Render2dTargetAdmissionError, Render2dWorkBinding,
 };
-use crate::runtime::program::retained_shaped_text_source;
+use crate::runtime::program::{retained_shaped_text_2d_descriptor, retained_shaped_text_source};
 use runen_gpu::*;
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
@@ -293,9 +293,12 @@ pub(super) fn shaped_text_pipeline() -> Result<GpuRenderPipelineDescriptor, Rend
         )
         .with_sampler_class(GpuSamplerClass::Filtering),
     ];
-    let program =
-        GpuProgramDescriptor::new(source, [vertex.clone(), fragment.clone()], refinements)
-            .map_err(|error| gpu("shaped-text program descriptor", error))?;
+    let program = retained_shaped_text_2d_descriptor(
+        source,
+        [vertex.clone(), fragment.clone()],
+        refinements,
+    )
+    .map_err(|error| gpu("shaped-text program descriptor", error))?;
     let vertex_layout = GpuVertexBufferLayoutDescriptor::new(
         0,
         VERTEX_STRIDE,
