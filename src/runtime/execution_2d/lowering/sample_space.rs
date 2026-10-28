@@ -858,11 +858,7 @@ mod retained_pipeline_contract_tests {
                 "fs_sample_mask_fill_clipped",
                 Some(0),
             ),
-            (
-                GpuTextureFormat::Rgba16Float,
-                "fs_sample_gradient",
-                Some(0),
-            ),
+            (GpuTextureFormat::Rgba16Float, "fs_sample_gradient", Some(0)),
             (
                 GpuTextureFormat::Rgba16Float,
                 "fs_sample_gradient_clipped",
