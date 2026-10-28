@@ -177,13 +177,23 @@ mod tests {
         let mut cache = Maintained2dDescriptors::default();
         let calls = Cell::new(0);
         let same = entries("fs_sample_merge");
+        let unfilterable = vec![
+            GpuBindingLayoutRefinement::new(
+                GpuBindingKey::try_new(0, 6).expect("sample binding key"),
+            )
+            .with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable),
+        ];
         let initial = cache
-            .get_or_validate(2, source.clone(), same.clone(), Vec::new(), |s, e, r| {
-                checked(&calls, s, e, r)
-            })
+            .get_or_validate(
+                2,
+                source.clone(),
+                same.clone(),
+                unfilterable.clone(),
+                |s, e, r| checked(&calls, s, e, r),
+            )
             .expect("valid descriptor");
         let warm = cache
-            .get_or_validate(2, source.clone(), same.clone(), Vec::new(), |s, e, r| {
+            .get_or_validate(2, source.clone(), same.clone(), unfilterable, |s, e, r| {
                 checked(&calls, s, e, r)
             })
             .expect("warm descriptor");
@@ -194,7 +204,7 @@ mod tests {
             GpuBindingLayoutRefinement::new(
                 GpuBindingKey::try_new(0, 6).expect("sample binding key"),
             )
-            .with_texture_sample_class(GpuTextureSampleClass::FloatUnfilterable),
+            .with_texture_sample_class(GpuTextureSampleClass::FloatFilterable),
         ];
         let changed = cache
             .get_or_validate(2, source.clone(), same, refined, |s, e, r| {
