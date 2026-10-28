@@ -47,13 +47,12 @@ impl Maintained2dDescriptors {
     ) -> Result<GpuProgramDescriptor, GpuProgramContractError> {
         // Record identity implies exact canonical bytes, revision and admission
         // provenance. Different selected interfaces/refinements never alias.
-        if let Some(existing) = self.slots[slot].as_ref() {
-            if existing.descriptor.source().is_same_record(&source)
-                && existing.entry_points == entry_points
-                && existing.refinements == refinements
-            {
-                return Ok(existing.descriptor.clone());
-            }
+        if let Some(existing) = self.slots[slot].as_ref()
+            && existing.descriptor.source().is_same_record(&source)
+            && existing.entry_points == entry_points
+            && existing.refinements == refinements
+        {
+            return Ok(existing.descriptor.clone());
         }
 
         // Do not replace a successful contract unless the new one validates.
@@ -87,7 +86,7 @@ fn retain(
             source,
             entry_points,
             refinements,
-            |source, entries, bindings| GpuProgramDescriptor::new(source, entries, bindings),
+            GpuProgramDescriptor::new,
         )
 }
 
