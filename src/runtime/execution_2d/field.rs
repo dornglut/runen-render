@@ -1,5 +1,9 @@
 //! Private deterministic shaped-outline and MSDF field realization.
 
+mod reuse;
+pub(super) use reuse::FieldReuseIndex;
+use reuse::MatchingFields;
+
 use crate::composition_2d::{Render2dResourceId, Render2dShapedTextResource};
 use crate::execution_2d::{
     Render2dExecutionError, Render2dShapedTextError, Render2dUnsupportedGlyphKind,
@@ -345,6 +349,7 @@ pub(super) fn realize(
     quality: QualityTier,
     max_texture_dimension_2d: u32,
     budget: &mut FieldBudget,
+    reusable: Option<MatchingFields<'_>>,
 ) -> Result<ResourceFields, Render2dExecutionError> {
     if resource.font().faux_bold() {
         return Err(Render2dShapedTextError::UnsupportedGlyph {
@@ -406,6 +411,29 @@ pub(super) fn realize(
         }
 
         intrinsic.admit(glyph_id)?;
+
+        // Immutable font facts and quality were matched by the index. Keep
+        // current resource/size/intrinsic admission and per-invocation limits;
+        // only the already-proven physical outline/bitmap work may be shared.
+        if let Some(field) = reusable.and_then(|matching| matching.glyph(glyph.id()).cloned()) {
+            if let Some(field) = &field {
+                if field.width() > max_texture_dimension_2d
+                    || field.height() > max_texture_dimension_2d
+                {
+                    return Err(Render2dShapedTextError::GlyphExtentExceedsLimit {
+                        resource_id,
+                        glyph_id: glyph.id(),
+                        width: field.width(),
+                        height: field.height(),
+                        maximum: max_texture_dimension_2d,
+                    }
+                    .into());
+                }
+                budget.charge(resource_id, glyph.id(), field.width(), field.height())?;
+            }
+            by_glyph.insert(glyph.id(), field);
+            continue;
+        }
 
         let outline = if let Some(outline) = outlines.get(glyph_id) {
             let mut pen = OutlinePathPen::new(resource.font().faux_skew());
@@ -715,6 +743,7 @@ mod tests {
             QualityTier::P24,
             4096,
             &mut FieldBudget::default(),
+            None,
         )
     }
 
@@ -792,7 +821,8 @@ mod tests {
                 &resource,
                 QualityTier::P24,
                 4096,
-                &mut FieldBudget::default()
+                &mut FieldBudget::default(),
+                None
             ),
             Err(Render2dExecutionError::ShapedText(
                 Render2dShapedTextError::InvalidFont { .. }
