@@ -1,4 +1,7 @@
 pub(crate) mod abi;
+mod retained_2d;
+
+pub(crate) use retained_2d::{retained_shaped_text_2d_descriptor, retained_vector_2d_descriptor};
 
 use runen_gpu::{
     GpuAdmittedProgramSource, GpuProgramSourceError, GpuProgramSourceIdentity, GpuProgramSourceKey,

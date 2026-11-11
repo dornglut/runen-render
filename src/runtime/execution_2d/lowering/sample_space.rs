@@ -21,7 +21,7 @@ use crate::execution_2d::{
 use crate::runtime::execution_2d::{
     clip as clip_geometry, image as image_semantics, scene, vector as geometry,
 };
-use crate::runtime::program::retained_vector_source;
+use crate::runtime::program::{retained_vector_2d_descriptor, retained_vector_source};
 use std::collections::BTreeMap;
 
 // At RGBA16F each 4x4 sample tile occupies 128 bytes per logical pixel/layer.
@@ -831,5 +831,85 @@ mod tile_budget_tests {
         assert_eq!(used, MAX_RETAINED_VECTOR_VERTICES);
         assert!(charge_vector_geometry(&mut used, 1).is_err());
         assert_eq!(used, MAX_RETAINED_VECTOR_VERTICES);
+    }
+}
+
+#[cfg(test)]
+mod retained_pipeline_contract_tests {
+    use super::*;
+
+    #[test]
+    fn all_maintained_2d_variants_reuse_validated_program_but_not_pipeline_state() {
+        let variants = [
+            (GpuTextureFormat::Rgba8Unorm, "fs_coverage", None),
+            (
+                GpuTextureFormat::Rgba16Float,
+                "fs_sample_mask_fill",
+                Some(0),
+            ),
+            (GpuTextureFormat::Rgba16Float, "fs_sample_merge", Some(6)),
+            (
+                GpuTextureFormat::Rgba16Float,
+                "fs_sample_merge_clipped",
+                Some(6),
+            ),
+            (
+                GpuTextureFormat::Rgba16Float,
+                "fs_sample_mask_fill_clipped",
+                Some(0),
+            ),
+            (GpuTextureFormat::Rgba16Float, "fs_sample_gradient", Some(0)),
+            (
+                GpuTextureFormat::Rgba16Float,
+                "fs_sample_gradient_clipped",
+                Some(0),
+            ),
+            (GpuTextureFormat::Rgba16Float, "fs_sample_image", Some(2)),
+            (GpuTextureFormat::Rgba16Float, "fs_sample_resolve", Some(6)),
+        ];
+        let first = variants
+            .iter()
+            .map(|(format, entry, binding)| {
+                pipeline(*format, entry, *binding).expect("first validated pipeline")
+            })
+            .collect::<Vec<_>>();
+        let repeated = variants
+            .iter()
+            .map(|(format, entry, binding)| {
+                pipeline(*format, entry, *binding).expect("repeated validated pipeline")
+            })
+            .collect::<Vec<_>>();
+
+        for (a, b) in first.iter().zip(&repeated) {
+            assert!(
+                a.program().is_same_record(b.program()),
+                "repeated pipelines must reuse exact validated CPU program records",
+            );
+            assert!(
+                !a.is_same_record(b),
+                "each preparation still constructs a separate pipeline descriptor",
+            );
+        }
+        for (i, a) in first.iter().enumerate() {
+            for b in &first[i + 1..] {
+                assert!(
+                    !a.program().is_same_record(b.program()),
+                    "different maintained entrypoint contracts must not alias",
+                );
+            }
+        }
+
+        // The admitted CPU program stays reusable while the target-specific
+        // pipeline contract is reconstructed for a different attachment format.
+        let alternate = pipeline(GpuTextureFormat::Rgba16Float, "fs_coverage", None)
+            .expect("alternate valid target format");
+        assert!(alternate.program().is_same_record(first[0].program()));
+        assert!(!alternate.is_same_record(&first[0]));
+
+        let text_first = super::super::shaped_text_pipeline().expect("first shaped text");
+        let text_again = super::super::shaped_text_pipeline().expect("repeated shaped text");
+        assert!(text_first.program().is_same_record(text_again.program()));
+        assert!(!text_first.is_same_record(&text_again));
+        assert!(!text_first.program().is_same_record(first[0].program()));
     }
 }
