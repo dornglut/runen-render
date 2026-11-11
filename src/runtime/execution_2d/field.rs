@@ -1,6 +1,9 @@
 //! Private deterministic shaped-outline and MSDF field realization.
 
-use crate::composition_2d::{Render2dResourceId, Render2dShapedTextResource};
+use crate::composition_2d::{
+    Render2dFillRule, Render2dPath, Render2dPathCommand, Render2dPoint, Render2dResourceId,
+    Render2dShape, Render2dShapedTextResource,
+};
 use crate::execution_2d::{
     Render2dExecutionError, Render2dShapedTextError, Render2dUnsupportedGlyphKind,
 };
@@ -24,10 +27,17 @@ const FIELD_BORDER: f64 = 4.0;
 // The 4-byte retained RGBA field is preceded by a 3-channel f32 MSDF
 // generation bitmap. Bound aggregate field area before either allocation.
 pub(super) const MAX_TEXT_FIELD_BYTES: u64 = 32 * 1024 * 1024;
+// The same immutable glyph outlines must be retained for F3F neutral geometry.
+// Retain a separate bounded outline budget so previously accepted F2 field
+// byte admission remains exactly unchanged by F3F's geometric source.
+const MAX_TEXT_OUTLINE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_OUTLINE_VERBS: usize =
+    MAX_TEXT_OUTLINE_BYTES as usize / std::mem::size_of::<OutlineVerb>();
 
 #[derive(Debug, Default)]
 pub(super) struct FieldBudget {
     bytes: u64,
+    outline_bytes: u64,
 }
 
 impl FieldBudget {
@@ -37,6 +47,7 @@ impl FieldBudget {
         glyph_id: u32,
         width: u32,
         height: u32,
+        outline_verbs: usize,
     ) -> Result<(), Render2dShapedTextError> {
         let fail = || Render2dShapedTextError::FieldBudgetExceeded {
             resource_id,
@@ -51,7 +62,29 @@ impl FieldBudget {
         if next > MAX_TEXT_FIELD_BYTES {
             return Err(fail());
         }
+        let outline_fail = || Render2dShapedTextError::FieldBudgetExceeded {
+            resource_id,
+            glyph_id,
+            maximum_bytes: MAX_TEXT_OUTLINE_BYTES,
+        };
+        let outline_bytes = u64::try_from(outline_verbs)
+            .ok()
+            .and_then(|count| {
+                count.checked_mul(
+                    u64::try_from(std::mem::size_of::<OutlineVerb>())
+                        .expect("fixed outline layout fits u64"),
+                )
+            })
+            .ok_or_else(outline_fail)?;
+        let next_outline = self
+            .outline_bytes
+            .checked_add(outline_bytes)
+            .ok_or_else(outline_fail)?;
+        if next_outline > MAX_TEXT_OUTLINE_BYTES {
+            return Err(outline_fail());
+        }
         self.bytes = next;
+        self.outline_bytes = next_outline;
         Ok(())
     }
 }
@@ -114,6 +147,9 @@ pub(super) struct GlyphField {
     width: u32,
     height: u32,
     rgba8: Arc<[u8]>,
+    /// Unhinted, variation/synthesis-resolved immutable outline, never an
+    /// approximate MSDF or a text foreground-alpha footprint.
+    outline: Arc<[OutlineVerb]>,
 }
 
 impl GlyphField {
@@ -140,6 +176,105 @@ impl GlyphField {
     pub(super) fn rgba8(&self) -> &[u8] {
         &self.rgba8
     }
+
+    /// Borrow the original unhinted outline as F1 commands without allocating
+    /// a path or consulting the field bitmap. Placement and font size remain
+    /// separate source facts; query arithmetic must enclose their transforms.
+    pub(super) fn outline_commands(
+        &self,
+    ) -> impl ExactSizeIterator<Item = Result<Render2dPathCommand, ()>> + Clone + '_ {
+        outline_commands(&self.outline)
+    }
+
+    /// Share only the original controls. A semantic consumer must never pin
+    /// the disposable MSDF bitmap or the field cache to retain an outline.
+    pub(super) fn original_outline(&self) -> GlyphOutline {
+        GlyphOutline {
+            verbs: Arc::clone(&self.outline),
+        }
+    }
+
+    pub(super) fn outline_storage_bytes(&self) -> Option<usize> {
+        outline_storage_bytes(self.outline.len())
+    }
+
+    #[cfg(test)]
+    pub(super) fn outline_owners(&self) -> usize {
+        Arc::strong_count(&self.outline)
+    }
+
+    /// Reuses the exact F2 retained outline authority for F3F neutral path
+    /// tessellation. Coordinates are normalized em units; glyph placement and
+    /// font-size/parent transforms belong to the receiving F1 item.
+    pub(super) fn neutral_shape(
+        &self,
+        resource_id: Render2dResourceId,
+        path: &[usize],
+        work: &mut super::shadow::NeutralPreparationWork<'_>,
+    ) -> Result<Render2dShape, Render2dExecutionError> {
+        let invalid = || Render2dShapedTextError::InvalidOutline {
+            resource_id,
+            glyph_id: self.glyph_id,
+        };
+        // Conversion, point validation, F1 contour validation and the final
+        // Arc copy all traverse these commands. Pay before the first visit.
+        let count = self.outline.len();
+        work.charge(256 + 128 * count, path)?;
+        let mut commands = Vec::new();
+        work.reserve_vector(&mut commands, count, path)?;
+        let command_bytes = commands.capacity() * size_of::<Render2dPathCommand>();
+        for command in self.outline_commands() {
+            let Ok(command) = command else {
+                drop(commands);
+                work.release_bytes(command_bytes);
+                return Err(invalid().into());
+            };
+            commands.push(command);
+        }
+        // Vec -> Arc keeps the Vec allocation alive during the copy. Include
+        // both buffers and the two Arc counters before calling F1 construction.
+        let arc_bytes = count * size_of::<Render2dPathCommand>() + 2 * size_of::<usize>();
+        if let Err(error) = work.reserve_bytes(arc_bytes, path) {
+            drop(commands);
+            work.release_bytes(command_bytes);
+            return Err(error);
+        }
+        let result = Render2dPath::new(Render2dFillRule::NonZero, commands);
+        work.release_bytes(command_bytes);
+        match result {
+            Ok(path) => Ok(Render2dShape::path(path)),
+            Err(_) => {
+                work.release_bytes(arc_bytes);
+                Err(invalid().into())
+            }
+        }
+    }
+}
+
+fn outline_commands(
+    outline: &[OutlineVerb],
+) -> impl ExactSizeIterator<Item = Result<Render2dPathCommand, ()>> + Clone + '_ {
+    outline.iter().copied().map(|verb| {
+        let point = |p: OutlinePoint| Render2dPoint::new(p.x, p.y).map_err(|_| ());
+        Ok(match verb {
+            OutlineVerb::MoveTo(to) => Render2dPathCommand::MoveTo(point(to)?),
+            OutlineVerb::LineTo(to) => Render2dPathCommand::LineTo(point(to)?),
+            OutlineVerb::QuadraticTo { control, to } => Render2dPathCommand::QuadraticTo {
+                control: point(control)?,
+                to: point(to)?,
+            },
+            OutlineVerb::CubicTo {
+                control1,
+                control2,
+                to,
+            } => Render2dPathCommand::CubicTo {
+                control1: point(control1)?,
+                control2: point(control2)?,
+                to: point(to)?,
+            },
+            OutlineVerb::Close => Render2dPathCommand::Close,
+        })
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -152,13 +287,34 @@ impl ResourceFields {
         self.by_glyph.get(&glyph_id).and_then(Option::as_ref)
     }
 
+    /// Original-outline consumers must distinguish a validated empty glyph
+    /// from a missing admission record. Missing data cannot prove absence.
+    pub(super) fn admitted_outline(&self, glyph_id: u32) -> Result<Option<&GlyphField>, ()> {
+        self.by_glyph
+            .get(&glyph_id)
+            .map(|field| field.as_deref())
+            .ok_or(())
+    }
+
+    pub(super) fn outline_lookup_work(&self) -> usize {
+        // B-tree nodes compare at most 11 keys and height <= bit length.
+        // Includes dispatch, an empty hit and scalar placement bookkeeping.
+        256 + 512 * (usize::BITS - self.by_glyph.len().leading_zeros()) as usize
+    }
+
     pub(super) fn charge_cached(
         &self,
         resource_id: Render2dResourceId,
         budget: &mut FieldBudget,
     ) -> Result<(), Render2dShapedTextError> {
         for field in self.by_glyph.values().flatten() {
-            budget.charge(resource_id, field.glyph_id(), field.width(), field.height())?;
+            budget.charge(
+                resource_id,
+                field.glyph_id(),
+                field.width(),
+                field.height(),
+                field.outline.len(),
+            )?;
         }
         Ok(())
     }
@@ -206,8 +362,58 @@ enum OutlineVerb {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct GlyphOutline {
+pub(super) struct GlyphOutline {
     verbs: Arc<[OutlineVerb]>,
+}
+
+fn outline_storage_bytes(verbs: usize) -> Option<usize> {
+    // Arc's two counters plus conservative alignment padding; the immutable
+    // control allocation is shared, never recopied by source preparation.
+    verbs
+        .checked_mul(size_of::<OutlineVerb>())?
+        .checked_add(2 * size_of::<usize>() + align_of::<OutlineVerb>())
+}
+
+impl GlyphOutline {
+    pub(super) fn commands(
+        &self,
+    ) -> impl ExactSizeIterator<Item = Result<Render2dPathCommand, ()>> + Clone + '_ {
+        outline_commands(&self.verbs)
+    }
+
+    /// Synthetic source controls for private certificate tests. The same F2
+    /// pen validates contours; no new production outline construction exists.
+    #[cfg(test)]
+    pub(super) fn linear_fixture(contours: &[&[[f32; 2]]]) -> Self {
+        let mut pen = OutlinePathPen::new(None);
+        for contour in contours {
+            let (first, rest) = contour.split_first().expect("fixture contour");
+            pen.move_to(first[0], -first[1]);
+            for point in rest {
+                pen.line_to(point[0], -point[1]);
+            }
+            pen.close();
+        }
+        pen.finish().unwrap().unwrap()
+    }
+
+    #[cfg(test)]
+    pub(super) fn fixture_storage_bytes(&self) -> usize {
+        outline_storage_bytes(self.verbs.len()).unwrap()
+    }
+
+    #[cfg(test)]
+    pub(super) fn arch_fixture(cubic: bool) -> Self {
+        let mut pen = OutlinePathPen::new(None);
+        pen.move_to(0.0, 0.0);
+        if cubic {
+            pen.curve_to(0.0, -8.0, 8.0, -8.0, 8.0, 0.0);
+        } else {
+            pen.quad_to(4.0, -8.0, 8.0, 0.0);
+        }
+        pen.close();
+        pen.finish().unwrap().unwrap()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -253,9 +459,17 @@ impl OutlinePathPen {
         Some(OutlinePoint { x, y })
     }
 
+    fn push_verb(&mut self, verb: OutlineVerb) {
+        if self.verbs.len() >= MAX_OUTLINE_VERBS {
+            self.invalid = true;
+        } else {
+            self.verbs.push(verb);
+        }
+    }
+
     fn finish_contour(&mut self) {
         if matches!(self.contour, ContourState::OpenSegmentBearing) {
-            self.verbs.push(OutlineVerb::Close);
+            self.push_verb(OutlineVerb::Close);
         }
         self.contour = ContourState::Closed;
     }
@@ -280,7 +494,7 @@ impl OutlinePen for OutlinePathPen {
     fn move_to(&mut self, x: f32, y: f32) {
         self.finish_contour();
         if let Some(point) = self.point(x, y) {
-            self.verbs.push(OutlineVerb::MoveTo(point));
+            self.push_verb(OutlineVerb::MoveTo(point));
             self.contour = ContourState::OpenMoveOnly;
         }
     }
@@ -293,7 +507,7 @@ impl OutlinePen for OutlinePathPen {
             self.invalid = true;
             return;
         }
-        self.verbs.push(OutlineVerb::LineTo(to));
+        self.push_verb(OutlineVerb::LineTo(to));
         self.mark_segment();
     }
 
@@ -308,7 +522,7 @@ impl OutlinePen for OutlinePathPen {
             self.invalid = true;
             return;
         }
-        self.verbs.push(OutlineVerb::QuadraticTo { control, to });
+        self.push_verb(OutlineVerb::QuadraticTo { control, to });
         self.mark_segment();
     }
 
@@ -326,7 +540,7 @@ impl OutlinePen for OutlinePathPen {
             self.invalid = true;
             return;
         }
-        self.verbs.push(OutlineVerb::CubicTo {
+        self.push_verb(OutlineVerb::CubicTo {
             control1,
             control2,
             to,
@@ -639,7 +853,7 @@ fn generate_field(
 
     // Reject aggregate work before MSDF's temporary 3xf32 bitmap is created.
     // This is the same per-invocation accounting used for preexisting cache entries.
-    budget.charge(resource_id, glyph_id, width, height)?;
+    budget.charge(resource_id, glyph_id, width, height, outline.verbs.len())?;
 
     let projection = Projection::new(Vector2::splat(scale), Vector2::new(-origin_x, -origin_y));
     let mapping = DistanceMapping::from_range(Range::symmetric(FIELD_RANGE / scale));
@@ -686,6 +900,7 @@ fn generate_field(
         width,
         height,
         rgba8: rgba8.into(),
+        outline: Arc::clone(&outline.verbs),
     })
 }
 
@@ -695,6 +910,32 @@ mod tests {
     use crate::composition_2d::{Render2dFontBinding, Render2dGlyph};
 
     const OUTLINE: &[u8] = include_bytes!("../../../tests/fixtures/f2_outline.ttf");
+
+    #[test]
+    fn original_outline_handle_survives_without_retaining_field_bitmap() {
+        let fields = realize_fixture(OUTLINE, 2).unwrap();
+        let field = fields.glyph(2).unwrap();
+        let pixels = Arc::downgrade(&field.rgba8);
+        let before = field.outline_owners();
+        let source = field.original_outline();
+        assert_eq!(field.outline_owners(), before + 1);
+        let expected = field.outline_commands().collect::<Vec<_>>();
+        drop(fields);
+        assert!(
+            pixels.upgrade().is_none(),
+            "semantic handles cannot pin disposable bitmap storage"
+        );
+        assert_eq!(source.commands().collect::<Vec<_>>(), expected);
+        let recreated = realize_fixture(OUTLINE, 2).unwrap();
+        assert_eq!(
+            source.commands().collect::<Vec<_>>(),
+            recreated
+                .glyph(2)
+                .unwrap()
+                .outline_commands()
+                .collect::<Vec<_>>()
+        );
+    }
 
     fn resource(bytes: &[u8], glyph_id: u32) -> Render2dShapedTextResource {
         Render2dShapedTextResource::new(
@@ -723,14 +964,14 @@ mod tests {
         let id = Render2dResourceId::new(920).unwrap();
         let mut budget = FieldBudget::default();
         budget
-            .charge(id, 1, 2048, 2048)
+            .charge(id, 1, 2048, 2048, 0)
             .expect("first sixteen MiB field");
         budget
-            .charge(id, 2, 2048, 2048)
+            .charge(id, 2, 2048, 2048, 0)
             .expect("second sixteen MiB field");
         assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
         assert!(matches!(
-            budget.charge(id, 3, 1, 1),
+            budget.charge(id, 3, 1, 1, 0),
             Err(Render2dShapedTextError::FieldBudgetExceeded {
                 resource_id,
                 glyph_id: 3,
@@ -738,7 +979,7 @@ mod tests {
             }) if resource_id == id
         ));
         assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
-        assert!(budget.charge(id, 4, u32::MAX, u32::MAX).is_err());
+        assert!(budget.charge(id, 4, u32::MAX, u32::MAX, 0).is_err());
         assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
         let mut cached = BTreeMap::new();
         cached.insert(
@@ -750,6 +991,7 @@ mod tests {
                 width: 2,
                 height: 2,
                 rgba8: Arc::from([0_u8; 16]),
+                outline: Arc::from([]),
             })),
         );
         let fields = ResourceFields { by_glyph: cached };
@@ -758,6 +1000,308 @@ mod tests {
             Err(Render2dShapedTextError::FieldBudgetExceeded { glyph_id: 5, .. })
         ));
         assert_eq!(budget.bytes, MAX_TEXT_FIELD_BYTES);
+    }
+
+    #[test]
+    fn neutral_text_shape_comes_from_immutable_outline_independently_of_msdf() {
+        let source = realize_fixture(OUTLINE, 2).unwrap();
+        let reproduced = realize_fixture(OUTLINE, 2).unwrap();
+        let field = source.glyph(2).expect("fixture glyph has an outline");
+        let again = reproduced.glyph(2).expect("recreated outline exists");
+        assert!(!field.outline.is_empty());
+        let id = Render2dResourceId::new(1).unwrap();
+        let a = field
+            .neutral_shape(
+                id,
+                &[0],
+                &mut super::super::shadow::NeutralPreparationWork::new(
+                    &mut 0,
+                    &mut 0,
+                    &mut super::super::support::PreparationHostBudget::new(),
+                ),
+            )
+            .unwrap();
+        let b = again
+            .neutral_shape(
+                id,
+                &[0],
+                &mut super::super::shadow::NeutralPreparationWork::new(
+                    &mut 0,
+                    &mut 0,
+                    &mut super::super::support::PreparationHostBudget::new(),
+                ),
+            )
+            .unwrap();
+        assert_eq!(a, b);
+        let path = a.as_path().unwrap();
+        assert_eq!(path.fill_rule(), Render2dFillRule::NonZero);
+        assert!(
+            path.commands()
+                .iter()
+                .any(|v| matches!(v, Render2dPathCommand::Close))
+        );
+    }
+
+    #[test]
+    fn neutral_glyph_command_conversion_admits_work_and_vec_arc_coexistence() {
+        use super::super::{
+            shadow::NeutralPreparationWork,
+            support::{
+                MAX_COMPOSITIONAL_SHADOW_WORK, MAX_SHADOW_HOST_BYTES, PreparationHostBudget,
+            },
+        };
+        let field = GlyphField {
+            glyph_id: 1,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            width: 1,
+            height: 1,
+            rgba8: Arc::from([0; 4]),
+            outline: Arc::from([
+                OutlineVerb::MoveTo(OutlinePoint { x: 0.0, y: 0.0 }),
+                OutlineVerb::LineTo(OutlinePoint { x: 1.0, y: 0.0 }),
+                OutlineVerb::LineTo(OutlinePoint { x: 0.0, y: 1.0 }),
+                OutlineVerb::Close,
+            ]),
+        };
+        let id = Render2dResourceId::new(1).unwrap();
+        let path = [3, 4];
+        let cost = 256 + 128 * 4;
+        let vector_bytes = 4 * size_of::<Render2dPathCommand>();
+        let arc_bytes = vector_bytes + 2 * size_of::<usize>();
+        let peak = vector_bytes + arc_bytes;
+        let mut work = MAX_COMPOSITIONAL_SHADOW_WORK - cost;
+        let mut host = PreparationHostBudget::new();
+        let shape = field
+            .neutral_shape(
+                id,
+                &path,
+                &mut NeutralPreparationWork::new(&mut work, &mut 0, &mut host),
+            )
+            .unwrap();
+        assert_eq!(
+            shape.as_path().unwrap().commands(),
+            &[
+                Render2dPathCommand::MoveTo(Render2dPoint::new(0.0, 0.0).unwrap()),
+                Render2dPathCommand::LineTo(Render2dPoint::new(1.0, 0.0).unwrap()),
+                Render2dPathCommand::LineTo(Render2dPoint::new(0.0, 1.0).unwrap()),
+                Render2dPathCommand::Close,
+            ]
+        );
+        assert_eq!(work, MAX_COMPOSITIONAL_SHADOW_WORK);
+        assert_eq!((host.live(), host.peak()), (arc_bytes, peak));
+        drop(shape);
+
+        let mut work = MAX_COMPOSITIONAL_SHADOW_WORK - cost + 1;
+        let initial = work;
+        let mut host = PreparationHostBudget::new();
+        assert!(
+            matches!(field.neutral_shape(id, &path, &mut NeutralPreparationWork::new(
+            &mut work, &mut 0, &mut host,
+        )), Err(Render2dExecutionError::SampleSpace {
+            kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+            path: Some(owner), ..
+        }) if owner == path)
+        );
+        assert_eq!(work, initial);
+        assert_eq!((host.live(), host.peak()), (0, 0));
+
+        for short in [0, 1] {
+            let occupied = MAX_SHADOW_HOST_BYTES - peak + short;
+            let mut work = 0;
+            let mut host = PreparationHostBudget::new();
+            host.reserve(occupied, &path).unwrap();
+            let result = field.neutral_shape(
+                id,
+                &path,
+                &mut NeutralPreparationWork::new(&mut work, &mut 0, &mut host),
+            );
+            if short == 0 {
+                assert!(result.is_ok());
+                assert_eq!(host.live(), occupied + arc_bytes);
+                assert_eq!(host.peak(), MAX_SHADOW_HOST_BYTES);
+            } else {
+                assert!(matches!(result, Err(Render2dExecutionError::SampleSpace {
+                    kind: crate::execution_2d::Render2dSampleSpaceError::ResourceLimit,
+                    path: Some(owner), ..
+                }) if owner == path));
+                assert_eq!(host.live(), occupied);
+                assert_eq!(host.peak(), occupied + vector_bytes);
+            }
+            assert_eq!(work, cost);
+        }
+
+        // Both point conversion and F1 contour validation preserve the original
+        // outline diagnostic and return all newly owned command storage.
+        for outline in [
+            Arc::from([OutlineVerb::MoveTo(OutlinePoint {
+                x: f64::NAN,
+                y: 0.0,
+            })]),
+            Arc::from([OutlineVerb::LineTo(OutlinePoint { x: 0.0, y: 0.0 })]),
+        ] {
+            let invalid = GlyphField {
+                outline,
+                ..field.clone()
+            };
+            let mut work = 0;
+            let mut host = PreparationHostBudget::new();
+            assert!(
+                matches!(invalid.neutral_shape(id, &path, &mut NeutralPreparationWork::new(
+                &mut work, &mut 0, &mut host,
+            )), Err(Render2dExecutionError::ShapedText(
+                Render2dShapedTextError::InvalidOutline { resource_id, glyph_id: 1 }
+            )) if resource_id == id)
+            );
+            assert_eq!(host.live(), 0);
+            assert_eq!(work, 256 + 128);
+        }
+
+        let mut work = 0;
+        let mut host = PreparationHostBudget::new();
+        assert!(
+            super::super::vector::neutral_shaped_glyph(
+                super::super::vector::NeutralGlyphInstance {
+                    field: &field,
+                    resource_id: id,
+                    origin: [0.0, 0.0],
+                    font_size: 1.0,
+                    to_parent: crate::composition_2d::Render2dAffineTransform::translation(
+                        2.0_f64.powi(44),
+                        0.0,
+                    )
+                    .unwrap(),
+                },
+                &path,
+                4.0,
+                1_048_576,
+                &mut NeutralPreparationWork::new(&mut work, &mut 0, &mut host),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            host.live(),
+            0,
+            "glyph path drops after late physical failure"
+        );
+        assert_eq!(host.peak(), peak);
+        // The one-triangle glyph pays four flattened path events and its
+        // three-index original-vector scan before the late transform rejects.
+        // Executed work is not refunded; temporary geometry is retired.
+        assert_eq!(work, cost + 512 + 256 + 4 + 4 + 3 * 64);
+    }
+
+    #[test]
+    fn shaped_glyph_neutral_mesh_preserves_outline_and_parent_affine() {
+        let glyphs = realize_fixture(OUTLINE, 2).unwrap();
+        let field = glyphs.glyph(2).expect("fixture glyph has an outline");
+        let id = Render2dResourceId::new(1).unwrap();
+        let path = [4, 1];
+        let source = super::super::vector::neutral_shaped_glyph(
+            super::super::vector::NeutralGlyphInstance {
+                field,
+                resource_id: id,
+                origin: [2.0, 3.0],
+                font_size: 24.0,
+                to_parent: crate::composition_2d::Render2dAffineTransform::IDENTITY,
+            },
+            &path,
+            1.0,
+            1_048_576,
+            &mut super::super::shadow::NeutralPreparationWork::new(
+                &mut 0,
+                &mut 0,
+                &mut super::super::support::PreparationHostBudget::new(),
+            ),
+        )
+        .unwrap()
+        .expect("nonempty actual outline tessellates");
+        let affine =
+            crate::composition_2d::Render2dAffineTransform::new(2.0, 0.0, 0.0, 0.5, 7.0, -3.0)
+                .unwrap();
+        let changed = super::super::vector::neutral_shaped_glyph(
+            super::super::vector::NeutralGlyphInstance {
+                field,
+                resource_id: id,
+                origin: [2.0, 3.0],
+                font_size: 24.0,
+                to_parent: affine,
+            },
+            &path,
+            1.0,
+            1_048_576,
+            &mut super::super::shadow::NeutralPreparationWork::new(
+                &mut 0,
+                &mut 0,
+                &mut super::super::support::PreparationHostBudget::new(),
+            ),
+        )
+        .unwrap()
+        .expect("parent affine retains neutral glyph support");
+        let expected = [
+            source.bounds[0] * 2.0 + 7.0,
+            source.bounds[1] * 0.5 - 3.0,
+            source.bounds[2] * 2.0 + 7.0,
+            source.bounds[3] * 0.5 - 3.0,
+        ];
+        for (&actual, &oracle) in changed.bounds.iter().zip(&expected) {
+            assert!((actual - oracle).abs() < 1.0e-6);
+        }
+        let mut transparent_field = (**field).clone();
+        transparent_field.rgba8 = vec![0; field.rgba8.len()].into();
+        let transparent = super::super::vector::neutral_shaped_glyph(
+            super::super::vector::NeutralGlyphInstance {
+                field: &transparent_field,
+                resource_id: id,
+                origin: [2.0, 3.0],
+                font_size: 24.0,
+                to_parent: crate::composition_2d::Render2dAffineTransform::IDENTITY,
+            },
+            &path,
+            1.0,
+            1_048_576,
+            &mut super::super::shadow::NeutralPreparationWork::new(
+                &mut 0,
+                &mut 0,
+                &mut super::super::support::PreparationHostBudget::new(),
+            ),
+        )
+        .unwrap()
+        .expect("MSDF zero-alpha bytes are not geometry");
+        assert_eq!(source.bounds, transparent.bounds);
+        assert_eq!(source.triangles, transparent.triangles);
+    }
+
+    #[test]
+    fn cached_field_budget_includes_retained_outline_work() {
+        let id = Render2dResourceId::new(1).unwrap();
+        let fields = realize_fixture(OUTLINE, 2).unwrap();
+        let field = fields.glyph(2).unwrap();
+        let mut budget = FieldBudget::default();
+        fields.charge_cached(id, &mut budget).unwrap();
+        assert_eq!(
+            budget.bytes,
+            u64::from(field.width()) * u64::from(field.height()) * 4
+        );
+        assert_eq!(
+            budget.outline_bytes,
+            u64::try_from(field.outline.len() * std::mem::size_of::<OutlineVerb>()).unwrap()
+        );
+    }
+
+    #[test]
+    fn outline_admission_rejects_over_budget_without_changing_prior_field_reservations() {
+        let id = Render2dResourceId::new(72).unwrap();
+        let mut budget = FieldBudget::default();
+        assert!(matches!(
+            budget.charge(id, 3, 1, 1, MAX_OUTLINE_VERBS + 1),
+            Err(Render2dShapedTextError::FieldBudgetExceeded {
+                maximum_bytes: MAX_TEXT_OUTLINE_BYTES,
+                ..
+            })
+        ));
+        assert_eq!(budget.bytes, 0);
+        assert_eq!(budget.outline_bytes, 0);
     }
 
     #[test]

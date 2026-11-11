@@ -361,6 +361,8 @@ pub struct Render2dGroup {
     clips: Arc<[Render2dClip]>,
     opacity: Render2dOpacity,
     shadows: Arc<[Render2dDropShadow]>,
+    // Immutable authored structure only, never paint visibility or geometry.
+    structurally_active: bool,
 }
 
 impl Render2dGroup {
@@ -376,13 +378,25 @@ impl Render2dGroup {
         let entries: Vec<Render2dEntry> = entries.into();
         let clips: Vec<Render2dClip> = clips.into();
         let shadows: Vec<Render2dDropShadow> = shadows.into();
+        let structurally_active = !shadows.is_empty()
+            || entries.iter().any(|entry| match entry {
+                Render2dEntry::Item(_) => true,
+                Render2dEntry::Group(group) => group.is_structurally_active(),
+            });
         Self {
             entries: entries.into(),
             local_to_parent,
             clips: clips.into(),
             opacity,
             shadows: shadows.into(),
+            structurally_active,
         }
+    }
+
+    /// Whether this immutable subtree contains an authored item or effect.
+    /// Empty geometry and transparent colors/opacities do not alter this fact.
+    pub(crate) const fn is_structurally_active(&self) -> bool {
+        self.structurally_active
     }
 
     /// Returns child entries in exact painter order.
@@ -491,6 +505,7 @@ impl Render2dResourceRequirement {
 pub struct Render2dComposition {
     root_entries: Arc<[Render2dEntry]>,
     resource_requirements: Arc<[Render2dResourceRequirement]>,
+    has_shadows: bool,
 }
 
 impl Render2dComposition {
@@ -507,6 +522,7 @@ impl Render2dComposition {
     ) -> Result<Self, Render2dCompositionError> {
         let root_entries = root_entries.into();
         let mut requirements = BTreeMap::new();
+        let mut has_shadows = false;
         let mut pending = root_entries.iter().rev().collect::<Vec<_>>();
 
         while let Some(entry) = pending.pop() {
@@ -532,6 +548,7 @@ impl Render2dComposition {
                     Render2dPrimitive::Fill { .. } | Render2dPrimitive::Stroke { .. } => {}
                 },
                 Render2dEntry::Group(group) => {
+                    has_shadows |= !group.shadows().is_empty();
                     pending.extend(group.entries().iter().rev());
                 }
             }
@@ -541,6 +558,7 @@ impl Render2dComposition {
         Ok(Self {
             root_entries: root_entries.into(),
             resource_requirements: resource_requirements.into(),
+            has_shadows,
         })
     }
 
@@ -554,6 +572,10 @@ impl Render2dComposition {
     #[must_use]
     pub fn resource_requirements(&self) -> &[Render2dResourceRequirement] {
         &self.resource_requirements
+    }
+
+    pub(crate) const fn has_shadows(&self) -> bool {
+        self.has_shadows
     }
 
     /// Validates one immutable invocation resource set against this composition.

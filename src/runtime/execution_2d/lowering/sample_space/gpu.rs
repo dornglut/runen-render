@@ -133,13 +133,13 @@ pub(super) fn operation(
 }
 
 pub(super) fn append(
-    operations: &mut Vec<GpuRenderOperation>,
-    op: GpuRenderOperation,
+    operations: &mut Vec<GpuWorkOperation>,
+    op: impl Into<GpuWorkOperation>,
 ) -> Result<(), Render2dExecutionError> {
     if operations.len() >= MAX_OPERATIONS {
         return Err(failure("sample-space work-node budget exceeded"));
     }
-    operations.push(op);
+    operations.push(op.into());
     Ok(())
 }
 
