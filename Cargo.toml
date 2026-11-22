@@ -14,7 +14,7 @@ default = []
 [dependencies]
 bymsdfgen-core = { version = "=0.1.1", default-features = false }
 lyon_tessellation = { version = "=1.0.22", default-features = false, features = ["std"] }
-runen-gpu = { git = "https://github.com/dornglut/runen-gpu", rev = "f2256e53a907c1881c18b2c2d1315b249ce33a5b" }
+runen-gpu = { git = "https://github.com/dornglut/runen-gpu", rev = "5044437a2edf2d56dcb9e5cd47785539b61b82f0" }
 runen-shader = { git = "https://github.com/dornglut/runen-shader", rev = "406f8165da92caa2d296b3a2f774ba534279870d" }
 skrifa = { version = "=0.44.0", default-features = false, features = ["std"] }
 
