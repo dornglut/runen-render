@@ -293,7 +293,7 @@ fn validate_manifest_dependencies(manifest: &toml::Value) -> Result<(), String> 
         }
     }
     for (name, revision) in [
-        ("runen-gpu", "f2256e53a907c1881c18b2c2d1315b249ce33a5b"),
+        ("runen-gpu", "5044437a2edf2d56dcb9e5cd47785539b61b82f0"),
         ("runen-shader", "406f8165da92caa2d296b3a2f774ba534279870d"),
     ] {
         expect_manifest_string(
@@ -1051,13 +1051,13 @@ mod manifest_policy_tests {
     #[test]
     fn altered_git_revision_with_original_in_comment_cannot_pass() {
         let mut changed = CURRENT.replace(
-            "rev = \"f2256e53a907c1881c18b2c2d1315b249ce33a5b\"",
+            "rev = \"5044437a2edf2d56dcb9e5cd47785539b61b82f0\"",
             "rev = \"0000000000000000000000000000000000000000\"",
         );
         assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
-        changed.push_str("# rev = \"f2256e53a907c1881c18b2c2d1315b249ce33a5b\"\n");
+        changed.push_str("# rev = \"5044437a2edf2d56dcb9e5cd47785539b61b82f0\"\n");
         assert!(
-            changed.contains("rev = \"f2256e53a907c1881c18b2c2d1315b249ce33a5b\""),
+            changed.contains("rev = \"5044437a2edf2d56dcb9e5cd47785539b61b82f0\""),
             "expected dependency pin remains visible only in a comment",
         );
         let manifest = parse_manifest(&changed).expect("mutation remains valid TOML");
@@ -1067,8 +1067,8 @@ mod manifest_policy_tests {
     #[test]
     fn moving_dependency_ref_is_not_hidden_by_immutable_revision() {
         let changed = CURRENT.replace(
-            "rev = \"f2256e53a907c1881c18b2c2d1315b249ce33a5b\"",
-            "rev = \"f2256e53a907c1881c18b2c2d1315b249ce33a5b\", branch = \"main\"",
+            "rev = \"5044437a2edf2d56dcb9e5cd47785539b61b82f0\"",
+            "rev = \"5044437a2edf2d56dcb9e5cd47785539b61b82f0\", branch = \"main\"",
         );
         assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
         let manifest = parse_manifest(&changed).expect("mutation remains valid TOML");
