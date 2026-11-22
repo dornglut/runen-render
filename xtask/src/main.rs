@@ -293,7 +293,7 @@ fn validate_manifest_dependencies(manifest: &toml::Value) -> Result<(), String> 
         }
     }
     for (name, revision) in [
-        ("runen-gpu", "03be685a1c0ea3f51afbc769cccdc4ef9d765005"),
+        ("runen-gpu", "f2256e53a907c1881c18b2c2d1315b249ce33a5b"),
         ("runen-shader", "406f8165da92caa2d296b3a2f774ba534279870d"),
     ] {
         expect_manifest_string(
@@ -1051,14 +1051,14 @@ mod manifest_policy_tests {
     #[test]
     fn altered_git_revision_with_original_in_comment_cannot_pass() {
         let mut changed = CURRENT.replace(
-            "rev = \"03be685a1c0ea3f51afbc769cccdc4ef9d765005\"",
+            "rev = \"f2256e53a907c1881c18b2c2d1315b249ce33a5b\"",
             "rev = \"0000000000000000000000000000000000000000\"",
         );
         assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
-        changed.push_str("# rev = \"03be685a1c0ea3f51afbc769cccdc4ef9d765005\"\n");
+        changed.push_str("# rev = \"f2256e53a907c1881c18b2c2d1315b249ce33a5b\"\n");
         assert!(
-            changed.contains("rev = \"03be685a1c0ea3f51afbc769cccdc4ef9d765005\""),
-            "old dependency pin remains visible only in a comment",
+            changed.contains("rev = \"f2256e53a907c1881c18b2c2d1315b249ce33a5b\""),
+            "expected dependency pin remains visible only in a comment",
         );
         let manifest = parse_manifest(&changed).expect("mutation remains valid TOML");
         assert!(validate_manifest_dependencies(&manifest).is_err());
@@ -1067,8 +1067,8 @@ mod manifest_policy_tests {
     #[test]
     fn moving_dependency_ref_is_not_hidden_by_immutable_revision() {
         let changed = CURRENT.replace(
-            "rev = \"03be685a1c0ea3f51afbc769cccdc4ef9d765005\"",
-            "rev = \"03be685a1c0ea3f51afbc769cccdc4ef9d765005\", branch = \"main\"",
+            "rev = \"f2256e53a907c1881c18b2c2d1315b249ce33a5b\"",
+            "rev = \"f2256e53a907c1881c18b2c2d1315b249ce33a5b\", branch = \"main\"",
         );
         assert_ne!(changed, CURRENT, "mutation must affect the actual manifest");
         let manifest = parse_manifest(&changed).expect("mutation remains valid TOML");
