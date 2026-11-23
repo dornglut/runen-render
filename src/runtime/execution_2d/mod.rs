@@ -70,6 +70,9 @@ impl Render2dExecutionState {
         // One bounded active working set; evict fields no longer referenced by
         // this successful composition instead of retaining unlimited past fonts.
         let mut resolved_fields = BTreeMap::<FieldSetKey, Arc<ResourceFields>>::new();
+        // Lazily index only the previous successful working set. The bounded
+        // index is disposable metadata, not another resource identity owner.
+        let mut prior_fields = None;
 
         for resource_id in unique_resources {
             let value = bindings
@@ -101,12 +104,16 @@ impl Render2dExecutionState {
                 continue;
             }
 
+            let shared = prior_fields
+                .get_or_insert_with(|| field::FieldReuseIndex::new(&self.fields, &self.observed))
+                .resolve(resource.font(), quality);
             let realized = Arc::new(field::realize(
                 resource_id,
                 resource,
                 quality,
                 admitted_target.max_texture_dimension_2d(),
                 &mut field_budget,
+                shared,
             )?);
             resolved_fields.insert(key, realized);
         }
@@ -194,6 +201,7 @@ impl Render2dExecutionState {
             bindings,
             &occurrences,
         )?;
+        drop(prior_fields);
         for (resource_id, value) in observed_updates {
             let previous = self.observed.insert(resource_id, value);
             debug_assert!(previous.is_none());

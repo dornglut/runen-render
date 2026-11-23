@@ -41,6 +41,8 @@ const BOX_GLYPH: u32 = 2;
 mod clip;
 #[path = "execution_2d/control_order.rs"]
 mod control_order;
+#[path = "execution_2d/field_reuse.rs"]
+mod field_reuse;
 #[path = "execution_2d/gradient.rs"]
 mod gradient;
 #[path = "execution_2d/group.rs"]
